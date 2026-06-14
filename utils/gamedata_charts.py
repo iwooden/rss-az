@@ -39,6 +39,10 @@ from utils.gamedata_analysis import (  # noqa: E402
     StrategyDataset,
     TurnAverageSummary,
     TurnMeanSummary,
+    TurnOneAuctionCompanyPresenceSummary,
+    TurnOneAuctionDeckPresenceSummary,
+    TurnOneAuctionPoolPremiumSummary,
+    TurnOneIpoParPriceSummary,
     TurnOneOpeningSummary,
     WinRateSummary,
 )
@@ -1244,6 +1248,89 @@ def plot_average_par_price_by_turn(
     return _save_figure(fig, Path(output_path))
 
 
+def plot_turn_one_ipo_par_price_distribution(
+    summaries: dict[int, TurnOneIpoParPriceSummary],
+    output_path: str | Path,
+) -> Path:
+    """Write T1 IPO par-price percentage lines by pick order."""
+    counts = sorted(summaries)
+    fig, axes = plt.subplots(
+        1,
+        len(counts),
+        figsize=(5.0 * len(counts), 4.2),
+        sharey=True,
+    )
+    axes_arr = _as_axes_array(axes)
+    price_chunks = [
+        summary.par_prices
+        for summary in summaries.values()
+        if summary.par_prices.size
+    ]
+    percentage_chunks = [
+        summary.percentages[np.isfinite(summary.percentages)]
+        for summary in summaries.values()
+        if summary.percentages.size
+    ]
+    all_prices = (
+        np.concatenate(price_chunks)
+        if price_chunks
+        else np.empty(0, dtype=np.int64)
+    )
+    all_percentages = (
+        np.concatenate(percentage_chunks)
+        if percentage_chunks
+        else np.empty(0, dtype=np.float64)
+    )
+    y_max = (
+        max(1.0, float(np.max(all_percentages)) * 1.16)
+        if all_percentages.size
+        else 1.0
+    )
+
+    for ax, num_players in zip(axes_arr, counts):
+        summary = summaries[num_players]
+        if summary.par_prices.size == 0 or summary.pick_positions.size == 0:
+            ax.text(
+                0.5,
+                0.5,
+                "No Turn 1 IPOs",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=10,
+                color="#777777",
+            )
+        else:
+            for line_index, pick_position in enumerate(summary.pick_positions):
+                label = _rank_labels(np.asarray([pick_position], dtype=np.int64))[0]
+                ax.plot(
+                    summary.par_prices,
+                    summary.percentages[line_index],
+                    marker="o",
+                    markersize=4.0,
+                    linewidth=1.7,
+                    color=POSITION_COLORS[line_index % len(POSITION_COLORS)],
+                    label=f"{label} pick",
+                )
+
+        ax.set_title(f"{num_players} Players")
+        ax.set_xlabel("IPO par price")
+        ax.set_ylabel("Share of T1 IPOs at par price (%)" if ax is axes_arr[0] else "")
+        ax.set_ylim(0.0, y_max)
+        if all_prices.size:
+            unique_prices = np.unique(all_prices)
+            ax.set_xticks(unique_prices)
+            x_min = float(np.min(unique_prices))
+            x_max = float(np.max(unique_prices))
+            ax.set_xlim(x_min - 0.5, x_max + 0.5)
+        _style_axis(ax)
+        ax.legend(loc="upper right", frameon=False, fontsize=8)
+
+    fig.suptitle("Turn 1 IPO Par Price Distribution by Pick Order", fontsize=14)
+    fig.tight_layout()
+    return _save_figure(fig, Path(output_path))
+
+
 def plot_net_worth_breakdown_by_turn(
     summary: NetWorthBreakdownSummary,
     output_path: str | Path,
@@ -1393,6 +1480,278 @@ def plot_initial_auction_position_deltas(
 
     fig.suptitle("Turn 1 Auction Delta by Initial Offering Face-Value Rank", fontsize=14)
     fig.tight_layout()
+    return _save_figure(fig, Path(output_path))
+
+
+def plot_turn_one_auction_pool_premiums(
+    summaries: dict[int, TurnOneAuctionPoolPremiumSummary],
+    output_path: str | Path,
+) -> Path:
+    """Write a line chart of T1 premium totals by initial auction-pool FV."""
+    counts = sorted(summaries)
+    fig, ax = plt.subplots(figsize=(9.2, 5.0))
+    all_x = np.concatenate(
+        [
+            summary.face_value_sums
+            for summary in summaries.values()
+            if summary.face_value_sums.size
+        ]
+    )
+    all_y = np.concatenate(
+        [
+            summary.mean_premium_sums[np.isfinite(summary.mean_premium_sums)]
+            for summary in summaries.values()
+            if np.any(np.isfinite(summary.mean_premium_sums))
+        ]
+    )
+
+    for color_index, num_players in enumerate(counts):
+        summary = summaries[num_players]
+        if summary.face_value_sums.size == 0:
+            continue
+        ax.plot(
+            summary.face_value_sums,
+            summary.mean_premium_sums,
+            marker="o",
+            markersize=4.5,
+            linewidth=1.8,
+            color=POSITION_COLORS[color_index % len(POSITION_COLORS)],
+            label=f"{num_players} Players",
+        )
+
+    ax.set_title("Turn 1 Auction Premium by Initial Auction Pool Face Value")
+    ax.set_xlabel("Initial auction pool total face value")
+    ax.set_ylabel("Average total auction premium")
+    if all_x.size:
+        x_min = float(np.min(all_x))
+        x_max = float(np.max(all_x))
+        x_pad = max(1.0, (x_max - x_min) * 0.04)
+        ax.set_xlim(x_min - x_pad, x_max + x_pad)
+    if all_y.size:
+        ax.set_ylim(0.0, max(1.0, float(np.max(all_y)) * 1.14))
+    _style_axis(ax)
+    ax.legend(loc="upper left", frameon=False)
+    ax.text(
+        1.0,
+        -0.18,
+        (
+            "Each point averages per-game Turn 1 auction premiums for companies "
+            "that started in the setup auction pool."
+        ),
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=8.5,
+        color="#555555",
+    )
+    fig.tight_layout()
+    return _save_figure(fig, Path(output_path))
+
+
+def plot_turn_one_auction_company_presence_effects(
+    summaries: dict[int, TurnOneAuctionCompanyPresenceSummary],
+    output_path: str | Path,
+) -> Path:
+    """Write included/excluded red-company effects on T1 auction premium."""
+    counts = sorted(summaries)
+    fig, axes = plt.subplots(2, len(counts), figsize=(5.2 * len(counts), 8.0))
+    axes_arr = np.asarray(axes, dtype=object).reshape(2, len(counts))
+    all_values = np.concatenate(
+        [
+            values[np.isfinite(values)]
+            for summary in summaries.values()
+            for values in (summary.included_deltas, summary.excluded_deltas)
+            if np.any(np.isfinite(values))
+        ]
+    )
+    y_abs = max(1.0, float(np.max(np.abs(all_values))) * 1.18) if all_values.size else 1.0
+
+    for col, num_players in enumerate(counts):
+        summary = summaries[num_players]
+        x = np.arange(len(summary.company_names))
+        for row, (label, values, observed) in enumerate(
+            (
+                ("Included in Initial Pool", summary.included_deltas, summary.included_counts),
+                ("Excluded from Initial Pool", summary.excluded_deltas, summary.excluded_counts),
+            )
+        ):
+            ax = axes_arr[row, col]
+            plot_values = np.nan_to_num(values, nan=0.0)
+            colors = [
+                POSITIVE_COLOR if value >= 0.0 else NEGATIVE_COLOR
+                for value in plot_values
+            ]
+            bars = ax.bar(
+                x,
+                plot_values,
+                width=0.72,
+                color=colors,
+                edgecolor="#ffffff",
+                linewidth=0.7,
+            )
+            for bar, missing in zip(bars, observed == 0):
+                if missing:
+                    bar.set_hatch("//")
+                    bar.set_alpha(0.35)
+            ax.axhline(0.0, color=FAIR_LINE_COLOR, linewidth=0.9)
+            ax.set_title(
+                f"{num_players} Players"
+                if row == 0
+                else f"Baseline: {summary.baseline_mean_premium:.2f}",
+                fontsize=10,
+            )
+            if col == 0:
+                ax.set_ylabel(f"{label}\nDelta from overall avg premium")
+            ax.set_xticks(x)
+            ax.set_xticklabels(summary.company_names, rotation=55, ha="right", fontsize=8)
+            for tick in ax.get_xticklabels():
+                tick.set_color(COMPANY_STAR_COLORS[1])
+                tick.set_fontweight("bold")
+            ax.set_ylim(-y_abs, y_abs)
+            count_y = -y_abs * 0.91
+            for company_x, count in zip(x, observed):
+                ax.text(
+                    float(company_x),
+                    count_y,
+                    str(int(count)),
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                    color="#666666",
+                )
+            _style_axis(ax)
+
+    fig.suptitle(
+        "Turn 1 Auction Premium Effect by Red Company Initial Pool Presence",
+        fontsize=14,
+    )
+    fig.text(
+        0.5,
+        0.025,
+        (
+            "Bars show conditional average per-game Turn 1 auction premium minus "
+            "the overall average for that player count."
+        ),
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#555555",
+    )
+    fig.subplots_adjust(left=0.07, right=0.985, top=0.9, bottom=0.12, hspace=0.34)
+    return _save_figure(fig, Path(output_path))
+
+
+def plot_turn_one_auction_deck_presence_effects(
+    summaries: dict[int, TurnOneAuctionDeckPresenceSummary],
+    output_path: str | Path,
+) -> Path:
+    """Write red-deck inclusion/exclusion effects on T1 auction premium."""
+    counts = [
+        num_players
+        for num_players, summary in sorted(summaries.items())
+        if summary.company_ids.size
+        and np.any(summary.included_counts > 0)
+        and np.any(summary.excluded_counts > 0)
+    ]
+    if not counts:
+        fig, ax = plt.subplots(figsize=(7.0, 4.0))
+        ax.text(
+            0.5,
+            0.5,
+            "No player counts with red deck inclusion/exclusion variation",
+            ha="center",
+            va="center",
+        )
+        ax.axis("off")
+        return _save_figure(fig, Path(output_path))
+
+    fig, axes = plt.subplots(2, len(counts), figsize=(5.2 * len(counts), 8.0))
+    axes_arr = np.asarray(axes, dtype=object).reshape(2, len(counts))
+    all_values = np.concatenate(
+        [
+            values[np.isfinite(values)]
+            for num_players in counts
+            for values in (
+                summaries[num_players].included_deltas,
+                summaries[num_players].excluded_deltas,
+            )
+            if np.any(np.isfinite(values))
+        ]
+    )
+    y_abs = max(1.0, float(np.max(np.abs(all_values))) * 1.18) if all_values.size else 1.0
+
+    for col, num_players in enumerate(counts):
+        summary = summaries[num_players]
+        x = np.arange(len(summary.company_names))
+        for row, (label, values, observed) in enumerate(
+            (
+                ("Included in Deck", summary.included_deltas, summary.included_counts),
+                ("Excluded from Deck", summary.excluded_deltas, summary.excluded_counts),
+            )
+        ):
+            ax = axes_arr[row, col]
+            plot_values = np.nan_to_num(values, nan=0.0)
+            colors = [
+                POSITIVE_COLOR if value >= 0.0 else NEGATIVE_COLOR
+                for value in plot_values
+            ]
+            bars = ax.bar(
+                x,
+                plot_values,
+                width=0.72,
+                color=colors,
+                edgecolor="#ffffff",
+                linewidth=0.7,
+            )
+            for bar, missing in zip(bars, observed == 0):
+                if missing:
+                    bar.set_hatch("//")
+                    bar.set_alpha(0.35)
+            ax.axhline(0.0, color=FAIR_LINE_COLOR, linewidth=0.9)
+            ax.set_title(
+                f"{num_players} Players"
+                if row == 0
+                else f"Baseline: {summary.baseline_mean_premium:.2f}",
+                fontsize=10,
+            )
+            if col == 0:
+                ax.set_ylabel(f"{label}\nDelta from overall avg premium")
+            ax.set_xticks(x)
+            ax.set_xticklabels(summary.company_names, rotation=55, ha="right", fontsize=8)
+            for tick in ax.get_xticklabels():
+                tick.set_color(COMPANY_STAR_COLORS[1])
+                tick.set_fontweight("bold")
+            ax.set_ylim(-y_abs, y_abs)
+            count_y = -y_abs * 0.91
+            for company_x, count in zip(x, observed):
+                ax.text(
+                    float(company_x),
+                    count_y,
+                    str(int(count)),
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                    color="#666666",
+                )
+            _style_axis(ax)
+
+    fig.suptitle(
+        "Turn 1 Auction Premium Effect by Red Company Deck Presence",
+        fontsize=14,
+    )
+    fig.text(
+        0.5,
+        0.025,
+        (
+            "MHE is omitted because the highest face-value red company is always in the deck; "
+            "player counts with all red companies always included are omitted."
+        ),
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#555555",
+    )
+    fig.subplots_adjust(left=0.08, right=0.985, top=0.9, bottom=0.12, hspace=0.34)
     return _save_figure(fig, Path(output_path))
 
 
@@ -1592,6 +1951,10 @@ def generate_default_charts(
     par_price_by_turn = dataset.average_par_price_by_turn_summary(
         player_counts=player_counts
     )
+    turn_one_ipo_par_prices = dataset.turn_one_ipo_par_price_summary(
+        player_counts=player_counts,
+        max_picks=4,
+    )
     net_worth_breakdown = dataset.net_worth_breakdown_by_turn_summary(
         player_counts=player_counts
     )
@@ -1606,6 +1969,15 @@ def generate_default_charts(
     )
     turn_one_opening = dataset.turn_one_opening_summary(player_counts=player_counts)
     initial_auction_positions = dataset.initial_auction_position_summary(
+        player_counts=player_counts
+    )
+    turn_one_pool_premiums = dataset.turn_one_auction_pool_premium_summary(
+        player_counts=player_counts
+    )
+    turn_one_presence_effects = dataset.turn_one_auction_company_presence_summary(
+        player_counts=player_counts
+    )
+    turn_one_deck_presence_effects = dataset.turn_one_auction_deck_presence_summary(
         player_counts=player_counts
     )
     output = Path(output_dir)
@@ -1667,6 +2039,12 @@ def generate_default_charts(
             output / "average_par_price_by_turn.png",
         )
     )
+    written.append(
+        plot_turn_one_ipo_par_price_distribution(
+            turn_one_ipo_par_prices,
+            output / "turn1_ipo_par_price_distribution.png",
+        )
+    )
     written.extend(plot_net_worth_breakdown_charts(net_worth_breakdown, output))
     written.append(
         plot_final_rank_net_worth_breakdown(
@@ -1691,6 +2069,24 @@ def generate_default_charts(
         plot_initial_auction_position_deltas(
             initial_auction_positions,
             output / "turn1_initial_auction_position_deltas.png",
+        )
+    )
+    written.append(
+        plot_turn_one_auction_pool_premiums(
+            turn_one_pool_premiums,
+            output / "turn1_auction_pool_premiums.png",
+        )
+    )
+    written.append(
+        plot_turn_one_auction_company_presence_effects(
+            turn_one_presence_effects,
+            output / "turn1_auction_company_presence_effects.png",
+        )
+    )
+    written.append(
+        plot_turn_one_auction_deck_presence_effects(
+            turn_one_deck_presence_effects,
+            output / "turn1_auction_deck_presence_effects.png",
         )
     )
     return written

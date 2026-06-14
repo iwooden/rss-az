@@ -46,6 +46,7 @@ LOC_PLAYER_INT = int(CompanyLocation.LOC_PLAYER)
 LOC_CORP_INT = int(CompanyLocation.LOC_CORP)
 LOC_CORP_ACQ_INT = int(CompanyLocation.LOC_CORP_ACQ)
 LOC_REMOVED_INT = int(CompanyLocation.LOC_REMOVED)
+LOC_EXCLUDED_INT = int(CompanyLocation.LOC_EXCLUDED)
 AUCTION_OUTCOME_ACQUIRED = 0
 AUCTION_OUTCOME_IPO = 1
 AUCTION_OUTCOME_CLOSED = 2
@@ -159,6 +160,19 @@ class CorpIpoHeadToHeadSummary:
 
 
 @dataclass(frozen=True)
+class TurnOneIpoParPriceSummary:
+    """Turn 1 IPO par-price distribution by ordinal pick position."""
+
+    num_players: int
+    num_games: int
+    par_prices: np.ndarray
+    pick_positions: np.ndarray
+    counts: np.ndarray
+    totals: np.ndarray
+    percentages: np.ndarray
+
+
+@dataclass(frozen=True)
 class TurnAverageSummary:
     """Average per-game event counts by turn."""
 
@@ -261,6 +275,53 @@ class InitialAuctionPositionSummary:
     position_ranks: np.ndarray
     mean_deltas: np.ndarray
     counts: np.ndarray
+
+
+@dataclass(frozen=True)
+class TurnOneAuctionPoolPremiumSummary:
+    """Turn 1 premium totals grouped by initial auction-pool face value."""
+
+    num_players: int
+    num_games: int
+    offering_games: int
+    face_value_sums: np.ndarray
+    mean_premium_sums: np.ndarray
+    game_counts: np.ndarray
+    auction_counts: np.ndarray
+
+
+@dataclass(frozen=True)
+class TurnOneAuctionCompanyPresenceSummary:
+    """Turn 1 premium effects from including/excluding red opening companies."""
+
+    num_players: int
+    num_games: int
+    offering_games: int
+    company_names: list[str]
+    company_ids: np.ndarray
+    face_values: np.ndarray
+    baseline_mean_premium: float
+    included_deltas: np.ndarray
+    excluded_deltas: np.ndarray
+    included_counts: np.ndarray
+    excluded_counts: np.ndarray
+
+
+@dataclass(frozen=True)
+class TurnOneAuctionDeckPresenceSummary:
+    """Turn 1 premium effects from including/excluding red companies from deck."""
+
+    num_players: int
+    num_games: int
+    offering_games: int
+    company_names: list[str]
+    company_ids: np.ndarray
+    face_values: np.ndarray
+    baseline_mean_premium: float
+    included_deltas: np.ndarray
+    excluded_deltas: np.ndarray
+    included_counts: np.ndarray
+    excluded_counts: np.ndarray
 
 
 class StrategyDataset:
@@ -1202,6 +1263,111 @@ class StrategyDataset:
             )
         return summaries
 
+    def turn_one_ipo_par_price_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+        max_picks: int = 4,
+    ) -> dict[int, TurnOneIpoParPriceSummary]:
+        """Summarize Turn 1 IPO par-price percentages by ordinal pick slot."""
+        if max_picks <= 0:
+            raise ValueError("max_picks must be positive")
+
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        game_counts = {count: 0 for count in requested}
+        events_by_count: dict[int, list[np.ndarray]] = {
+            count: [] for count in requested
+        }
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[shard.num_players] += int(data["game_num_examples"].shape[0])
+                events = data["ipo_events"]
+                if events.shape[0] == 0:
+                    continue
+                turn_one = events[events[:, 2] == 1]
+                if turn_one.shape[0] == 0:
+                    continue
+                # Columns: game_id, move_number, par_price.
+                selected = turn_one[:, [0, 1, 7]].astype(np.int64, copy=False)
+                events_by_count[shard.num_players].append(
+                    np.column_stack(
+                        (
+                            np.full(selected.shape[0], shard.shard_index, dtype=np.int64),
+                            selected,
+                        )
+                    )
+                )
+
+        summaries: dict[int, TurnOneIpoParPriceSummary] = {}
+        for num_players in sorted(requested):
+            event_chunks = events_by_count[num_players]
+            all_pick_positions = np.arange(1, max_picks + 1, dtype=np.int64)
+            if not event_chunks:
+                summaries[num_players] = TurnOneIpoParPriceSummary(
+                    num_players=num_players,
+                    num_games=game_counts[num_players],
+                    par_prices=np.empty(0, dtype=np.int64),
+                    pick_positions=np.empty(0, dtype=np.int64),
+                    counts=np.empty((0, 0), dtype=np.int64),
+                    totals=np.empty(0, dtype=np.int64),
+                    percentages=np.empty((0, 0), dtype=np.float64),
+                )
+                continue
+
+            events = np.concatenate(event_chunks, axis=0)
+            order = np.lexsort((events[:, 2], events[:, 1], events[:, 0]))
+            events = events[order]
+            par_prices = np.unique(events[:, 3]).astype(np.int64, copy=False)
+            price_index = {
+                int(par_price): idx
+                for idx, par_price in enumerate(par_prices)
+            }
+            counts = np.zeros((max_picks, par_prices.shape[0]), dtype=np.int64)
+
+            current_shard = -1
+            current_game = -1
+            pick_index = 0
+            for shard_index, game_id, _move_number, par_price in events:
+                shard_index_int = int(shard_index)
+                game_id_int = int(game_id)
+                if (
+                    shard_index_int != current_shard
+                    or game_id_int != current_game
+                ):
+                    current_shard = shard_index_int
+                    current_game = game_id_int
+                    pick_index = 0
+                if pick_index < max_picks:
+                    counts[pick_index, price_index[int(par_price)]] += 1
+                pick_index += 1
+
+            totals = counts.sum(axis=1)
+            percentages = np.zeros_like(counts, dtype=np.float64)
+            np.divide(
+                counts * 100.0,
+                totals[:, None],
+                out=percentages,
+                where=totals[:, None] > 0,
+            )
+            observed = totals > 0
+            summaries[num_players] = TurnOneIpoParPriceSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                par_prices=par_prices,
+                pick_positions=all_pick_positions[observed],
+                counts=counts[observed],
+                totals=totals[observed],
+                percentages=percentages[observed],
+            )
+        return summaries
+
     def average_par_price_by_turn_summary(
         self,
         *,
@@ -1771,6 +1937,309 @@ class StrategyDataset:
             )
         return summaries
 
+    def turn_one_auction_pool_premium_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+    ) -> dict[int, TurnOneAuctionPoolPremiumSummary]:
+        """Summarize Turn 1 total premiums by initial auction-pool FV sum."""
+        company_static = self.metadata["company_static"]  # type: ignore[index]
+        face_values = np.asarray(company_static["face_value"], dtype=np.float64)  # type: ignore[index]
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        game_counts = {count: 0 for count in requested}
+        offering_games = {count: 0 for count in requested}
+        premium_sums: dict[int, dict[int, float]] = {
+            count: {} for count in requested
+        }
+        bucket_game_counts: dict[int, dict[int, int]] = {
+            count: {} for count in requested
+        }
+        bucket_auction_counts: dict[int, dict[int, int]] = {
+            count: {} for count in requested
+        }
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            num_players = shard.num_players
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[num_players] += int(data["game_num_examples"].shape[0])
+                (
+                    shard_premiums,
+                    shard_game_counts,
+                    shard_auction_counts,
+                    shard_offerings,
+                ) = _turn_one_auction_pool_premiums_for_shard(
+                    data,
+                    num_players=num_players,
+                    face_values=face_values,
+                )
+                offering_games[num_players] += shard_offerings
+                for face_sum, premium_sum in shard_premiums.items():
+                    premium_sums[num_players][face_sum] = (
+                        premium_sums[num_players].get(face_sum, 0.0)
+                        + premium_sum
+                    )
+                    bucket_game_counts[num_players][face_sum] = (
+                        bucket_game_counts[num_players].get(face_sum, 0)
+                        + shard_game_counts[face_sum]
+                    )
+                    bucket_auction_counts[num_players][face_sum] = (
+                        bucket_auction_counts[num_players].get(face_sum, 0)
+                        + shard_auction_counts[face_sum]
+                    )
+
+        summaries: dict[int, TurnOneAuctionPoolPremiumSummary] = {}
+        for num_players in sorted(requested):
+            face_sums = np.asarray(
+                sorted(bucket_game_counts[num_players]),
+                dtype=np.int64,
+            )
+            games = np.asarray(
+                [
+                    bucket_game_counts[num_players][int(face_sum)]
+                    for face_sum in face_sums
+                ],
+                dtype=np.int64,
+            )
+            auctions = np.asarray(
+                [
+                    bucket_auction_counts[num_players][int(face_sum)]
+                    for face_sum in face_sums
+                ],
+                dtype=np.int64,
+            )
+            total_premiums = np.asarray(
+                [
+                    premium_sums[num_players][int(face_sum)]
+                    for face_sum in face_sums
+                ],
+                dtype=np.float64,
+            )
+            mean_premiums = np.full(face_sums.shape, np.nan, dtype=np.float64)
+            np.divide(
+                total_premiums,
+                games,
+                out=mean_premiums,
+                where=games > 0,
+            )
+            summaries[num_players] = TurnOneAuctionPoolPremiumSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                offering_games=offering_games[num_players],
+                face_value_sums=face_sums,
+                mean_premium_sums=mean_premiums,
+                game_counts=games,
+                auction_counts=auctions,
+            )
+        return summaries
+
+    def turn_one_auction_company_presence_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+    ) -> dict[int, TurnOneAuctionCompanyPresenceSummary]:
+        """Summarize T1 premium deltas when each red company is included/excluded."""
+        all_company_names = [str(v) for v in self.metadata["company_names"]]  # type: ignore[index]
+        company_static = self.metadata["company_static"]  # type: ignore[index]
+        company_stars = np.asarray(company_static["stars"], dtype=np.int16)  # type: ignore[index]
+        face_values = np.asarray(company_static["face_value"], dtype=np.float64)  # type: ignore[index]
+        red_company_ids = np.flatnonzero(company_stars == 1).astype(np.int64)
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        num_red = int(red_company_ids.shape[0])
+        game_counts = {count: 0 for count in requested}
+        offering_games = {count: 0 for count in requested}
+        total_premiums = {count: 0.0 for count in requested}
+        included_sums = {
+            count: np.zeros(num_red, dtype=np.float64)
+            for count in requested
+        }
+        excluded_sums = {
+            count: np.zeros(num_red, dtype=np.float64)
+            for count in requested
+        }
+        included_counts = {
+            count: np.zeros(num_red, dtype=np.int64)
+            for count in requested
+        }
+        excluded_counts = {
+            count: np.zeros(num_red, dtype=np.int64)
+            for count in requested
+        }
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            num_players = shard.num_players
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[num_players] += int(data["game_num_examples"].shape[0])
+                (
+                    shard_total,
+                    shard_offerings,
+                    shard_included_sums,
+                    shard_included_counts,
+                    shard_excluded_sums,
+                    shard_excluded_counts,
+                ) = _turn_one_auction_company_presence_for_shard(
+                    data,
+                    num_players=num_players,
+                    face_values=face_values,
+                    red_company_ids=red_company_ids,
+                )
+                total_premiums[num_players] += shard_total
+                offering_games[num_players] += shard_offerings
+                included_sums[num_players] += shard_included_sums
+                included_counts[num_players] += shard_included_counts
+                excluded_sums[num_players] += shard_excluded_sums
+                excluded_counts[num_players] += shard_excluded_counts
+
+        summaries: dict[int, TurnOneAuctionCompanyPresenceSummary] = {}
+        for num_players in sorted(requested):
+            baseline = (
+                total_premiums[num_players] / offering_games[num_players]
+                if offering_games[num_players]
+                else float("nan")
+            )
+            included_means = np.full(num_red, np.nan, dtype=np.float64)
+            excluded_means = np.full(num_red, np.nan, dtype=np.float64)
+            np.divide(
+                included_sums[num_players],
+                included_counts[num_players],
+                out=included_means,
+                where=included_counts[num_players] > 0,
+            )
+            np.divide(
+                excluded_sums[num_players],
+                excluded_counts[num_players],
+                out=excluded_means,
+                where=excluded_counts[num_players] > 0,
+            )
+            summaries[num_players] = TurnOneAuctionCompanyPresenceSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                offering_games=offering_games[num_players],
+                company_names=[all_company_names[int(i)] for i in red_company_ids],
+                company_ids=red_company_ids.copy(),
+                face_values=face_values[red_company_ids].copy(),
+                baseline_mean_premium=baseline,
+                included_deltas=included_means - baseline,
+                excluded_deltas=excluded_means - baseline,
+                included_counts=included_counts[num_players].copy(),
+                excluded_counts=excluded_counts[num_players].copy(),
+            )
+        return summaries
+
+    def turn_one_auction_deck_presence_summary(
+        self,
+        *,
+        player_counts: Sequence[int] | None = None,
+    ) -> dict[int, TurnOneAuctionDeckPresenceSummary]:
+        """Summarize T1 premium deltas by red-company deck inclusion/exclusion."""
+        all_company_names = [str(v) for v in self.metadata["company_names"]]  # type: ignore[index]
+        company_static = self.metadata["company_static"]  # type: ignore[index]
+        company_stars = np.asarray(company_static["stars"], dtype=np.int16)  # type: ignore[index]
+        face_values = np.asarray(company_static["face_value"], dtype=np.float64)  # type: ignore[index]
+        red_company_ids_all = np.flatnonzero(company_stars == 1).astype(np.int64)
+        max_red_face = float(np.max(face_values[red_company_ids_all]))
+        red_company_ids = red_company_ids_all[
+            face_values[red_company_ids_all] < max_red_face
+        ].astype(np.int64, copy=False)
+        requested = (
+            set(self.player_counts)
+            if player_counts is None
+            else {int(v) for v in player_counts}
+        )
+        num_red = int(red_company_ids.shape[0])
+        game_counts = {count: 0 for count in requested}
+        offering_games = {count: 0 for count in requested}
+        total_premiums = {count: 0.0 for count in requested}
+        included_sums = {
+            count: np.zeros(num_red, dtype=np.float64)
+            for count in requested
+        }
+        excluded_sums = {
+            count: np.zeros(num_red, dtype=np.float64)
+            for count in requested
+        }
+        included_counts = {
+            count: np.zeros(num_red, dtype=np.int64)
+            for count in requested
+        }
+        excluded_counts = {
+            count: np.zeros(num_red, dtype=np.int64)
+            for count in requested
+        }
+
+        for shard in self.iter_shards():
+            if shard.num_players not in requested:
+                continue
+            num_players = shard.num_players
+            with np.load(shard.path, allow_pickle=False) as data:
+                game_counts[num_players] += int(data["game_num_examples"].shape[0])
+                (
+                    shard_total,
+                    shard_offerings,
+                    shard_included_sums,
+                    shard_included_counts,
+                    shard_excluded_sums,
+                    shard_excluded_counts,
+                ) = _turn_one_auction_deck_presence_for_shard(
+                    data,
+                    num_players=num_players,
+                    face_values=face_values,
+                    red_company_ids=red_company_ids,
+                )
+                total_premiums[num_players] += shard_total
+                offering_games[num_players] += shard_offerings
+                included_sums[num_players] += shard_included_sums
+                included_counts[num_players] += shard_included_counts
+                excluded_sums[num_players] += shard_excluded_sums
+                excluded_counts[num_players] += shard_excluded_counts
+
+        summaries: dict[int, TurnOneAuctionDeckPresenceSummary] = {}
+        for num_players in sorted(requested):
+            baseline = (
+                total_premiums[num_players] / offering_games[num_players]
+                if offering_games[num_players]
+                else float("nan")
+            )
+            included_means = np.full(num_red, np.nan, dtype=np.float64)
+            excluded_means = np.full(num_red, np.nan, dtype=np.float64)
+            np.divide(
+                included_sums[num_players],
+                included_counts[num_players],
+                out=included_means,
+                where=included_counts[num_players] > 0,
+            )
+            np.divide(
+                excluded_sums[num_players],
+                excluded_counts[num_players],
+                out=excluded_means,
+                where=excluded_counts[num_players] > 0,
+            )
+            summaries[num_players] = TurnOneAuctionDeckPresenceSummary(
+                num_players=num_players,
+                num_games=game_counts[num_players],
+                offering_games=offering_games[num_players],
+                company_names=[all_company_names[int(i)] for i in red_company_ids],
+                company_ids=red_company_ids.copy(),
+                face_values=face_values[red_company_ids].copy(),
+                baseline_mean_premium=baseline,
+                included_deltas=included_means - baseline,
+                excluded_deltas=excluded_means - baseline,
+                included_counts=included_counts[num_players].copy(),
+                excluded_counts=excluded_counts[num_players].copy(),
+            )
+        return summaries
+
 
 def _opening_bid_delta_rows(
     data: object,
@@ -2160,6 +2629,182 @@ def _initial_auction_position_deltas_for_shard(
     return sums, counts, offering_games, complete_games
 
 
+def _turn_one_auction_pool_premiums_for_shard(
+    data: object,
+    *,
+    num_players: int,
+    face_values: np.ndarray,
+) -> tuple[dict[int, float], dict[int, int], dict[int, int], int]:
+    """Return per-pool FV premium sums for one shard's Turn 1 auctions."""
+    premium_sums: dict[int, float] = {}
+    game_counts: dict[int, int] = {}
+    auction_counts: dict[int, int] = {}
+    offering_games = 0
+
+    auction_prices = {
+        (int(event[0]), int(event[3])): float(event[5])
+        for event in data["auction_events"]
+        if int(event[2]) == 1
+    }
+
+    starts = data["game_start_offsets"].astype(np.int64)
+    lengths = data["game_num_examples"].astype(np.int64)
+    game_ids = data["game_ids_per_game"].astype(np.int64)
+    for game_id, start, length in zip(game_ids, starts, lengths):
+        if int(length) <= 0:
+            continue
+        initial_locations = data["company_locations"][int(start)]
+        company_ids = np.flatnonzero(initial_locations == int(CompanyLocation.LOC_AUCTION))
+        if company_ids.shape[0] != num_players:
+            continue
+
+        offering_games += 1
+        face_sum = int(round(float(face_values[company_ids].sum())))
+        total_premium = 0.0
+        total_auctions = 0
+        for company_id in company_ids:
+            price = auction_prices.get((int(game_id), int(company_id)))
+            if price is None:
+                continue
+            total_premium += price - face_values[int(company_id)]
+            total_auctions += 1
+
+        premium_sums[face_sum] = premium_sums.get(face_sum, 0.0) + total_premium
+        game_counts[face_sum] = game_counts.get(face_sum, 0) + 1
+        auction_counts[face_sum] = auction_counts.get(face_sum, 0) + total_auctions
+
+    return premium_sums, game_counts, auction_counts, offering_games
+
+
+def _turn_one_auction_company_presence_for_shard(
+    data: object,
+    *,
+    num_players: int,
+    face_values: np.ndarray,
+    red_company_ids: np.ndarray,
+) -> tuple[float, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return T1 premium totals conditioned on red-company pool presence."""
+    num_red = int(red_company_ids.shape[0])
+    total_premium_sum = 0.0
+    offering_games = 0
+    included_sums = np.zeros(num_red, dtype=np.float64)
+    excluded_sums = np.zeros(num_red, dtype=np.float64)
+    included_counts = np.zeros(num_red, dtype=np.int64)
+    excluded_counts = np.zeros(num_red, dtype=np.int64)
+    red_index_by_company = {
+        int(company_id): idx
+        for idx, company_id in enumerate(red_company_ids)
+    }
+
+    auction_prices = {
+        (int(event[0]), int(event[3])): float(event[5])
+        for event in data["auction_events"]
+        if int(event[2]) == 1
+    }
+
+    starts = data["game_start_offsets"].astype(np.int64)
+    lengths = data["game_num_examples"].astype(np.int64)
+    game_ids = data["game_ids_per_game"].astype(np.int64)
+    for game_id, start, length in zip(game_ids, starts, lengths):
+        if int(length) <= 0:
+            continue
+        initial_locations = data["company_locations"][int(start)]
+        company_ids = np.flatnonzero(initial_locations == int(CompanyLocation.LOC_AUCTION))
+        if company_ids.shape[0] != num_players:
+            continue
+
+        total_premium = 0.0
+        for company_id in company_ids:
+            price = auction_prices.get((int(game_id), int(company_id)))
+            if price is None:
+                continue
+            total_premium += price - face_values[int(company_id)]
+
+        present = np.zeros(num_red, dtype=np.bool_)
+        for company_id in company_ids:
+            red_idx = red_index_by_company.get(int(company_id))
+            if red_idx is not None:
+                present[red_idx] = True
+
+        offering_games += 1
+        total_premium_sum += total_premium
+        included_sums[present] += total_premium
+        included_counts[present] += 1
+        excluded = ~present
+        excluded_sums[excluded] += total_premium
+        excluded_counts[excluded] += 1
+
+    return (
+        total_premium_sum,
+        offering_games,
+        included_sums,
+        included_counts,
+        excluded_sums,
+        excluded_counts,
+    )
+
+
+def _turn_one_auction_deck_presence_for_shard(
+    data: object,
+    *,
+    num_players: int,
+    face_values: np.ndarray,
+    red_company_ids: np.ndarray,
+) -> tuple[float, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return T1 premium totals conditioned on red-company deck membership."""
+    num_red = int(red_company_ids.shape[0])
+    total_premium_sum = 0.0
+    offering_games = 0
+    included_sums = np.zeros(num_red, dtype=np.float64)
+    excluded_sums = np.zeros(num_red, dtype=np.float64)
+    included_counts = np.zeros(num_red, dtype=np.int64)
+    excluded_counts = np.zeros(num_red, dtype=np.int64)
+
+    auction_prices = {
+        (int(event[0]), int(event[3])): float(event[5])
+        for event in data["auction_events"]
+        if int(event[2]) == 1
+    }
+
+    starts = data["game_start_offsets"].astype(np.int64)
+    lengths = data["game_num_examples"].astype(np.int64)
+    game_ids = data["game_ids_per_game"].astype(np.int64)
+    for game_id, start, length in zip(game_ids, starts, lengths):
+        if int(length) <= 0:
+            continue
+        initial_locations = data["company_locations"][int(start)]
+        auction_company_ids = np.flatnonzero(
+            initial_locations == int(CompanyLocation.LOC_AUCTION)
+        )
+        if auction_company_ids.shape[0] != num_players:
+            continue
+
+        total_premium = 0.0
+        for company_id in auction_company_ids:
+            price = auction_prices.get((int(game_id), int(company_id)))
+            if price is None:
+                continue
+            total_premium += price - face_values[int(company_id)]
+
+        present = initial_locations[red_company_ids] != LOC_EXCLUDED_INT
+        offering_games += 1
+        total_premium_sum += total_premium
+        included_sums[present] += total_premium
+        included_counts[present] += 1
+        excluded = ~present
+        excluded_sums[excluded] += total_premium
+        excluded_counts[excluded] += 1
+
+    return (
+        total_premium_sum,
+        offering_games,
+        included_sums,
+        included_counts,
+        excluded_sums,
+        excluded_counts,
+    )
+
+
 def _discover_shards(
     run_dir: Path,
     metadata: dict[str, object],
@@ -2315,6 +2960,19 @@ def average_par_price_by_turn_summary(
     )
 
 
+def turn_one_ipo_par_price_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+    max_picks: int = 4,
+) -> dict[int, TurnOneIpoParPriceSummary]:
+    """Convenience wrapper for Turn 1 IPO par-price pick distributions."""
+    return StrategyDataset(run_dir).turn_one_ipo_par_price_summary(
+        player_counts=player_counts,
+        max_picks=max_picks,
+    )
+
+
 def net_worth_breakdown_by_turn_summary(
     run_dir: str | Path,
     *,
@@ -2377,6 +3035,39 @@ def initial_auction_position_summary(
 ) -> dict[int, InitialAuctionPositionSummary]:
     """Convenience wrapper for initial-offering Turn 1 auction positions."""
     return StrategyDataset(run_dir).initial_auction_position_summary(
+        player_counts=player_counts
+    )
+
+
+def turn_one_auction_pool_premium_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+) -> dict[int, TurnOneAuctionPoolPremiumSummary]:
+    """Convenience wrapper for Turn 1 premium totals by auction-pool FV."""
+    return StrategyDataset(run_dir).turn_one_auction_pool_premium_summary(
+        player_counts=player_counts
+    )
+
+
+def turn_one_auction_company_presence_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+) -> dict[int, TurnOneAuctionCompanyPresenceSummary]:
+    """Convenience wrapper for T1 premiums by red-company pool presence."""
+    return StrategyDataset(run_dir).turn_one_auction_company_presence_summary(
+        player_counts=player_counts
+    )
+
+
+def turn_one_auction_deck_presence_summary(
+    run_dir: str | Path,
+    *,
+    player_counts: Sequence[int] | None = None,
+) -> dict[int, TurnOneAuctionDeckPresenceSummary]:
+    """Convenience wrapper for T1 premiums by red-company deck presence."""
+    return StrategyDataset(run_dir).turn_one_auction_deck_presence_summary(
         player_counts=player_counts
     )
 
