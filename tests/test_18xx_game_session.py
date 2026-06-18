@@ -1132,6 +1132,28 @@ def test_session_does_not_drain_when_extractor_round_is_closing():
     )
 
 
+def test_session_drains_only_acquisition_when_extractor_reaches_closing(monkeypatch):
+    state = _new_state()
+    float_corp_for_test(state, corp_id=0, player_id=0, par_index=10)
+    CORPS[0].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+
+    session = GameSession(3)
+    session._last_extract_record = {"current_round": "CLO"}
+    drained = []
+
+    session._drain_acq_phases = lambda state: drained.append("acq")
+    monkeypatch.setattr(
+        game_session_module,
+        "drain_offer_phases",
+        lambda state, layout: drained.append("offer"),
+    )
+
+    session._drain_trailing_offer_phases({"round": "Acquisition"}, state)
+
+    assert drained == ["acq"]
+
+
 def test_live_state_validation_reports_corp_price_mismatch():
     state = _new_state()
     corp_id = CORP_NAMES.index("PR")

@@ -103,6 +103,7 @@ UNORDERED_PASS_PHASES = (
     GamePhases.PHASE_CLOSING,
 )
 GAME_BLACKLIST_FILE = "blacklisted_games.json"
+STALE_MOVE_RETRY_LIMIT = 3
 
 
 def prepare_live_decision_state(state) -> None:
@@ -2410,6 +2411,59 @@ class MoveWorker(threading.Thread):
         self._auth = auth
         self._registry = registry
 
+    def _fetch_game_data(self, bot_name: str, game_id: str, token: str) -> dict | None:
+        try:
+            return self._api.fetch_game(game_id, token)
+        except TransientError:
+            logger.error(
+                f"[{bot_name}] Failed to fetch game {game_id} after retries"
+            )
+            return None
+        except PermanentError as e:
+            logger.error(f"[{bot_name}] Cannot fetch game {game_id}: {e}")
+            return None
+
+    def _game_summary_is_fresh(
+        self,
+        bot_name: str,
+        game_id: str,
+        token: str,
+        expected_updated_at,
+    ) -> bool:
+        if expected_updated_at is None:
+            logger.warning(
+                f"[{bot_name}] Game {game_id} has no updated_at; "
+                "treating pre-post freshness check as stale"
+            )
+            return False
+
+        try:
+            summary = self._api.fetch_game_summary(game_id, token)
+        except (TransientError, PermanentError) as e:
+            logger.warning(
+                f"[{bot_name}] Freshness check failed for game {game_id}: {e}; "
+                "re-fetching and replanning"
+            )
+            return False
+
+        if summary is None:
+            logger.warning(
+                f"[{bot_name}] Game {game_id} missing from summary list; "
+                "re-fetching and replanning"
+            )
+            return False
+
+        current_updated_at = summary.get("updated_at")
+        if current_updated_at != expected_updated_at:
+            logger.info(
+                f"[{bot_name}] Game {game_id} changed during planning "
+                f"(updated_at {expected_updated_at} -> {current_updated_at}); "
+                "re-fetching and replanning"
+            )
+            return False
+
+        return True
+
     def run(self):
         logger.info("Move worker started")
         while True:
@@ -2425,15 +2479,8 @@ class MoveWorker(threading.Thread):
         token = self._auth[bot_name]["token"]
 
         # Fetch game data
-        try:
-            game_data = self._api.fetch_game(game_id, token)
-        except TransientError:
-            logger.error(
-                f"[{bot_name}] Failed to fetch game {game_id} after retries"
-            )
-            return
-        except PermanentError as e:
-            logger.error(f"[{bot_name}] Cannot fetch game {game_id}: {e}")
+        game_data = self._fetch_game_data(bot_name, game_id, token)
+        if game_data is None:
             return
 
         # Determine player count and our player index
@@ -2490,7 +2537,9 @@ class MoveWorker(threading.Thread):
         # A single webhook may require multiple actions (e.g. sequential
         # IPO decisions, ACQ offers, or Closing choices).
         max_consecutive = 50  # safety limit
+        stale_retries = 0
         for _ in range(max_consecutive):
+            expected_updated_at = game_data.get("updated_at")
             try:
                 api_actions = engine.process_turn(
                     game_data,
@@ -2508,6 +2557,7 @@ class MoveWorker(threading.Thread):
                 return
 
             # Post each action (IPO+PAR is a single compound action)
+            replan = False
             for post_idx, action in enumerate(api_actions):
                 try:
                     action = attach_expected_auto_actions(game_data, action)
@@ -2517,6 +2567,26 @@ class MoveWorker(threading.Thread):
                         f"for game {game_id}: {action}"
                     )
                     return
+
+                if not self._game_summary_is_fresh(
+                    bot_name,
+                    game_id,
+                    token,
+                    expected_updated_at,
+                ):
+                    stale_retries += 1
+                    if stale_retries > STALE_MOVE_RETRY_LIMIT:
+                        logger.error(
+                            f"[{bot_name}] Game {game_id} stayed stale across "
+                            f"{STALE_MOVE_RETRY_LIMIT} replans; giving up"
+                        )
+                        return
+
+                    game_data = self._fetch_game_data(bot_name, game_id, token)
+                    if game_data is None:
+                        return
+                    replan = True
+                    break
 
                 logger.info(
                     f"[{bot_name}] Posting to game {game_id}: {action}"
@@ -2534,27 +2604,23 @@ class MoveWorker(threading.Thread):
                         f"[{bot_name}] Failed to post action after retries"
                     )
                     return
+                stale_retries = 0
 
                 if post_idx < len(api_actions) - 1:
-                    try:
-                        game_data = self._api.fetch_game(game_id, token)
-                    except (TransientError, PermanentError) as e:
-                        logger.error(
-                            f"[{bot_name}] Failed to fetch game {game_id} "
-                            f"after posting action: {e}"
-                        )
+                    game_data = self._fetch_game_data(bot_name, game_id, token)
+                    if game_data is None:
                         return
+                    expected_updated_at = game_data.get("updated_at")
+
+            if replan:
+                continue
 
             # Wait for the server to process the action before re-fetching
             time.sleep(5)
 
             # Re-fetch game data and check if we're still acting
-            try:
-                game_data = self._api.fetch_game(game_id, token)
-            except (TransientError, PermanentError) as e:
-                logger.error(
-                    f"[{bot_name}] Failed to re-fetch game {game_id}: {e}"
-                )
+            game_data = self._fetch_game_data(bot_name, game_id, token)
+            if game_data is None:
                 return
 
             acting = game_data.get("acting", [])

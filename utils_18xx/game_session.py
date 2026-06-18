@@ -260,8 +260,7 @@ class GameSession:
         # round.  During live sync the action stream is intentionally partial:
         # if 18xx is still waiting in Acquisition/Closing, passing through the
         # remaining engine choices would reconstruct a future state.
-        if self._should_drain_trailing_offer_phases(game_data, state):
-            drain_offer_phases(state, self.layout)
+        self._drain_trailing_offer_phases(game_data, state)
 
         return state
 
@@ -1519,9 +1518,29 @@ class GameSession:
         state: GameState,
     ) -> bool:
         """Return whether sync should pass through leftover ACQ/CLO choices."""
+        return self._trailing_offer_drain_mode(game_data, state) is not None
+
+    def _drain_trailing_offer_phases(
+        self,
+        game_data: dict,
+        state: GameState,
+    ) -> None:
+        """Pass through trailing paused offer phases up to the 18xx round."""
+        drain_mode = self._trailing_offer_drain_mode(game_data, state)
+        if drain_mode == "acq":
+            self._drain_acq_phases(state)
+        elif drain_mode == "offer":
+            drain_offer_phases(state, self.layout)
+
+    def _trailing_offer_drain_mode(
+        self,
+        game_data: dict,
+        state: GameState,
+    ) -> str | None:
+        """Return which paused offer phases can be drained after replay."""
         phase = TURN.get_phase(state)
         if phase not in ACQ_PHASES and phase != PHASE_CLO:
-            return False
+            return None
 
         round_name = str(
             self._last_extract_record.get("current_round")
@@ -1529,11 +1548,13 @@ class GameSession:
         )
         round_stage = self._round_stage_key(round_name)
         if phase in ACQ_PHASES and round_stage == 1:
-            return False
+            return None
+        if phase in ACQ_PHASES and round_stage == 2:
+            return "acq"
         if phase == PHASE_CLO and round_stage == 2:
-            return False
+            return None
 
-        return True
+        return "offer"
 
     def _resolve_acq_offer(
         self,

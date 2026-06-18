@@ -34,6 +34,15 @@ class ApiClient:
         """GET /api/game/:id — fetch full game data including actions."""
         return self._request("GET", f"/api/game/{game_id}", token)
 
+    def fetch_game_summary(self, game_id: int | str, token: str) -> dict | None:
+        """Fetch one no-actions game summary from the home-game API."""
+        cache_buster = int(time.time() * 1000)
+        response = self._request("GET", f"/api/game?_fresh={cache_buster}", token)
+        for game in response.get("games", []):
+            if str(game.get("id")) == str(game_id):
+                return game
+        return None
+
     def post_action(
         self, game_id: int | str, action: dict, token: str,
     ) -> dict:
