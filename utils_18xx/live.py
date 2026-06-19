@@ -9,6 +9,7 @@ Usage:
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --no-compile
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --model-output
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --allow-cross-president-offers
+    .venv/bin/python -m utils_18xx.live --runtime-dir runtime --determinization-count 4
 """
 
 from __future__ import annotations
@@ -45,9 +46,11 @@ from core.driver import (
 from core.state import GameState, get_layout
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
+from entities.deck import DECK
 from entities.market import MARKET
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
+from mcts.node import MCTSNode
 from mcts.search import (
     StatePool,
     get_greedy_leaf_depth,
@@ -117,6 +120,17 @@ def _resolve_live_eval_dtype(config, override: str | None) -> str | None:
     if override == "float32":
         return None
     return override
+
+
+def _nonnegative_int(value: str) -> int:
+    """Parse a CLI integer constrained to values >= 0."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer >= 0") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be an integer >= 0")
+    return parsed
 
 
 def _player_names_from_game_data(game_data: dict, num_players: int) -> list[str]:
@@ -1331,6 +1345,7 @@ class ModelRegistry:
         model_output: bool = False,
         eval_dtype: str | None = None,
         allow_cross_president_offers: bool = False,
+        determinization_count: int = 0,
     ):
         self._config = models_config
         self._device = device
@@ -1341,6 +1356,7 @@ class ModelRegistry:
         self._model_output = model_output
         self._eval_dtype = eval_dtype
         self._allow_cross_president_offers = allow_cross_president_offers
+        self._determinization_count = determinization_count
         self._engines: dict[Path, _SearchEngine] = {}
 
     def get_engine(self, num_players: int) -> _SearchEngine:
@@ -1358,6 +1374,7 @@ class ModelRegistry:
                 model_output=self._model_output,
                 eval_dtype=self._eval_dtype,
                 allow_cross_president_offers=self._allow_cross_president_offers,
+                determinization_count=self._determinization_count,
             )
             self._engines[cp_path] = engine
         engine.validate_player_count(num_players)
@@ -1420,11 +1437,13 @@ class _SearchEngine:
         model_output: bool = False,
         eval_dtype: str | None = None,
         allow_cross_president_offers: bool = False,
+        determinization_count: int = 0,
     ):
         self.device = device
         self.num_simulations = num_simulations
         self.model_output = model_output
         self.allow_cross_president_offers = allow_cross_president_offers
+        self.determinization_count = determinization_count
 
         model, self.config, cp = load_model_from_checkpoint(checkpoint_path, device)
         self.search_batch_size = _resolve_live_search_batch_size(
@@ -1480,7 +1499,8 @@ class _SearchEngine:
             f"{num_simulations} sims/move, "
             f"search batch={self.search_batch_size}, "
             f"eval dtype={self.eval_dtype or 'float32'}, "
-            f"cross-president offers={self.allow_cross_president_offers}"
+            f"cross-president offers={self.allow_cross_president_offers}, "
+            f"determinization_count={self.determinization_count}"
         )
 
     def validate_player_count(self, num_players: int) -> None:
@@ -1721,13 +1741,17 @@ class _SearchEngine:
                         flush=True,
                     )
             else:
-                search_reuse = (
-                    reuse_root
-                    if self._reuse_root_matches_state(reuse_root, state)
-                    else None
-                )
-                if reuse_root is not None and search_reuse is None:
+                if self.determinization_count > 0:
+                    search_reuse = None
                     reuse_root = None
+                else:
+                    search_reuse = (
+                        reuse_root
+                        if self._reuse_root_matches_state(reuse_root, state)
+                        else None
+                    )
+                    if reuse_root is not None and search_reuse is None:
+                        reuse_root = None
                 action_idx, root, elapsed, search_stats = self._search(
                     state, num_players, reuse_root=search_reuse,
                 )
@@ -1752,7 +1776,10 @@ class _SearchEngine:
                         ),
                         flush=True,
                     )
-                reuse_root = prepare_reuse_root(root, action_idx, self._state_pool)
+                if self.determinization_count > 0:
+                    reuse_root = None
+                else:
+                    reuse_root = prepare_reuse_root(root, action_idx, self._state_pool)
 
             intent = engine_action_to_18xx(
                 action_idx, state, self.max_players,
@@ -1809,6 +1836,9 @@ class _SearchEngine:
 
     def _search(self, state, num_players: int, reuse_root=None):
         """Run MCTS and return the best action index."""
+        if self.determinization_count > 0:
+            return self._search_determinized(state, num_players)
+
         search_stats = SearchStats() if self.model_output else None
         t0 = time.monotonic()
         root = run_search(
@@ -1833,6 +1863,118 @@ class _SearchEngine:
             f"time={elapsed:.1f}s"
         )
         return action_idx, root, elapsed, search_stats
+
+    def _search_determinized(self, state, num_players: int):
+        """Run independent hidden-deck determinizations and aggregate visits."""
+        search_stats = SearchStats() if self.model_output else None
+        mcts_config = self._mcts_config_for(num_players)
+        count = self.determinization_count
+        t0 = time.monotonic()
+
+        visit_counts: dict[int, int] = {}
+        value_sums: dict[int, np.ndarray] = {}
+        root_value_sum = np.zeros(num_players, dtype=np.float32)
+        root_visit_count = 0
+
+        for _ in range(count):
+            det_state = DECK.determinize_remaining(state, self._rng)
+            root = run_search(
+                det_state,
+                self._evaluator,
+                mcts_config,
+                self._rng,
+                state_pool=self._state_pool,
+                profile=search_stats,
+            )
+            self._accumulate_root_visits(
+                root,
+                visit_counts,
+                value_sums,
+                root_value_sum,
+            )
+            root_visit_count += int(root.visit_count)
+
+        elapsed = time.monotonic() - t0
+        aggregate_root = self._aggregate_root(
+            state,
+            num_players,
+            visit_counts,
+            value_sums,
+            root_value_sum,
+            root_visit_count,
+        )
+        assert (
+            aggregate_root.legal_actions is not None
+            and aggregate_root.visit_counts is not None
+        )
+        best_idx = int(np.argmax(aggregate_root.visit_counts))
+        action_idx = int(aggregate_root.legal_actions[best_idx])
+        top_visits = int(aggregate_root.visit_counts[best_idx])
+        total_visits = int(aggregate_root.visit_counts.sum())
+
+        logger.info(
+            "MCTS determinized: "
+            f"count={count}, action={action_idx}, "
+            f"visits={top_visits}/{total_visits}, "
+            f"sims={self.num_simulations * count}, time={elapsed:.1f}s"
+        )
+        return action_idx, aggregate_root, elapsed, search_stats
+
+    def _accumulate_root_visits(
+        self,
+        root,
+        visit_counts: dict[int, int],
+        value_sums: dict[int, np.ndarray],
+        root_value_sum: np.ndarray,
+    ) -> None:
+        assert root.legal_actions is not None and root.visit_counts is not None
+        assert root.value_sums is not None
+
+        root_value_sum += root.value_sum
+        for idx, action_id_raw in enumerate(root.legal_actions):
+            action_id = int(action_id_raw)
+            visit_counts[action_id] = (
+                visit_counts.get(action_id, 0)
+                + int(root.visit_counts[idx])
+            )
+            if action_id in value_sums:
+                value_sums[action_id] += root.value_sums[idx]
+            else:
+                value_sums[action_id] = root.value_sums[idx].astype(
+                    np.float32,
+                    copy=True,
+                )
+
+    def _aggregate_root(
+        self,
+        state,
+        num_players: int,
+        visit_counts: dict[int, int],
+        value_sums: dict[int, np.ndarray],
+        root_value_sum: np.ndarray,
+        root_visit_count: int,
+    ) -> MCTSNode:
+        actions = np.array(sorted(visit_counts), dtype=np.int32)
+        root = MCTSNode(
+            active_player_id=TURN.get_active_player(state),
+            num_players=num_players,
+        )
+        root.legal_actions = actions
+        root.visit_counts = np.array(
+            [visit_counts[int(action)] for action in actions],
+            dtype=np.int32,
+        )
+        if len(actions) > 0:
+            root.value_sums = np.vstack(
+                [value_sums[int(action)] for action in actions],
+            ).astype(np.float32, copy=False)
+        else:
+            root.value_sums = np.zeros((0, num_players), dtype=np.float32)
+        root.value_sum = root_value_sum.astype(np.float32, copy=True)
+        root.visit_count = root_visit_count
+        if root_visit_count > 0:
+            root.default_value = root.value_sum / root_visit_count
+        return root
 
 
 # ---------------------------------------------------------------------------
@@ -2285,6 +2427,15 @@ def main():
         help="MCTS simulations per move (default: 400)",
     )
     parser.add_argument(
+        "--determinization-count",
+        type=_nonnegative_int,
+        default=0,
+        help=(
+            "Number of randomized hidden-deck determinizations per searched "
+            "decision. 0 preserves current non-determinized MCTS (default: 0)"
+        ),
+    )
+    parser.add_argument(
         "--search-batch-size",
         type=int,
         default=None,
@@ -2369,6 +2520,7 @@ def main():
         model_output=args.model_output,
         eval_dtype=args.eval_dtype,
         allow_cross_president_offers=args.allow_cross_president_offers,
+        determinization_count=args.determinization_count,
     )
 
     api = ApiClient(args.base_url)

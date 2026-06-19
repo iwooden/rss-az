@@ -22,6 +22,7 @@ deck" from "filtered out at setup for this player count".
 from libc.stdint cimport int16_t
 from libc.stdlib cimport rand, srand
 
+from core.state import GameState as PyGameState
 from core.state cimport GameState, LAYOUT, DECK_OFFSETS
 from core.data cimport (
     GameConstants,
@@ -56,6 +57,86 @@ DEF GREEN_LAST = 28   # E - highest face value green
 DEF BLUE_START = 29
 DEF BLUE_END = 36
 DEF BLUE_LAST = 35    # CDG - highest face value blue
+
+
+cdef int _setup_group_count(int num_players, int start, int end):
+    """Return setup-time live-card count for one company color group."""
+    if num_players == 6:
+        return end - start
+    if start == ORANGE_START:
+        if num_players == 4:
+            return 6
+        if num_players == 5:
+            return 8
+    return num_players + 1
+
+
+cdef bint _company_publicly_seen(GameState state, int company_id, int coo_level):
+    """Return whether this company is public information for determinization."""
+    cdef int loc = (<Company>company_module.COMPANIES[company_id])._get_location(state)
+    if loc == LOC_DECK:
+        return False
+    if loc == LOC_EXCLUDED:
+        return coo_level > COMPANY_STARS[company_id]
+    return True
+
+
+cdef list _determinized_color_group(
+    GameState state,
+    int num_players,
+    int coo_level,
+    int start,
+    int end,
+    int last_idx,
+    int star,
+    object rng,
+):
+    """Sample one remaining color stack from public observations."""
+    cdef int setup_count = _setup_group_count(num_players, start, end)
+    cdef int seen = 0
+    cdef int remaining
+    cdef int slots
+    cdef int company_id
+    cdef list selected = []
+    cdef list pool = []
+
+    for company_id in range(start, end):
+        if _company_publicly_seen(state, company_id, coo_level):
+            seen += 1
+
+    remaining = setup_count - seen
+    if remaining < 0:
+        raise ValueError(
+            f"Cannot determinize {star}-star group: public seen count "
+            f"{seen} exceeds setup count {setup_count}"
+        )
+    if remaining == 0:
+        return selected
+
+    if not _company_publicly_seen(state, last_idx, coo_level):
+        selected.append(last_idx)
+
+    slots = remaining - len(selected)
+    for company_id in range(start, end):
+        if company_id == last_idx:
+            continue
+        if not _company_publicly_seen(state, company_id, coo_level):
+            pool.append(company_id)
+
+    if slots > len(pool):
+        raise ValueError(
+            f"Cannot determinize {star}-star group: need {slots} hidden "
+            f"companies but only {len(pool)} are eligible"
+        )
+
+    if len(pool) > 1:
+        rng.shuffle(pool)
+    if slots > 0:
+        selected.extend(pool[:slots])
+    if len(selected) > 1:
+        rng.shuffle(selected)
+
+    return selected
 
 
 cdef class Deck:
@@ -394,6 +475,82 @@ cdef class Deck:
             deck_cards[group_start + j] = temp
 
         return deck_size
+
+    cpdef GameState determinize_remaining(self, GameState state, object rng=None):
+        """Return a clone with a public-information randomized remaining deck.
+
+        The original state is left untouched. Publicly visible company
+        locations are preserved, while hidden setup exclusions in the current
+        or future color groups are eligible to appear in the randomized deck.
+        Each remaining color group is sampled with the same setup counts and
+        highest-face-value inclusion rule used by normal deck construction.
+        """
+        cdef int num_players = turn_module.TURN.get_num_players(state)
+        cdef int remaining = self.get_remaining_count(state)
+        cdef int coo_level = turn_module.TURN.get_coo_level(state)
+        cdef int min_star = coo_level
+        cdef int top_company
+        cdef list new_order = []
+        cdef GameState det_state = PyGameState.from_array(
+            state._array,
+            num_players,
+            max_players=state.max_players,
+        )
+
+        det_state.step_mode = state.step_mode
+        det_state.acq_same_president = state.acq_same_president
+        det_state.allow_positive_income_closing = (
+            state.allow_positive_income_closing
+        )
+
+        if remaining <= 0:
+            return det_state
+
+        if rng is None:
+            import numpy as np
+            rng = np.random.default_rng()
+
+        if min_star < 1 or min_star > 5:
+            top_company = self.peek(state)
+            if top_company < 0:
+                return det_state
+            min_star = COMPANY_STARS[top_company]
+
+        # Build bottom-to-top so the top card remains in the current CoO tier.
+        if 5 >= min_star:
+            new_order.extend(_determinized_color_group(
+                state, num_players, coo_level,
+                BLUE_START, BLUE_END, BLUE_LAST, 5, rng,
+            ))
+        if 4 >= min_star:
+            new_order.extend(_determinized_color_group(
+                state, num_players, coo_level,
+                GREEN_START, GREEN_END, GREEN_LAST, 4, rng,
+            ))
+        if 3 >= min_star:
+            new_order.extend(_determinized_color_group(
+                state, num_players, coo_level,
+                YELLOW_START, YELLOW_END, YELLOW_LAST, 3, rng,
+            ))
+        if 2 >= min_star:
+            new_order.extend(_determinized_color_group(
+                state, num_players, coo_level,
+                ORANGE_START, ORANGE_END, ORANGE_LAST, 2, rng,
+            ))
+        if 1 >= min_star:
+            new_order.extend(_determinized_color_group(
+                state, num_players, coo_level,
+                RED_START, RED_END, RED_LAST, 1, rng,
+            ))
+
+        if len(new_order) != remaining:
+            raise ValueError(
+                f"Determinized deck size {len(new_order)} does not match "
+                f"current remaining count {remaining}"
+            )
+
+        self.set_order(det_state, new_order)
+        return det_state
 
     # =========================================================================
     # DEBUG/TESTING HELPERS

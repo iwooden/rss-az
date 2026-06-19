@@ -36,6 +36,7 @@ cdef class Deck:
 
     # Setup - builds deck according to rules based on player count
     cpdef void setup(self, GameState state, int num_players, int seed)
+    cpdef GameState determinize_remaining(self, GameState state, object rng=*)
 
     # Internal helper for building color groups
     cdef int _add_color_group(self, int* deck_cards, int deck_size, int start, int end, int last_idx, int count)
