@@ -1147,7 +1147,7 @@ def _apply_live_planned_action(
     """Apply a chosen live action while preserving 18xx round progression."""
     del intent
 
-    if phase != GamePhases.PHASE_CLOSING:
+    if phase != GamePhases.PHASE_CLOSING and phase not in ACQ_PHASES:
         return DRIVER.apply_action(state, action_idx)
 
     previous_allow_positive = state.allow_positive_income_closing

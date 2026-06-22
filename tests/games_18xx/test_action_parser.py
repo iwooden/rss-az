@@ -67,6 +67,59 @@ def test_map_issue_action_uses_active_corp(monkeypatch):
     assert calls == [{"action_type": action_parser.ACTION_ISSUE}]
 
 
+def test_map_ipo_pass_ignores_non_active_company_entity(monkeypatch):
+    action = {"type": "pass", "entity": "HH", "entity_type": "company"}
+
+    monkeypatch.setattr(action_parser, "COMPANY_NAME_TO_ID", {"HH": 29, "E": 28})
+    monkeypatch.setattr(action_parser, "TURN", SimpleNamespace(get_active_company=lambda state: 28))
+
+    def unexpected_find_legal_action(state, **kwargs):
+        raise AssertionError("non-active IPO company pass should not map")
+
+    monkeypatch.setattr(action_parser, "find_legal_action", unexpected_find_legal_action)
+
+    assert action_parser.map_ipo_action(object(), action, None) is None
+
+
+def test_map_ipo_par_ignores_non_active_company_entity(monkeypatch):
+    action = {
+        "type": "par",
+        "entity": "E",
+        "entity_type": "company",
+        "corporation": "S",
+        "share_price": "24,0,15",
+    }
+
+    monkeypatch.setattr(action_parser, "COMPANY_NAME_TO_ID", {"SZD": 22, "E": 28})
+    monkeypatch.setattr(action_parser, "TURN", SimpleNamespace(get_active_company=lambda state: 22))
+
+    def unexpected_find_legal_action(state, **kwargs):
+        raise AssertionError("non-active IPO company par should not map")
+
+    monkeypatch.setattr(action_parser, "find_legal_action", unexpected_find_legal_action)
+
+    assert action_parser.map_ipo_action(object(), action, None) is None
+
+
+def test_map_par_action_ignores_non_active_company_entity(monkeypatch):
+    action = {
+        "type": "par",
+        "entity": "E",
+        "entity_type": "company",
+        "share_price": "24,0,15",
+    }
+
+    monkeypatch.setattr(action_parser, "COMPANY_NAME_TO_ID", {"SZD": 22, "E": 28})
+    monkeypatch.setattr(action_parser, "TURN", SimpleNamespace(get_active_company=lambda state: 22))
+
+    def unexpected_find_legal_action(state, **kwargs):
+        raise AssertionError("non-active PAR company price should not map")
+
+    monkeypatch.setattr(action_parser, "find_legal_action", unexpected_find_legal_action)
+
+    assert action_parser.map_par_action(object(), action, None) is None
+
+
 def test_map_acquisition_action_uses_select_company_for_fi_target(monkeypatch):
     action = {"type": "offer", "company": "KK", "corporation": "OS", "price": 40}
     calls: list[dict] = []

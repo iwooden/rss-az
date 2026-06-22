@@ -317,13 +317,32 @@ def map_bid_action(state: GameState, action: dict, layout: ActionLayout | None =
     raise ValueError(f"Unrecognised BID action type: {atype!r}")
 
 
-def map_ipo_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int:
+def _action_matches_active_company(state: GameState, action: dict) -> bool:
+    """Return whether a company-entity action targets the active IPO/PAR company."""
+    company_name = None
+    if action.get("entity_type") == "company":
+        company_name = action.get("entity")
+    elif "company" in action:
+        company_name = action.get("company")
+
+    if company_name is None:
+        return True
+
+    company_id = COMPANY_NAME_TO_ID.get(company_name)
+    return company_id is not None and TURN.get_active_company(state) == company_id
+
+
+def map_ipo_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int | None:
     atype = action["type"]
 
     if atype == "pass":
+        if not _action_matches_active_company(state, action):
+            return None
         return find_legal_action(state, action_type=ACTION_PASS)
 
     if atype == "par":
+        if not _action_matches_active_company(state, action):
+            return None
         corp_id = CORP_NAME_TO_ID[action["corporation"]]
         return find_legal_action(
             state,
@@ -334,9 +353,11 @@ def map_ipo_action(state: GameState, action: dict, layout: ActionLayout | None =
     raise ValueError(f"Unrecognised IPO action type: {atype!r}")
 
 
-def map_par_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int:
+def map_par_action(state: GameState, action: dict, layout: ActionLayout | None = None) -> int | None:
     if action["type"] != "par":
         raise ValueError(f"Unrecognised PAR action type: {action['type']!r}")
+    if not _action_matches_active_company(state, action):
+        return None
     return find_legal_action(
         state,
         action_type=ACTION_PAR,

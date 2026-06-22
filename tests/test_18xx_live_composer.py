@@ -786,6 +786,43 @@ def test_live_closing_pass_uses_18xx_progression_and_restores_model_gate():
     assert TURN.get_active_player(validation_state) == 1
 
 
+def test_live_acq_pass_into_closing_uses_18xx_surface_and_restores_model_gate():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    positive_company = COMPANY_NAME_TO_ID["BME"]
+    negative_company = COMPANY_NAME_TO_ID["OL"]
+
+    give_company_to_player(state, positive_company, 0)
+    give_company_to_player(state, negative_company, 1)
+    COMPANIES[negative_company].set_adjusted_income(state, -1)
+    float_corp_for_test(state, corp_id=0, company_id=COMPANY_NAME_TO_ID["MS"], player_id=2)
+
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    TURN.set_active_player(state, 2)
+    TURN.clear_acquisition_context(state)
+    TURN.clear_passed_flags(state)
+    state.allow_positive_income_closing = False
+    state.step_mode = True
+
+    pass_action = next(
+        action_id
+        for action_id, info in live_module.get_legal_actions(state)
+        if info.action_type == live_module.ACTION_PASS
+    )
+
+    status = _apply_live_planned_action(
+        state,
+        GamePhases.PHASE_ACQ_SELECT_CORP,
+        pass_action,
+        {"type": "pass"},
+    )
+
+    assert status != STATUS_INVALID
+    assert state.allow_positive_income_closing is False
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
+    assert TURN.get_active_player(state) == 0
+
+
 def test_unordered_round_alignment_consumes_nonacting_closing_pass():
     state = GameState(3)
     state.initialize_game(3, seed=42)
