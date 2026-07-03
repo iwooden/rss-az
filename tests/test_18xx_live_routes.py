@@ -3,10 +3,12 @@ import json
 import queue
 
 from utils_18xx.live import (
+    EvalRequest,
     GameBlacklist,
     WebhookHandler,
     is_local_request_host,
     is_turn_webhook_text,
+    parse_eval_request,
     parse_poke_game_id,
 )
 
@@ -23,6 +25,32 @@ def test_parse_poke_game_id_from_query():
 def test_parse_poke_game_id_rejects_other_paths():
     assert parse_poke_game_id("/webhook/rss-az-1") is None
     assert parse_poke_game_id("/poke") is None
+
+
+def test_parse_eval_request_from_path():
+    assert parse_eval_request(
+        "/eval/12345?player_index=1&bot=rss-az-2"
+    ) == EvalRequest(
+        game_id="12345",
+        player_index=1,
+        bot_name="rss-az-2",
+    )
+
+
+def test_parse_eval_request_from_query():
+    assert parse_eval_request(
+        "/eval?game_id=12345&player=Alice&player_id=101"
+    ) == EvalRequest(
+        game_id="12345",
+        player="Alice",
+        player_id="101",
+    )
+
+
+def test_parse_eval_request_rejects_other_paths():
+    assert parse_eval_request("/webhook/rss-az-1") is None
+    assert parse_eval_request("/eval") is None
+    assert parse_eval_request("/eval/123/extra") is None
 
 
 def test_turn_webhook_text_is_case_insensitive():
@@ -154,3 +182,40 @@ def test_manual_poke_bypasses_blacklist(tmp_path, monkeypatch):
 
     assert handler.responses == [202]
     assert work_queue.get_nowait() == ("rss-az-1", "254153")
+
+
+def test_manual_eval_queues_eval_request(monkeypatch):
+    work_queue = queue.Queue()
+
+    monkeypatch.setattr(WebhookHandler, "work_queue", work_queue, raising=False)
+    monkeypatch.setattr(
+        WebhookHandler,
+        "auth",
+        {"rss-az-1": {"token": "token"}},
+        raising=False,
+    )
+
+    handler = _make_handler("/eval/254153?player_index=1&bot=rss-az-1")
+
+    handler.do_GET()
+
+    assert handler.responses == [202]
+    assert work_queue.get_nowait() == EvalRequest(
+        game_id="254153",
+        player_index=1,
+        bot_name="rss-az-1",
+    )
+
+
+def test_manual_eval_is_local_only(monkeypatch):
+    work_queue = queue.Queue()
+
+    monkeypatch.setattr(WebhookHandler, "work_queue", work_queue, raising=False)
+
+    handler = _make_handler("/eval/254153")
+    handler.client_address = ("203.0.113.7", 12345)
+
+    handler.do_GET()
+
+    assert handler.responses == [403]
+    assert work_queue.empty()

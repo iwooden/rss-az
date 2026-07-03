@@ -1,7 +1,7 @@
 import queue
 
 from utils_18xx import live
-from utils_18xx.live import MoveWorker
+from utils_18xx.live import EvalRequest, MoveWorker
 
 
 class _FakeApi:
@@ -185,6 +185,37 @@ class _RecordingRegistry:
         return self.engine
 
 
+class _EvalApi:
+    def __init__(self):
+        self.fetches = []
+        self.posts = []
+
+    def fetch_game(self, game_id, token):
+        self.fetches.append((game_id, token))
+        return {
+            "id": game_id,
+            "players": [
+                {"id": 1, "name": "bot"},
+                {"id": 2, "name": "other"},
+            ],
+            "acting": [2],
+            "actions": [],
+        }
+
+    def post_action(self, game_id, action, token):
+        self.posts.append((game_id, action, token))
+        raise AssertionError("eval requests must not post actions")
+
+
+class _EvalEngine:
+    def __init__(self):
+        self.calls = []
+
+    def evaluate_turn(self, game_data, request):
+        self.calls.append((game_data, request))
+        return True
+
+
 def test_worker_refetches_full_game_between_batched_posts(monkeypatch):
     api = _FakeApi()
     seen_action_counts = []
@@ -263,3 +294,26 @@ def test_worker_lets_replay_check_stale_top_level_acting():
     worker._process("bot", "1")
 
     assert engine.calls == 1
+
+
+def test_worker_process_eval_fetches_and_evaluates_without_posting():
+    api = _EvalApi()
+    engine = _EvalEngine()
+    worker = MoveWorker(
+        queue.Queue(),
+        api,
+        {
+            "bot": {"token": "token-1", "user_id": 1},
+            "analyst": {"token": "token-2", "user_id": 2},
+        },
+        _RecordingRegistry(engine),
+    )
+    request = EvalRequest(game_id="254153", player_id="2", bot_name="analyst")
+
+    worker._process_eval(request)
+
+    assert api.fetches == [("254153", "token-2")]
+    assert api.posts == []
+    assert len(engine.calls) == 1
+    assert engine.calls[0][0]["id"] == "254153"
+    assert engine.calls[0][1] == request

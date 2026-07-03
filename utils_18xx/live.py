@@ -22,6 +22,7 @@ import queue
 import re
 import threading
 import time
+from dataclasses import dataclass
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -244,6 +245,15 @@ _GAME_URL_RE = re.compile(r"/game/(\d+)")
 _WEBHOOK_USER_RE = re.compile(r"<@([^>]+)>")
 
 
+@dataclass(frozen=True)
+class EvalRequest:
+    game_id: str
+    player: str | None = None
+    player_id: str | None = None
+    player_index: int | None = None
+    bot_name: str | None = None
+
+
 def parse_webhook_text(text: str) -> tuple[str | None, str | None]:
     """Extract (game_id, webhook_user_id) from webhook notification text.
 
@@ -283,6 +293,50 @@ def parse_poke_game_id(path: str) -> str | None:
             if values and values[0]:
                 return values[0]
 
+    return None
+
+
+def parse_eval_request(path: str) -> EvalRequest | None:
+    """Extract an evaluation request from /eval/<id> or /eval?game_id=<id>."""
+    parsed = urlparse(path)
+    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if not path_parts or path_parts[0] != "eval":
+        return None
+
+    query = parse_qs(parsed.query)
+    game_id: str | None = None
+    if len(path_parts) == 2:
+        game_id = path_parts[1]
+    elif len(path_parts) == 1:
+        game_id = _first_query_value(query, "game_id", "game")
+    else:
+        return None
+
+    if not game_id:
+        return None
+
+    player_index = None
+    player_index_s = _first_query_value(query, "player_index", "p")
+    if player_index_s is not None:
+        try:
+            player_index = int(player_index_s)
+        except ValueError:
+            return None
+
+    return EvalRequest(
+        game_id=str(game_id),
+        player=_first_query_value(query, "player"),
+        player_id=_first_query_value(query, "player_id", "user_id"),
+        player_index=player_index,
+        bot_name=_first_query_value(query, "bot", "bot_name"),
+    )
+
+
+def _first_query_value(query: dict[str, list[str]], *keys: str) -> str | None:
+    for key in keys:
+        values = query.get(key)
+        if values and values[0]:
+            return values[0]
     return None
 
 
@@ -999,6 +1053,76 @@ def _acting_engine_player_indices(
             pass
 
     return set()
+
+
+def _player_user_id_for_index(game_data: dict, player_idx: int):
+    players = game_data.get("players", [])
+    if not 0 <= player_idx < len(players):
+        raise ValueError(f"player index out of range: {player_idx}")
+    return players[player_idx].get("id")
+
+
+def _select_eval_player_index(
+    game_data: dict,
+    session: GameSession,
+    state,
+    request: EvalRequest | None = None,
+) -> int:
+    """Return the engine player index whose current decision should be evaluated."""
+    request = request or EvalRequest(str(game_data.get("id", "")))
+    players = game_data.get("players", [])
+    num_players = len(players)
+
+    if request.player_index is not None:
+        idx = int(request.player_index)
+        if not 0 <= idx < num_players:
+            raise ValueError(f"player_index out of range: {idx}")
+        return idx
+
+    if request.player_id is not None:
+        return session.player_index_for_user_id(request.player_id)
+
+    if request.player:
+        selector = str(request.player).strip()
+        if not selector:
+            raise ValueError("empty player selector")
+        if selector.lower().startswith("p") and selector[1:].isdigit():
+            idx = int(selector[1:])
+            if not 0 <= idx < num_players:
+                raise ValueError(f"player selector out of range: {selector}")
+            return idx
+        for idx, player in enumerate(players):
+            if str(player.get("id")) == selector:
+                return idx
+        lowered = selector.lower()
+        for idx, player in enumerate(players):
+            if str(player.get("name", "")).strip().lower() == lowered:
+                return idx
+        if selector.isdigit():
+            idx = int(selector)
+            if 0 <= idx < num_players:
+                return idx
+        raise ValueError(f"unknown player selector: {selector}")
+
+    if _is_18xx_acquisition_round(game_data) or _is_18xx_closing_round(game_data):
+        acting_indices = _acting_engine_player_indices(game_data, session)
+    else:
+        acting_indices = set()
+    if acting_indices:
+        return min(acting_indices)
+    return int(TURN.get_active_player(state))
+
+
+def _clone_live_state(state, num_players: int, max_players: int):
+    clone = GameState.from_array(
+        state._array.copy(),
+        num_players,
+        max_players=max_players,
+    )
+    clone.step_mode = state.step_mode
+    clone.acq_same_president = state.acq_same_president
+    clone.allow_positive_income_closing = state.allow_positive_income_closing
+    return clone
 
 
 def _align_unordered_round_to_18xx_actor(
@@ -1733,6 +1857,117 @@ class _SearchEngine:
             max_players=self.max_players,
         )
 
+    def evaluate_turn(
+        self,
+        game_data: dict,
+        request: EvalRequest | None = None,
+    ) -> bool:
+        """Sync state and print one model/MCTS evaluation without posting."""
+        num_players = len(game_data.get("players", []))
+        self.validate_player_count(num_players)
+        session = self._session_for(game_data)
+        synced_state = session.sync(game_data)
+        state = _clone_live_state(synced_state, num_players, self.max_players)
+        prepare_live_decision_state(state)
+
+        if TURN.get_phase(state) == GamePhases.PHASE_GAME_OVER:
+            logger.info("Game is over")
+            return False
+
+        eval_player_idx = _select_eval_player_index(
+            game_data,
+            session,
+            state,
+            request,
+        )
+        eval_user_id = _player_user_id_for_index(game_data, eval_player_idx)
+
+        unordered_eval_round = (
+            _is_18xx_acquisition_round(game_data)
+            or _is_18xx_closing_round(game_data)
+        )
+        acting_indices = _acting_engine_player_indices(game_data, session)
+        if (
+            unordered_eval_round
+            and acting_indices
+            and eval_player_idx not in acting_indices
+        ):
+            raise ValueError(
+                f"Selected player P{eval_player_idx} is not currently acting; "
+                f"acting={sorted(acting_indices)}"
+            )
+
+        retargeted_acquisition = _retarget_acquisition_active_player_to_bot(
+            game_data,
+            state,
+            eval_user_id,
+            eval_player_idx,
+        )
+        aligned_passes = _align_unordered_round_to_18xx_actor(
+            game_data,
+            session,
+            state,
+            bot_player_indices={eval_player_idx},
+        )
+        retargeted_closing = _retarget_closing_active_player_to_bot(
+            game_data,
+            state,
+            eval_user_id,
+            eval_player_idx,
+        )
+        active = TURN.get_active_player(state)
+        if aligned_passes:
+            logger.info(
+                "Applied local unordered pass alignment for eval: "
+                f"passes={aligned_passes}, active=P{active}"
+            )
+        if retargeted_acquisition:
+            logger.info(
+                "Retargeted unordered Acquisition eval decision: "
+                f"active=P{active}"
+            )
+        if retargeted_closing:
+            logger.info(
+                "Retargeted unordered Closing eval decision: "
+                f"active=P{active}"
+            )
+        logger.info(
+            "Evaluation mapping: "
+            f"user_id={eval_user_id}, engine_idx={eval_player_idx}, "
+            f"active=P{active}"
+        )
+
+        if active != eval_player_idx:
+            logger.info(
+                f"Cannot evaluate selected player yet: "
+                f"active=P{active}, selected=P{eval_player_idx}"
+            )
+            return False
+
+        mismatches = session.validate_against_18xx(
+            game_data,
+            state,
+            context=f"eval game={game_data.get('id', '?')}",
+        )
+        if mismatches:
+            logger.error(
+                "18xx/RSS replay mismatch before eval; refusing to evaluate:\n%s",
+                format_state_mismatches(mismatches),
+            )
+            return False
+
+        previous_step_mode = state.step_mode
+        state.step_mode = True
+        try:
+            return self._print_live_evaluation(
+                state,
+                game_data,
+                eval_player_idx,
+                num_players,
+            )
+        finally:
+            state.step_mode = previous_step_mode
+
     def process_turn(
         self,
         game_data: dict,
@@ -2033,6 +2268,94 @@ class _SearchEngine:
 
         return composer.finish()
 
+    def _print_live_evaluation(
+        self,
+        state,
+        game_data: dict,
+        eval_player_idx: int,
+        num_players: int,
+    ) -> bool:
+        """Print one live model-output block without applying the action."""
+        live_evaluator = self._live_evaluator_for(num_players)
+        max_steps = 100
+
+        for _ in range(max_steps):
+            phase = TURN.get_phase(state)
+            if phase == GamePhases.PHASE_GAME_OVER:
+                logger.info("Game is over")
+                return False
+
+            if phase in AUTOMATED_PHASES:
+                status = DRIVER.advance_phase(state)
+                if status == STATUS_INVALID:
+                    raise RuntimeError(f"Invalid automated advance in phase {phase}")
+                if status == STATUS_GAME_OVER:
+                    logger.info("Game is over")
+                    return False
+                continue
+
+            active = TURN.get_active_player(state)
+            if active != eval_player_idx:
+                logger.info(
+                    f"Evaluation stopped before decision: "
+                    f"active=P{active}, selected=P{eval_player_idx}"
+                )
+                return False
+
+            legal_actions = get_legal_actions(state)
+            if not legal_actions:
+                raise RuntimeError(f"No legal actions in live phase {phase}")
+
+            model_eval = live_evaluator.evaluate(state)
+            priors, values, action_ids_arr, _, phase_id = model_eval
+
+            if len(legal_actions) == 1:
+                action_idx = int(legal_actions[0][0])
+                print(
+                    _format_live_model_output(
+                        game_data=game_data,
+                        state=state,
+                        priors=priors,
+                        values=values,
+                        action_ids=action_ids_arr,
+                        phase_id=int(phase_id),
+                        num_players=num_players,
+                        root=None,
+                        action_idx=action_idx,
+                        elapsed_secs=None,
+                    ),
+                    flush=True,
+                )
+                return True
+
+            action_idx, root, elapsed, search_stats = self._search(
+                state,
+                num_players,
+                evaluator=live_evaluator,
+                collect_stats=True,
+            )
+            assert search_stats is not None
+            print(
+                _format_live_model_output(
+                    game_data=game_data,
+                    state=state,
+                    priors=priors,
+                    values=values,
+                    action_ids=action_ids_arr,
+                    phase_id=int(phase_id),
+                    num_players=num_players,
+                    root=root,
+                    action_idx=action_idx,
+                    mcts_config=self._mcts_config_for(num_players),
+                    search_stats=search_stats,
+                    elapsed_secs=elapsed,
+                ),
+                flush=True,
+            )
+            return True
+
+        raise RuntimeError("Exceeded live evaluation step limit")
+
     def _reuse_root_matches_state(self, reuse_root, state) -> bool:
         if reuse_root is None or reuse_root.state_idx < 0:
             return False
@@ -2041,17 +2364,27 @@ class _SearchEngine:
             state._array,
         )
 
-    def _search(self, state, num_players: int, reuse_root=None, evaluator=None):
+    def _search(
+        self,
+        state,
+        num_players: int,
+        reuse_root=None,
+        evaluator=None,
+        collect_stats: bool | None = None,
+    ):
         """Run MCTS and return the best action index."""
         if evaluator is None:
             evaluator = self._evaluator
+        if collect_stats is None:
+            collect_stats = self.model_output
         if self.determinization_count > 0:
             return self._search_determinized(
                 state,
                 num_players,
                 evaluator=evaluator,
+                collect_stats=collect_stats,
             )
-        search_stats = SearchStats() if self.model_output else None
+        search_stats = SearchStats() if collect_stats else None
         t0 = time.monotonic()
         root = run_search(
             None if reuse_root is not None else state,
@@ -2076,11 +2409,19 @@ class _SearchEngine:
         )
         return action_idx, root, elapsed, search_stats
 
-    def _search_determinized(self, state, num_players: int, evaluator=None):
+    def _search_determinized(
+        self,
+        state,
+        num_players: int,
+        evaluator=None,
+        collect_stats: bool | None = None,
+    ):
         """Run independent hidden-deck determinizations and aggregate visits."""
         if evaluator is None:
             evaluator = self._evaluator
-        search_stats = SearchStats() if self.model_output else None
+        if collect_stats is None:
+            collect_stats = self.model_output
+        search_stats = SearchStats() if collect_stats else None
         mcts_config = self._mcts_config_for(num_players)
         count = self.determinization_count
         t0 = time.monotonic()
@@ -2242,6 +2583,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 return
             self._handle_poke()
             return
+        if self._is_eval_path():
+            if not self._is_local_request():
+                self._send_json(403, {"error": "local_only"})
+                return
+            self._handle_eval()
+            return
         self._send_json(404, {"error": "not_found"})
 
     def do_POST(self):
@@ -2252,6 +2599,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 self._send_json(403, {"error": "local_only"})
                 return
             self._handle_poke()
+            return
+
+        if self._is_eval_path():
+            if not self._is_local_request():
+                self._send_json(403, {"error": "local_only"})
+                return
+            self._handle_eval()
             return
 
         # Extract bot name from URL path: /webhook/<bot_name>
@@ -2336,6 +2690,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         return parsed.path.strip("/").split("/", 1)[0] == "poke"
 
+    def _is_eval_path(self) -> bool:
+        parsed = urlparse(self.path)
+        return parsed.path.strip("/").split("/", 1)[0] == "eval"
+
     def _is_local_request(self) -> bool:
         return is_local_request_host(str(self.client_address[0]))
 
@@ -2363,6 +2721,39 @@ class WebhookHandler(BaseHTTPRequestHandler):
             {"status": "queued", "game_id": game_id, "bots": bot_names},
         )
 
+    def _handle_eval(self):
+        request = parse_eval_request(self.path)
+        if request is None:
+            request = self._read_json_eval_request()
+
+        if request is None:
+            self._send_json(
+                400,
+                {"error": "missing_game_id", "usage": "/eval/<game_id>"},
+            )
+            return
+
+        self.work_queue.put(request)
+        logger.info(
+            "Manual eval: "
+            f"game={request.game_id}, "
+            f"player={request.player}, "
+            f"player_id={request.player_id}, "
+            f"player_index={request.player_index}, "
+            f"bot={request.bot_name}"
+        )
+        self._send_json(
+            202,
+            {
+                "status": "queued",
+                "game_id": request.game_id,
+                "player": request.player,
+                "player_id": request.player_id,
+                "player_index": request.player_index,
+                "bot": request.bot_name,
+            },
+        )
+
     def _read_json_body_game_id(self) -> str | None:
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length <= 0:
@@ -2376,6 +2767,56 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         game_id = data.get("game_id") or data.get("game")
         return str(game_id) if game_id else None
+
+    def _read_json_eval_request(self) -> EvalRequest | None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0:
+            return None
+
+        body = self.rfile.read(content_length).decode()
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            return None
+
+        game_id = data.get("game_id") or data.get("game")
+        if not game_id:
+            return None
+
+        player_index = data.get("player_index")
+        if player_index is not None:
+            try:
+                player_index = int(player_index)
+            except (TypeError, ValueError):
+                return None
+
+        return EvalRequest(
+            game_id=str(game_id),
+            player=(
+                str(data["player"])
+                if data.get("player") is not None
+                else None
+            ),
+            player_id=(
+                str(data["player_id"])
+                if data.get("player_id") is not None
+                else (
+                    str(data["user_id"])
+                    if data.get("user_id") is not None
+                    else None
+                )
+            ),
+            player_index=player_index,
+            bot_name=(
+                str(data["bot"])
+                if data.get("bot") is not None
+                else (
+                    str(data["bot_name"])
+                    if data.get("bot_name") is not None
+                    else None
+                )
+            ),
+        )
 
     def _send_json(self, status: int, payload: dict):
         body = json.dumps(payload).encode()
@@ -2468,12 +2909,65 @@ class MoveWorker(threading.Thread):
         logger.info("Move worker started")
         while True:
             try:
-                bot_name, game_id = self._queue.get()
-                self._process(bot_name, game_id)
+                item = self._queue.get()
+                if isinstance(item, EvalRequest):
+                    self._process_eval(item)
+                else:
+                    bot_name, game_id = item
+                    self._process(bot_name, game_id)
             except Exception:
                 logger.exception("Unhandled error in move worker")
             finally:
                 self._queue.task_done()
+
+    def _auth_for_eval(self, request: EvalRequest) -> tuple[str, dict] | None:
+        if request.bot_name:
+            auth_info = self._auth.get(request.bot_name)
+            if auth_info is None:
+                logger.error(f"[eval] Unknown bot for eval: {request.bot_name}")
+                return None
+            return request.bot_name, auth_info
+
+        try:
+            bot_name, auth_info = next(iter(self._auth.items()))
+        except StopIteration:
+            logger.error("[eval] Cannot evaluate without at least one auth token")
+            return None
+        return bot_name, auth_info
+
+    def _process_eval(self, request: EvalRequest):
+        auth_pair = self._auth_for_eval(request)
+        if auth_pair is None:
+            return
+        bot_name, auth_info = auth_pair
+        token = auth_info["token"]
+
+        game_data = self._fetch_game_data(f"eval/{bot_name}", request.game_id, token)
+        if game_data is None:
+            return
+
+        players = game_data.get("players", [])
+        num_players = len(players)
+        try:
+            engine = self._registry.get_engine(num_players)
+        except (ValueError, FileNotFoundError) as e:
+            logger.error(f"[eval/{bot_name}] {e}")
+            return
+
+        try:
+            printed = engine.evaluate_turn(game_data, request)
+        except Exception:
+            logger.exception(
+                f"[eval/{bot_name}] Error evaluating game {request.game_id}"
+            )
+            return
+
+        if printed:
+            logger.info(f"[eval/{bot_name}] Evaluation complete for {request.game_id}")
+        else:
+            logger.info(
+                f"[eval/{bot_name}] No evaluation printed for {request.game_id}"
+            )
 
     def _process(self, bot_name: str, game_id: str):
         token = self._auth[bot_name]["token"]
@@ -2684,6 +3178,10 @@ class LiveService:
         logger.info(
             "Manual poke URL: "
             f"http://<host>:{self._port}/poke/<game_id>"
+        )
+        logger.info(
+            "Manual eval URL: "
+            f"http://<host>:{self._port}/eval/<game_id>"
         )
 
         try:

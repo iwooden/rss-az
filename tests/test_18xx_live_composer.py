@@ -20,6 +20,7 @@ from entities.turn import TURN
 from tests.phases.conftest import float_corp_for_test
 from tests.phases.helpers.ownership import give_company_to_fi, give_company_to_player
 from utils_18xx.live import (
+    EvalRequest,
     _CrossPresidentAcqOfferPriorEvaluator,
     _LiveActionComposer,
     _SearchEngine,
@@ -38,6 +39,7 @@ from utils_18xx.live import (
     _resolve_sellable_share,
     _retarget_acquisition_active_player_to_bot,
     _retarget_closing_active_player_to_bot,
+    _select_eval_player_index,
     _should_continue_after_postable_action,
     prepare_live_decision_state,
 )
@@ -644,6 +646,87 @@ def test_acquisition_retarget_points_ordered_turn_at_acting_bot():
     assert TURN.get_active_player(state) == 1
 
 
+def test_eval_selection_defaults_to_lowest_acting_engine_player():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    TURN.set_active_player(state, 2)
+    session = _FakeSession(player_ids=[101, 202, 303])
+
+    selected = _select_eval_player_index(
+        {
+            "id": 1,
+            "round": "Acquisition",
+            "acting": [303, 101],
+            "players": [
+                {"id": 101, "name": "p1"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        session,
+        state,
+    )
+
+    assert selected == 0
+
+
+def test_eval_selection_ignores_stale_ordered_round_acting():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    TURN.set_active_player(state, 2)
+    session = _FakeSession(player_ids=[101, 202, 303])
+
+    selected = _select_eval_player_index(
+        {
+            "id": 1,
+            "round": "Investment",
+            "acting": [101],
+            "players": [
+                {"id": 101, "name": "p1"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        session,
+        state,
+    )
+
+    assert selected == 2
+
+
+def test_eval_selection_resolves_player_selectors():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    session = _FakeSession(player_ids=[101, 202, 303])
+    game_data = {
+        "id": 1,
+        "players": [
+            {"id": 101, "name": "p1"},
+            {"id": 202, "name": "Alice"},
+            {"id": 303, "name": "p3"},
+        ],
+    }
+
+    assert _select_eval_player_index(
+        game_data,
+        session,
+        state,
+        EvalRequest("1", player="Alice"),
+    ) == 1
+    assert _select_eval_player_index(
+        game_data,
+        session,
+        state,
+        EvalRequest("1", player="P2"),
+    ) == 2
+    assert _select_eval_player_index(
+        game_data,
+        session,
+        state,
+        EvalRequest("1", player_id="202"),
+    ) == 1
+
+
 def test_search_engine_retargets_acquisition_before_compatibility_pass():
     state = GameState(3)
     state.initialize_game(3, seed=42)
@@ -700,6 +783,48 @@ def test_search_engine_retargets_acquisition_before_compatibility_pass():
     )
 
     assert actions == [{"type": "planned-acquisition"}]
+
+
+def test_search_engine_eval_retargets_acquisition_to_selected_actor():
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    TURN.set_active_player(state, 0)
+    session = _FakeProcessTurnSession(state, player_ids=[101, 202, 303])
+
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.max_players = 3
+    engine.validate_player_count = lambda num_players: None
+    engine._session_for = lambda game_data: session
+    calls = []
+
+    def print_live_evaluation(planned_state, game_data, eval_player_idx, num_players):
+        calls.append((planned_state, game_data, eval_player_idx, num_players))
+        assert TURN.get_active_player(planned_state) == 1
+        assert planned_state.step_mode
+        return True
+
+    engine._print_live_evaluation = print_live_evaluation
+
+    printed = engine.evaluate_turn(
+        {
+            "id": 1,
+            "round": "Acquisition",
+            "acting": [202, 303],
+            "players": [
+                {"id": 101, "name": "p1"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        EvalRequest("1", player_id="202"),
+    )
+
+    assert printed
+    assert len(calls) == 1
+    assert calls[0][2:] == (1, 3)
+    assert TURN.get_active_player(state) == 0
+    assert not state.step_mode
 
 
 def test_composer_rejects_incomplete_split_action():
