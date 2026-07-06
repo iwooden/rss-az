@@ -6,6 +6,7 @@ from utils_18xx.live import (
     EvalRequest,
     GameBlacklist,
     WebhookHandler,
+    default_api_min_interval,
     is_local_request_host,
     is_turn_webhook_text,
     parse_eval_request,
@@ -69,6 +70,12 @@ def test_turn_webhook_text_rejects_non_turn_notifications():
     assert not is_turn_webhook_text(
         '<@rss-az-2> Game Finished in Rolling Stock Stars "" (Issue Shares 13)'
     )
+
+
+def test_public_18xx_host_defaults_to_conservative_api_throttle():
+    assert default_api_min_interval("https://18xx.games") == 10.0
+    assert default_api_min_interval("https://www.18xx.games") == 10.0
+    assert default_api_min_interval("http://localhost:9292") == 0.0
 
 
 def test_poke_endpoint_host_check_allows_only_loopback():

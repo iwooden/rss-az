@@ -167,11 +167,16 @@ Start the live server:
   --runtime-dir runtime \
   --checkpoint-dir checkpoints \
   --base-url http://localhost:9292 \
+  --api-min-interval 0 \
   --host 0.0.0.0 \
   --port 8080 \
   --simulations 400 \
   --model-output
 ```
+
+When `--base-url` points at `https://18xx.games`, outbound API requests are
+throttled by default to one request start every 10 seconds. Override with
+`--api-min-interval SECONDS`; local URLs default to no throttling.
 
 Configure the webhook URL for bot `rss-az-1` as:
 

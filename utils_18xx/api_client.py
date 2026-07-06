@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -26,22 +27,21 @@ class PermanentError(Exception):
 class ApiClient:
     """Thin HTTP client for the 18xx.games REST API."""
 
-    def __init__(self, base_url: str, request_timeout: float = 15.0):
+    def __init__(
+        self,
+        base_url: str,
+        request_timeout: float = 15.0,
+        min_request_interval: float = 0.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self.request_timeout = request_timeout
+        self.min_request_interval = max(0.0, float(min_request_interval))
+        self._throttle_lock = threading.Lock()
+        self._next_request_at = 0.0
 
     def fetch_game(self, game_id: int | str, token: str) -> dict:
         """GET /api/game/:id — fetch full game data including actions."""
         return self._request("GET", f"/api/game/{game_id}", token)
-
-    def fetch_game_summary(self, game_id: int | str, token: str) -> dict | None:
-        """Fetch one no-actions game summary from the home-game API."""
-        cache_buster = int(time.time() * 1000)
-        response = self._request("GET", f"/api/game?_fresh={cache_buster}", token)
-        for game in response.get("games", []):
-            if str(game.get("id")) == str(game_id):
-                return game
-        return None
 
     def post_action(
         self, game_id: int | str, action: dict, token: str,
@@ -79,6 +79,8 @@ class ApiClient:
                 time.sleep(delay)
 
             try:
+                self._throttle_request(method, path)
+                logger.info("18xx API request: %s %s", method, path)
                 req = urllib.request.Request(
                     url, data=body, headers=headers, method=method,
                 )
@@ -116,3 +118,22 @@ class ApiClient:
                 continue
 
         raise last_error or TransientError("Max retries exceeded")
+
+    def _throttle_request(self, method: str, path: str) -> None:
+        """Limit outbound request start rate across all API operations."""
+        if self.min_request_interval <= 0:
+            return
+
+        with self._throttle_lock:
+            now = time.monotonic()
+            delay = self._next_request_at - now
+            if delay > 0:
+                logger.info(
+                    "Throttling 18xx API %s %s for %.1fs",
+                    method,
+                    path,
+                    delay,
+                )
+                time.sleep(delay)
+                now = time.monotonic()
+            self._next_request_at = now + self.min_request_interval

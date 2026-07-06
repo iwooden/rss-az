@@ -104,7 +104,14 @@ UNORDERED_PASS_PHASES = (
     GamePhases.PHASE_CLOSING,
 )
 GAME_BLACKLIST_FILE = "blacklisted_games.json"
-STALE_MOVE_RETRY_LIMIT = 3
+
+
+def default_api_min_interval(base_url: str) -> float:
+    """Default to a conservative throttle only for the public 18xx.games host."""
+    host = (urlparse(base_url).hostname or "").lower()
+    if host in {"18xx.games", "www.18xx.games"}:
+        return 10.0
+    return 0.0
 
 
 def prepare_live_decision_state(state) -> None:
@@ -476,6 +483,20 @@ def _game_data_with_synthetic_post_actions(
         next_id += 1
         actions.append(enriched)
 
+    synthetic["actions"] = actions
+    return synthetic
+
+
+def _game_data_with_synthetic_post_action(
+    game_data: dict,
+    posted_action: dict,
+) -> dict:
+    """Return game data with one just-posted action appended locally."""
+    synthetic = dict(game_data)
+    actions = list(game_data.get("actions", []))
+    synthetic_action = dict(posted_action)
+    synthetic_action.setdefault("id", _next_synthetic_action_id(game_data))
+    actions.append(synthetic_action)
     synthetic["actions"] = actions
     return synthetic
 
@@ -2864,47 +2885,6 @@ class MoveWorker(threading.Thread):
             logger.error(f"[{bot_name}] Cannot fetch game {game_id}: {e}")
             return None
 
-    def _game_summary_is_fresh(
-        self,
-        bot_name: str,
-        game_id: str,
-        token: str,
-        expected_updated_at,
-    ) -> bool:
-        if expected_updated_at is None:
-            logger.warning(
-                f"[{bot_name}] Game {game_id} has no updated_at; "
-                "treating pre-post freshness check as stale"
-            )
-            return False
-
-        try:
-            summary = self._api.fetch_game_summary(game_id, token)
-        except (TransientError, PermanentError) as e:
-            logger.warning(
-                f"[{bot_name}] Freshness check failed for game {game_id}: {e}; "
-                "re-fetching and replanning"
-            )
-            return False
-
-        if summary is None:
-            logger.warning(
-                f"[{bot_name}] Game {game_id} missing from summary list; "
-                "re-fetching and replanning"
-            )
-            return False
-
-        current_updated_at = summary.get("updated_at")
-        if current_updated_at != expected_updated_at:
-            logger.info(
-                f"[{bot_name}] Game {game_id} changed during planning "
-                f"(updated_at {expected_updated_at} -> {current_updated_at}); "
-                "re-fetching and replanning"
-            )
-            return False
-
-        return True
-
     def run(self):
         logger.info("Move worker started")
         while True:
@@ -3031,9 +3011,7 @@ class MoveWorker(threading.Thread):
         # A single webhook may require multiple actions (e.g. sequential
         # IPO decisions, ACQ offers, or Closing choices).
         max_consecutive = 50  # safety limit
-        stale_retries = 0
         for _ in range(max_consecutive):
-            expected_updated_at = game_data.get("updated_at")
             try:
                 api_actions = engine.process_turn(
                     game_data,
@@ -3051,36 +3029,16 @@ class MoveWorker(threading.Thread):
                 return
 
             # Post each action (IPO+PAR is a single compound action)
-            replan = False
+            post_game_data = game_data
             for post_idx, action in enumerate(api_actions):
                 try:
-                    action = attach_expected_auto_actions(game_data, action)
+                    action = attach_expected_auto_actions(post_game_data, action)
                 except Exception:
                     logger.exception(
                         f"[{bot_name}] Failed to compute auto_actions "
                         f"for game {game_id}: {action}"
                     )
                     return
-
-                if not self._game_summary_is_fresh(
-                    bot_name,
-                    game_id,
-                    token,
-                    expected_updated_at,
-                ):
-                    stale_retries += 1
-                    if stale_retries > STALE_MOVE_RETRY_LIMIT:
-                        logger.error(
-                            f"[{bot_name}] Game {game_id} stayed stale across "
-                            f"{STALE_MOVE_RETRY_LIMIT} replans; giving up"
-                        )
-                        return
-
-                    game_data = self._fetch_game_data(bot_name, game_id, token)
-                    if game_data is None:
-                        return
-                    replan = True
-                    break
 
                 logger.info(
                     f"[{bot_name}] Posting to game {game_id}: {action}"
@@ -3098,16 +3056,12 @@ class MoveWorker(threading.Thread):
                         f"[{bot_name}] Failed to post action after retries"
                     )
                     return
-                stale_retries = 0
 
                 if post_idx < len(api_actions) - 1:
-                    game_data = self._fetch_game_data(bot_name, game_id, token)
-                    if game_data is None:
-                        return
-                    expected_updated_at = game_data.get("updated_at")
-
-            if replan:
-                continue
+                    post_game_data = _game_data_with_synthetic_post_action(
+                        post_game_data,
+                        action,
+                    )
 
             # Wait for the server to process the action before re-fetching
             time.sleep(5)
@@ -3211,6 +3165,15 @@ def main():
         type=str,
         default="http://localhost:9292",
         help="18xx.games base URL (default: http://localhost:9292)",
+    )
+    parser.add_argument(
+        "--api-min-interval",
+        type=float,
+        default=None,
+        help=(
+            "Minimum seconds between outbound 18xx API request starts. "
+            "Defaults to 10 for https://18xx.games and 0 otherwise."
+        ),
     )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
@@ -3316,7 +3279,17 @@ def main():
         determinization_count=args.determinization_count,
     )
 
-    api = ApiClient(args.base_url)
+    api_min_interval = (
+        args.api_min_interval
+        if args.api_min_interval is not None
+        else default_api_min_interval(args.base_url)
+    )
+    if api_min_interval > 0:
+        logger.info(
+            "Throttling outbound 18xx API requests to one start every %.1fs",
+            api_min_interval,
+        )
+    api = ApiClient(args.base_url, min_request_interval=api_min_interval)
 
     service = LiveService(
         api=api,
