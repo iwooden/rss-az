@@ -1,7 +1,8 @@
 import queue
 
 from utils_18xx import live
-from utils_18xx.live import EvalRequest, MoveWorker
+from utils_18xx.api_client import PermanentError
+from utils_18xx.live import AcqOfferTracker, EvalRequest, MoveWorker
 
 
 class _FakeApi:
@@ -170,6 +171,65 @@ class _EvalEngine:
         return True
 
 
+class _TrackedRejectEngine:
+    def __init__(self):
+        self.calls = []
+
+    def process_turn(
+        self,
+        game_data,
+        bot_player_idx,
+        bot_user_id=None,
+        bot_user_ids=None,
+        acq_offer_rejection_counts=None,
+    ):
+        self.calls.append(
+            (
+                game_data,
+                bot_player_idx,
+                bot_user_id,
+                bot_user_ids,
+                acq_offer_rejection_counts,
+            )
+        )
+        return [{
+            "type": "respond",
+            "entity": bot_user_id,
+            "entity_type": "player",
+            "corporation": "SI",
+            "company": "KME",
+            "accept": "false",
+            "_acq_offer_rejection_increment": True,
+            "_acq_offer_proposer_id": 202,
+            "_acq_offer_turn": 3,
+        }]
+
+
+class _TrackedRejectApi:
+    def __init__(self, *, fail_post: bool = False):
+        self.fetches = 0
+        self.posts = []
+        self.fail_post = fail_post
+
+    def fetch_game(self, game_id, token):
+        del token
+        self.fetches += 1
+        return {
+            "id": game_id,
+            "turn": 3,
+            "players": [{"id": 1, "name": "bot"}],
+            "acting": [1] if self.fetches == 1 else [],
+            "actions": [],
+        }
+
+    def post_action(self, game_id, action, token):
+        del token
+        self.posts.append((game_id, action))
+        if self.fail_post:
+            raise PermanentError("rejected")
+        return {}
+
+
 def test_worker_posts_batched_actions_without_intermediate_fetch(monkeypatch):
     api = _FakeApi()
     seen_action_counts = []
@@ -220,6 +280,72 @@ def test_worker_posts_without_home_game_freshness_call(monkeypatch):
     assert engine.calls == 1
     assert api.fetches == 2
     assert api.posts == [{"type": "pass", "attempt": 1}]
+
+
+def test_worker_records_acq_offer_rejection_after_successful_post(
+    tmp_path,
+    monkeypatch,
+):
+    api = _TrackedRejectApi()
+    engine = _TrackedRejectEngine()
+    tracker = AcqOfferTracker(tmp_path / "acq_offer_tracking.json")
+    seen_post_action = []
+
+    def fake_attach(game_data, action):
+        del game_data
+        assert not any(key.startswith("_") for key in action)
+        seen_post_action.append(action)
+        return action
+
+    monkeypatch.setattr(live, "attach_expected_auto_actions", fake_attach)
+    monkeypatch.setattr(live.time, "sleep", lambda seconds: None)
+
+    worker = MoveWorker(
+        queue.Queue(),
+        api,
+        {"bot": {"token": "token", "user_id": 1}},
+        _RecordingRegistry(engine),
+        acq_offer_tracker=tracker,
+    )
+
+    worker._process("bot", "256285")
+
+    assert seen_post_action == [{
+        "type": "respond",
+        "entity": 1,
+        "entity_type": "player",
+        "corporation": "SI",
+        "company": "KME",
+        "accept": "false",
+    }]
+    assert api.posts == [("256285", seen_post_action[0])]
+    assert tracker.rejection_counts("256285", 3) == {"202": 1}
+    assert engine.calls[0][4] == {}
+
+
+def test_worker_does_not_record_acq_offer_rejection_after_post_error(
+    tmp_path,
+    monkeypatch,
+):
+    api = _TrackedRejectApi(fail_post=True)
+    engine = _TrackedRejectEngine()
+    tracker = AcqOfferTracker(tmp_path / "acq_offer_tracking.json")
+
+    monkeypatch.setattr(live, "attach_expected_auto_actions", lambda game_data, action: action)
+
+    worker = MoveWorker(
+        queue.Queue(),
+        api,
+        {"bot": {"token": "token", "user_id": 1}},
+        _RecordingRegistry(engine),
+        acq_offer_tracker=tracker,
+    )
+
+    worker._process("bot", "256285")
+
+    assert len(api.posts) == 1
+    assert tracker.rejection_counts("256285", 3) == {}
+    assert api.fetches == 1
 
 
 def test_worker_lets_replay_check_stale_top_level_acting():

@@ -104,6 +104,9 @@ UNORDERED_PASS_PHASES = (
     GamePhases.PHASE_CLOSING,
 )
 GAME_BLACKLIST_FILE = "blacklisted_games.json"
+ACQ_OFFER_TRACKING_FILE = "acq_offer_tracking.json"
+ACQ_OFFER_REJECTION_LIMIT = 3
+_INTERNAL_ACTION_METADATA_PREFIX = "_"
 
 
 def default_api_min_interval(base_url: str) -> float:
@@ -414,6 +417,100 @@ class GameBlacklist:
             )
 
 
+class AcqOfferTracker:
+    """Runtime-backed ACQ offer rejection counts by game and turn."""
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._lock = threading.Lock()
+
+    def rejection_counts(self, game_id, turn) -> dict[str, int]:
+        """Return proposer rejection counts for this game turn."""
+        game_key = str(game_id)
+        turn_key = _turn_tracking_key(turn)
+        with self._lock:
+            data = self._load_locked()
+            entry = data.get(game_key)
+            if not isinstance(entry, dict):
+                return {}
+            if _turn_tracking_key(entry.get("turn")) != turn_key:
+                return {}
+            rejections = entry.get("rejections", {})
+            if not isinstance(rejections, dict):
+                return {}
+            counts: dict[str, int] = {}
+            for player_id, count in rejections.items():
+                try:
+                    counts[str(player_id)] = int(count)
+                except (TypeError, ValueError):
+                    continue
+            return counts
+
+    def record_rejection(self, game_id, turn, proposer_id) -> int:
+        """Persist one rejected ACQ offer for ``proposer_id``."""
+        game_key = str(game_id)
+        turn_key = _turn_tracking_key(turn)
+        proposer_key = str(proposer_id)
+        with self._lock:
+            data = self._load_locked()
+            entry = data.get(game_key)
+            if (
+                not isinstance(entry, dict)
+                or _turn_tracking_key(entry.get("turn")) != turn_key
+            ):
+                entry = {"turn": turn, "rejections": {}}
+                data[game_key] = entry
+
+            rejections = entry.setdefault("rejections", {})
+            if not isinstance(rejections, dict):
+                rejections = {}
+                entry["rejections"] = rejections
+            try:
+                current = int(rejections.get(proposer_key, 0))
+            except (TypeError, ValueError):
+                current = 0
+            rejections[proposer_key] = current + 1
+            self._write_locked(data)
+            return current + 1
+
+    def _load_locked(self) -> dict:
+        try:
+            with open(self._path) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Failed to load ACQ offer tracking from %s: %s",
+                self._path,
+                exc,
+            )
+            return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "Ignoring ACQ offer tracking file with non-object root: %s",
+                self._path,
+            )
+            return {}
+        return data
+
+    def _write_locked(self, data: dict) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._path.with_name(f".{self._path.name}.tmp")
+        with open(tmp_path, "w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.write("\n")
+        tmp_path.replace(self._path)
+
+
+def _turn_tracking_key(turn) -> str:
+    return str(0 if turn is None else turn)
+
+
+def _game_turn(game_data: dict):
+    return game_data.get("turn", 0)
+
+
 def _same_id(left, right) -> bool:
     return str(left) == str(right)
 
@@ -466,6 +563,15 @@ def _next_synthetic_action_id(game_data: dict) -> int:
     return (max(action_ids) if action_ids else 0) + 1
 
 
+def _strip_internal_action_metadata(action: dict) -> dict:
+    """Remove live-server-only metadata before simulating or posting."""
+    return {
+        key: value
+        for key, value in action.items()
+        if not str(key).startswith(_INTERNAL_ACTION_METADATA_PREFIX)
+    }
+
+
 def _game_data_with_synthetic_post_actions(
     game_data: dict,
     planned_actions: list[dict],
@@ -478,7 +584,10 @@ def _game_data_with_synthetic_post_actions(
     for action in planned_actions:
         before_action = dict(synthetic)
         before_action["actions"] = actions
-        enriched = attach_expected_auto_actions(before_action, dict(action))
+        enriched = attach_expected_auto_actions(
+            before_action,
+            _strip_internal_action_metadata(action),
+        )
         enriched["id"] = next_id
         next_id += 1
         actions.append(enriched)
@@ -494,7 +603,7 @@ def _game_data_with_synthetic_post_action(
     """Return game data with one just-posted action appended locally."""
     synthetic = dict(game_data)
     actions = list(game_data.get("actions", []))
-    synthetic_action = dict(posted_action)
+    synthetic_action = _strip_internal_action_metadata(posted_action)
     synthetic_action.setdefault("id", _next_synthetic_action_id(game_data))
     actions.append(synthetic_action)
     synthetic["actions"] = actions
@@ -782,6 +891,165 @@ def _pending_cross_president_offer_is_represented(
     return location in (
         int(CompanyLocation.LOC_PLAYER),
         int(CompanyLocation.LOC_CORP),
+    )
+
+
+def _pending_offer_sort_key(offer: dict) -> tuple[int, int, int, int, str]:
+    """Return deterministic queue order: company, highest price, proposer, corp."""
+    company_id = COMPANY_NAME_TO_ID.get(str(offer.get("company")), 9999)
+    corp_id = CORP_NAME_TO_ID.get(str(offer.get("corporation")), 9999)
+    try:
+        price = int(offer.get("price", 0))
+    except (TypeError, ValueError):
+        price = 0
+    try:
+        proposer_id = int(offer.get("proposer_id", offer.get("entity", 0)) or 0)
+    except (TypeError, ValueError):
+        proposer_id = 0
+    return (
+        company_id,
+        -price,
+        proposer_id,
+        corp_id,
+        str(offer.get("corporation", "")),
+    )
+
+
+def _sorted_pending_acq_offers(offers: list[dict]) -> list[dict]:
+    """Return pending offers grouped by company, best price first per company."""
+    return sorted(offers, key=_pending_offer_sort_key)
+
+
+def _pending_acq_offers_for_user(
+    session: GameSession,
+    user_id,
+) -> list[dict]:
+    """Return all pending 18xx ACQ offers for ``user_id``."""
+    getter = getattr(session, "pending_offers_for_user_id", None)
+    if callable(getter):
+        return list(getter(user_id))
+    offer = session.pending_offer_for_user_id(user_id)
+    return [offer] if offer is not None else []
+
+
+def _pending_offer_has_cross_president_target(state, pending_offer: dict) -> bool:
+    try:
+        company_id = COMPANY_NAME_TO_ID[pending_offer["company"]]
+    except (KeyError, TypeError):
+        return False
+    return COMPANIES[company_id].get_location(state) in (
+        int(CompanyLocation.LOC_PLAYER),
+        int(CompanyLocation.LOC_CORP),
+    )
+
+
+def _represent_pending_cross_president_offer(
+    state,
+    pending_offer: dict,
+    engine_player_idx: int,
+) -> bool:
+    """Set RSS state to a single pending cross-president ACQ offer."""
+    try:
+        corp_id = CORP_NAME_TO_ID[pending_offer["corporation"]]
+        company_id = COMPANY_NAME_TO_ID[pending_offer["company"]]
+        price = int(pending_offer["price"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    location = COMPANIES[company_id].get_location(state)
+    if location not in (
+        int(CompanyLocation.LOC_PLAYER),
+        int(CompanyLocation.LOC_CORP),
+    ):
+        return False
+    if (
+        COMPANIES[company_id].is_owned_by_corp(state, corp_id)
+        or COMPANIES[company_id].is_in_corp_acquisition(state, corp_id)
+    ):
+        return False
+
+    TURN.clear_acquisition_context(state)
+    TURN.enter_acq_offer(
+        state,
+        corp_id,
+        company_id,
+        price,
+        corp_id,
+        engine_player_idx,
+    )
+    return _pending_cross_president_offer_is_represented(
+        state,
+        pending_offer,
+        engine_player_idx,
+    )
+
+
+def _response_accepts_offer(action: dict) -> bool:
+    return (
+        action.get("type") == "respond"
+        and str(action.get("accept", "")).lower() == "true"
+    )
+
+
+def _pending_offer_proposer_id(offer: dict):
+    return offer.get("proposer_id", offer.get("entity"))
+
+
+def _offer_rejection_count(
+    counts: dict[str, int],
+    proposer_id,
+) -> int:
+    try:
+        return int(counts.get(str(proposer_id), 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _increment_offer_rejection_count(
+    counts: dict[str, int],
+    proposer_id,
+) -> int:
+    proposer_key = str(proposer_id)
+    count = _offer_rejection_count(counts, proposer_id) + 1
+    counts[proposer_key] = count
+    return count
+
+
+def _acq_offer_response_action(
+    offer: dict,
+    *,
+    bot_user_id,
+    accept: bool,
+) -> dict:
+    return {
+        "type": "respond",
+        "entity": bot_user_id,
+        "entity_type": "player",
+        "corporation": offer.get("corporation"),
+        "company": offer.get("company"),
+        "accept": "true" if accept else "false",
+    }
+
+
+def _trackable_acq_offer_rejection_action(
+    action: dict,
+    offer: dict,
+    game_data: dict,
+) -> dict:
+    proposer_id = _pending_offer_proposer_id(offer)
+    if proposer_id is None:
+        return action
+    tracked = dict(action)
+    tracked["_acq_offer_rejection_increment"] = True
+    tracked["_acq_offer_proposer_id"] = proposer_id
+    tracked["_acq_offer_turn"] = _game_turn(game_data)
+    return tracked
+
+
+def _should_track_acq_offer_rejection(action: dict) -> bool:
+    return (
+        action.get("_acq_offer_rejection_increment") is True
+        and action.get("_acq_offer_proposer_id") is not None
     )
 
 
@@ -1995,6 +2263,7 @@ class _SearchEngine:
         bot_player_idx: int,
         bot_user_id=None,
         bot_user_ids: set | None = None,
+        acq_offer_rejection_counts: dict[str, int] | None = None,
     ) -> list[dict]:
         """Sync state, run MCTS, return API-format actions to post."""
         num_players = len(game_data.get("players", []))
@@ -2058,6 +2327,45 @@ class _SearchEngine:
             f"bot_user_id={bot_user_id}, api_idx={bot_player_idx}, "
             f"engine_idx={engine_player_idx}, active=P{active}"
         )
+
+        queued_offers = []
+        if self.allow_cross_president_offers and bot_user_id is not None:
+            queued_offers = _sorted_pending_acq_offers(
+                [
+                    offer
+                    for offer in _pending_acq_offers_for_user(session, bot_user_id)
+                    if _pending_offer_has_cross_president_target(state, offer)
+                ]
+            )
+        if queued_offers:
+            mismatches = session.validate_against_18xx(
+                game_data,
+                state,
+                context=f"game={game_data.get('id', '?')}",
+            )
+            if mismatches:
+                logger.error(
+                    "18xx/RSS replay mismatch before ACQ offer queue; "
+                    "refusing to move:\n%s",
+                    format_state_mismatches(mismatches),
+                )
+                return []
+
+            previous_step_mode = state.step_mode
+            state.step_mode = True
+            try:
+                return self._plan_pending_acq_offer_queue(
+                    state,
+                    game_data,
+                    engine_player_idx,
+                    num_players,
+                    session.committed_ids,
+                    bot_user_id=bot_user_id,
+                    pending_offers=queued_offers,
+                    offer_rejection_counts=acq_offer_rejection_counts,
+                )
+            finally:
+                state.step_mode = previous_step_mode
 
         compatibility_action = _acquisition_compatibility_action(
             game_data,
@@ -2133,6 +2441,141 @@ class _SearchEngine:
         finally:
             state.step_mode = previous_step_mode
 
+    def _plan_pending_acq_offer_queue(
+        self,
+        state,
+        game_data: dict,
+        bot_player_idx: int,
+        num_players: int,
+        committed_ids: set,
+        *,
+        bot_user_id=None,
+        pending_offers: list[dict],
+        offer_rejection_counts: dict[str, int] | None = None,
+    ) -> list[dict]:
+        """Plan responses to simultaneous 18xx ACQ offers without re-fetching."""
+        queue = list(pending_offers)
+        planned_actions: list[dict] = []
+        planning_game_data = game_data
+        working_rejections: dict[str, int] = {}
+        for player_id, count in (offer_rejection_counts or {}).items():
+            try:
+                working_rejections[str(player_id)] = int(count)
+            except (TypeError, ValueError):
+                continue
+
+        logger.info(
+            "Planning pending ACQ offer queue: %s",
+            [
+                {
+                    "corporation": offer.get("corporation"),
+                    "company": offer.get("company"),
+                    "price": offer.get("price"),
+                    "proposer_id": offer.get("proposer_id"),
+                }
+                for offer in queue
+            ],
+        )
+
+        while queue:
+            offer = queue.pop(0)
+            company = offer.get("company")
+            proposer_id = _pending_offer_proposer_id(offer)
+            if (
+                proposer_id is not None
+                and _offer_rejection_count(working_rejections, proposer_id)
+                >= ACQ_OFFER_REJECTION_LIMIT
+            ):
+                logger.info(
+                    "Auto-rejecting ACQ offer after proposer reached "
+                    "rejection limit: proposer_id=%s, offer=%s",
+                    proposer_id,
+                    offer,
+                )
+                action = _acq_offer_response_action(
+                    offer,
+                    bot_user_id=bot_user_id,
+                    accept=False,
+                )
+                planned_actions.append(action)
+                planning_game_data = _game_data_with_synthetic_post_action(
+                    planning_game_data,
+                    action,
+                )
+                continue
+
+            if not _represent_pending_cross_president_offer(
+                state,
+                offer,
+                bot_player_idx,
+            ):
+                logger.info(
+                    "Skipping unrepresentable pending ACQ offer: %s",
+                    offer,
+                )
+                continue
+
+            before_count = len(planned_actions)
+            actions = self._plan_live_actions(
+                state,
+                planning_game_data,
+                bot_player_idx,
+                num_players,
+                committed_ids,
+                bot_user_id=bot_user_id,
+                validate_post_state=False,
+            )
+            if not actions:
+                break
+
+            planned_actions.extend(actions)
+            for action in actions:
+                planning_game_data = _game_data_with_synthetic_post_action(
+                    planning_game_data,
+                    action,
+                )
+
+            new_actions = planned_actions[before_count:]
+            accepted_company = None
+            normalized_new_actions = []
+            for action in new_actions:
+                if _response_accepts_offer(action):
+                    accepted_company = action.get("company")
+                    normalized_new_actions.append(action)
+                    continue
+                if action.get("type") == "respond" and proposer_id is not None:
+                    _increment_offer_rejection_count(
+                        working_rejections,
+                        proposer_id,
+                    )
+                    action = _trackable_acq_offer_rejection_action(
+                        action,
+                        offer,
+                        game_data,
+                    )
+                    normalized_new_actions.append(action)
+                else:
+                    normalized_new_actions.append(action)
+            planned_actions[before_count:] = normalized_new_actions
+
+            if accepted_company is not None:
+                queue = [
+                    queued
+                    for queued in queue
+                    if queued.get("company") != accepted_company
+                ]
+            elif company is not None and not _pending_offer_has_cross_president_target(
+                state,
+                offer,
+            ):
+                queue = [
+                    queued
+                    for queued in queue
+                    if queued.get("company") != company
+                ]
+
+        return planned_actions
+
     def _plan_live_actions(
         self,
         state,
@@ -2141,6 +2584,7 @@ class _SearchEngine:
         num_players: int,
         committed_ids: set,
         bot_user_id=None,
+        validate_post_state: bool = True,
     ) -> list[dict]:
         """Choose and apply engine steps until the bot no longer acts."""
         composer = _LiveActionComposer(
@@ -2261,7 +2705,7 @@ class _SearchEngine:
                 break
             if len(composer.actions) > action_count_before:
                 planned_actions = composer.finish()
-                if phase != GamePhases.PHASE_CLOSING:
+                if validate_post_state and phase != GamePhases.PHASE_CLOSING:
                     post_mismatches = _validate_planned_post_state(
                         game_data,
                         state,
@@ -2866,12 +3310,14 @@ class MoveWorker(threading.Thread):
         api: ApiClient,
         auth: dict[str, dict],
         registry: ModelRegistry,
+        acq_offer_tracker: AcqOfferTracker | None = None,
     ):
         super().__init__(daemon=True, name="move-worker")
         self._queue = work_queue
         self._api = api
         self._auth = auth
         self._registry = registry
+        self._acq_offer_tracker = acq_offer_tracker
 
     def _fetch_game_data(self, bot_name: str, game_id: str, token: str) -> dict | None:
         try:
@@ -3013,11 +3459,26 @@ class MoveWorker(threading.Thread):
         max_consecutive = 50  # safety limit
         for _ in range(max_consecutive):
             try:
+                acq_offer_rejection_counts = None
+                if self._acq_offer_tracker is not None:
+                    acq_offer_rejection_counts = (
+                        self._acq_offer_tracker.rejection_counts(
+                            game_id,
+                            _game_turn(game_data),
+                        )
+                    )
+                process_kwargs = {
+                    "bot_user_id": bot_user_id,
+                    "bot_user_ids": bot_user_ids,
+                }
+                if acq_offer_rejection_counts is not None:
+                    process_kwargs["acq_offer_rejection_counts"] = (
+                        acq_offer_rejection_counts
+                    )
                 api_actions = engine.process_turn(
                     game_data,
                     bot_player_idx,
-                    bot_user_id=bot_user_id,
-                    bot_user_ids=bot_user_ids,
+                    **process_kwargs,
                 )
             except Exception:
                 logger.exception(
@@ -3031,12 +3492,17 @@ class MoveWorker(threading.Thread):
             # Post each action (IPO+PAR is a single compound action)
             post_game_data = game_data
             for post_idx, action in enumerate(api_actions):
+                tracking_action = action
+                post_action = _strip_internal_action_metadata(action)
                 try:
-                    action = attach_expected_auto_actions(post_game_data, action)
+                    action = attach_expected_auto_actions(
+                        post_game_data,
+                        post_action,
+                    )
                 except Exception:
                     logger.exception(
                         f"[{bot_name}] Failed to compute auto_actions "
-                        f"for game {game_id}: {action}"
+                        f"for game {game_id}: {post_action}"
                     )
                     return
 
@@ -3056,6 +3522,12 @@ class MoveWorker(threading.Thread):
                         f"[{bot_name}] Failed to post action after retries"
                     )
                     return
+
+                self._record_acq_offer_rejection_if_needed(
+                    game_id,
+                    game_data,
+                    tracking_action,
+                )
 
                 if post_idx < len(api_actions) - 1:
                     post_game_data = _game_data_with_synthetic_post_action(
@@ -3078,6 +3550,29 @@ class MoveWorker(threading.Thread):
                 )
                 return
 
+    def _record_acq_offer_rejection_if_needed(
+        self,
+        game_id: str,
+        game_data: dict,
+        action: dict,
+    ) -> None:
+        if self._acq_offer_tracker is None:
+            return
+        if not _should_track_acq_offer_rejection(action):
+            return
+        proposer_id = action.get("_acq_offer_proposer_id")
+        new_count = self._acq_offer_tracker.record_rejection(
+            game_id,
+            action.get("_acq_offer_turn", _game_turn(game_data)),
+            proposer_id,
+        )
+        logger.info(
+            "Recorded ACQ offer rejection: "
+            f"game={game_id}, "
+            f"turn={action.get('_acq_offer_turn', _game_turn(game_data))}, "
+            f"proposer_id={proposer_id}, count={new_count}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Main service
@@ -3095,6 +3590,7 @@ class LiveService:
         host: str = "0.0.0.0",
         port: int = 8080,
         game_blacklist: GameBlacklist | None = None,
+        acq_offer_tracker: AcqOfferTracker | None = None,
     ):
         self._api = api
         self._auth = auth
@@ -3102,6 +3598,7 @@ class LiveService:
         self._host = host
         self._port = port
         self._game_blacklist = game_blacklist
+        self._acq_offer_tracker = acq_offer_tracker
         self._work_queue: queue.Queue = queue.Queue()
 
     def start(self):
@@ -3113,7 +3610,11 @@ class LiveService:
 
         # Start worker
         worker = MoveWorker(
-            self._work_queue, self._api, self._auth, self._registry,
+            self._work_queue,
+            self._api,
+            self._auth,
+            self._registry,
+            acq_offer_tracker=self._acq_offer_tracker,
         )
         worker.start()
 
@@ -3298,6 +3799,9 @@ def main():
         host=args.host,
         port=args.port,
         game_blacklist=GameBlacklist(runtime_dir / GAME_BLACKLIST_FILE),
+        acq_offer_tracker=AcqOfferTracker(
+            runtime_dir / ACQ_OFFER_TRACKING_FILE
+        ),
     )
     service.start()
 

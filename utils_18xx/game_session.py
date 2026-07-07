@@ -286,11 +286,17 @@ class GameSession:
 
     def pending_offer_for_user_id(self, user_id) -> dict | None:
         """Return the current 18xx ACQ offer this user must answer, if any."""
+        offers = self.pending_offers_for_user_id(user_id)
+        return offers[0] if offers else None
+
+    def pending_offers_for_user_id(self, user_id) -> list[dict]:
+        """Return all current 18xx ACQ offers this user must answer."""
         target = str(user_id)
+        offers = []
         for offer in self._last_extract_record.get("offers", []):
             if str(offer.get("responder_id")) == target:
-                return offer
-        return None
+                offers.append(offer)
+        return offers
 
     def validate_against_18xx(
         self,
@@ -1111,6 +1117,14 @@ class GameSession:
                         pending_offer,
                     )
                     if (
+                        future_response is None
+                        and self._extractor_has_pending_offer(pending_offer)
+                    ):
+                        # Live 18xx may expose several simultaneous offers.
+                        # If this one is still pending, stop replay here rather
+                        # than treating the next offer as an implicit accept.
+                        return len(actions)
+                    if (
                         future_response is not None
                         and not self._response_accepts(future_response)
                     ):
@@ -1192,6 +1206,10 @@ class GameSession:
             and TURN.get_phase(state) in ACQ_PHASES
             and TURN.get_phase(state) != GamePhases.PHASE_ACQ_OFFER
         ):
+            if self._extractor_has_pending_offer(pending_offer):
+                # The transfer is unresolved in 18xx; keep replay behind the
+                # unanswered offer rather than inventing an acceptance.
+                return len(actions)
             self._resolve_acq_offer(
                 state,
                 pending_offer,

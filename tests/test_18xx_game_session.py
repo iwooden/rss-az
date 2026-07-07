@@ -882,6 +882,87 @@ def test_acq_sync_does_not_accept_interleaved_declined_offer():
     assert not COMPANIES[mhe_id].is_in_corp_acquisition(state, vm_id)
 
 
+def test_acq_sync_does_not_accept_extractor_pending_offer_before_later_offer():
+    state = GameState(3, acq_same_president=False)
+    state.initialize_game(3, seed=42)
+
+    sm_id = CORP_NAMES.index("SM")
+    pr_id = CORP_NAMES.index("PR")
+    bme_id = COMPANY_NAME_TO_ID["BME"]
+    kme_id = COMPANY_NAME_TO_ID["KME"]
+
+    float_corp_for_test(state, corp_id=sm_id, player_id=1, par_index=10)
+    float_corp_for_test(
+        state,
+        corp_id=pr_id,
+        company_id=COMPANY_NAME_TO_ID["AKE"],
+        player_id=2,
+        par_index=10,
+    )
+    give_company_to_corp(state, bme_id, pr_id)
+    give_company_to_corp(state, kme_id, pr_id)
+    CORPS[sm_id].set_cash(state, 100)
+    CORPS[pr_id].set_cash(state, 26)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 1)
+
+    session = GameSession(3)
+    session._player_ids = [101, 202, 303]
+    session._last_extract_record = {
+        "offers": [
+            {
+                "responder_id": 303,
+                "corporation": "SM",
+                "company": "BME",
+                "price": COMPANIES[bme_id].get_low_price(),
+            },
+            {
+                "responder_id": 303,
+                "corporation": "SM",
+                "company": "KME",
+                "price": COMPANIES[kme_id].get_low_price(),
+            },
+        ],
+    }
+
+    next_idx = session._sync_acq_round(
+        state,
+        [
+            {
+                "id": 10,
+                "type": "offer",
+                "entity": 202,
+                "entity_type": "player",
+                "corporation": "SM",
+                "company": "BME",
+                "price": COMPANIES[bme_id].get_low_price(),
+            },
+            {
+                "id": 11,
+                "type": "offer",
+                "entity": 202,
+                "entity_type": "player",
+                "corporation": "SM",
+                "company": "KME",
+                "price": COMPANIES[kme_id].get_low_price(),
+            },
+        ],
+        0,
+    )
+
+    assert next_idx == 2
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
+    assert TURN.get_active_player(state) == 2
+    assert TURN.get_active_corp(state) == sm_id
+    assert TURN.get_active_company(state) == bme_id
+    assert TURN.get_acq_offer_corp(state) == sm_id
+    assert TURN.get_acq_offer_price(state) == COMPANIES[bme_id].get_low_price()
+    assert COMPANIES[bme_id].is_owned_by_corp(state, pr_id)
+    assert not COMPANIES[bme_id].is_in_corp_acquisition(state, sm_id)
+    assert CORPS[sm_id].get_cash(state) == 100
+    assert CORPS[pr_id].get_cash(state) == 26
+
+
 def test_acq_sync_replays_declined_fi_preemption_before_original_buy():
     state = GameState(4, acq_same_president=False)
     state.initialize_game(4, seed=42)

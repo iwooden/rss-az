@@ -18,7 +18,11 @@ from entities.market import MARKET
 from entities.player import PLAYERS
 from entities.turn import TURN
 from tests.phases.conftest import float_corp_for_test
-from tests.phases.helpers.ownership import give_company_to_fi, give_company_to_player
+from tests.phases.helpers.ownership import (
+    give_company_to_corp,
+    give_company_to_fi,
+    give_company_to_player,
+)
 from utils_18xx.live import (
     EvalRequest,
     _CrossPresidentAcqOfferPriorEvaluator,
@@ -785,6 +789,77 @@ def test_search_engine_retargets_acquisition_before_compatibility_pass():
     assert actions == [{"type": "planned-acquisition"}]
 
 
+def test_search_engine_plans_bot_offer_queue_before_active_player_check():
+    state = _queued_offer_state()
+    TURN.enter_acq_offer(
+        state,
+        CORP_NAME_TO_ID["SM"],
+        COMPANY_NAME_TO_ID["BME"],
+        2,
+        CORP_NAME_TO_ID["SM"],
+        0,
+    )
+
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.allow_cross_president_offers = True
+    engine.validate_player_count = lambda num_players: None
+    engine._session_for = lambda game_data: _FakeProcessTurnSession(
+        state,
+        offer={
+            "responder_id": 303,
+            "proposer_id": 202,
+            "corporation": "SI",
+            "company": "KME",
+            "price": 4,
+        },
+        player_ids=[101, 202, 303],
+    )
+
+    def plan_queue(
+        planned_state,
+        game_data,
+        bot_player_idx,
+        num_players,
+        committed_ids,
+        *,
+        bot_user_id=None,
+        pending_offers,
+        offer_rejection_counts=None,
+    ):
+        del planned_state, game_data, num_players, committed_ids
+        del offer_rejection_counts
+        assert bot_player_idx == 2
+        assert bot_user_id == 303
+        assert pending_offers == [{
+            "responder_id": 303,
+            "proposer_id": 202,
+            "corporation": "SI",
+            "company": "KME",
+            "price": 4,
+        }]
+        return [{"type": "queued-offer-response"}]
+
+    engine._plan_pending_acq_offer_queue = plan_queue
+
+    actions = engine.process_turn(
+        {
+            "id": 1,
+            "round": "Acquisition",
+            "acting": [101, 303],
+            "players": [
+                {"id": 101, "name": "p1"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "bot"},
+            ],
+        },
+        bot_player_idx=2,
+        bot_user_id=303,
+        bot_user_ids={303},
+    )
+
+    assert actions == [{"type": "queued-offer-response"}]
+
+
 def test_search_engine_eval_retargets_acquisition_to_selected_actor():
     state = GameState(3)
     state.initialize_game(3, seed=42)
@@ -1184,6 +1259,282 @@ def test_live_planning_stops_after_acq_offer_response():
         state,
         bot_player_idx=2,
     )
+
+
+def _queued_offer_state():
+    state = GameState(3, acq_same_president=False)
+    state.initialize_game(3, seed=42)
+
+    float_corp_for_test(
+        state,
+        corp_id=CORP_NAME_TO_ID["SM"],
+        player_id=0,
+        par_index=10,
+    )
+    float_corp_for_test(
+        state,
+        corp_id=CORP_NAME_TO_ID["SI"],
+        player_id=1,
+        par_index=11,
+    )
+    float_corp_for_test(
+        state,
+        corp_id=CORP_NAME_TO_ID["PR"],
+        company_id=COMPANY_NAME_TO_ID["AKE"],
+        player_id=2,
+        par_index=12,
+    )
+    give_company_to_corp(state, COMPANY_NAME_TO_ID["BME"], CORP_NAME_TO_ID["PR"])
+    give_company_to_corp(state, COMPANY_NAME_TO_ID["KME"], CORP_NAME_TO_ID["PR"])
+    CORPS[CORP_NAME_TO_ID["SM"]].set_cash(state, 100)
+    CORPS[CORP_NAME_TO_ID["SI"]].set_cash(state, 100)
+    CORPS[CORP_NAME_TO_ID["PR"]].set_cash(state, 26)
+    return state
+
+
+def _queued_offer_game_data():
+    return {
+        "id": 1,
+        "round": "Acquisition",
+        "acting": [101, 202, 303],
+        "players": [
+            {"id": 101, "name": "p1"},
+            {"id": 202, "name": "p2"},
+            {"id": 303, "name": "bot"},
+        ],
+        "actions": [],
+    }
+
+
+def _fake_offer_queue_planner(engine, seen, accept_offers=None):
+    accept_offers = accept_offers or set()
+
+    def fake_plan(
+        planned_state,
+        game_data,
+        bot_player_idx,
+        num_players,
+        committed_ids,
+        bot_user_id=None,
+        validate_post_state=True,
+    ):
+        del game_data, bot_player_idx, num_players, committed_ids
+        del validate_post_state
+        phase = TURN.get_phase(planned_state)
+        company = COMPANY_NAMES[TURN.get_active_company(planned_state)]
+        corporation = CORP_NAMES[TURN.get_active_corp(planned_state)]
+        price = TURN.get_acq_offer_price(planned_state)
+        seen.append((company, price, corporation))
+
+        accept = (company, price, corporation) in accept_offers
+        action_type = (
+            live_module.ACTION_ACQ_OFFER_ACCEPT
+            if accept
+            else live_module.ACTION_PASS
+        )
+        action_idx = live_module.find_legal_action(
+            planned_state,
+            action_type=action_type,
+        )
+        action = {
+            "type": "respond",
+            "entity": bot_user_id,
+            "entity_type": "player",
+            "corporation": corporation,
+            "company": company,
+            "accept": "true" if accept else "false",
+        }
+        status = _apply_live_planned_action(
+            planned_state,
+            phase,
+            action_idx,
+            action,
+        )
+        assert status != STATUS_INVALID
+        return [action]
+
+    engine._plan_live_actions = fake_plan
+
+
+def test_pending_offer_queue_evaluates_higher_price_first_within_company():
+    state = _queued_offer_state()
+    engine = _SearchEngine.__new__(_SearchEngine)
+    seen = []
+    _fake_offer_queue_planner(engine, seen)
+
+    offers = live_module._sorted_pending_acq_offers([
+        {
+            "responder_id": 303,
+            "proposer_id": 101,
+            "corporation": "SM",
+            "company": "KME",
+            "price": 3,
+        },
+        {
+            "responder_id": 303,
+            "proposer_id": 202,
+            "corporation": "SI",
+            "company": "KME",
+            "price": 4,
+        },
+        {
+            "responder_id": 303,
+            "proposer_id": 101,
+            "corporation": "SM",
+            "company": "BME",
+            "price": 2,
+        },
+    ])
+
+    actions = engine._plan_pending_acq_offer_queue(
+        state,
+        _queued_offer_game_data(),
+        bot_player_idx=2,
+        num_players=3,
+        committed_ids=set(),
+        bot_user_id=303,
+        pending_offers=offers,
+    )
+
+    assert [entry for entry in seen if entry[0] == "KME"] == [
+        ("KME", 4, "SI"),
+        ("KME", 3, "SM"),
+    ]
+    assert [action["accept"] for action in actions] == ["false", "false", "false"]
+
+
+def test_pending_offer_queue_accept_clears_remaining_same_company_offers():
+    state = _queued_offer_state()
+    engine = _SearchEngine.__new__(_SearchEngine)
+    seen = []
+    _fake_offer_queue_planner(
+        engine,
+        seen,
+        accept_offers={("KME", 4, "SI")},
+    )
+
+    offers = live_module._sorted_pending_acq_offers([
+        {
+            "responder_id": 303,
+            "proposer_id": 101,
+            "corporation": "SM",
+            "company": "KME",
+            "price": 3,
+        },
+        {
+            "responder_id": 303,
+            "proposer_id": 202,
+            "corporation": "SI",
+            "company": "KME",
+            "price": 4,
+        },
+    ])
+
+    actions = engine._plan_pending_acq_offer_queue(
+        state,
+        _queued_offer_game_data(),
+        bot_player_idx=2,
+        num_players=3,
+        committed_ids=set(),
+        bot_user_id=303,
+        pending_offers=offers,
+    )
+
+    assert seen == [("KME", 4, "SI")]
+    assert actions == [{
+        "type": "respond",
+        "entity": 303,
+        "entity_type": "player",
+        "corporation": "SI",
+        "company": "KME",
+        "accept": "true",
+    }]
+    assert COMPANIES[COMPANY_NAME_TO_ID["KME"]].is_in_corp_acquisition(
+        state,
+        CORP_NAME_TO_ID["SI"],
+    )
+
+
+def test_pending_offer_queue_auto_rejects_proposer_at_rejection_limit():
+    state = _queued_offer_state()
+    engine = _SearchEngine.__new__(_SearchEngine)
+
+    def fail_plan(*args, **kwargs):
+        raise AssertionError("MCTS should not run for capped proposer")
+
+    engine._plan_live_actions = fail_plan
+    offers = live_module._sorted_pending_acq_offers([
+        {
+            "responder_id": 303,
+            "proposer_id": 202,
+            "corporation": "SI",
+            "company": "KME",
+            "price": 4,
+        },
+    ])
+
+    actions = engine._plan_pending_acq_offer_queue(
+        state,
+        _queued_offer_game_data(),
+        bot_player_idx=2,
+        num_players=3,
+        committed_ids=set(),
+        bot_user_id=303,
+        pending_offers=offers,
+        offer_rejection_counts={"202": 3},
+    )
+
+    assert actions == [{
+        "type": "respond",
+        "entity": 303,
+        "entity_type": "player",
+        "corporation": "SI",
+        "company": "KME",
+        "accept": "false",
+    }]
+    assert not any(key.startswith("_") for key in actions[0])
+
+
+def test_pending_offer_queue_uses_working_rejection_count_within_batch():
+    state = _queued_offer_state()
+    engine = _SearchEngine.__new__(_SearchEngine)
+    seen = []
+    _fake_offer_queue_planner(engine, seen)
+
+    offers = live_module._sorted_pending_acq_offers([
+        {
+            "responder_id": 303,
+            "proposer_id": 202,
+            "corporation": "SI",
+            "company": "BME",
+            "price": 2,
+        },
+        {
+            "responder_id": 303,
+            "proposer_id": 202,
+            "corporation": "SI",
+            "company": "KME",
+            "price": 4,
+        },
+    ])
+
+    actions = engine._plan_pending_acq_offer_queue(
+        state,
+        _queued_offer_game_data(),
+        bot_player_idx=2,
+        num_players=3,
+        committed_ids=set(),
+        bot_user_id=303,
+        pending_offers=offers,
+        offer_rejection_counts={"202": 2},
+    )
+
+    assert seen == [("BME", 2, "SI")]
+    assert [action["company"] for action in actions] == ["BME", "KME"]
+    assert [action["accept"] for action in actions] == ["false", "false"]
+    assert actions[0]["_acq_offer_rejection_increment"] is True
+    assert actions[0]["_acq_offer_proposer_id"] == 202
+    assert not any(key.startswith("_") for key in actions[1])
 
 
 def test_live_planning_continues_same_player_closing_batch():

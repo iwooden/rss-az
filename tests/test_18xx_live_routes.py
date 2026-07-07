@@ -3,6 +3,7 @@ import json
 import queue
 
 from utils_18xx.live import (
+    AcqOfferTracker,
     EvalRequest,
     GameBlacklist,
     WebhookHandler,
@@ -98,6 +99,31 @@ def test_game_blacklist_loads_json_list(tmp_path):
     assert blacklist.contains(254153)
     assert blacklist.contains("abc")
     assert not blacklist.contains("999")
+
+
+def test_acq_offer_tracker_records_and_resets_by_turn(tmp_path):
+    path = tmp_path / "acq_offer_tracking.json"
+    tracker = AcqOfferTracker(path)
+
+    assert tracker.rejection_counts("256285", 3) == {}
+    assert tracker.record_rejection("256285", 3, 13748) == 1
+    assert tracker.record_rejection("256285", 3, 13748) == 2
+    assert tracker.record_rejection("256285", 3, 8923) == 1
+
+    assert tracker.rejection_counts("256285", 3) == {
+        "13748": 2,
+        "8923": 1,
+    }
+    assert tracker.rejection_counts("256285", 4) == {}
+
+    assert tracker.record_rejection("256285", 4, 13748) == 1
+    assert tracker.rejection_counts("256285", 4) == {"13748": 1}
+    assert json.loads(path.read_text()) == {
+        "256285": {
+            "rejections": {"13748": 1},
+            "turn": 4,
+        }
+    }
 
 
 def _make_handler(path: str, body: str = ""):
