@@ -1495,7 +1495,12 @@ def main() -> None:
             epoch_duration = time.perf_counter() - epoch_start
             logger.log_scalars(epoch_num, {"epoch/duration_secs": epoch_duration})
             base_model = getattr(model, "_orig_mod", model)
-            diagnostics = base_model.phase_mod_diagnostics()
+            phase_mod_diagnostics = getattr(base_model, "phase_mod_diagnostics", None)
+            diagnostics = (
+                phase_mod_diagnostics()
+                if callable(phase_mod_diagnostics)
+                else {}
+            )
             if diagnostics:
                 logger.log_scalars(epoch_num, diagnostics)
             logger.log_epoch_summary(
