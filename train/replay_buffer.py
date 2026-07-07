@@ -7,9 +7,10 @@ TB reporting, dense ``legal_mask`` + ``policy_target`` rows over
 ``value_target``.
 
 The trainer is responsible for materializing model-family-specific inputs per
-sampled state at training time: transformer token/relation tensors or ResNet
-dense vectors. Keeping replay in compact state form avoids storing derived NN
-inputs twice and keeps canonical value targets shared by both model families.
+sampled state at training time: transformer tokens plus sparse relation
+coordinates or ResNet dense vectors. Keeping replay in compact state form
+avoids storing derived NN inputs twice and keeps canonical value targets
+shared by both model families.
 """
 
 from __future__ import annotations
@@ -21,10 +22,12 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.relations import get_relation_data_batch
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+)
+from core.relations import get_relation_coord_data_batch
 from core.state import get_layout
-from core.token_data import get_num_tokens
 from nn.transformer import UNIFIED_LOGIT_DIM
 
 
@@ -83,8 +86,8 @@ class ReplayBuffer:
                 f"({expected_state_size})"
             )
         self._unified_dim = int(UNIFIED_LOGIT_DIM)
-        self._num_tokens = get_num_tokens(self._max_players)
-        self._num_relations = NUM_ATTENTION_RELATIONS
+        self._max_relation_edges = MAX_ATTENTION_RELATION_EDGES
+        self._relation_coord_width = ATTENTION_RELATION_COORD_WIDTH
         self._size = 0
         self._index = 0
 
@@ -232,8 +235,9 @@ class ReplayBuffer:
     ) -> dict[str, torch.Tensor]:
         """Sample a random batch. Returns dict of torch tensors (CPU).
 
-        Relation planes are generated from the sampled compact states rather
-        than stored in the ring buffer for transformer-oriented callers.
+        Sparse relation coordinates are generated from the sampled compact
+        states rather than stored in the ring buffer for transformer-oriented
+        callers.
 
         Raises ValueError if batch_size > current buffer size.
         """
@@ -246,13 +250,12 @@ class ReplayBuffer:
         relations = np.empty(
             (
                 batch_size,
-                self._num_relations,
-                self._num_tokens,
-                self._num_tokens,
+                self._max_relation_edges,
+                self._relation_coord_width,
             ),
             dtype=np.uint8,
         )
-        get_relation_data_batch(
+        get_relation_coord_data_batch(
             [states[i] for i in range(batch_size)],
             relations,
             max_players=self._max_players,
@@ -286,8 +289,8 @@ class ReplayBuffer:
         subsequent H→D copy is genuinely async. Integer outputs may be
         wider than the stored dtype (e.g. int64); widening happens
         during the fancy-index copy. If ``relations_out`` is supplied,
-        relation planes are generated from the sampled states into that
-        caller-owned scratch buffer; ResNet callers leave it as ``None``.
+        sparse relation coordinates are generated from the sampled states into
+        that caller-owned scratch buffer; ResNet callers leave it as ``None``.
         """
         if batch_size > self._size:
             raise ValueError(
@@ -302,7 +305,7 @@ class ReplayBuffer:
         policy_targets_out[:] = self._policy_targets[indices]
         value_targets_out[:] = self._value_targets[indices]
         if relations_out is not None:
-            get_relation_data_batch(
+            get_relation_coord_data_batch(
                 [states_out[i] for i in range(batch_size)],
                 relations_out,
                 max_players=self._max_players,

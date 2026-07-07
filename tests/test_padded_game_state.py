@@ -1,14 +1,16 @@
 import numpy as np
 import pytest
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+)
 from core.state import (
     GameState,
     get_layout,
     get_storage_player_capacity,
     get_turn_fields,
 )
-from core.token_data import get_num_tokens
 from entities.player import PLAYERS
 from entities.turn import TURN
 from nn.transformer import UNIFIED_LOGIT_DIM
@@ -155,9 +157,8 @@ def test_replay_buffer_samples_padded_state_rows_and_relation_scratch() -> None:
     assert tuple(sample["states"].shape) == (1, get_layout(max_players).total_size)
     assert tuple(sample["relations"].shape) == (
         1,
-        int(NUM_ATTENTION_RELATIONS),
-        get_num_tokens(max_players),
-        get_num_tokens(max_players),
+        int(MAX_ATTENTION_RELATION_EDGES),
+        int(ATTENTION_RELATION_COORD_WIDTH),
     )
     assert tuple(sample["value_targets"].shape) == (1, max_players)
     assert int(sample["player_counts"][0].item()) == num_players

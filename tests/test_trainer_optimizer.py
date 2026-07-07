@@ -4,7 +4,7 @@ Regressions this catches:
 - norm scale weights (LayerNorm/RMSNorm) silently routed to a decay group
 - bias params routed to a decay group
 - embedding/anchor tables routed to a decay group
-- relation attention-bias multipliers routed to a decay group
+- relation attention-bias multipliers silently routed to a no-decay group
 - phase-conditioning modulation weights routed to a decay group
 - Muon claiming embedding/anchor tables instead of leaving them to AdamW
 - any trainable param orphaned from, or double-claimed by, the optimizer(s)
@@ -168,7 +168,7 @@ def test_embedding_params_are_not_decayed(optimizer: str) -> None:
 
 
 @pytest.mark.parametrize("optimizer", ["adamw", "muon"])
-def test_relation_bias_params_are_not_decayed(optimizer: str) -> None:
+def test_relation_bias_params_are_decayed(optimizer: str) -> None:
     trainer = _make_trainer(optimizer)
     groups = _all_groups(trainer)
     relation_bias_ids = _relation_bias_param_ids(trainer.model)
@@ -177,7 +177,7 @@ def test_relation_bias_params_are_not_decayed(optimizer: str) -> None:
     for name, pid in relation_bias_ids.items():
         g = _group_of(pid, groups)
         assert g is not None, f"{name} not routed to any optimizer group"
-        assert g["weight_decay"] == 0.0, (
+        assert g["weight_decay"] == trainer.config.weight_decay, (
             f"{name} routed to weight_decay={g['weight_decay']} group"
         )
 

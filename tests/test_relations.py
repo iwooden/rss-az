@@ -581,7 +581,7 @@ def _one_row_training_targets() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.
     return phase_ids, legal_masks, policy_targets, value_targets
 
 
-def test_replay_buffer_sample_materializes_relation_planes() -> None:
+def test_replay_buffer_sample_materializes_relation_coords() -> None:
     corp_id = 2
     company_id = 5
     state = _state_with_corp_company(corp_id, company_id)
@@ -607,13 +607,15 @@ def test_replay_buffer_sample_materializes_relation_planes() -> None:
     assert relations.dtype == np.uint8
     assert relations.shape == (
         1,
-        NUM_ATTENTION_RELATIONS,
-        get_num_tokens(NUM_PLAYERS),
-        get_num_tokens(NUM_PLAYERS),
+        MAX_ATTENTION_RELATION_EDGES,
+        ATTENTION_RELATION_COORD_WIDTH,
+    )
+    materialized = _materialize_relation_coords_np(
+        relations[0],
+        num_tokens=get_num_tokens(NUM_PLAYERS),
     )
     assert (
-        relations[
-            0,
+        materialized[
             owns_relation_id,
             CORP_TOKEN_START + corp_id,
             COMPANY_TOKEN_START + company_id,
@@ -621,8 +623,7 @@ def test_replay_buffer_sample_materializes_relation_planes() -> None:
         == 1
     )
     assert (
-        relations[
-            0,
+        materialized[
             owned_by_relation_id,
             COMPANY_TOKEN_START + company_id,
             CORP_TOKEN_START + corp_id,
@@ -631,7 +632,7 @@ def test_replay_buffer_sample_materializes_relation_planes() -> None:
     )
 
 
-def test_replay_buffer_sample_into_fills_relation_scratch() -> None:
+def test_replay_buffer_sample_into_fills_relation_coord_scratch() -> None:
     corp_id = 4
     company_id = 10
     state = _state_with_corp_company(corp_id, company_id)
@@ -657,11 +658,10 @@ def test_replay_buffer_sample_into_fills_relation_scratch() -> None:
     relations_out = np.full(
         (
             1,
-            NUM_ATTENTION_RELATIONS,
-            get_num_tokens(NUM_PLAYERS),
-            get_num_tokens(NUM_PLAYERS),
+            MAX_ATTENTION_RELATION_EDGES,
+            ATTENTION_RELATION_COORD_WIDTH,
         ),
-        7,
+        255,
         dtype=np.uint8,
     )
 
@@ -678,9 +678,12 @@ def test_replay_buffer_sample_into_fills_relation_scratch() -> None:
 
     owns_relation_id = int(AttentionRelation.CORP_OWNS_COMPANY)
     owned_by_relation_id = int(AttentionRelation.COMPANY_OWNED_BY_CORP)
+    materialized = _materialize_relation_coords_np(
+        relations_out[0],
+        num_tokens=get_num_tokens(NUM_PLAYERS),
+    )
     assert (
-        relations_out[
-            0,
+        materialized[
             owns_relation_id,
             CORP_TOKEN_START + corp_id,
             COMPANY_TOKEN_START + company_id,
@@ -688,12 +691,11 @@ def test_replay_buffer_sample_into_fills_relation_scratch() -> None:
         == 1
     )
     assert (
-        relations_out[
-            0,
+        materialized[
             owned_by_relation_id,
             COMPANY_TOKEN_START + company_id,
             CORP_TOKEN_START + corp_id,
         ]
         == 1
     )
-    assert 7 not in relations_out
+    assert 255 not in relations_out

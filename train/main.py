@@ -17,7 +17,10 @@ import torch
 import torch.multiprocessing as mp
 from torch._dynamo.decorators import mark_unbacked
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+)
 from core.data import PHASE_ACTION_SIZES
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
@@ -362,6 +365,21 @@ def _build_profile_scalars(
         )
 
     return scalars
+
+
+def _relation_bias_diagnostics(model: torch.nn.Module) -> dict[str, float]:
+    relation_bias_mult = getattr(model, "relation_bias_mult", None)
+    if not isinstance(relation_bias_mult, torch.Tensor):
+        return {}
+
+    with torch.no_grad():
+        values = relation_bias_mult.detach()
+        abs_values = values.abs()
+        return {
+            "relation_bias_mult/abs_mean": float(abs_values.mean().item()),
+            "relation_bias_mult/rms": float(values.square().mean().sqrt().item()),
+            "relation_bias_mult/max_abs": float(abs_values.max().item()),
+        }
 
 
 _RANK_LABELS = ("1st", "2nd", "3rd", "4th", "5th", "6th")
@@ -1113,7 +1131,9 @@ def main() -> None:
                         warmup_n, num_tokens, token_dim, device=device,
                     )
                     dummy_relations = torch.zeros(
-                        warmup_n, NUM_ATTENTION_RELATIONS, num_tokens, num_tokens,
+                        warmup_n,
+                        MAX_ATTENTION_RELATION_EDGES,
+                        ATTENTION_RELATION_COORD_WIDTH,
                         dtype=torch.uint8, device=device,
                     )
                     for _t in (dummy_tokens, dummy_mask, dummy_relations):
@@ -1495,12 +1515,10 @@ def main() -> None:
             epoch_duration = time.perf_counter() - epoch_start
             logger.log_scalars(epoch_num, {"epoch/duration_secs": epoch_duration})
             base_model = getattr(model, "_orig_mod", model)
+            diagnostics = _relation_bias_diagnostics(base_model)
             phase_mod_diagnostics = getattr(base_model, "phase_mod_diagnostics", None)
-            diagnostics = (
-                phase_mod_diagnostics()
-                if callable(phase_mod_diagnostics)
-                else {}
-            )
+            if callable(phase_mod_diagnostics):
+                diagnostics.update(phase_mod_diagnostics())
             if diagnostics:
                 logger.log_scalars(epoch_num, diagnostics)
             logger.log_epoch_summary(

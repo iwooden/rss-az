@@ -5,9 +5,9 @@ dense ``legal_mask`` + ``policy_target`` rows over the model's unified
 logit space, canonical per-player ``value_target``, and a pure-reporting
 ``phase_id`` that the model never sees. The trainer materializes
 model-family-specific inputs at training time from those compact states:
-transformer tokens plus relation planes, or dense active-relative ResNet
-vectors. Replay value targets stay canonical; ResNet targets are rotated to
-active-relative order only in the trainer loss path.
+transformer tokens plus sparse relation coordinates, or dense active-relative
+ResNet vectors. Replay value targets stay canonical; ResNet targets are
+rotated to active-relative order only in the trainer loss path.
 """
 
 from __future__ import annotations
@@ -20,7 +20,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+)
 from core.resnet_data import get_resnet_data_batch, get_resnet_vector_size
 from core.state import get_layout, get_turn_fields
 from core.token_data import TokenDataSize, get_num_tokens, get_token_data_batch
@@ -139,7 +142,6 @@ class Trainer:
                     )
                     or pname == "bias"
                     or pname.endswith("embeds")
-                    or pname == "relation_bias_mult"
                     or (module_name.endswith("phase_mod") and pname == "weight")
                 )
                 if no_weight_decay:
@@ -176,7 +178,6 @@ class Trainer:
                     is_norm
                     or is_embedding
                     or pname == "bias"
-                    or pname == "relation_bias_mult"
                     or (module_name.endswith("phase_mod") and pname == "weight")
                 )
                 # Muon only supports 2D matrix params. Stacked (3D+) tensors —
@@ -228,8 +229,9 @@ class Trainer:
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
         nt, td = self._num_tokens, TOKEN_DIM
-        nr = NUM_ATTENTION_RELATIONS
         N = self._num_players
+        re = MAX_ATTENTION_RELATION_EDGES
+        rw = ATTENTION_RELATION_COORD_WIDTH
 
         # Raw states: CPU-only (consumed by get_token_data), never shipped.
         self._states_np = np.empty((cap, self._state_size), dtype=np.int16)
@@ -247,7 +249,7 @@ class Trainer:
             )
             self._tok_h_np = self._tok_h.numpy()
             self._rel_h = torch.empty(
-                (cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm,
+                (cap, re, rw), dtype=torch.uint8, pin_memory=pm,
             )
             self._rel_h_np = self._rel_h.numpy()
         self._phase_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
@@ -272,7 +274,7 @@ class Trainer:
                     (cap, nt, td), dtype=torch.float32, device=self.device,
                 )
                 self._rel_d = torch.empty(
-                    (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
+                    (cap, re, rw), dtype=torch.uint8, device=self.device,
                 )
             self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._pc_d = torch.empty(cap, dtype=torch.uint8, device=self.device)

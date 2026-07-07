@@ -1,9 +1,9 @@
 """NN evaluator for MCTS leaf evaluation.
 
 Fills token buffers from compact int16 game states via
-``core.token_data.get_token_data`` plus relation-attention planes via
-``core.relations.get_relation_data`` for transformer models or dense
-``core.resnet_data.get_resnet_data`` vectors for ResNet models, runs NN
+``core.token_data.get_token_data`` plus sparse relation-attention coordinates
+via ``core.relations.get_relation_coord_data`` for transformer models or
+dense ``core.resnet_data.get_resnet_data`` vectors for ResNet models, runs NN
 inference, and returns sparse softmax priors over legal actions plus
 canonical-order values. ResNet values are active-relative inside the model and
 are unrotated here before MCTS consumes them.
@@ -16,8 +16,11 @@ from typing import Any
 import numpy as np
 import torch
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.relations import get_relation_data, get_relation_data_batch
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+)
+from core.relations import get_relation_coord_data, get_relation_coord_data_batch
 from core.resnet_data import (
     get_resnet_data,
     get_resnet_data_batch,
@@ -208,31 +211,24 @@ def fill_token_buffer_batch_padded(
     get_token_data_batch(state_arrays, buf3d, max_players=max_players)
 
 
-def fill_relation_buffer(
+def fill_relation_coord_buffer(
     state: Any,
-    buf3d: np.ndarray,
+    buf2d: np.ndarray,
     *,
     max_players: int = 0,
 ) -> None:
-    """Fill a ``(num_relations, num_tokens, num_tokens)`` uint8 relation buffer."""
-    get_relation_data(state, buf3d, max_players=max_players)
+    """Fill a ``(max_edges, coord_width)`` uint8 relation-coordinate buffer."""
+    get_relation_coord_data(state, buf2d, max_players=max_players)
 
 
-def fill_relation_buffer_batch(
-    state_arrays: list[np.ndarray], num_players: int, buf4d: np.ndarray,
-) -> None:
-    """Fill a ``(n, num_relations, num_tokens, num_tokens)`` relation buffer."""
-    get_relation_data_batch(state_arrays, num_players, buf4d)
-
-
-def fill_relation_buffer_batch_padded(
+def fill_relation_coord_buffer_batch_padded(
     state_arrays: list[np.ndarray],
-    buf4d: np.ndarray,
+    buf3d: np.ndarray,
     *,
     max_players: int,
 ) -> None:
-    """Fill a padded relation batch using each row's actual player count."""
-    get_relation_data_batch(state_arrays, buf4d, max_players=max_players)
+    """Fill padded relation coordinates using each row's actual player count."""
+    get_relation_coord_data_batch(state_arrays, buf3d, max_players=max_players)
 
 
 def fill_resnet_buffer(state: Any, buf1d: np.ndarray) -> None:
@@ -316,8 +312,8 @@ class BaseEvaluator:
     Subclassed by NNEvaluator (local model inference) and
     RemoteEvaluator (shared-memory IPC to eval server). Evaluators accept
     compact int16 state and return sparse softmaxed priors plus canonical-order
-    values; the local evaluator chooses token/relation or ResNet-vector model
-    inputs from the model config.
+    values; the local evaluator chooses token/relations or ResNet-vector
+    model inputs from the model config.
     """
 
     def __init__(self, num_players: int, terminal_rank_weight: float = 0.5) -> None:
@@ -371,9 +367,9 @@ class NNEvaluator(BaseEvaluator):
 
     Used for single-process tests and anything that doesn't go through
     the shared-mem eval server. Fills preallocated pinned-host model input
-    buffers (transformer tokens/relations or ResNet dense vectors) plus a
-    ``(UNIFIED_LOGIT_DIM,)`` legal mask from compact state, async-copies to the
-    device, and runs inference. The model returns dense
+    buffers (transformer tokens plus sparse relation coordinates or ResNet
+    dense vectors) plus a ``(UNIFIED_LOGIT_DIM,)`` legal mask from compact
+    state, async-copies to the device, and runs inference. The model returns dense
     ``(B, UNIFIED_LOGIT_DIM)`` logits with illegal slots at -1e9; we softmax
     on-device then gather the per-leaf legal prior slice using the same
     ``action_lut`` the mask was built from.
@@ -430,7 +426,8 @@ class NNEvaluator(BaseEvaluator):
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
         nt, td = self.num_tokens, self.token_dim
-        nr = NUM_ATTENTION_RELATIONS
+        re = MAX_ATTENTION_RELATION_EDGES
+        rw = ATTENTION_RELATION_COORD_WIDTH
 
         # Host (pinned on CUDA): exposed as numpy for the mask scatter.
         # Mask is zero-initialized so ``_build_mask_row`` only touches
@@ -444,7 +441,7 @@ class NNEvaluator(BaseEvaluator):
         else:
             self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
             self._tok_h_np = self._tok_h.numpy()
-            self._rel_h = torch.empty((cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm)
+            self._rel_h = torch.empty((cap, re, rw), dtype=torch.uint8, pin_memory=pm)
             self._rel_h_np = self._rel_h.numpy()
         self._mask_h = torch.zeros(
             (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, pin_memory=pm,
@@ -464,7 +461,7 @@ class NNEvaluator(BaseEvaluator):
                     (cap, nt, td), dtype=torch.float32, device=self.device,
                 )
                 self._rel_d = torch.empty(
-                    (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
+                    (cap, re, rw), dtype=torch.uint8, device=self.device,
                 )
             self._mask_d = torch.empty(
                 (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, device=self.device,
@@ -541,7 +538,7 @@ class NNEvaluator(BaseEvaluator):
             fill_token_buffer(
                 state, self._tok_h_np[0], max_players=self.num_players,
             )
-            fill_relation_buffer(
+            fill_relation_coord_buffer(
                 state, self._rel_h_np[0], max_players=self.num_players,
             )
         self._build_mask_row(0, phase_id, self._enum_scratch[:n_legal])
@@ -590,7 +587,7 @@ class NNEvaluator(BaseEvaluator):
                 state_arrays, self._tok_h_np[:n],
                 max_players=self.num_players,
             )
-            fill_relation_buffer_batch_padded(
+            fill_relation_coord_buffer_batch_padded(
                 state_arrays, self._rel_h_np[:n],
                 max_players=self.num_players,
             )
@@ -677,7 +674,7 @@ class NNEvaluator(BaseEvaluator):
                 state_arrays, self._tok_h_np[:n],
                 max_players=self.num_players,
             )
-            fill_relation_buffer_batch_padded(
+            fill_relation_coord_buffer_batch_padded(
                 state_arrays, self._rel_h_np[:n],
                 max_players=self.num_players,
             )

@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 import torch
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+)
 from core.resnet_data import get_resnet_vector_size
 from core.state import GameState, get_layout
 from core.token_data import TokenDataSize, get_num_tokens
@@ -158,9 +161,8 @@ def test_train_step_value_loss_uses_mean_over_player_dimension() -> None:
     assert losses["total_loss"] == pytest.approx(1.0 / NUM_PLAYERS)
     assert model.last_relations_shape == (
         1,
-        NUM_ATTENTION_RELATIONS,
-        get_num_tokens(NUM_PLAYERS),
-        get_num_tokens(NUM_PLAYERS),
+        MAX_ATTENTION_RELATION_EDGES,
+        ATTENTION_RELATION_COORD_WIDTH,
     )
     assert model.last_relations_dtype == torch.uint8
 
@@ -294,8 +296,7 @@ def test_train_step_mixed_batch_uses_masked_value_mse_and_max_width_inputs() -> 
     assert model.last_tokens_dtype == torch.float32
     assert model.last_relations_shape == (
         2,
-        NUM_ATTENTION_RELATIONS,
-        get_num_tokens(5),
-        get_num_tokens(5),
+        MAX_ATTENTION_RELATION_EDGES,
+        ATTENTION_RELATION_COORD_WIDTH,
     )
     assert model.last_relations_dtype == torch.uint8

@@ -5,9 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
+from core.attention_relations import (
+    ATTENTION_RELATION_COORD_WIDTH,
+    MAX_ATTENTION_RELATION_EDGES,
+)
 from core.state import GameState, get_layout, get_turn_fields
-from core.token_data import get_num_tokens
 from nn.transformer import UNIFIED_LOGIT_DIM
 from train.replay_buffer import ReplayBuffer
 
@@ -58,9 +60,8 @@ def test_replay_buffer_samples_mixed_player_counts_at_max_width() -> None:
     assert tuple(batch["value_targets"].shape) == (2, 5)
     assert tuple(batch["relations"].shape) == (
         2,
-        int(NUM_ATTENTION_RELATIONS),
-        get_num_tokens(5),
-        get_num_tokens(5),
+        int(MAX_ATTENTION_RELATION_EDGES),
+        int(ATTENTION_RELATION_COORD_WIDTH),
     )
 
     values_by_count = {
