@@ -29,6 +29,7 @@ from core.data import GamePhases, GameConstants
 from core.state import GameState
 from entities.company import COMPANIES
 from entities.corp import CORPS
+from entities.player import PLAYERS
 from entities.turn import TURN
 from phases.acq_select_corp import setup_acquisition_phase_py
 from tests.phases import conftest as phase_conftest
@@ -264,7 +265,7 @@ def corrupt_corp_inactive_price_idx(buf):
 def corrupt_corp_is_selected(buf):
     buf[CORP_BASE_TOK + 0, 1] = 1.0                # active_corp=-1 so must be 0
 
-# The corp token pins TOKEN_DIM (TW_CORP=95 == TOKEN_DIM=95), so there is
+# The corp token pins TOKEN_DIM (TW_CORP=98 == TOKEN_DIM=98), so there is
 # no zero-padded tail past TW_CORP to corrupt. The conftest tail check
 # runs vacuously on the empty slice.
 
@@ -277,11 +278,11 @@ def corrupt_player_is_selected_wrong(buf):
     buf[PLAYER_BASE_TOK + 1, 1] = 1.0              # active_player=0 so player 1 must be 0
 
 def corrupt_player_tail(buf):
-    buf[PLAYER_BASE_TOK + 0, 62] = 1.0             # padding past TW_PLAYER must stay 0
+    buf[PLAYER_BASE_TOK + 0, 61] = 1.0             # padding past TW_PLAYER must stay 0
 
 
 def corrupt_inactive_corp_companies(buf):
-    buf[CORP_BASE_TOK + 0, 59] = 1.0               # inactive corp company bitmap must be 0
+    buf[CORP_BASE_TOK + 0, 62] = 1.0               # inactive corp company bitmap must be 0
 
 
 def corrupt_active_corp_pending_move(buf):
@@ -302,6 +303,18 @@ def corrupt_active_corp_coo_cost(buf):
 
 def corrupt_active_corp_ability(buf):
     buf[CORP_BASE_TOK + 0, 44] = 1.0               # active corp ability income
+
+
+def corrupt_active_corp_player_bought(buf):
+    buf[CORP_BASE_TOK + 0, 51] = 1.0               # no active-player buys yet
+
+
+def corrupt_active_corp_player_sold(buf):
+    buf[CORP_BASE_TOK + 0, 52] = 1.0               # no active-player sells yet
+
+
+def corrupt_active_corp_player_round_tripped(buf):
+    buf[CORP_BASE_TOK + 0, 53] = 1.0               # no paired buy/sell yet
 
 
 def corrupt_acq_price_info_max_offset(buf):
@@ -371,6 +384,9 @@ ACTIVE_CORP_CASES = [
     (corrupt_active_corp_synergy,          "synergy_income"),
     (corrupt_active_corp_coo_cost,         "coo_cost"),
     (corrupt_active_corp_ability,          "ability_income"),
+    (corrupt_active_corp_player_bought,    "active_player_bought"),
+    (corrupt_active_corp_player_sold,      "active_player_sold"),
+    (corrupt_active_corp_player_round_tripped, "active_player_round_tripped"),
 ]
 
 
@@ -401,6 +417,16 @@ def test_baseline_passes_without_corruption():
     into something the invariants already reject.
     """
     state = _invest_state()
+    assert_token_data_invariants(state)
+
+
+def test_invariants_cover_active_corp_player_trade_history():
+    state = _active_corp_invest_state()
+
+    PLAYERS[0].increment_share_buys(state, 0)
+    assert_token_data_invariants(state)
+
+    PLAYERS[0].increment_share_sells(state, 0)
     assert_token_data_invariants(state)
 
 

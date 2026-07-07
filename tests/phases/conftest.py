@@ -568,7 +568,7 @@ def assert_invariants(state, msg=""):
 # TOKEN DATA INVARIANTS
 # =============================================================================
 #
-# The token buffer carries (num_players + 54, TOKEN_DIM=92) float32 rows.
+# The token buffer carries (num_players + 54, TOKEN_DIM) float32 rows.
 # Informational tokens come first (every token now carries at least some
 # dynamic content, so there is no pure-static prefix); then phase-specific;
 # then per-corp and per-player rows. Indexing (for 3-5p, corp_base = 46):
@@ -608,14 +608,13 @@ _PLAYER_OFF = {
     "INCOME":         11,
     "AUC_HIGH":       12,
     "AUC_STARTER":    13,
-    "ROUND_TRIPS":    14,
-    "SHARES":         15,  # 8 slots
+    "SHARES":         14,  # 8 slots
     # Relational summary scalars (aggregate views of the multihot tail).
-    "NUM_COMPANIES":  23,
-    "NUM_PRESIDENCIES": 24,
-    "TOTAL_SHARES":   25,
+    "NUM_COMPANIES":  22,
+    "NUM_PRESIDENCIES": 23,
+    "TOTAL_SHARES":   24,
     # Relational tail (dropped on the model side; relations enter via attention).
-    "COMPANIES":      26,  # 36 slots
+    "COMPANIES":      25,  # 36 slots
 }
 _CORP_OFF = {
     "ATTN_MASK":     0,
@@ -643,13 +642,16 @@ _CORP_OFF = {
     "IPO_REMAIN":    48,
     "BUY_IMPACT":    49,
     "SELL_IMPACT":   50,
+    "ACTIVE_BUY":     51,
+    "ACTIVE_SELL":    52,
+    "ACTIVE_RT":      53,
     # Relational summary scalars (aggregate views of the multihot tail).
-    "NUM_OPERATIONAL": 51,
-    "NUM_ACQ_PILE":    52,
-    "NUM_TOTAL":       53,
+    "NUM_OPERATIONAL": 54,
+    "NUM_ACQ_PILE":    55,
+    "NUM_TOTAL":       56,
     # Relational tail (dropped on the model side; relations enter via attention).
-    "PRESIDENT":     54,  # 5 slots
-    "COMPANIES":     59,  # 36 slots
+    "PRESIDENT":     57,  # 5 slots
+    "COMPANIES":     62,  # 36 slots
 }
 # Company token carries static game-setup data plus per-company dynamic
 # scalars (attention mask, CoO-adjusted income, active-company selector,
@@ -861,24 +863,19 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             _assert_close(buf[tok, _PLAYER_OFF["AUC_STARTER"]], 0.0, T_FLAG,
                           f"{pm}: auction_starter flag outside BID")
 
-        # Per-corp shares, with buys/sells summarized by the round-trip flag,
-        # plus the relational-summary aggregates (total shares, presidency
-        # count). Presidency gating mirrors the corp-token's president
-        # one-hot: active && !receivership && president_id == p.
-        any_roundtrip = False
+        # Per-corp shares plus the relational-summary aggregates (total
+        # shares, presidency count). Active-player buy/sell history now lives
+        # on the corresponding corp token. Presidency gating mirrors the
+        # corp-token's president one-hot: active && !receivership &&
+        # president_id == p.
         total_shares = 0
         num_presidencies = 0
         for c in range(num_corps):
             shares = PLAYERS[p].get_shares(state, c)
-            buys = PLAYERS[p].get_share_buys(state, c)
-            sells = PLAYERS[p].get_share_sells(state, c)
 
             _assert_close(buf[tok, _PLAYER_OFF["SHARES"] + c] * PY_SHARE_DIVISOR,
                           shares, T_SCALE, f"{pm}: shares[{c}]")
             total_shares += shares
-
-            if buys >= 2 or sells >= 2:
-                any_roundtrip = True
 
             if (
                 CORPS[c].is_active(state)
@@ -887,9 +884,6 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             ):
                 num_presidencies += 1
 
-        expected_rt = 1.0 if any_roundtrip else 0.0
-        _assert_close(buf[tok, _PLAYER_OFF["ROUND_TRIPS"]], expected_rt, T_FLAG,
-                      f"{pm}: round_trips flag")
         _assert_close(buf[tok, _PLAYER_OFF["TOTAL_SHARES"]] * PY_TOTAL_SHARES_DIVISOR,
                       total_shares, T_SCALE, f"{pm}: total_owned_shares")
         _assert_close(buf[tok, _PLAYER_OFF["NUM_PRESIDENCIES"]] * PY_PRESIDENCIES_DIVISOR,
@@ -1078,15 +1072,29 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
             cur = corp.get_price_index(state)
             exp_buy = MARKET.find_next_higher_space(state, cur) - cur
             exp_sell = MARKET.find_next_lower_space(state, cur) - cur
+            active_buys = PLAYERS[active_player].get_share_buys(state, c)
+            active_sells = PLAYERS[active_player].get_share_sells(state, c)
             _assert_close(buf[tok, _CORP_OFF["BUY_IMPACT"]] * PY_IMPACT_DIVISOR,
                           exp_buy, T_SCALE, f"{cm}: buy_impact")
             _assert_close(buf[tok, _CORP_OFF["SELL_IMPACT"]] * PY_IMPACT_DIVISOR,
                           exp_sell, T_SCALE, f"{cm}: sell_impact")
+            _assert_close(buf[tok, _CORP_OFF["ACTIVE_BUY"]],
+                          1.0 if active_buys > 0 else 0.0, T_FLAG,
+                          f"{cm}: active_player_bought")
+            _assert_close(buf[tok, _CORP_OFF["ACTIVE_SELL"]],
+                          1.0 if active_sells > 0 else 0.0, T_FLAG,
+                          f"{cm}: active_player_sold")
+            _assert_close(buf[tok, _CORP_OFF["ACTIVE_RT"]],
+                          1.0 if active_buys > 0 and active_sells > 0 else 0.0,
+                          T_FLAG, f"{cm}: active_player_round_tripped")
         else:
             _assert_close(buf[tok, _CORP_OFF["BUY_IMPACT"]], 0.0, T_FLAG,
                           f"{cm}: buy_impact must be zero outside active INVEST")
             _assert_close(buf[tok, _CORP_OFF["SELL_IMPACT"]], 0.0, T_FLAG,
                           f"{cm}: sell_impact must be zero outside active INVEST")
+            for key in ("ACTIVE_BUY", "ACTIVE_SELL", "ACTIVE_RT"):
+                _assert_close(buf[tok, _CORP_OFF[key]], 0.0, T_FLAG,
+                              f"{cm}: {key} must be zero outside active INVEST")
 
         # is_selected: set iff this corp is the current active_corp. The
         # selector is independent of the lifecycle ACTIVE flag — an inactive

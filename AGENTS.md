@@ -62,12 +62,12 @@ widths.
 - `core/driver.pyx`: legality check, phase dispatch, automated phase chaining,
   forced-action chaining, history recording, and step-mode helpers.
 - `core/token_data.{pxd,pyx}`: token extraction. Engine tokens are
-  `num_players + 54` rows, `TokenDataSize.TOKEN_DIM == 95`; per-row meaningful
+  `num_players + 54` rows, `TokenDataSize.TOKEN_DIM == 98`; per-row meaningful
   widths come from `TokenWidth` / `get_token_widths(num_players)`.
 - `core/relations.{pxd,pyx}` and `core/attention_relations.py`: directed
   Graphormer-style relation planes. Current constants are
-  `NUM_ATTENTION_RELATIONS == 10`, sparse IPC coord shape
-  `(MAX_ATTENTION_RELATION_EDGES == 256, ATTENTION_RELATION_COORD_WIDTH == 3)`.
+  `NUM_ATTENTION_RELATIONS == 11`, sparse IPC coord shape
+  `(MAX_ATTENTION_RELATION_EDGES == 512, ATTENTION_RELATION_COORD_WIDTH == 3)`.
 - `core/resnet_data.{pxd,pyx}`: dense normalized ResNet vector extraction.
   Vectors are active-relative; use `get_resnet_vector_size(num_players)`.
 - `nn/model_contract.py` and `nn/__init__.py`: model-family contract and

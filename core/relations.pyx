@@ -27,6 +27,7 @@ from core.relations cimport (
     REL_COMPANY_OWNED_BY_FI,
     REL_COMPANY_OWNED_BY_PLAYER,
     REL_COMPANY_OWNED_BY_CORP,
+    REL_COMPANY_HAS_SYNERGY,
     REL_CORP_HAS_PLAYER_SHAREHOLDER,
     REL_CORP_PRESIDENT_PLAYER,
     REL_CORP_OWNS_COMPANY,
@@ -38,7 +39,11 @@ from core.relations cimport (
     REL_PLAYER_OWNS_CORP_SHARES,
     REL_PLAYER_PRESIDENT_OF_CORP,
 )
-from entities.company cimport company_owned_by_fi, company_owned_by_player
+from entities.company cimport (
+    company_owned_by_fi,
+    company_owned_by_player,
+    company_synergy,
+)
 from entities.corp cimport (
     corp_has_acquisition_company,
     corp_is_in_receivership,
@@ -395,8 +400,10 @@ cdef void _fill_relations(
 ) noexcept nogil:
     cdef int corp_id
     cdef int company_id
+    cdef int other_company_id
     cdef int corp_tok
     cdef int company_tok
+    cdef int other_company_tok
     cdef int player_id
     cdef int player_tok
     cdef int president_id
@@ -422,6 +429,28 @@ cdef void _fill_relations(
                 company_tok = TOKEN_COMPANY_START + company_id
                 buffer[<int>REL_CORP_OWNS_COMPANY, corp_tok, company_tok] = 1
                 buffer[<int>REL_COMPANY_OWNED_BY_CORP, company_tok, corp_tok] = 1
+
+    # Company synergies are represented as a symmetric attention relation:
+    # if either static synergy direction is non-zero, both company tokens get
+    # relation edges to each other.
+    for company_id in range(NUM_COMPANIES):
+        company_tok = TOKEN_COMPANY_START + company_id
+        for other_company_id in range(company_id + 1, NUM_COMPANIES):
+            if (
+                company_synergy(company_id, other_company_id) > 0
+                or company_synergy(other_company_id, company_id) > 0
+            ):
+                other_company_tok = TOKEN_COMPANY_START + other_company_id
+                buffer[
+                    <int>REL_COMPANY_HAS_SYNERGY,
+                    company_tok,
+                    other_company_tok,
+                ] = 1
+                buffer[
+                    <int>REL_COMPANY_HAS_SYNERGY,
+                    other_company_tok,
+                    company_tok,
+                ] = 1
 
     # Player/FI company ownership. These are separate relation planes from
     # corp ownership so attention heads can learn different routing priors for
@@ -483,8 +512,10 @@ cdef int _fill_relation_coords(
 ) noexcept nogil:
     cdef int corp_id
     cdef int company_id
+    cdef int other_company_id
     cdef int corp_tok
     cdef int company_tok
+    cdef int other_company_tok
     cdef int player_id
     cdef int player_tok
     cdef int president_id
@@ -521,6 +552,30 @@ cdef int _fill_relation_coords(
                     <int>REL_COMPANY_OWNED_BY_CORP,
                     company_tok,
                     corp_tok,
+                )
+
+    # Company synergies are represented as a symmetric attention relation.
+    for company_id in range(NUM_COMPANIES):
+        company_tok = TOKEN_COMPANY_START + company_id
+        for other_company_id in range(company_id + 1, NUM_COMPANIES):
+            if (
+                company_synergy(company_id, other_company_id) > 0
+                or company_synergy(other_company_id, company_id) > 0
+            ):
+                other_company_tok = TOKEN_COMPANY_START + other_company_id
+                count = _append_relation_coord(
+                    coords,
+                    count,
+                    <int>REL_COMPANY_HAS_SYNERGY,
+                    company_tok,
+                    other_company_tok,
+                )
+                count = _append_relation_coord(
+                    coords,
+                    count,
+                    <int>REL_COMPANY_HAS_SYNERGY,
+                    other_company_tok,
+                    company_tok,
                 )
 
     # Player/FI company ownership.

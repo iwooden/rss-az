@@ -114,11 +114,11 @@ _COMPANY_FACE_VALUE_FEATURE_OFFSET = 2
 # stay in the projection while the multihots they summarize are dropped.
 _COMPANY_REL_TAIL_START = 14
 _FI_REL_TAIL_START = 4
-_CORP_REL_TAIL_START = 54
+_CORP_REL_TAIL_START = 57
 # Player share amounts are scalar quantities, not just relation presence:
 # keep OFF_SHARES (8 slots) in projected token features and drop only the
 # owned-company relation tail.
-_PLAYER_REL_TAIL_START = 26
+_PLAYER_REL_TAIL_START = 25
 
 
 def _phase_action_size(phase: DecisionPhase) -> int:
@@ -464,7 +464,7 @@ class RSSTransformerNet(nn.Module):
         # skipped here; those relations now enter the trunk as Graphormer-style
         # attention bias planes. Learned additive state is limited to type
         # embeddings and corp row-order identity embeddings.
-        # The engine-side buffer is rectangular at ``TOKEN_DIM=92`` so
+        # The engine-side buffer is rectangular at ``TOKEN_DIM`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but each projection still sizes itself to that token type's meaningful
         # width so padding remains inert.

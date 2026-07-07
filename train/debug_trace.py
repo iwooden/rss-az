@@ -211,6 +211,9 @@ def _token_field_labels(token_label: str) -> list[str]:
                 "ipo_remaining",
                 "buy_impact",
                 "sell_impact",
+                "active_player_bought",
+                "active_player_sold",
+                "active_player_round_tripped",
                 "num_operational_companies",
                 "num_acq_pile_companies",
                 "num_total_companies",
@@ -223,7 +226,7 @@ def _token_field_labels(token_label: str) -> list[str]:
             ["attn_mask", "is_selected"]
             + _field_names("turn_order", NUM_PLAYER_SLOTS)
             + ["has_passed", "cash", "net_worth", "liquidity", "income"]
-            + ["auction_high_bidder", "auction_starter", "round_trips"]
+            + ["auction_high_bidder", "auction_starter"]
             + _field_names("owned_share", NUM_CORPS)
             + ["num_owned_companies", "num_presidencies", "total_owned_shares"]
             + _field_names("owned_company", NUM_COMPANIES)

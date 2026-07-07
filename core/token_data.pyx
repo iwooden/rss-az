@@ -25,7 +25,7 @@ Active-entity selectors (active_player / active_corp / active_company
 in TURN_OFFSETS) are surfaced as ``is_selected`` scalar flags on each
 entity's own token, not as standalone one-hot tokens.
 
-Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 95 = max width,
+Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 98 = max width,
 currently pinned by the Corp token):
 
   Every token starts with attn_mask (1), a 0/1 scalar that marks whether
@@ -39,15 +39,15 @@ currently pinned by the Corp token):
   attention biases; the summary scalars stay in the projection so the
   trunk has a direct aggregate view (count, totals) of the same data.
 
-  Player (62):  attn_mask (1) + is_selected (1) + turn_order onehot (5) +
+  Player (61):  attn_mask (1) + is_selected (1) + turn_order onehot (5) +
                 has_passed (1) +
                 cash (1) + net_worth (1) + liquidity (1) + income (1) +
                 auction_high_bidder (1) + auction_starter (1) +
-                round_trips (1) + owned_shares (8) +
+                owned_shares (8) +
                 relational summary: num_owned_companies (1) +
                 num_presidencies (1) + total_owned_shares (1) +
                 relational tail: owned_companies (36)
-  Corp   (95):  attn_mask (1) + is_selected (1) + active (1) +
+  Corp   (98):  attn_mask (1) + is_selected (1) + active (1) +
                 in_receivership (1) +
                 passed_acq_offer (1) + unissued/issued/bank shares (3) +
                 price_index onehot (27) + share_price (1) +
@@ -57,6 +57,7 @@ currently pinned by the Corp token):
                 acq_offer_corp (1) + dividend_remaining (1) +
                 issue_remaining (1) + ipo_remaining (1) +
                 buy_impact (1) + sell_impact (1) +
+                active_player_bought/sold/round_tripped (3) +
                 relational summary: num_operational_companies (1) +
                 num_acq_pile_companies (1) + num_total_companies (1) +
                 relational tail: president_id onehot (5) +
@@ -207,7 +208,6 @@ DEF NUM_PAR_PRICES = 14
 DEF MAX_DIVIDEND = 26              # dividend amounts 0..25 (26 slots)
 DEF ACQ_PRICE_OFFSETS = 51         # acquisition price offsets (matches action encoding)
 DEF FLOAT_SHARES_MAX = 4.0         # max issued shares at float (face>par → 4)
-DEF ROUNDTRIP_LIMIT = 2            # share buy+sell limit per corp per turn
 
 # Normalization constant for the invest token's consecutive_passes slot.
 # Matches the max training player count (5).
@@ -245,7 +245,7 @@ cpdef object get_token_widths(int max_players):
     projection modules without duplicating the layout logic.
 
     Returns a uint8 ``(max_players + 54,)`` numpy array; all widths fit
-    in a byte (max is TW_CORP = 95 < 256).
+    in a byte (max is TW_CORP = 98 < 256).
     """
     assert 3 <= max_players <= 5, \
         f"get_token_widths: max_players must be 3-5, got {max_players}"
@@ -559,14 +559,13 @@ cdef void _fill_player_token(
     cdef int OFF_INCOME            = 11
     cdef int OFF_AUC_HIGH          = 12
     cdef int OFF_AUC_STARTER       = 13
-    cdef int OFF_ROUND_TRIPS       = 14
-    cdef int OFF_SHARES            = 15   # 8 slots
+    cdef int OFF_SHARES            = 14   # 8 slots
     # --- relational summary ---
-    cdef int OFF_NUM_COMPANIES     = 23
-    cdef int OFF_NUM_PRESIDENCIES  = 24
-    cdef int OFF_TOTAL_SHARES      = 25
+    cdef int OFF_NUM_COMPANIES     = 22
+    cdef int OFF_NUM_PRESIDENCIES  = 23
+    cdef int OFF_TOTAL_SHARES      = 24
     # --- relational tail ---
-    cdef int OFF_COMPANIES         = 26   # 36 slots
+    cdef int OFF_COMPANIES         = 25   # 36 slots
 
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int turn_order = <int>state._data[player_base + PLAYER_FIELDS.turn_order]
@@ -575,7 +574,7 @@ cdef void _fill_player_token(
     cdef int net_worth = <int>state._data[player_base + PLAYER_FIELDS.net_worth]
     cdef int liquidity = <int>state._data[player_base + PLAYER_FIELDS.liquidity]
     cdef int income = <int>state._data[player_base + PLAYER_FIELDS.income]
-    cdef int c, shares, buys, sells, roundtrip_flag, total_shares
+    cdef int c, shares, total_shares
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
     cdef int high_bidder
     cdef int starter
@@ -617,25 +616,17 @@ cdef void _fill_player_token(
         if starter == player_id:
             buffer[tok, OFF_AUC_STARTER] = 1.0
 
-    # Per-corp: shares, the aggregated round-trip flag, and total-shares /
-    # presidency aggregates. Presidency count mirrors the gating used by
-    # the corp-token's president one-hot (active && !receivership) so the
-    # scalar matches the relational-tail signal.
-    roundtrip_flag = 0
+    # Per-corp shares plus total-shares / presidency aggregates. Presidency
+    # count mirrors the gating used by the corp-token's president one-hot
+    # (active && !receivership) so the scalar matches the relational-tail
+    # signal. Active-player buy/sell history is emitted on corp tokens.
     total_shares = 0
     num_presidencies = 0
     for c in range(NUM_CORPS):
         shares = <int>state._data[player_base + PLAYER_FIELDS.owned_shares + c]
-        buys = <int>state._data[player_base + PLAYER_FIELDS.share_buys + c]
-        sells = <int>state._data[player_base + PLAYER_FIELDS.share_sells + c]
 
         buffer[tok, OFF_SHARES + c] = <float>shares / SHARE_DIVISOR
         total_shares += shares
-
-        # Round-trip threshold: once the player hits the buy+sell cap on
-        # any corp, any further buy/sell in that corp is illegal this turn.
-        if buys >= ROUNDTRIP_LIMIT or sells >= ROUNDTRIP_LIMIT:
-            roundtrip_flag = 1
 
         if (
             corp_is_active(state, c)
@@ -644,7 +635,6 @@ cdef void _fill_player_token(
         ):
             num_presidencies += 1
 
-    buffer[tok, OFF_ROUND_TRIPS] = 1.0 if roundtrip_flag else 0.0
     buffer[tok, OFF_TOTAL_SHARES] = <float>total_shares / TOTAL_SHARES_DIVISOR
     buffer[tok, OFF_NUM_PRESIDENCIES] = <float>num_presidencies / PRESIDENCIES_DIVISOR
 
@@ -714,19 +704,28 @@ cdef void _fill_corp_token(
     cdef int OFF_IPO_REMAIN        = 48
     cdef int OFF_BUY_IMPACT        = 49
     cdef int OFF_SELL_IMPACT       = 50
+    cdef int OFF_ACTIVE_BUY        = 51
+    cdef int OFF_ACTIVE_SELL       = 52
+    cdef int OFF_ACTIVE_ROUNDTRIP  = 53
     # --- relational summary ---
-    cdef int OFF_NUM_OPERATIONAL   = 51
-    cdef int OFF_NUM_ACQ_PILE      = 52
-    cdef int OFF_NUM_TOTAL         = 53
+    cdef int OFF_NUM_OPERATIONAL   = 54
+    cdef int OFF_NUM_ACQ_PILE      = 55
+    cdef int OFF_NUM_TOTAL         = 56
     # --- relational tail ---
-    cdef int OFF_PRESIDENT         = 54   # 5 slots
-    cdef int OFF_COMPANIES         = 59   # 36 slots
+    cdef int OFF_PRESIDENT         = 57   # 5 slots
+    cdef int OFF_COMPANIES         = 62   # 36 slots
 
     cdef bint active = corp_is_active(state, corp_id)
     cdef int price_idx, president, company_id, current_idx, new_idx, delta
     cdef int num_operational, num_acq_pile
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
+    cdef int active_player = <int>state._data[
+        LAYOUT.turn_offset + TURN_OFFSETS.active_player
+    ]
     cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
+    cdef int active_player_base
+    cdef int active_player_buys
+    cdef int active_player_sells
     cdef int offer_corp
 
     assert -1 <= active_corp < NUM_CORPS, \
@@ -822,6 +821,23 @@ cdef void _fill_corp_token(
         new_idx = market_find_next_lower_space(state, current_idx)
         delta = new_idx - current_idx
         buffer[tok, OFF_SELL_IMPACT] = <float>delta / IMPACT_DIVISOR
+
+        assert 0 <= active_player < num_players, \
+            f"_fill_corp_token: active_player {active_player} out of range in INVEST"
+        active_player_base = (
+            LAYOUT.players_offset + PLAYER_FIELDS.size * active_player
+        )
+        active_player_buys = <int>state._data[
+            active_player_base + PLAYER_FIELDS.share_buys + corp_id
+        ]
+        active_player_sells = <int>state._data[
+            active_player_base + PLAYER_FIELDS.share_sells + corp_id
+        ]
+        buffer[tok, OFF_ACTIVE_BUY] = 1.0 if active_player_buys > 0 else 0.0
+        buffer[tok, OFF_ACTIVE_SELL] = 1.0 if active_player_sells > 0 else 0.0
+        buffer[tok, OFF_ACTIVE_ROUNDTRIP] = (
+            1.0 if active_player_buys > 0 and active_player_sells > 0 else 0.0
+        )
 
     # Active-corp selector flag (independent of the lifecycle ``OFF_ACTIVE``).
     if active_corp == corp_id:

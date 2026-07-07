@@ -112,6 +112,37 @@ def test_relation_count_matches_cython_source() -> None:
     assert NUM_ATTENTION_RELATIONS == get_num_attention_relations()
 
 
+def test_get_relation_data_marks_company_synergy_bidirectionally() -> None:
+    state = GameState(NUM_PLAYERS)
+    state.initialize_game(NUM_PLAYERS, seed=123)
+    num_tokens = get_num_tokens(NUM_PLAYERS)
+    relations = np.zeros(
+        (NUM_ATTENTION_RELATIONS, num_tokens, num_tokens),
+        dtype=np.uint8,
+    )
+    synergy_pairs = [
+        (company_id, other_company_id)
+        for company_id in range(len(COMPANIES))
+        for other_company_id in range(company_id + 1, len(COMPANIES))
+        if (
+            COMPANIES[company_id].get_synergy_with(other_company_id) > 0
+            or COMPANIES[other_company_id].get_synergy_with(company_id) > 0
+        )
+    ]
+    assert synergy_pairs, "expected static company synergy data"
+
+    get_relation_data(state, relations)
+
+    synergy_relation_id = int(AttentionRelation.COMPANY_HAS_SYNERGY)
+    synergy_plane = relations[synergy_relation_id]
+    assert int(synergy_plane.sum()) == 2 * len(synergy_pairs)
+    for company_id, other_company_id in synergy_pairs:
+        company_tok = COMPANY_TOKEN_START + company_id
+        other_company_tok = COMPANY_TOKEN_START + other_company_id
+        assert synergy_plane[company_tok, other_company_tok] == 1
+        assert synergy_plane[other_company_tok, company_tok] == 1
+
+
 def test_get_relation_data_marks_corp_company_ownership_directions() -> None:
     corp_id = 2
     company_id = 5
@@ -184,7 +215,8 @@ def test_get_relation_data_marks_player_company_ownership_directions() -> None:
     assert relations[owns_relation_id, company_tok, player_tok] == 0
     assert relations[owned_by_relation_id, company_tok, player_tok] == 1
     assert relations[owned_by_relation_id, player_tok, company_tok] == 0
-    assert int(relations.sum()) == 2
+    assert int(relations[owns_relation_id].sum()) == 1
+    assert int(relations[owned_by_relation_id].sum()) == 1
 
 
 def test_get_relation_data_marks_fi_company_ownership_directions() -> None:
@@ -206,7 +238,8 @@ def test_get_relation_data_marks_fi_company_ownership_directions() -> None:
     assert relations[owns_relation_id, company_tok, fi_tok] == 0
     assert relations[owned_by_relation_id, company_tok, fi_tok] == 1
     assert relations[owned_by_relation_id, fi_tok, company_tok] == 0
-    assert int(relations.sum()) == 2
+    assert int(relations[owns_relation_id].sum()) == 1
+    assert int(relations[owned_by_relation_id].sum()) == 1
 
 
 def test_get_relation_data_marks_player_corp_shareholder_directions() -> None:

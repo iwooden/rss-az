@@ -37,6 +37,7 @@ class AttentionRelation(IntEnum):
     )
     PLAYER_PRESIDENT_OF_CORP = int(AttentionRelationIndex.REL_PLAYER_PRESIDENT_OF_CORP)
     CORP_PRESIDENT_PLAYER = int(AttentionRelationIndex.REL_CORP_PRESIDENT_PLAYER)
+    COMPANY_HAS_SYNERGY = int(AttentionRelationIndex.REL_COMPANY_HAS_SYNERGY)
 
 
 NUM_ATTENTION_RELATIONS = get_num_attention_relations()

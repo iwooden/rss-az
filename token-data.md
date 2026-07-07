@@ -46,7 +46,7 @@ player rows and remain all-zero.
 The model consumes exactly these engine-side rows; it does not append
 synthetic model-side tokens after projection.
 
-Each token row is zero-padded to `TOKEN_DIM = 95`, currently pinned by the
+Each token row is zero-padded to `TOKEN_DIM = 98`, currently pinned by the
 Corp token. Per-type widths live in `TokenWidth`:
 
 - `TW_MARKET_INFO = 55`
@@ -60,8 +60,8 @@ Corp token. Per-type widths live in `TokenWidth`:
 - `TW_PAR = 43`
 - `TW_ACQ_OFFER = 4`
 - `TW_ACQ_PRICE = 4`
-- `TW_CORP = 95`
-- `TW_PLAYER = 62`
+- `TW_CORP = 98`
+- `TW_PLAYER = 61`
 
 **Relational summary scalars.** Corp, player, and FI tokens carry a small
 group of aggregate scalars (owned-company counts, presidency count, total
@@ -229,7 +229,7 @@ Buy/sell invest impacts moved to Corp tokens.
 - `fi_flag`. 1 if the target company is FI-owned.
 - `total_synergies`, normalized by `ENTITY_INCOME_DIVISOR`
 
-## Corp Tokens (95, x8)
+## Corp Tokens (98, x8)
 
 Corp identity is inferred from row order.
 
@@ -263,6 +263,13 @@ Corp identity is inferred from row order.
   delta, normalized by `IMPACT_DIVISOR`.
 - Sell impact. During `PHASE_INVEST`, active corp's sell-one-share market
   index delta, normalized by `IMPACT_DIVISOR`.
+- `active_player_bought`. During `PHASE_INVEST`, 1 if the active player has
+  bought this corp's share in the current INVEST phase.
+- `active_player_sold`. During `PHASE_INVEST`, 1 if the active player has
+  sold this corp's share in the current INVEST phase.
+- `active_player_round_tripped`. During `PHASE_INVEST`, 1 if the active
+  player has both bought and sold this corp's share in the current INVEST
+  phase.
 
 Relational summary (active corps only — inactive corps leave these zero,
 matching the rest of the active-gated fields):
@@ -300,8 +307,6 @@ reserved player-token row so the model projection layout is stable.
 - `auction_high_bidder`. During `PHASE_BID`, 1 on the high bidder; all zero
   on the opening bid before a bid has been placed.
 - `auction_starter`. During `PHASE_BID`, 1 on the auction starter.
-- Round trips. 1 if any share buy/sell would be affected by the round-trip
-  limit.
 - Owned shares (8 slots), normalized by `SHARE_DIVISOR`. Per-corp share
   counts are scalar quantities, not just relation presence, so they stay
   in the projection rather than the relational tail.
