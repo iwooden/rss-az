@@ -768,24 +768,6 @@ class RSSTransformerNet(nn.Module):
         """
         return (x[:, :, 0] > 0.5)[:, None, None, :]
 
-    def _relation_attention_bias(
-        self,
-        relation_flags: torch.Tensor,
-        layer_idx: int,
-        ref: torch.Tensor,
-    ) -> torch.Tensor:
-        """Combine relation planes into an SDPA additive bias for one layer.
-
-        ``relation_flags`` is ``(B, R, N, N)``. The learned multipliers for
-        layer ``layer_idx`` are ``(H, R)``, producing ``(B, H, N, N)`` so the
-        result lines up with SDPA attention weights.
-        """
-        relation_mult = self._match_dtype_device(
-            self.relation_bias_mult[layer_idx],
-            ref,
-        )
-        return torch.einsum("brij,hr->bhij", relation_flags, relation_mult)
-
     def _prepare_sparse_relation_context(
         self,
         relation_coords: torch.Tensor,
@@ -1426,12 +1408,9 @@ class RSSTransformerNet(nn.Module):
                 will be ignored (for example the eval server's trash row);
                 if such a row is consumed by softmax downstream it becomes a
                 near-uniform distribution over the unified slots.
-            relations: Either dense ``(batch, NUM_ATTENTION_RELATIONS,
-                num_tokens, num_tokens)`` uint8/bool directed relation planes
-                or sparse eval-server coordinates ``(batch,
+            relations: Sparse directed relation coordinates ``(batch,
                 MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH)``
-                uint8. Dense rows are attention queries and columns are
-                attention keys; sparse rows are ``(relation_id, query, key)``
+                uint8. Rows are ``(relation_id, query_token, key_token)``
                 triplets padded with ``(0, 0, 0)``.
 
         Returns:
@@ -1467,54 +1446,31 @@ class RSSTransformerNet(nn.Module):
             raise AssertionError(
                 f"relations device must match x device; got {relations.device} vs {x.device}"
             )
-        tokens = self._project_tokens(x)
-        relation_flags: torch.Tensor | None = None
-        sparse_relation_ctx: _SparseRelationContext | None = None
-        expected_dense_rel_shape = (
-            x.shape[0],
-            NUM_ATTENTION_RELATIONS,
-            self._num_tokens,
-            self._num_tokens,
-        )
         expected_sparse_rel_shape = (
             x.shape[0],
             MAX_ATTENTION_RELATION_EDGES,
             ATTENTION_RELATION_COORD_WIDTH,
         )
-        if tuple(relations.shape) == expected_dense_rel_shape:
-            if relations.dtype not in (torch.bool, torch.uint8):
-                raise AssertionError(
-                    f"dense relation planes must be bool or uint8; got {relations.dtype}"
-                )
-            relation_flags = relations.to(dtype=tokens.dtype)
-        elif tuple(relations.shape) == expected_sparse_rel_shape:
-            if relations.dtype != torch.uint8:
-                raise AssertionError(
-                    f"sparse relation coordinates must be uint8; got {relations.dtype}"
-            )
-            sparse_relation_ctx = self._prepare_sparse_relation_context(relations)
-        else:
+        if tuple(relations.shape) != expected_sparse_rel_shape:
             raise AssertionError(
-                f"relations shape must be {expected_dense_rel_shape} for dense "
-                f"planes or {expected_sparse_rel_shape} for sparse coordinates; "
+                f"relations shape must be {expected_sparse_rel_shape} for "
+                f"sparse relation coordinates; "
                 f"got {tuple(relations.shape)}"
             )
+        if relations.dtype != torch.uint8:
+            raise AssertionError(
+                f"sparse relation coordinates must be uint8; got {relations.dtype}"
+            )
+        sparse_relation_ctx = self._prepare_sparse_relation_context(relations)
+        tokens = self._project_tokens(x)
         attn_mask = self._attention_mask(x)
 
         for layer_idx, block in enumerate(self.blocks):
-            if relation_flags is not None:
-                relation_bias = self._relation_attention_bias(
-                    relation_flags,
-                    layer_idx,
-                    tokens,
-                )
-            else:
-                assert sparse_relation_ctx is not None
-                relation_bias = self._sparse_relation_attention_bias(
-                    sparse_relation_ctx,
-                    layer_idx,
-                    tokens,
-                )
+            relation_bias = self._sparse_relation_attention_bias(
+                sparse_relation_ctx,
+                layer_idx,
+                tokens,
+            )
             tokens = block(tokens, attn_mask, relation_bias)
         tokens = self.final_norm(tokens)
 
@@ -1698,9 +1654,8 @@ if __name__ == "__main__":
     legal_mask = torch.zeros(batch_size, UNIFIED_LOGIT_DIM, dtype=torch.bool)
     relations = torch.zeros(
         batch_size,
-        NUM_ATTENTION_RELATIONS,
-        cfg.num_tokens,
-        cfg.num_tokens,
+        MAX_ATTENTION_RELATION_EDGES,
+        ATTENTION_RELATION_COORD_WIDTH,
         dtype=torch.uint8,
     )
     for i in range(NUM_PHASES):
