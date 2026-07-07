@@ -224,7 +224,9 @@ def test_get_relation_data_marks_player_corp_shareholder_directions() -> None:
 
     owns_relation_id = int(AttentionRelation.PLAYER_OWNS_CORP_SHARES)
     shareholder_relation_id = int(AttentionRelation.CORP_HAS_PLAYER_SHAREHOLDER)
-    player_tok = 54 + player_id
+    president_relation_id = int(AttentionRelation.PLAYER_PRESIDENT_OF_CORP)
+    corp_president_relation_id = int(AttentionRelation.CORP_PRESIDENT_PLAYER)
+    player_tok = PLAYER_TOKEN_START + player_id
     corp_tok = CORP_TOKEN_START + corp_id
     assert relations[owns_relation_id, player_tok, corp_tok] == 0
     assert relations[shareholder_relation_id, corp_tok, player_tok] == 0
@@ -236,9 +238,11 @@ def test_get_relation_data_marks_player_corp_shareholder_directions() -> None:
     assert relations[owns_relation_id, corp_tok, player_tok] == 0
     assert relations[shareholder_relation_id, corp_tok, player_tok] == 1
     assert relations[shareholder_relation_id, player_tok, corp_tok] == 0
+    assert relations[president_relation_id, player_tok, corp_tok] == 0
+    assert relations[corp_president_relation_id, corp_tok, player_tok] == 0
 
 
-def test_get_relation_data_marks_player_corp_president_directions() -> None:
+def test_get_relation_data_marks_player_corp_president_directions_only() -> None:
     corp_id = 5
     player_id = 0
     company_id = 11
@@ -253,12 +257,16 @@ def test_get_relation_data_marks_player_corp_president_directions() -> None:
 
     president_relation_id = int(AttentionRelation.PLAYER_PRESIDENT_OF_CORP)
     corp_president_relation_id = int(AttentionRelation.CORP_PRESIDENT_PLAYER)
-    player_tok = 54 + player_id
+    owns_relation_id = int(AttentionRelation.PLAYER_OWNS_CORP_SHARES)
+    shareholder_relation_id = int(AttentionRelation.CORP_HAS_PLAYER_SHAREHOLDER)
+    player_tok = PLAYER_TOKEN_START + player_id
     corp_tok = CORP_TOKEN_START + corp_id
     assert relations[president_relation_id, player_tok, corp_tok] == 1
     assert relations[president_relation_id, corp_tok, player_tok] == 0
     assert relations[corp_president_relation_id, corp_tok, player_tok] == 1
     assert relations[corp_president_relation_id, player_tok, corp_tok] == 0
+    assert relations[owns_relation_id, player_tok, corp_tok] == 0
+    assert relations[shareholder_relation_id, corp_tok, player_tok] == 0
 
 
 def test_get_relation_data_batch_marks_each_row_independently() -> None:

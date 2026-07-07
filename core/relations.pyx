@@ -441,21 +441,39 @@ cdef void _fill_relations(
 
     # Player/corp shareholding and presidency. Presidency is derived from
     # share ownership, but it is decision-critical enough to get a distinct
-    # directed relation pair.
+    # directed relation pair. Use exactly one relation pair for each positive
+    # player/corp holding: president if this player is the live president,
+    # otherwise generic shareholder.
     for corp_id in range(NUM_CORPS):
         corp_tok = TOKEN_CORP_START + corp_id
+        president_id = -1
+        if not corp_is_in_receivership(state, corp_id):
+            president_id = corp_president_id(state, corp_id)
         for player_id in range(num_players):
             player_tok = TOKEN_PLAYER_START + player_id
             if _player_shares(state, player_id, corp_id) > 0:
-                buffer[<int>REL_PLAYER_OWNS_CORP_SHARES, player_tok, corp_tok] = 1
-                buffer[<int>REL_CORP_HAS_PLAYER_SHAREHOLDER, corp_tok, player_tok] = 1
-
-        if not corp_is_in_receivership(state, corp_id):
-            president_id = corp_president_id(state, corp_id)
-            if 0 <= president_id < num_players:
-                player_tok = TOKEN_PLAYER_START + president_id
-                buffer[<int>REL_PLAYER_PRESIDENT_OF_CORP, player_tok, corp_tok] = 1
-                buffer[<int>REL_CORP_PRESIDENT_PLAYER, corp_tok, player_tok] = 1
+                if player_id == president_id and 0 <= president_id < num_players:
+                    buffer[
+                        <int>REL_PLAYER_PRESIDENT_OF_CORP,
+                        player_tok,
+                        corp_tok,
+                    ] = 1
+                    buffer[
+                        <int>REL_CORP_PRESIDENT_PLAYER,
+                        corp_tok,
+                        player_tok,
+                    ] = 1
+                else:
+                    buffer[
+                        <int>REL_PLAYER_OWNS_CORP_SHARES,
+                        player_tok,
+                        corp_tok,
+                    ] = 1
+                    buffer[
+                        <int>REL_CORP_HAS_PLAYER_SHAREHOLDER,
+                        corp_tok,
+                        player_tok,
+                    ] = 1
 
 
 cdef int _fill_relation_coords(
@@ -543,45 +561,46 @@ cdef int _fill_relation_coords(
                     )
                     break
 
-    # Player/corp shareholding and presidency.
+    # Player/corp shareholding and presidency. Use exactly one relation pair
+    # for each positive player/corp holding.
     for corp_id in range(NUM_CORPS):
         corp_tok = TOKEN_CORP_START + corp_id
+        president_id = -1
+        if not corp_is_in_receivership(state, corp_id):
+            president_id = corp_president_id(state, corp_id)
         for player_id in range(num_players):
             player_tok = TOKEN_PLAYER_START + player_id
             if _player_shares(state, player_id, corp_id) > 0:
-                count = _append_relation_coord(
-                    coords,
-                    count,
-                    <int>REL_PLAYER_OWNS_CORP_SHARES,
-                    player_tok,
-                    corp_tok,
-                )
-                count = _append_relation_coord(
-                    coords,
-                    count,
-                    <int>REL_CORP_HAS_PLAYER_SHAREHOLDER,
-                    corp_tok,
-                    player_tok,
-                )
-
-        if not corp_is_in_receivership(state, corp_id):
-            president_id = corp_president_id(state, corp_id)
-            if 0 <= president_id < num_players:
-                player_tok = TOKEN_PLAYER_START + president_id
-                count = _append_relation_coord(
-                    coords,
-                    count,
-                    <int>REL_PLAYER_PRESIDENT_OF_CORP,
-                    player_tok,
-                    corp_tok,
-                )
-                count = _append_relation_coord(
-                    coords,
-                    count,
-                    <int>REL_CORP_PRESIDENT_PLAYER,
-                    corp_tok,
-                    player_tok,
-                )
+                if player_id == president_id and 0 <= president_id < num_players:
+                    count = _append_relation_coord(
+                        coords,
+                        count,
+                        <int>REL_PLAYER_PRESIDENT_OF_CORP,
+                        player_tok,
+                        corp_tok,
+                    )
+                    count = _append_relation_coord(
+                        coords,
+                        count,
+                        <int>REL_CORP_PRESIDENT_PLAYER,
+                        corp_tok,
+                        player_tok,
+                    )
+                else:
+                    count = _append_relation_coord(
+                        coords,
+                        count,
+                        <int>REL_PLAYER_OWNS_CORP_SHARES,
+                        player_tok,
+                        corp_tok,
+                    )
+                    count = _append_relation_coord(
+                        coords,
+                        count,
+                        <int>REL_CORP_HAS_PLAYER_SHAREHOLDER,
+                        corp_tok,
+                        player_tok,
+                    )
 
     return count
 
