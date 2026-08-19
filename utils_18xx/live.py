@@ -932,6 +932,14 @@ def _pending_acq_offers_for_user(
     return [offer] if offer is not None else []
 
 
+def _user_id_sort_key(user_id) -> tuple[int, int, str]:
+    """Sort numeric 18xx user IDs numerically, then other IDs as strings."""
+    try:
+        return (0, int(user_id), str(user_id))
+    except (TypeError, ValueError):
+        return (1, 0, str(user_id))
+
+
 def _pending_offer_has_cross_president_target(state, pending_offer: dict) -> bool:
     try:
         company_id = COMPANY_NAME_TO_ID[pending_offer["company"]]
@@ -1392,6 +1400,19 @@ def _select_eval_player_index(
             if 0 <= idx < num_players:
                 return idx
         raise ValueError(f"unknown player selector: {selector}")
+
+    if _is_18xx_acquisition_round(game_data):
+        offer_responders = []
+        for idx, player in enumerate(players):
+            user_id = player.get("id")
+            offers = _pending_acq_offers_for_user(session, user_id)
+            if any(
+                _pending_offer_has_cross_president_target(state, offer)
+                for offer in offers
+            ):
+                offer_responders.append((_user_id_sort_key(user_id), idx))
+        if offer_responders:
+            return min(offer_responders)[1]
 
     if _is_18xx_acquisition_round(game_data) or _is_18xx_closing_round(game_data):
         acting_indices = _acting_engine_player_indices(game_data, session)
@@ -2186,6 +2207,45 @@ class _SearchEngine:
                 f"acting={sorted(acting_indices)}"
             )
 
+        queued_offers = []
+        if _is_18xx_acquisition_round(game_data):
+            queued_offers = _sorted_pending_acq_offers(
+                [
+                    offer
+                    for offer in _pending_acq_offers_for_user(
+                        session,
+                        eval_user_id,
+                    )
+                    if _pending_offer_has_cross_president_target(state, offer)
+                ]
+            )
+        if queued_offers:
+            mismatches = session.validate_against_18xx(
+                game_data,
+                state,
+                context=f"eval game={game_data.get('id', '?')}",
+            )
+            if mismatches:
+                logger.error(
+                    "18xx/RSS replay mismatch before ACQ offer eval queue; "
+                    "refusing to evaluate:\n%s",
+                    format_state_mismatches(mismatches),
+                )
+                return False
+
+            previous_step_mode = state.step_mode
+            state.step_mode = True
+            try:
+                return self._print_pending_acq_offer_evaluations(
+                    state,
+                    game_data,
+                    eval_player_idx,
+                    num_players,
+                    queued_offers,
+                ) == len(queued_offers)
+            finally:
+                state.step_mode = previous_step_mode
+
         retargeted_acquisition = _retarget_acquisition_active_player_to_bot(
             game_data,
             state,
@@ -2820,6 +2880,46 @@ class _SearchEngine:
             return True
 
         raise RuntimeError("Exceeded live evaluation step limit")
+
+    def _print_pending_acq_offer_evaluations(
+        self,
+        state,
+        game_data: dict,
+        eval_player_idx: int,
+        num_players: int,
+        pending_offers: list[dict],
+    ) -> int:
+        """Print one fresh model/MCTS evaluation for every pending ACQ offer."""
+        printed = 0
+        total = len(pending_offers)
+        for offer_idx, offer in enumerate(pending_offers, start=1):
+            if not _represent_pending_cross_president_offer(
+                state,
+                offer,
+                eval_player_idx,
+            ):
+                logger.info(
+                    "Skipping unrepresentable pending ACQ eval offer: %s",
+                    offer,
+                )
+                continue
+
+            logger.info(
+                "Evaluating pending ACQ offer %d/%d for P%d: %s",
+                offer_idx,
+                total,
+                eval_player_idx,
+                offer,
+            )
+            if self._print_live_evaluation(
+                state,
+                game_data,
+                eval_player_idx,
+                num_players,
+            ):
+                printed += 1
+
+        return printed
 
     def _reuse_root_matches_state(self, reuse_root, state) -> bool:
         if reuse_root is None or reuse_root.state_idx < 0:

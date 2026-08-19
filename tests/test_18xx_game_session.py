@@ -882,7 +882,7 @@ def test_acq_sync_does_not_accept_interleaved_declined_offer():
     assert not COMPANIES[mhe_id].is_in_corp_acquisition(state, vm_id)
 
 
-def test_acq_sync_does_not_accept_extractor_pending_offer_before_later_offer():
+def test_acq_sync_advances_between_simultaneous_pending_offers_without_accepting():
     state = GameState(3, acq_same_president=False)
     state.initialize_game(3, seed=42)
 
@@ -954,13 +954,108 @@ def test_acq_sync_does_not_accept_extractor_pending_offer_before_later_offer():
     assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
     assert TURN.get_active_player(state) == 2
     assert TURN.get_active_corp(state) == sm_id
-    assert TURN.get_active_company(state) == bme_id
+    assert TURN.get_active_company(state) == kme_id
     assert TURN.get_acq_offer_corp(state) == sm_id
-    assert TURN.get_acq_offer_price(state) == COMPANIES[bme_id].get_low_price()
+    assert TURN.get_acq_offer_price(state) == COMPANIES[kme_id].get_low_price()
     assert COMPANIES[bme_id].is_owned_by_corp(state, pr_id)
+    assert COMPANIES[kme_id].is_owned_by_corp(state, pr_id)
     assert not COMPANIES[bme_id].is_in_corp_acquisition(state, sm_id)
+    assert not COMPANIES[kme_id].is_in_corp_acquisition(state, sm_id)
     assert CORPS[sm_id].get_cash(state) == 100
     assert CORPS[pr_id].get_cash(state) == 26
+
+
+def test_acq_sync_cancels_superseded_offer_and_replays_later_acquisitions():
+    state = GameState(3, acq_same_president=False)
+    state.initialize_game(3, seed=42)
+
+    sm_id = CORP_NAMES.index("SM")
+    vm_id = CORP_NAMES.index("VM")
+    si_id = CORP_NAMES.index("SI")
+    pr_id = CORP_NAMES.index("PR")
+    bme_id = COMPANY_NAME_TO_ID["BME"]
+    kme_id = COMPANY_NAME_TO_ID["KME"]
+
+    float_corp_for_test(state, corp_id=sm_id, player_id=0, par_index=10)
+    float_corp_for_test(state, corp_id=vm_id, player_id=1, par_index=10)
+    float_corp_for_test(state, corp_id=si_id, player_id=2, par_index=10)
+    float_corp_for_test(
+        state,
+        corp_id=pr_id,
+        company_id=COMPANY_NAME_TO_ID["AKE"],
+        player_id=2,
+        par_index=10,
+    )
+    give_company_to_corp(state, bme_id, si_id)
+    give_company_to_corp(state, kme_id, si_id)
+    for corp_id in (sm_id, vm_id, pr_id):
+        CORPS[corp_id].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+
+    sm_offer = {
+        "id": 10,
+        "type": "offer",
+        "entity": 101,
+        "entity_type": "player",
+        "corporation": "SM",
+        "company": "BME",
+        "price": COMPANIES[bme_id].get_low_price(),
+    }
+    vm_offer = {
+        "id": 11,
+        "type": "offer",
+        "entity": 202,
+        "entity_type": "player",
+        "corporation": "VM",
+        "company": "KME",
+        "price": COMPANIES[kme_id].get_low_price(),
+    }
+    vm_accept = {
+        "id": 12,
+        "type": "respond",
+        "entity": 303,
+        "entity_type": "player",
+        "corporation": "VM",
+        "company": "KME",
+        "accept": "true",
+    }
+    pr_offer = {
+        "id": 13,
+        "type": "offer",
+        "entity": 303,
+        "entity_type": "player",
+        "corporation": "PR",
+        "company": "BME",
+        "price": COMPANIES[bme_id].get_low_price(),
+    }
+
+    session = GameSession(3)
+    session._player_ids = [101, 202, 303]
+    session._extract_records_by_action_id = {
+        10: {"offers": [sm_offer]},
+        11: {"offers": [sm_offer, vm_offer]},
+        12: {"offers": [sm_offer]},
+        13: {"offers": []},
+    }
+    session._last_extract_record = session._extract_records_by_action_id[13]
+
+    next_idx = session._sync_acq_round(
+        state,
+        [sm_offer, vm_offer, vm_accept, pr_offer],
+        0,
+    )
+
+    assert next_idx == 4
+    assert (
+        COMPANIES[bme_id].is_owned_by_corp(state, pr_id)
+        or COMPANIES[bme_id].is_in_corp_acquisition(state, pr_id)
+    )
+    assert (
+        COMPANIES[kme_id].is_owned_by_corp(state, vm_id)
+        or COMPANIES[kme_id].is_in_corp_acquisition(state, vm_id)
+    )
+    assert not COMPANIES[bme_id].is_owned_by_corp(state, sm_id)
+    assert not COMPANIES[bme_id].is_in_corp_acquisition(state, sm_id)
 
 
 def test_acq_sync_replays_declined_fi_preemption_before_original_buy():

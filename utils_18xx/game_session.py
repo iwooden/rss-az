@@ -1116,18 +1116,16 @@ class GameSession:
                         idx,
                         pending_offer,
                     )
-                    if (
-                        future_response is None
-                        and self._extractor_has_pending_offer(pending_offer)
-                    ):
-                        # Live 18xx may expose several simultaneous offers.
-                        # If this one is still pending, stop replay here rather
-                        # than treating the next offer as an implicit accept.
-                        return len(actions)
-                    if (
-                        future_response is not None
-                        and not self._response_accepts(future_response)
-                    ):
+                    if future_response is None:
+                        # 18xx may keep several offers open simultaneously,
+                        # then clear an older one implicitly when the responder
+                        # passes or the target company is acquired elsewhere.
+                        # RSS can represent only one offer at a time, so drop
+                        # the older unresolved context and continue replaying.
+                        # Any offers still live in the latest snapshot are
+                        # reconstructed individually by the live server.
+                        self._cancel_pending_acq_offer(state)
+                    elif not self._response_accepts(future_response):
                         self._cancel_pending_acq_offer(state)
                     else:
                         self._resolve_acq_offer(

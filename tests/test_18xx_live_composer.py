@@ -674,6 +674,45 @@ def test_eval_selection_defaults_to_lowest_acting_engine_player():
     assert selected == 0
 
 
+def test_eval_selection_prefers_lowest_user_id_with_pending_acq_offers():
+    state = _queued_offer_state()
+    session = _FakeSession(player_ids=[303, 101, 202])
+    offers_by_user = {
+        "303": [{
+            "responder_id": 303,
+            "corporation": "SM",
+            "company": "KME",
+            "price": 3,
+        }],
+        "101": [{
+            "responder_id": 101,
+            "corporation": "SI",
+            "company": "BME",
+            "price": 2,
+        }],
+    }
+    session.pending_offers_for_user_id = (
+        lambda user_id: offers_by_user.get(str(user_id), [])
+    )
+
+    selected = _select_eval_player_index(
+        {
+            "id": 1,
+            "round": "Acquisition",
+            "acting": [303, 101],
+            "players": [
+                {"id": 303, "name": "p1"},
+                {"id": 101, "name": "p2"},
+                {"id": 202, "name": "p3"},
+            ],
+        },
+        session,
+        state,
+    )
+
+    assert selected == 1
+
+
 def test_eval_selection_ignores_stale_ordered_round_acting():
     state = GameState(3)
     state.initialize_game(3, seed=42)
@@ -900,6 +939,88 @@ def test_search_engine_eval_retargets_acquisition_to_selected_actor():
     assert calls[0][2:] == (1, 3)
     assert TURN.get_active_player(state) == 0
     assert not state.step_mode
+
+
+def test_search_engine_eval_prints_each_offer_for_selected_responder():
+    state = _queued_offer_state()
+    session = _FakeProcessTurnSession(
+        state,
+        player_ids=[303, 101, 202],
+    )
+    offers_by_user = {
+        "303": [{
+            "responder_id": 303,
+            "proposer_id": 202,
+            "corporation": "SM",
+            "company": "KME",
+            "price": 3,
+        }],
+        "101": [
+            {
+                "responder_id": 101,
+                "proposer_id": 303,
+                "corporation": "SM",
+                "company": "KME",
+                "price": 3,
+            },
+            {
+                "responder_id": 101,
+                "proposer_id": 202,
+                "corporation": "SI",
+                "company": "BME",
+                "price": 2,
+            },
+        ],
+    }
+    session.pending_offers_for_user_id = (
+        lambda user_id: offers_by_user.get(str(user_id), [])
+    )
+
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.max_players = 3
+    engine.validate_player_count = lambda num_players: None
+    engine._session_for = lambda game_data: session
+    seen = []
+
+    def print_live_evaluation(
+        planned_state,
+        game_data,
+        eval_player_idx,
+        num_players,
+    ):
+        del game_data, num_players
+        seen.append((
+            eval_player_idx,
+            COMPANY_NAMES[TURN.get_active_company(planned_state)],
+            CORP_NAMES[TURN.get_active_corp(planned_state)],
+            TURN.get_acq_offer_price(planned_state),
+        ))
+        return True
+
+    engine._print_live_evaluation = print_live_evaluation
+    game_data = {
+        "id": 1,
+        "round": "Acquisition",
+        "acting": [303, 101],
+        "players": [
+            {"id": 303, "name": "p1"},
+            {"id": 101, "name": "p2"},
+            {"id": 202, "name": "p3"},
+        ],
+    }
+
+    assert engine.evaluate_turn(game_data)
+    assert seen == [
+        (1, "BME", "SI", 2),
+        (1, "KME", "SM", 3),
+    ]
+
+    seen.clear()
+    assert engine.evaluate_turn(
+        game_data,
+        EvalRequest("1", player_id="303"),
+    )
+    assert seen == [(0, "KME", "SM", 3)]
 
 
 def test_composer_rejects_incomplete_split_action():
