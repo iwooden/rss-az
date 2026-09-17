@@ -1,3 +1,5 @@
+from typing import cast
+
 import numpy as np
 import pytest
 
@@ -332,11 +334,11 @@ def test_acquisition_compatibility_rejects_pending_18xx_offer():
     state = GameState(2)
     action = _acquisition_compatibility_action(
         {"round": "Acquisition", "acting": [202]},
-        _FakeSession({
+        cast(GameSession, _FakeSession({
             "responder_id": 202,
             "corporation": "PR",
             "company": "OL",
-        }),
+        })),
         state,
         bot_user_id=202,
         engine_player_idx=1,
@@ -365,12 +367,12 @@ def test_acquisition_compatibility_allows_represented_cross_president_offer_when
 
     action = _acquisition_compatibility_action(
         {"round": "Acquisition", "acting": [202]},
-        _FakeSession({
+        cast(GameSession, _FakeSession({
             "responder_id": 202,
             "corporation": "PR",
             "company": "OL",
             "price": price,
-        }),
+        })),
         state,
         bot_user_id=202,
         engine_player_idx=1,
@@ -401,12 +403,12 @@ def test_acquisition_compatibility_still_rejects_fi_offer_when_cross_pres_enable
 
     action = _acquisition_compatibility_action(
         {"round": "Acquisition", "acting": [202]},
-        _FakeSession({
+        cast(GameSession, _FakeSession({
             "responder_id": 202,
             "corporation": "SM",
             "company": "B",
             "price": price,
-        }),
+        })),
         state,
         bot_user_id=202,
         engine_player_idx=1,
@@ -557,13 +559,13 @@ def test_cross_president_acq_offer_prior_adapter_leaves_fi_priors_unchanged():
     np.testing.assert_allclose(dense_priors[0, slots], [0.9, 0.1])
 
 
-def test_search_engine_threads_cross_president_flag_to_acq_compatibility():
+def test_search_engine_threads_cross_president_flag_to_acq_compatibility(monkeypatch):
     state = GameState(3)
     state.initialize_game(3, seed=42)
     engine = _SearchEngine.__new__(_SearchEngine)
     engine.allow_cross_president_offers = True
     engine.validate_player_count = lambda num_players: None
-    engine._session_for = lambda game_data: _FakeProcessTurnSession(
+    monkeypatch.setattr(engine, "_session_for", lambda game_data: _FakeProcessTurnSession(
         state,
         offer={
             "responder_id": 202,
@@ -571,7 +573,7 @@ def test_search_engine_threads_cross_president_flag_to_acq_compatibility():
             "company": "OL",
         },
         player_ids=[101, 202, 303],
-    )
+    ))
 
     actions = engine.process_turn(
         {
@@ -603,7 +605,7 @@ def test_acquisition_compatibility_passes_when_rss_phase_has_advanced():
     state = GameState(2)
     action = _acquisition_compatibility_action(
         {"round": "Acquisition", "acting": [101]},
-        _FakeSession(),
+        cast(GameSession, _FakeSession()),
         state,
         bot_user_id=101,
         engine_player_idx=0,
@@ -624,7 +626,7 @@ def test_acquisition_compatibility_does_not_pass_live_select_corp_mismatch():
 
     action = _acquisition_compatibility_action(
         {"round": "Acquisition", "acting": [202]},
-        _FakeSession(player_ids=[101, 202, 303]),
+        cast(GameSession, _FakeSession(player_ids=[101, 202, 303])),
         state,
         bot_user_id=202,
         engine_player_idx=1,
@@ -667,14 +669,14 @@ def test_eval_selection_defaults_to_lowest_acting_engine_player():
                 {"id": 303, "name": "p3"},
             ],
         },
-        session,
+        cast(GameSession, session),
         state,
     )
 
     assert selected == 0
 
 
-def test_eval_selection_prefers_lowest_user_id_with_pending_acq_offers():
+def test_eval_selection_prefers_lowest_user_id_with_pending_acq_offers(monkeypatch):
     state = _queued_offer_state()
     session = _FakeSession(player_ids=[303, 101, 202])
     offers_by_user = {
@@ -691,9 +693,7 @@ def test_eval_selection_prefers_lowest_user_id_with_pending_acq_offers():
             "price": 2,
         }],
     }
-    session.pending_offers_for_user_id = (
-        lambda user_id: offers_by_user.get(str(user_id), [])
-    )
+    monkeypatch.setattr(session, "pending_offers_for_user_id", lambda user_id: offers_by_user.get(str(user_id), []), raising=False)
 
     selected = _select_eval_player_index(
         {
@@ -706,7 +706,7 @@ def test_eval_selection_prefers_lowest_user_id_with_pending_acq_offers():
                 {"id": 202, "name": "p3"},
             ],
         },
-        session,
+        cast(GameSession, session),
         state,
     )
 
@@ -730,7 +730,7 @@ def test_eval_selection_ignores_stale_ordered_round_acting():
                 {"id": 303, "name": "p3"},
             ],
         },
-        session,
+        cast(GameSession, session),
         state,
     )
 
@@ -752,25 +752,25 @@ def test_eval_selection_resolves_player_selectors():
 
     assert _select_eval_player_index(
         game_data,
-        session,
+        cast(GameSession, session),
         state,
         EvalRequest("1", player="Alice"),
     ) == 1
     assert _select_eval_player_index(
         game_data,
-        session,
+        cast(GameSession, session),
         state,
         EvalRequest("1", player="P2"),
     ) == 2
     assert _select_eval_player_index(
         game_data,
-        session,
+        cast(GameSession, session),
         state,
         EvalRequest("1", player_id="202"),
     ) == 1
 
 
-def test_search_engine_retargets_acquisition_before_compatibility_pass():
+def test_search_engine_retargets_acquisition_before_compatibility_pass(monkeypatch):
     state = GameState(3)
     state.initialize_game(3, seed=42)
     state.acq_same_president = True
@@ -791,10 +791,10 @@ def test_search_engine_retargets_acquisition_before_compatibility_pass():
     engine = _SearchEngine.__new__(_SearchEngine)
     engine.allow_cross_president_offers = False
     engine.validate_player_count = lambda num_players: None
-    engine._session_for = lambda game_data: _FakeProcessTurnSession(
+    monkeypatch.setattr(engine, "_session_for", lambda game_data: _FakeProcessTurnSession(
         state,
         player_ids=[101, 202, 303],
-    )
+    ))
 
     def plan_live_actions(
         planned_state,
@@ -807,7 +807,7 @@ def test_search_engine_retargets_acquisition_before_compatibility_pass():
         assert TURN.get_active_player(planned_state) == 1
         return [{"type": "planned-acquisition"}]
 
-    engine._plan_live_actions = plan_live_actions
+    monkeypatch.setattr(engine, "_plan_live_actions", plan_live_actions)
 
     actions = engine.process_turn(
         {
@@ -828,7 +828,7 @@ def test_search_engine_retargets_acquisition_before_compatibility_pass():
     assert actions == [{"type": "planned-acquisition"}]
 
 
-def test_search_engine_plans_bot_offer_queue_before_active_player_check():
+def test_search_engine_plans_bot_offer_queue_before_active_player_check(monkeypatch):
     state = _queued_offer_state()
     TURN.enter_acq_offer(
         state,
@@ -842,7 +842,7 @@ def test_search_engine_plans_bot_offer_queue_before_active_player_check():
     engine = _SearchEngine.__new__(_SearchEngine)
     engine.allow_cross_president_offers = True
     engine.validate_player_count = lambda num_players: None
-    engine._session_for = lambda game_data: _FakeProcessTurnSession(
+    monkeypatch.setattr(engine, "_session_for", lambda game_data: _FakeProcessTurnSession(
         state,
         offer={
             "responder_id": 303,
@@ -852,7 +852,7 @@ def test_search_engine_plans_bot_offer_queue_before_active_player_check():
             "price": 4,
         },
         player_ids=[101, 202, 303],
-    )
+    ))
 
     def plan_queue(
         planned_state,
@@ -878,7 +878,7 @@ def test_search_engine_plans_bot_offer_queue_before_active_player_check():
         }]
         return [{"type": "queued-offer-response"}]
 
-    engine._plan_pending_acq_offer_queue = plan_queue
+    monkeypatch.setattr(engine, "_plan_pending_acq_offer_queue", plan_queue)
 
     actions = engine.process_turn(
         {
@@ -899,7 +899,7 @@ def test_search_engine_plans_bot_offer_queue_before_active_player_check():
     assert actions == [{"type": "queued-offer-response"}]
 
 
-def test_search_engine_eval_retargets_acquisition_to_selected_actor():
+def test_search_engine_eval_retargets_acquisition_to_selected_actor(monkeypatch):
     state = GameState(3)
     state.initialize_game(3, seed=42)
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
@@ -909,7 +909,7 @@ def test_search_engine_eval_retargets_acquisition_to_selected_actor():
     engine = _SearchEngine.__new__(_SearchEngine)
     engine.max_players = 3
     engine.validate_player_count = lambda num_players: None
-    engine._session_for = lambda game_data: session
+    monkeypatch.setattr(engine, "_session_for", lambda game_data: session)
     calls = []
 
     def print_live_evaluation(planned_state, game_data, eval_player_idx, num_players):
@@ -918,7 +918,7 @@ def test_search_engine_eval_retargets_acquisition_to_selected_actor():
         assert planned_state.step_mode
         return True
 
-    engine._print_live_evaluation = print_live_evaluation
+    monkeypatch.setattr(engine, "_print_live_evaluation", print_live_evaluation)
 
     printed = engine.evaluate_turn(
         {
@@ -941,7 +941,7 @@ def test_search_engine_eval_retargets_acquisition_to_selected_actor():
     assert not state.step_mode
 
 
-def test_search_engine_eval_prints_each_offer_for_selected_responder():
+def test_search_engine_eval_prints_each_offer_for_selected_responder(monkeypatch):
     state = _queued_offer_state()
     session = _FakeProcessTurnSession(
         state,
@@ -972,14 +972,12 @@ def test_search_engine_eval_prints_each_offer_for_selected_responder():
             },
         ],
     }
-    session.pending_offers_for_user_id = (
-        lambda user_id: offers_by_user.get(str(user_id), [])
-    )
+    monkeypatch.setattr(session, "pending_offers_for_user_id", lambda user_id: offers_by_user.get(str(user_id), []), raising=False)
 
     engine = _SearchEngine.__new__(_SearchEngine)
     engine.max_players = 3
     engine.validate_player_count = lambda num_players: None
-    engine._session_for = lambda game_data: session
+    monkeypatch.setattr(engine, "_session_for", lambda game_data: session)
     seen = []
 
     def print_live_evaluation(
@@ -997,7 +995,7 @@ def test_search_engine_eval_prints_each_offer_for_selected_responder():
         ))
         return True
 
-    engine._print_live_evaluation = print_live_evaluation
+    monkeypatch.setattr(engine, "_print_live_evaluation", print_live_evaluation)
     game_data = {
         "id": 1,
         "round": "Acquisition",
@@ -1155,7 +1153,7 @@ def test_unordered_round_alignment_consumes_nonacting_closing_pass():
 
     applied = _align_unordered_round_to_18xx_actor(
         {"acting": [202]},
-        _FakeSession(player_ids=[101, 202, 303]),
+        cast(GameSession, _FakeSession(player_ids=[101, 202, 303])),
         state,
         bot_player_indices={1},
     )
@@ -1182,7 +1180,7 @@ def test_unordered_round_alignment_prefers_live_acting_over_extractor_actor():
 
     applied = _align_unordered_round_to_18xx_actor(
         {"acting": [202]},
-        session,
+        cast(GameSession, session),
         state,
         bot_player_indices={1},
     )
@@ -1209,7 +1207,7 @@ def test_unordered_round_alignment_falls_back_to_extractor_closing_actor():
 
     applied = _align_unordered_round_to_18xx_actor(
         {"acting": []},
-        session,
+        cast(GameSession, session),
         state,
         bot_player_indices={1},
     )
@@ -1251,7 +1249,7 @@ def test_planned_post_validation_preserves_unordered_closing_actors():
 
     game_data = _planned_post_validation_game_data(
         {"round": "Closing", "acting": [101, 202]},
-        session,
+        cast(GameSession, session),
     )
 
     assert game_data["acting"] == [101, 202, 303]
@@ -1274,7 +1272,7 @@ def test_planned_post_validation_removes_planned_closing_pass_actor():
                 "entity_type": "player",
             }],
         },
-        session,
+        cast(GameSession, session),
     )
 
     assert game_data["acting"] == [101, 303]
@@ -1289,7 +1287,7 @@ def test_planned_post_validation_narrows_ordered_round_actor():
 
     game_data = _planned_post_validation_game_data(
         {"round": "Investment", "acting": [101, 202]},
-        session,
+        cast(GameSession, session),
     )
 
     assert game_data["acting"] == [303]
@@ -1306,7 +1304,7 @@ def test_unordered_round_alignment_does_not_pass_bot_player():
 
     applied = _align_unordered_round_to_18xx_actor(
         {"acting": [202]},
-        _FakeSession(player_ids=[101, 202, 303]),
+        cast(GameSession, _FakeSession(player_ids=[101, 202, 303])),
         state,
         bot_player_indices={0, 1},
     )
@@ -1724,7 +1722,7 @@ def test_dividend_compatibility_posts_already_satisfied_single_choice():
 
     action = _dividend_compatibility_action(
         {"round": "Dividends", "acting": [101]},
-        _FakeSession(active_corp="DA"),
+        cast(GameSession, _FakeSession(active_corp="DA")),
         state,
         bot_user_id=101,
         engine_player_idx=0,
@@ -1751,7 +1749,7 @@ def test_dividend_compatibility_ignores_normal_active_dividend_choice():
 
     action = _dividend_compatibility_action(
         {"round": "Dividends", "acting": [101]},
-        _FakeSession(active_corp="DA"),
+        cast(GameSession, _FakeSession(active_corp="DA")),
         state,
         bot_user_id=101,
         engine_player_idx=0,
@@ -2108,7 +2106,7 @@ def test_post_validation_applies_expected_program_share_auto_pass():
         state,
         synthetic_game_data,
         original_action_count=0,
-        session=session,
+        session=cast(GameSession, session),
     )
 
     assert applied

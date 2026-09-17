@@ -6,6 +6,7 @@ from dataclasses import fields, is_dataclass
 import hashlib
 import importlib
 import importlib.abc
+import importlib.machinery
 import importlib.util
 import os
 from pathlib import Path

@@ -34,6 +34,8 @@ U_DIM = int(UNIFIED_LOGIT_DIM)
 class SmokeTransformerModel(torch.nn.Module):
     """Small transformer-contract model for mixed player-count smoke tests."""
 
+    _slot_ids: torch.Tensor
+
     def __init__(self, num_players: int = MAX_PLAYERS) -> None:
         super().__init__()
         self.cfg = SimpleNamespace(num_players=num_players)

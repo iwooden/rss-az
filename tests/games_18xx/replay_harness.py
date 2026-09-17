@@ -309,7 +309,7 @@ class ReplayHarness:
         get_active_player = getattr(TURN, "get_active_player", None)
         get_auction_price = getattr(TURN, "get_auction_price", None)
         get_auction_high_bidder = getattr(TURN, "get_auction_high_bidder", None)
-        if not all(callable(fn) for fn in (get_active_player, get_auction_price, get_auction_high_bidder)):
+        if not (callable(get_active_player) and callable(get_auction_price) and callable(get_auction_high_bidder)):
             return False
 
         entity = action.get("entity")
@@ -318,15 +318,15 @@ class ReplayHarness:
         except (KeyError, TypeError, ValueError):
             return False
 
-        high_bidder = get_auction_high_bidder(state)
-        active_player = get_active_player(state)
+        high_bidder = TURN.get_auction_high_bidder(state)
+        active_player = TURN.get_active_player(state)
         if high_bidder < 0 or active_player < 0:
             return False
         if high_bidder >= len(self._engine_index_to_player_id) or active_player >= len(self._engine_index_to_player_id):
             return False
         return (
             self._engine_index_to_player_id[high_bidder] == entity
-            and get_auction_price(state) == price
+            and TURN.get_auction_price(state) == price
             and self._engine_index_to_player_id[active_player] != entity
         )
 

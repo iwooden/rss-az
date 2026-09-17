@@ -50,10 +50,10 @@ def _parse_int_csv(value: str) -> list[int]:
         ) from exc
     if not values:
         raise argparse.ArgumentTypeError("expected at least one player count")
-    for value in values:
-        if value not in (3, 4, 5):
+    for count in values:
+        if count not in (3, 4, 5):
             raise argparse.ArgumentTypeError(
-                f"supported strategy counts are 3, 4, and 5; got {value}"
+                f"supported strategy counts are 3, 4, and 5; got {count}"
             )
     return sorted(set(values))
 
@@ -339,7 +339,7 @@ class _StrategyShardWriter:
         path = self.output_dir / f"strategy_{num_players}p_shard_{shard_idx:05d}.npz"
         payload = self._payload(records)
         save_fn = np.savez_compressed if self.compress else np.savez
-        save_fn(path, **payload)
+        save_fn(path, allow_pickle=False, **payload)
         self.files.append(path.name)
         total_moves = int(payload["states"].shape[0])
         print(
@@ -350,10 +350,14 @@ class _StrategyShardWriter:
 
     def _payload(self, records: list[GameRecord]) -> dict[str, np.ndarray]:
         traces = []
+        final_states: list[np.ndarray] = []
         for record in records:
             if record.strategy_trace is None:
                 raise ValueError("strategy shard received a record without trace data")
             traces.append(record.strategy_trace)
+            if record.final_state is None:
+                raise ValueError("strategy shard received a record without a final state")
+            final_states.append(record.final_state)
 
         game_lengths = np.asarray([r.num_examples for r in records], dtype=np.int32)
         starts = np.zeros(len(records), dtype=np.int64)
@@ -381,7 +385,7 @@ class _StrategyShardWriter:
 
         return {
             "states": concat_record("states"),
-            "final_states": np.stack([r.final_state for r in records]).astype(np.int16),
+            "final_states": np.stack(final_states).astype(np.int16),
             "phase_ids": concat_record("phase_ids"),
             "legal_masks": concat_record("legal_masks"),
             "nn_policy_pct": concat_trace("nn_policy_pct"),

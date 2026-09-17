@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from typing import cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
@@ -964,7 +965,7 @@ def _pending_acq_offers_for_user(
     """Return all pending 18xx ACQ offers for ``user_id``."""
     getter = getattr(session, "pending_offers_for_user_id", None)
     if callable(getter):
-        return list(getter(user_id))
+        return list(session.pending_offers_for_user_id(user_id))
     offer = session.pending_offer_for_user_id(user_id)
     return [offer] if offer is not None else []
 
@@ -1921,7 +1922,10 @@ class _LiveActionComposer:
         return game_data
 
     def _append_bid(self, intent: dict) -> None:
-        company = intent.get("company") or self._pending_bid["company"]
+        company = intent.get("company")
+        if not company:
+            assert self._pending_bid is not None
+            company = self._pending_bid["company"]
         self.actions.append({
             "type": "bid",
             "entity": self.bot_user_id,
@@ -2123,7 +2127,7 @@ class _SearchEngine:
             logger.info(
                 f"Compiling live model with torch.compile: {compile_kwargs}"
             )
-            model = torch.compile(model, **compile_kwargs)  # type: ignore[assignment]
+            model = cast(torch.nn.Module, torch.compile(model, **compile_kwargs))
             model.eval()
         elif compile_model:
             logger.info(

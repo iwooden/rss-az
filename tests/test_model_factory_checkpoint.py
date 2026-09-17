@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+from multiprocessing.queues import Queue
 
 import pytest
 import torch
@@ -15,7 +16,7 @@ from train.checkpoint import load_model_from_checkpoint, save_checkpoint
 from train.config import TrainingConfig
 
 
-def _put_model_class_name(model_cls: type[torch.nn.Module], queue: object) -> None:
+def _put_model_class_name(model_cls: type[torch.nn.Module], queue: Queue) -> None:
     queue.put(model_cls.__name__)
 
 
@@ -62,7 +63,9 @@ def test_factory_instantiates_custom_sized_transformer_from_config() -> None:
     assert model.cfg.num_layers == 2
     assert model.cfg.ff_mult == 1.1
     assert len(model.blocks) == 2
-    assert model.blocks[0].ffn_gate.out_features == 128
+    gate = getattr(model.blocks[0], "ffn_gate")
+    assert isinstance(gate, torch.nn.Linear)
+    assert gate.out_features == 128
 
 
 def test_factory_instantiates_mixed_transformer_at_max_player_capacity() -> None:
@@ -90,18 +93,19 @@ def test_factory_instantiates_transformer_from_model_path() -> None:
         price_slot_residual_scale=0.0,
     )
     model = create_model(config)
+    cfg = getattr(model, "cfg")
 
     assert model.__class__.__name__ == "RSSTransformerNet"
     assert model.__class__ is not RSSTransformerNet
-    assert model.cfg.num_players == config.num_players
-    assert model.cfg.d_model == config.d_model
-    assert model.cfg.d_proj == config.d_proj
-    assert model.cfg.num_heads == config.num_heads
-    assert model.cfg.num_layers == config.num_layers
-    assert model.cfg.ff_mult == config.ff_mult
-    assert model.cfg.phase_conditioning is config.phase_conditioning
-    assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
-    assert not hasattr(model.cfg, "price_slot_residual_scale")
+    assert cfg.num_players == config.num_players
+    assert cfg.d_model == config.d_model
+    assert cfg.d_proj == config.d_proj
+    assert cfg.num_heads == config.num_heads
+    assert cfg.num_layers == config.num_layers
+    assert cfg.ff_mult == config.ff_mult
+    assert cfg.phase_conditioning is config.phase_conditioning
+    assert cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
+    assert not hasattr(cfg, "price_slot_residual_scale")
     assert any(name.endswith("phase_mod.weight") for name, _ in model.named_parameters())
 
 
@@ -116,15 +120,18 @@ def test_factory_threads_custom_size_into_model_path_transformer() -> None:
         ff_mult=1.1,
     )
     model = create_model(config)
+    cfg = getattr(model, "cfg")
 
     assert model.__class__.__name__ == "RSSTransformerNet"
     assert model.__class__ is not RSSTransformerNet
-    assert model.cfg.d_model == 64
-    assert model.cfg.d_proj == 16
-    assert model.cfg.num_heads == 4
-    assert model.cfg.num_layers == 1
-    assert model.cfg.ff_mult == 1.1
-    assert model.blocks[0].ffn_gate.out_features == 128
+    assert cfg.d_model == 64
+    assert cfg.d_proj == 16
+    assert cfg.num_heads == 4
+    assert cfg.num_layers == 1
+    assert cfg.ff_mult == 1.1
+    gate = getattr(getattr(model, "blocks")[0], "ffn_gate")
+    assert isinstance(gate, torch.nn.Linear)
+    assert gate.out_features == 128
 
 
 def test_factory_instantiates_mixed_model_path_transformer_at_max_player_capacity() -> None:
@@ -136,10 +143,11 @@ def test_factory_instantiates_mixed_model_path_transformer_at_max_player_capacit
         model_path="nn/transformer-v2.py",
     )
     model = create_model(config)
+    cfg = getattr(model, "cfg")
 
     assert model.__class__.__name__ == "RSSTransformerNet"
     assert model.__class__ is not RSSTransformerNet
-    assert model.cfg.num_players == config.effective_max_players
+    assert cfg.num_players == config.effective_max_players
 
 
 def test_factory_can_disable_model_path_phase_conditioning() -> None:
@@ -149,9 +157,10 @@ def test_factory_can_disable_model_path_phase_conditioning() -> None:
         phase_conditioning=False,
     )
     model = create_model(config)
+    cfg = getattr(model, "cfg")
 
-    assert model.cfg.phase_conditioning is False
-    assert model.phase_mod_diagnostics() == {}
+    assert cfg.phase_conditioning is False
+    assert getattr(model, "phase_mod_diagnostics")() == {}
     assert all("phase_mod" not in name for name, _ in model.named_parameters())
 
 
@@ -293,7 +302,9 @@ def test_checkpoint_reload_preserves_transformer_size(tmp_path) -> None:
     assert loaded_config.num_layers == config.num_layers
     assert loaded_config.ff_mult == config.ff_mult
     assert loaded.cfg.d_model == config.d_model
-    assert loaded.blocks[0].ffn_gate.out_features == 128
+    gate = getattr(loaded.blocks[0], "ffn_gate")
+    assert isinstance(gate, torch.nn.Linear)
+    assert gate.out_features == 128
 
 
 def test_checkpoint_reload_uses_model_path(tmp_path) -> None:

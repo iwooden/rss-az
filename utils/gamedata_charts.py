@@ -7,7 +7,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/rss-az-cython2-matplotlib")
 
@@ -17,6 +17,8 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import TwoSlopeNorm
 from matplotlib.patches import Patch, Rectangle
@@ -116,7 +118,7 @@ def _bar_colors(num_players: int) -> list[str]:
     return [POSITION_COLORS[i % len(POSITION_COLORS)] for i in range(num_players)]
 
 
-def _style_axis(ax: plt.Axes) -> None:
+def _style_axis(ax: Axes) -> None:
     ax.grid(axis="y", color="#d9d9d9", linewidth=0.8, alpha=0.8)
     ax.set_axisbelow(True)
     ax.spines["top"].set_visible(False)
@@ -124,8 +126,8 @@ def _style_axis(ax: plt.Axes) -> None:
 
 
 def _annotate_bars(
-    ax: plt.Axes,
-    bars: object,
+    ax: Axes,
+    bars: Iterable[Rectangle],
     values: np.ndarray,
     *,
     fmt: str,
@@ -157,7 +159,7 @@ def _annotate_bars(
         )
 
 
-def _save_figure(fig: plt.Figure, path: Path) -> Path:
+def _save_figure(fig: Figure, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)

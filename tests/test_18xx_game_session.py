@@ -1,6 +1,10 @@
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
+
+import numpy as np
+import pytest
 
 from core.data import COMPANY_NAME_TO_ID, COMPANY_NAMES, CORP_NAMES, GamePhases
 from core.driver import STATUS_INVALID_PY as STATUS_INVALID
@@ -11,6 +15,7 @@ from entities.fi import FI
 from entities.market import MARKET
 from entities.player import PLAYERS
 from entities.turn import TURN
+from mcts.evaluator import NNEvaluator
 from phases.acq_select_corp import setup_acquisition_phase_py
 from phases.ipo import setup_ipo_phase_py
 from tests.phases.helpers.finance import set_player_cashs
@@ -22,6 +27,7 @@ from tests.phases.helpers.ownership import (
 from tests.phases.conftest import draw_to_player, float_corp_for_test
 import utils_18xx.game_session as game_session_module
 from utils_18xx.action_parser import map_action
+from utils_18xx.analyze_replay import ReplayAnalyzerSession
 from utils_18xx.game_session import EXTRACTOR_PATH, GameSession
 from utils_18xx.replay_state import apply_action_sequence
 
@@ -32,7 +38,7 @@ def _new_state() -> GameState:
     return state
 
 
-def test_session_replays_18xx_bid_as_invest_and_bid_steps():
+def test_session_replays_18xx_bid_as_invest_and_bid_steps(monkeypatch):
     players = [
         {"id": 4, "name": "rss-az-3"},
         {"id": 3, "name": "rss-az-2"},
@@ -62,7 +68,7 @@ def test_session_replays_18xx_bid_as_invest_and_bid_steps():
     }
 
     session = GameSession(3)
-    session._run_extractor = lambda data: initial
+    monkeypatch.setattr(session, "_run_extractor", lambda data: initial)
 
     state = session.sync(game_data)
 
@@ -71,7 +77,7 @@ def test_session_replays_18xx_bid_as_invest_and_bid_steps():
     assert session.player_index_for_user_id(players[1]["id"]) == 1
 
 
-def test_new_game_sync_uses_initial_extractor_records_for_committed_ids():
+def test_new_game_sync_uses_initial_extractor_records_for_committed_ids(monkeypatch):
     players = [
         {"id": 4, "name": "rss-az-3"},
         {"id": 3, "name": "rss-az-2"},
@@ -92,7 +98,7 @@ def test_new_game_sync_uses_initial_extractor_records_for_committed_ids():
         calls.append(data)
         return initial
 
-    session._run_extractor = fake_run_extractor
+    monkeypatch.setattr(session, "_run_extractor", fake_run_extractor)
 
     session.sync({"id": "unit", "players": players, "actions": []})
 
@@ -156,6 +162,7 @@ def test_split_followup_replays_18xx_par_price_after_ipo_selection():
     }
 
     first_action = map_action(state, action, TURN.get_phase(state), session.layout)
+    assert first_action is not None
     assert apply_action_sequence(state, first_action) != STATUS_INVALID
     assert TURN.get_phase(state) == int(GamePhases.PHASE_PAR)
 
@@ -167,6 +174,78 @@ def test_split_followup_replays_18xx_par_price_after_ipo_selection():
 
     assert result != STATUS_INVALID
     assert TURN.get_phase(state) != int(GamePhases.PHASE_PAR)
+
+
+@pytest.mark.parametrize("logged", [False, True])
+def test_split_par_followup_rejects_different_company_without_changing_state(logged):
+    state = _new_state()
+    company_id = 14
+    give_company_to_player(state, company_id, 0)
+    set_player_cashs(state, {0: 100})
+    setup_ipo_phase_py(state)
+    if logged:
+        session = ReplayAnalyzerSession(Mock(spec=NNEvaluator), num_players=3, max_players=3)
+        followup = session._apply_split_action_followup_logged
+    else:
+        session = GameSession(3)
+        followup = session._apply_split_action_followup
+    action = {
+        "type": "par",
+        "entity": COMPANIES[company_id].name,
+        "entity_type": "company",
+        "corporation": CORP_NAMES[0],
+        "share_price": f"20,0,{MARKET.get_index_for_price(20)}",
+    }
+    first_action = map_action(state, action, TURN.get_phase(state), session.layout)
+    assert first_action is not None
+    assert apply_action_sequence(state, first_action) != STATUS_INVALID
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_PAR)
+    snapshot = state._array.copy()
+
+    action["entity"] = COMPANIES[company_id + 1].name
+    assert followup(state, action, GamePhases.PHASE_IPO) == STATUS_INVALID
+    np.testing.assert_array_equal(state._array, snapshot)
+
+
+def test_unmappable_acquisition_offer_rolls_back_partial_selection(monkeypatch):
+    state = _new_state()
+    corp_id = CORP_NAMES.index("SM")
+    company_id = COMPANY_NAME_TO_ID["SBB"]
+    float_corp_for_test(
+        state,
+        corp_id=corp_id,
+        company_id=COMPANY_NAME_TO_ID["MHE"],
+        player_id=0,
+        par_index=10,
+    )
+    give_company_to_fi(state, company_id)
+    give_company_to_fi(state, COMPANY_NAME_TO_ID["BY"])
+    CORPS[corp_id].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 0)
+    snapshot = state._array.copy()
+    session = GameSession(3)
+    offer = {
+        "type": "offer",
+        "corporation": "SM",
+        "company": "SBB",
+        "price": COMPANIES[company_id].get_high_price(),
+    }
+    calls = []
+
+    def map_first_step_only(state, action, phase, layout):
+        calls.append(phase)
+        if len(calls) == 1:
+            return map_action(state, action, phase, layout)
+        assert not np.array_equal(state._array, snapshot)
+        return None
+
+    monkeypatch.setattr(game_session_module, "map_action", map_first_step_only)
+    deferred = [(corp_id, company_id, 1)]
+    assert session._begin_acq_offer(state, offer, deferred) is False
+    assert len(calls) == 2
+    np.testing.assert_array_equal(state._array, snapshot)
+    assert deferred == [(corp_id, company_id, 1)]
 
 
 def test_split_bid_followup_accepts_forced_opening_bid_auto_apply():
@@ -189,6 +268,7 @@ def test_split_bid_followup_accepts_forced_opening_bid_auto_apply():
     }
 
     first_action = map_action(state, action, TURN.get_phase(state), session.layout)
+    assert first_action is not None
     assert apply_action_sequence(state, first_action) != STATUS_INVALID
     assert TURN.get_phase(state) == int(GamePhases.PHASE_BID)
     assert TURN.get_auction_price(state) == price
@@ -293,7 +373,7 @@ def test_share_owner_snapshot_keeps_adjustment_for_extractor_owner(monkeypatch):
     assert snapshot == (CORP_NAMES.index("SI"), 1, 2, 8)
 
 
-def test_session_consumes_closing_auto_passes_before_ipo():
+def test_session_consumes_closing_auto_passes_before_ipo(monkeypatch):
     players = [
         {"id": 4, "name": "rss-az-3"},
         {"id": 3, "name": "rss-az-2"},
@@ -350,7 +430,7 @@ def test_session_consumes_closing_auto_passes_before_ipo():
     game_data = {"id": "unit", "players": players, "actions": actions}
 
     session = GameSession(3)
-    session._run_extractor = lambda data: initial
+    monkeypatch.setattr(session, "_run_extractor", lambda data: initial)
 
     state = session.sync(game_data)
 
@@ -359,7 +439,7 @@ def test_session_consumes_closing_auto_passes_before_ipo():
     assert session.player_index_for_user_id(3) == 1
 
 
-def test_session_preserves_live_auction_after_share_price_cash_replay():
+def test_session_preserves_live_auction_after_share_price_cash_replay(monkeypatch):
     players = [
         {"id": 4, "name": "rss-az-3"},
         {"id": 3, "name": "rss-az-2"},
@@ -435,7 +515,7 @@ def test_session_preserves_live_auction_after_share_price_cash_replay():
     ]
 
     session = GameSession(3)
-    session._run_extractor = lambda data: initial
+    monkeypatch.setattr(session, "_run_extractor", lambda data: initial)
 
     state = session.sync({"id": "unit", "round": "Investment", "players": players, "actions": actions})
 
@@ -496,7 +576,7 @@ def test_acq_sync_applies_pass_for_recorded_entity():
     assert not PLAYERS[first_active].has_passed(state)
 
 
-def test_acq_sync_retargets_unordered_offer_to_recorded_entity():
+def test_acq_sync_retargets_unordered_offer_to_recorded_entity(monkeypatch):
     state = _new_state()
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
     TURN.set_active_player(state, 0)
@@ -515,8 +595,8 @@ def test_acq_sync_retargets_unordered_offer_to_recorded_entity():
         del current_state, offer, deferred_transfers
         return False
 
-    session._offer_resolves_immediately = fake_immediate
-    session._begin_acq_offer = fake_begin
+    monkeypatch.setattr(session, "_offer_resolves_immediately", fake_immediate)
+    monkeypatch.setattr(session, "_begin_acq_offer", fake_begin)
 
     next_idx = session._sync_acq_round(
         state,
@@ -1318,7 +1398,7 @@ def test_session_drains_only_acquisition_when_extractor_reaches_closing(monkeypa
     session._last_extract_record = {"current_round": "CLO"}
     drained = []
 
-    session._drain_acq_phases = lambda state: drained.append("acq")
+    monkeypatch.setattr(session, "_drain_acq_phases", lambda state: drained.append("acq"))
     monkeypatch.setattr(
         game_session_module,
         "drain_offer_phases",

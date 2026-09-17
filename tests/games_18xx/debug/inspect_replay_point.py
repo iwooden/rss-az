@@ -31,7 +31,7 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
 def usage() -> None:
-    print(__doc__.strip())
+    print((__doc__ or "").strip())
     raise SystemExit(2)
 
 

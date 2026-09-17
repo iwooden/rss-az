@@ -365,9 +365,12 @@ class ReplayAnalyzerSession(GameSession):
             and atype == "par"
             and phase == GamePhases.PHASE_PAR
         ):
+            action_idx = map_par_action(state, action, self.layout)
+            if action_idx is None:
+                return STATUS_INVALID
             return self._apply_logged_engine_action(
                 state,
-                map_par_action(state, action, self.layout),
+                action_idx,
                 action,
                 note="18xx par-price follow-up",
             )

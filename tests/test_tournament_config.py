@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
 
+from mcts.evaluator import NNEvaluator
 from train import tournament
 from train.config import MCTSConfig, TrainingConfig
 from train.tournament import (
@@ -85,7 +87,7 @@ def test_play_game_reads_turn_fields_via_entity(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(tournament, "DRIVER", FakeDriver())
 
     net_worths = tournament._play_game(
-        evaluators=[object(), object(), object(), object()],
+        evaluators=[Mock(spec=NNEvaluator) for _ in range(4)],
         seat_to_model=[0, 1, 2, 3],
         num_players=4,
         max_players=5,

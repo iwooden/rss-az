@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, NotRequired, TypedDict
 
 import torch
 
 from train.config import TrainingConfig
+
+
+class Checkpoint(TypedDict):
+    epoch: int
+    model_state_dict: dict[str, Any]
+    trainer_state: dict[str, object]
+    config_json: str
+    metrics: dict[str, float]
+    buffer_stats: dict[str, int]
+    rng_state: NotRequired[dict[str, object]]
 
 
 def _unwrap_state_dict(
@@ -31,7 +42,7 @@ def save_checkpoint(
 ) -> None:
     """Save checkpoint via torch.save. Creates parent dirs if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    data: dict[str, object] = {
+    data: Checkpoint = {
         "epoch": epoch,
         "model_state_dict": _unwrap_state_dict(model.state_dict()),
         "trainer_state": trainer_state,
@@ -44,7 +55,7 @@ def save_checkpoint(
     torch.save(data, path)
 
 
-def load_checkpoint(path: Path, device: torch.device) -> dict[str, object]:
+def load_checkpoint(path: Path, device: torch.device) -> Checkpoint:
     """Load checkpoint from disk with device mapping.
 
     Automatically strips ``_orig_mod.`` prefix from model keys so checkpoints
@@ -53,7 +64,7 @@ def load_checkpoint(path: Path, device: torch.device) -> dict[str, object]:
     Uses weights_only=False because optimizer/scheduler state dicts contain
     non-tensor objects. Only load checkpoints you trust.
     """
-    cp: dict[str, object] = torch.load(path, map_location=device, weights_only=False)
+    cp: Checkpoint = torch.load(path, map_location=device, weights_only=False)
     if "model_state_dict" in cp:
         cp["model_state_dict"] = _unwrap_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
     return cp
@@ -62,7 +73,7 @@ def load_checkpoint(path: Path, device: torch.device) -> dict[str, object]:
 def load_model_from_checkpoint(
     path: Path,
     device: torch.device,
-) -> tuple[torch.nn.Module, TrainingConfig, dict[str, object]]:
+) -> tuple[torch.nn.Module, TrainingConfig, Checkpoint]:
     """Load checkpoint data and instantiate the architecture it was saved with."""
     cp = load_checkpoint(path, device)
     config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]

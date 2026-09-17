@@ -400,9 +400,10 @@ class NNEvaluator(BaseEvaluator):
         self.input_spec = _validate_model_input_spec(input_spec, num_players)
         model_kind = normalize_model_type(self.input_spec.model_type)
         self._uses_resnet_vectors = model_kind is ModelKind.RESNET
-        self.resnet_vector_dim = (
-            int(self.input_spec.input_dim) if self._uses_resnet_vectors else 0
-        )
+        self.resnet_vector_dim = 0
+        if self._uses_resnet_vectors:
+            assert self.input_spec.input_dim is not None
+            self.resnet_vector_dim = int(self.input_spec.input_dim)
 
         # Preallocated scratch — grows lazily via ``_ensure_scratch``.
         self._scratch_cap: int = 0

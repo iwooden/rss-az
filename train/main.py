@@ -29,6 +29,7 @@ from nn.transformer import (
     build_action_lut,
 )
 from train.checkpoint import (
+    Checkpoint,
     cleanup_checkpoints,
     find_latest_checkpoint,
     load_checkpoint,
@@ -851,7 +852,7 @@ def main() -> None:
         )
 
     # --- Resolve checkpoint for resume ---
-    cp: dict[str, object] | None = None
+    cp: Checkpoint | None = None
     if args.resume:
         cp_path: Path | None = None
         if args.resume == "latest":
@@ -1495,7 +1496,8 @@ def main() -> None:
             epoch_duration = time.perf_counter() - epoch_start
             logger.log_scalars(epoch_num, {"epoch/duration_secs": epoch_duration})
             base_model = getattr(model, "_orig_mod", model)
-            diagnostics = base_model.phase_mod_diagnostics()
+            diagnostic = getattr(base_model, "phase_mod_diagnostics")
+            diagnostics = diagnostic()
             if diagnostics:
                 logger.log_scalars(epoch_num, diagnostics)
             logger.log_epoch_summary(

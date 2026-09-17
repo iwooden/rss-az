@@ -269,8 +269,10 @@ class RSSResNet(nn.Module):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
         for block in self.blocks:
+            assert isinstance(block, ResidualMLPBlock)
             nn.init.zeros_(block.fc2.weight)
-            nn.init.zeros_(block.fc2.bias)
+            if block.fc2.bias is not None:
+                nn.init.zeros_(block.fc2.bias)
 
 
 def count_parameters(model: nn.Module) -> int:

@@ -18,6 +18,7 @@ from entities.deck import DECK
 from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
+from nn.resnet import RSSResNet
 from nn import create_model, get_model_input_spec
 from nn.model_contract import (
     canonical_player_for_relative,
@@ -106,6 +107,7 @@ def test_resnet_vector_size_matches_schema_and_factory(
     model = create_model(config)
 
     assert spec.input_dim == expected
+    assert isinstance(model, RSSResNet)
     assert model.cfg.input_dim == expected
 
 

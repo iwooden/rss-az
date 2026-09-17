@@ -18,7 +18,7 @@ import queue
 import signal
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 import torch
@@ -70,6 +70,40 @@ LOC_CORP_ACQ_INT = int(CompanyLocation.LOC_CORP_ACQ)
 LOC_FI_INT = int(CompanyLocation.LOC_FI)
 LOC_PLAYER_INT = int(CompanyLocation.LOC_PLAYER)
 LOC_REMOVED_INT = int(CompanyLocation.LOC_REMOVED)
+
+
+class _StateSummary(TypedDict):
+    """Scalar turn fields and entity arrays captured for a strategy trace."""
+
+    engine_phase: int
+    active_player: int
+    active_corp: int
+    active_company: int
+    turn_number: int
+    coo_level: int
+    cards_remaining: int
+    auction_price: int
+    auction_high_bidder: int
+    auction_starter: int
+    acq_offer_price: int
+    acq_offer_corp: int
+    player_cash: np.ndarray
+    player_net_worth: np.ndarray
+    player_liquidity: np.ndarray
+    player_income: np.ndarray
+    player_shares: np.ndarray
+    corp_active: np.ndarray
+    corp_prices: np.ndarray
+    corp_cash: np.ndarray
+    corp_income: np.ndarray
+    corp_presidents: np.ndarray
+    corp_issued_shares: np.ndarray
+    corp_bank_shares: np.ndarray
+    corp_unissued_shares: np.ndarray
+    corp_receivership: np.ndarray
+    company_locations: np.ndarray
+    company_owners: np.ndarray
+    company_adjusted_income: np.ndarray
 
 
 @dataclass
@@ -397,12 +431,12 @@ class _StrategyTraceBuilder:
         self.issue_events: list[list[int]] = []
         self.close_events: list[list[int]] = []
 
-    def capture_summary(self, state: GameState) -> dict[str, object]:
+    def capture_summary(self, state: GameState) -> _StateSummary:
         num_players = self.num_players
         num_corps = self._NUM_CORPS
         num_companies = self._NUM_COMPANIES
 
-        summary: dict[str, object] = {
+        summary: _StateSummary = {
             "engine_phase": int(TURN.get_phase(state)),
             "active_player": int(TURN.get_active_player(state)),
             "active_corp": int(TURN.get_active_corp(state)),
@@ -495,7 +529,7 @@ class _StrategyTraceBuilder:
         slots: np.ndarray,
         nn_policy_sparse: np.ndarray,
         nn_values: np.ndarray,
-    ) -> dict[str, object]:
+    ) -> _StateSummary:
         summary = self.capture_summary(state)
 
         dense_nn = np.zeros(U_DIM, dtype=np.float32)
@@ -516,23 +550,23 @@ class _StrategyTraceBuilder:
         self.acq_offer_prices.append(int(summary["acq_offer_price"]))
         self.acq_offer_corps.append(int(summary["acq_offer_corp"]))
 
-        self.player_cash.append(summary["player_cash"])  # type: ignore[arg-type]
-        self.player_net_worth.append(summary["player_net_worth"])  # type: ignore[arg-type]
-        self.player_liquidity.append(summary["player_liquidity"])  # type: ignore[arg-type]
-        self.player_income.append(summary["player_income"])  # type: ignore[arg-type]
-        self.player_shares.append(summary["player_shares"])  # type: ignore[arg-type]
-        self.corp_active.append(summary["corp_active"])  # type: ignore[arg-type]
-        self.corp_prices.append(summary["corp_prices"])  # type: ignore[arg-type]
-        self.corp_cash.append(summary["corp_cash"])  # type: ignore[arg-type]
-        self.corp_income.append(summary["corp_income"])  # type: ignore[arg-type]
-        self.corp_presidents.append(summary["corp_presidents"])  # type: ignore[arg-type]
-        self.corp_issued_shares.append(summary["corp_issued_shares"])  # type: ignore[arg-type]
-        self.corp_bank_shares.append(summary["corp_bank_shares"])  # type: ignore[arg-type]
-        self.corp_unissued_shares.append(summary["corp_unissued_shares"])  # type: ignore[arg-type]
-        self.corp_receivership.append(summary["corp_receivership"])  # type: ignore[arg-type]
-        self.company_locations.append(summary["company_locations"])  # type: ignore[arg-type]
-        self.company_owners.append(summary["company_owners"])  # type: ignore[arg-type]
-        self.company_adjusted_income.append(summary["company_adjusted_income"])  # type: ignore[arg-type]
+        self.player_cash.append(summary["player_cash"])
+        self.player_net_worth.append(summary["player_net_worth"])
+        self.player_liquidity.append(summary["player_liquidity"])
+        self.player_income.append(summary["player_income"])
+        self.player_shares.append(summary["player_shares"])
+        self.corp_active.append(summary["corp_active"])
+        self.corp_prices.append(summary["corp_prices"])
+        self.corp_cash.append(summary["corp_cash"])
+        self.corp_income.append(summary["corp_income"])
+        self.corp_presidents.append(summary["corp_presidents"])
+        self.corp_issued_shares.append(summary["corp_issued_shares"])
+        self.corp_bank_shares.append(summary["corp_bank_shares"])
+        self.corp_unissued_shares.append(summary["corp_unissued_shares"])
+        self.corp_receivership.append(summary["corp_receivership"])
+        self.company_locations.append(summary["company_locations"])
+        self.company_owners.append(summary["company_owners"])
+        self.company_adjusted_income.append(summary["company_adjusted_income"])
         return summary
 
     def append_search_result(
@@ -572,7 +606,7 @@ class _StrategyTraceBuilder:
 
     def append_action_events(
         self,
-        pre: dict[str, object],
+        pre: _StateSummary,
         post_state: GameState,
         *,
         move_number: int,
@@ -918,7 +952,7 @@ def play_game(
         legal_actions = legal_scratch[:n_legal].copy()
         slots = action_lut_np[phase_id, legal_actions]
 
-        trace_pre_summary: dict[str, object] | None = None
+        trace_pre_summary: _StateSummary | None = None
         if trace_builder is not None:
             nn_priors, nn_values, nn_actions, nn_n_legal, nn_phase_id = (
                 evaluator.evaluate(state)

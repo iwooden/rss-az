@@ -882,7 +882,10 @@ class GameSession:
             and atype == "par"
             and phase == GamePhases.PHASE_PAR
         ):
-            return apply_action_sequence(state, map_par_action(state, action, self.layout))
+            action_idx = map_par_action(state, action, self.layout)
+            if action_idx is None:
+                return STATUS_INVALID
+            return apply_action_sequence(state, action_idx)
 
         return STATUS_OK
 
@@ -1322,6 +1325,9 @@ class GameSession:
                 rollback_speculative_offer()
                 return False
 
+            if action_idx is None:
+                rollback_speculative_offer()
+                return False
             result = apply_action_sequence(state, action_idx)
             if result == STATUS_INVALID:
                 rollback_speculative_offer()

@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from rich.console import Console
+from rich.text import Text
 
 from train.logging import TrainingLogger
 from train.main import (
@@ -115,6 +116,7 @@ def test_self_play_panel_formats_net_worth_by_player_count(tmp_path) -> None:
         )
 
         panel = logger._build_self_play_panel()
+        assert isinstance(panel.renderable, Text)
         text = panel.renderable.plain
     finally:
         logger.close()
@@ -210,6 +212,7 @@ def test_training_panel_formats_loss_by_player_count(tmp_path) -> None:
         )
 
         panel = logger._build_training_panel()
+        assert isinstance(panel.renderable, Text)
         text = panel.renderable.plain
     finally:
         logger.close()

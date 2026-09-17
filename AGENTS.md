@@ -52,6 +52,10 @@ affected producers, consumers, tests, and documentation together.
 
 - Run from the repo root with `.venv/bin/python` and `.venv/bin/pytest`.
   `pyright` is a system command, not a virtualenv binary.
+- The default Codex sandbox blocks GPU access. Request escalation for CUDA
+  tests and other GPU workloads; a sandboxed CUDA availability check does not
+  establish that the host lacks CUDA. Rerun tests skipped for unavailable CUDA
+  with escalation to verify them on the GPU.
 - Build missing or stale Cython extensions before imports/tests:
   `.venv/bin/python setup.py build_ext --inplace`.
 - Changes to `.pxd`, Cython signatures, or layouts require a clean rebuild.

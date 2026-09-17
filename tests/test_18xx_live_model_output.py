@@ -84,9 +84,9 @@ def test_determinized_live_search_sums_root_visits(monkeypatch):
     engine.determinization_count = 2
     engine.model_output = False
     engine.num_simulations = 7
-    engine._evaluator = object()
+    monkeypatch.setattr(engine, "_evaluator", object(), raising=False)
     engine._rng = np.random.default_rng(123)
-    engine._state_pool = object()
+    monkeypatch.setattr(engine, "_state_pool", object(), raising=False)
 
     monkeypatch.setattr(
         _SearchEngine,
@@ -145,6 +145,8 @@ def test_determinized_live_search_sums_root_visits(monkeypatch):
     assert fake_deck.calls == 2
     assert len(calls) == 2
     assert action_idx == 10
+    assert root.legal_actions is not None
+    assert root.visit_counts is not None
     assert root.legal_actions.tolist() == [10, 20]
     assert root.visit_counts.tolist() == [10, 6]
 

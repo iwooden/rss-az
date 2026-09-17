@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
 
@@ -36,6 +37,17 @@ DEFAULT_MAX_GAMES = 10_000
 DEFAULT_MAX_STEPS_PER_GAME = 5_000
 
 
+class PhaseSnapshot(TypedDict):
+    state: np.ndarray
+    legal_actions: np.ndarray
+    legal_count: int
+    game_index: int
+    game_seed: int
+    decision_step: int
+    history_index: int
+    action_id: int
+
+
 def _phase_names() -> list[str]:
     names_by_id = {
         int(member): name.removeprefix("DPHASE_")
@@ -52,7 +64,7 @@ def _record_state(
     state_array: np.ndarray,
     phase_id: int,
     num_players: int,
-    found: dict[int, dict[str, object]],
+    found: dict[int, PhaseSnapshot],
     game_index: int,
     game_seed: int,
     decision_step: int,
@@ -95,7 +107,7 @@ def _play_random_game(
     num_players: int,
     game_index: int,
     game_seed: int,
-    found: dict[int, dict[str, object]],
+    found: dict[int, PhaseSnapshot],
     max_steps: int,
 ) -> int:
     state = GameState(num_players)
@@ -164,7 +176,7 @@ def generate_states(
     max_games: int,
     max_steps_per_game: int,
 ) -> dict[str, int]:
-    found: dict[int, dict[str, object]] = {}
+    found: dict[int, PhaseSnapshot] = {}
     num_phases = int(GameConstants.NUM_DECISION_PHASES)
 
     games_played = 0

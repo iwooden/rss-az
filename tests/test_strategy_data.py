@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from core.state import get_layout
 from nn.transformer import UNIFIED_LOGIT_DIM
@@ -104,8 +105,9 @@ def _fake_record(game_id: int, num_examples: int = 2) -> GameRecord:
     )
 
 
-def test_strategy_shard_writer_emits_analysis_arrays(tmp_path) -> None:
-    writer = _StrategyShardWriter(tmp_path, games_per_shard=2, compress=False)
+@pytest.mark.parametrize("compress", [False, True])
+def test_strategy_shard_writer_emits_analysis_arrays(tmp_path, compress) -> None:
+    writer = _StrategyShardWriter(tmp_path, games_per_shard=2, compress=compress)
     writer.add(_fake_record(10))
     writer.add(_fake_record(11, num_examples=3))
 
@@ -118,3 +120,15 @@ def test_strategy_shard_writer_emits_analysis_arrays(tmp_path) -> None:
         assert data["mcts_policy_pct"].shape == (5, U_DIM)
         assert data["auction_events"].shape == (2, 10)
         assert data["auction_events"][:, 0].tolist() == [10, 11]
+
+
+def test_strategy_shard_writer_rejects_missing_final_state(tmp_path) -> None:
+    writer = _StrategyShardWriter(tmp_path, games_per_shard=1, compress=False)
+    record = _fake_record(10)
+    record.final_state = None
+
+    with pytest.raises(ValueError, match="without a final state"):
+        writer.add(record)
+
+    assert writer.files == []
+    assert list(tmp_path.glob("*.npz")) == []

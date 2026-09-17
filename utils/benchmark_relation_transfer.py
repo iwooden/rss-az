@@ -23,7 +23,7 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Callable
+from typing import Callable, TypedDict, cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -44,6 +44,22 @@ class BenchmarkResult:
     h2d_bytes_per_iter: int
     effective_h2d_gib_s_cuda: float | None
     notes: str
+
+
+class BenchmarkRow(TypedDict):
+    name: str
+    cuda_ms_per_iter: float
+    wall_ms_per_iter: float
+    h2d_bytes_per_iter: int
+    effective_h2d_gib_s_cuda: float | None
+    notes: str
+
+
+class BenchmarkPayload(TypedDict):
+    config: dict[str, str | int | bool | None]
+    bytes: dict[str, int | float]
+    comparison: dict[str, float | None]
+    results: list[BenchmarkRow]
 
 
 def _resolve_num_tokens(num_players: int, override: int | None) -> ResolvedConstant:
@@ -173,7 +189,7 @@ def _make_sparse_coords(
     return coords
 
 
-def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
+def run_benchmark(args: argparse.Namespace) -> BenchmarkPayload:
     import torch
 
     if not torch.cuda.is_available():
@@ -372,7 +388,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         - dense_result.wall_ms_per_iter
     )
 
-    payload: dict[str, object] = {
+    payload: BenchmarkPayload = {
         "config": config,
         "bytes": {
             "dense_relation_h2d_per_batch": dense_h2d_bytes,
@@ -398,12 +414,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
                 else None
             ),
         },
-        "results": [asdict(result) for result in results],
+        "results": [cast(BenchmarkRow, asdict(result)) for result in results],
     }
     return payload
 
 
-def print_human(payload: dict[str, object]) -> None:
+def print_human(payload: BenchmarkPayload) -> None:
     config = payload["config"]
     bytes_info = payload["bytes"]
     comparison = payload["comparison"]

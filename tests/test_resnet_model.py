@@ -27,7 +27,8 @@ def _small_model(num_players: int = 3) -> RSSResNet:
     )
 
 
-def _head_final_linear(head: torch.nn.Sequential) -> torch.nn.Linear:
+def _head_final_linear(head: torch.nn.Module) -> torch.nn.Linear:
+    assert isinstance(head, torch.nn.Sequential)
     final = head[-1]
     assert isinstance(final, torch.nn.Linear)
     return final

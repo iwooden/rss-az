@@ -15,7 +15,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -333,7 +333,7 @@ class StrategyDataset:
         if not self.metadata_path.exists():
             raise FileNotFoundError(f"missing metadata file: {self.metadata_path}")
         with self.metadata_path.open() as f:
-            self.metadata: dict[str, object] = json.load(f)
+            self.metadata: dict[str, Any] = json.load(f)
         self._shards = _discover_shards(self.run_dir, self.metadata)
 
     @property
@@ -2242,7 +2242,7 @@ class StrategyDataset:
 
 
 def _opening_bid_delta_rows(
-    data: object,
+    data: Mapping[str, np.ndarray],
     face_values: np.ndarray,
     num_companies: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -2282,7 +2282,7 @@ def _opening_bid_delta_rows(
 
 
 def _first_decision_rows_by_game_turn(
-    data: object,
+    data: Mapping[str, np.ndarray],
     *,
     phase_id: int,
 ) -> np.ndarray:
@@ -2413,7 +2413,7 @@ def _states_turn_numbers(
 
 
 def _auctioned_company_outcomes_for_shard(
-    data: object,
+    data: Mapping[str, np.ndarray],
     *,
     num_players: int,
     num_companies: int,
@@ -2541,7 +2541,7 @@ def _auction_exit_outcome(
 
 
 def _first_ipo_corps_for_shard(
-    data: object,
+    data: Mapping[str, np.ndarray],
     *,
     num_players: int,
     num_corps: int,
@@ -2582,7 +2582,7 @@ def _first_ipo_corps_for_shard(
 
 
 def _initial_auction_position_deltas_for_shard(
-    data: object,
+    data: Mapping[str, np.ndarray],
     *,
     num_players: int,
     face_values: np.ndarray,
@@ -2630,7 +2630,7 @@ def _initial_auction_position_deltas_for_shard(
 
 
 def _turn_one_auction_pool_premiums_for_shard(
-    data: object,
+    data: Mapping[str, np.ndarray],
     *,
     num_players: int,
     face_values: np.ndarray,
@@ -2677,7 +2677,7 @@ def _turn_one_auction_pool_premiums_for_shard(
 
 
 def _turn_one_auction_company_presence_for_shard(
-    data: object,
+    data: Mapping[str, np.ndarray],
     *,
     num_players: int,
     face_values: np.ndarray,
@@ -2745,7 +2745,7 @@ def _turn_one_auction_company_presence_for_shard(
 
 
 def _turn_one_auction_deck_presence_for_shard(
-    data: object,
+    data: Mapping[str, np.ndarray],
     *,
     num_players: int,
     face_values: np.ndarray,
@@ -2807,7 +2807,7 @@ def _turn_one_auction_deck_presence_for_shard(
 
 def _discover_shards(
     run_dir: Path,
-    metadata: dict[str, object],
+    metadata: dict[str, Any],
 ) -> tuple[StrategyShard, ...]:
     metadata_files = metadata.get("files")
     paths = (

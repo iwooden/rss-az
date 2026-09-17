@@ -85,12 +85,10 @@ def test_apply_declined_offer_if_mappable_skips_nondurable_failure_paths(monkeyp
     state = object()
     offer = {"id": 77, "type": "offer", "entity": 101, "corporation": "OS", "company": "KK", "price": 20}
 
-    if isinstance(map_behavior, Exception):
-        def fake_map_action(state, action, phase, layout):
+    def fake_map_action(state, action, phase, layout):
+        if isinstance(map_behavior, Exception):
             raise map_behavior
-    else:
-        def fake_map_action(state, action, phase, layout):
-            return map_behavior
+        return map_behavior
 
     monkeypatch.setattr(replay_harness, "map_action", fake_map_action)
     monkeypatch.setattr(replay_harness, "TURN", SimpleNamespace(get_phase=lambda state: replay_harness.PHASE_ACQ_SELECT_CORP))

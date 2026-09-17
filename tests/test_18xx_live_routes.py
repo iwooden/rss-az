@@ -1,6 +1,7 @@
 import io
 import json
 import queue
+from http.client import HTTPMessage
 
 from utils_18xx.live import (
     AcqOfferTracker,
@@ -137,29 +138,32 @@ def test_acq_offer_tracker_records_and_resets_by_turn(tmp_path):
     }
 
 
-def _make_handler(path: str, body: str = ""):
-    handler = WebhookHandler.__new__(WebhookHandler)
-    handler.path = path
-    handler.headers = {"Content-Length": str(len(body.encode()))}
-    handler.rfile = io.BytesIO(body.encode())
-    handler.wfile = io.BytesIO()
-    handler.client_address = ("127.0.0.1", 12345)
-    handler.responses = []
-    handler.sent_headers = []
+class _RecordingHandler(WebhookHandler):
+    """Exercise request handling without opening a network connection."""
 
-    def send_response(status):
-        handler.responses.append(status)
+    def __init__(self, path: str, body: str = "") -> None:
+        self.path = path
+        self.headers = HTTPMessage()
+        self.headers["Content-Length"] = str(len(body.encode()))
+        self.rfile = io.BytesIO(body.encode())
+        self.response_body = io.BytesIO()
+        self.wfile = self.response_body
+        self.client_address = ("127.0.0.1", 12345)
+        self.status_codes: list[int] = []
+        self.sent_headers: list[tuple[str, str]] = []
 
-    def send_header(key, value):
-        handler.sent_headers.append((key, value))
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self.status_codes.append(code)
 
-    def end_headers():
+    def send_header(self, keyword: str, value: str) -> None:
+        self.sent_headers.append((keyword, value))
+
+    def end_headers(self) -> None:
         pass
 
-    handler.send_response = send_response
-    handler.send_header = send_header
-    handler.end_headers = end_headers
-    return handler
+
+def _make_handler(path: str, body: str = "") -> _RecordingHandler:
+    return _RecordingHandler(path, body)
 
 
 def _turn_webhook_body(game_id: str) -> str:
@@ -197,7 +201,7 @@ def test_webhook_ignores_blacklisted_game(tmp_path, monkeypatch):
 
     handler.do_POST()
 
-    assert handler.responses == [200]
+    assert handler.status_codes == [200]
     assert work_queue.empty()
 
 
@@ -224,7 +228,7 @@ def test_manual_poke_bypasses_blacklist(tmp_path, monkeypatch):
 
     handler.do_GET()
 
-    assert handler.responses == [202]
+    assert handler.status_codes == [202]
     assert work_queue.get_nowait() == ("rss-az-1", "254153")
 
 
@@ -243,7 +247,7 @@ def test_manual_eval_queues_eval_request(monkeypatch):
 
     handler.do_GET()
 
-    assert handler.responses == [202]
+    assert handler.status_codes == [202]
     assert work_queue.get_nowait() == EvalRequest(
         game_id="254153",
         player_index=1,
@@ -260,12 +264,12 @@ def test_manual_file_eval_queues_eval_request(monkeypatch):
 
     handler.do_GET()
 
-    assert handler.responses == [202]
+    assert handler.status_codes == [202]
     assert work_queue.get_nowait() == EvalRequest(
         player_index=1,
         filename="256285.json",
     )
-    assert json.loads(handler.wfile.getvalue())["filename"] == "256285.json"
+    assert json.loads(handler.response_body.getvalue())["filename"] == "256285.json"
 
 
 def test_manual_eval_is_local_only(monkeypatch):
@@ -278,5 +282,5 @@ def test_manual_eval_is_local_only(monkeypatch):
 
     handler.do_GET()
 
-    assert handler.responses == [403]
+    assert handler.status_codes == [403]
     assert work_queue.empty()

@@ -356,7 +356,10 @@ class Trainer:
         """Return optional pass/action logit-scale diagnostics."""
         diagnostic = getattr(self._base_model, "pass_action_logit_abs", None)
         if callable(diagnostic):
-            return diagnostic(policy_logits, legal_masks, phase_ids)
+            result = diagnostic(policy_logits, legal_masks, phase_ids)
+            if not isinstance(result, torch.Tensor):
+                raise TypeError("pass_action_logit_abs must return a Tensor")
+            return result
         return policy_logits.new_zeros(2 * len(PHASES_WITH_PASS_HEAD))
 
     def train_step(
