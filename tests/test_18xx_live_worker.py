@@ -1,3 +1,4 @@
+import json
 import queue
 
 from utils_18xx import live
@@ -383,3 +384,57 @@ def test_worker_process_eval_fetches_and_evaluates_without_posting():
     assert len(engine.calls) == 1
     assert engine.calls[0][0]["id"] == "254153"
     assert engine.calls[0][1] == request
+
+
+def test_worker_process_eval_loads_tmp_file_without_fetching(tmp_path, monkeypatch):
+    game_data = {
+        "id": 256285,
+        "title": "Rolling Stock Stars",
+        "players": [
+            {"id": 1, "name": "bot"},
+            {"id": 2, "name": "other"},
+        ],
+        "acting": [2],
+        "actions": [],
+    }
+    (tmp_path / "game.json").write_text(json.dumps(game_data))
+    monkeypatch.setattr(live, "EVAL_FILE_DIR", tmp_path)
+
+    api = _EvalApi()
+    engine = _EvalEngine()
+    worker = MoveWorker(
+        queue.Queue(),
+        api,
+        {},
+        _RecordingRegistry(engine),
+    )
+    request = EvalRequest(filename="game.json", player_id="2")
+
+    worker._process_eval(request)
+
+    assert api.fetches == []
+    assert api.posts == []
+    assert engine.calls == [(game_data, request)]
+
+
+def test_worker_file_eval_rejects_symlink_outside_eval_dir(tmp_path, monkeypatch):
+    eval_dir = tmp_path / "eval"
+    eval_dir.mkdir()
+    outside_file = tmp_path / "outside.json"
+    outside_file.write_text("{}")
+    (eval_dir / "game.json").symlink_to(outside_file)
+    monkeypatch.setattr(live, "EVAL_FILE_DIR", eval_dir)
+
+    api = _EvalApi()
+    engine = _EvalEngine()
+    worker = MoveWorker(
+        queue.Queue(),
+        api,
+        {},
+        _RecordingRegistry(engine),
+    )
+
+    worker._process_eval(EvalRequest(filename="game.json"))
+
+    assert api.fetches == []
+    assert engine.calls == []

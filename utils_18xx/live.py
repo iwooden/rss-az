@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 import torch
@@ -69,6 +69,7 @@ from train.analyze_game import (
     _apply_player_names as _apply_analyze_player_names,
     _format_mcts_visits as _format_analyze_mcts_visits,
     _format_nn_eval as _format_analyze_nn_eval,
+    _load_18xx_game_data,
 )
 from train.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
 from train.config import MCTSConfig
@@ -107,6 +108,7 @@ GAME_BLACKLIST_FILE = "blacklisted_games.json"
 ACQ_OFFER_TRACKING_FILE = "acq_offer_tracking.json"
 ACQ_OFFER_REJECTION_LIMIT = 3
 _INTERNAL_ACTION_METADATA_PREFIX = "_"
+EVAL_FILE_DIR = Path("/tmp")
 
 
 def default_api_min_interval(base_url: str) -> float:
@@ -257,11 +259,12 @@ _WEBHOOK_USER_RE = re.compile(r"<@([^>]+)>")
 
 @dataclass(frozen=True)
 class EvalRequest:
-    game_id: str
+    game_id: str | None = None
     player: str | None = None
     player_id: str | None = None
     player_index: int | None = None
     bot_name: str | None = None
+    filename: str | None = None
 
 
 def parse_webhook_text(text: str) -> tuple[str | None, str | None]:
@@ -307,7 +310,7 @@ def parse_poke_game_id(path: str) -> str | None:
 
 
 def parse_eval_request(path: str) -> EvalRequest | None:
-    """Extract an evaluation request from /eval/<id> or /eval?game_id=<id>."""
+    """Extract an evaluation request from a supported local eval route."""
     parsed = urlparse(path)
     path_parts = [part for part in parsed.path.strip("/").split("/") if part]
     if not path_parts or path_parts[0] != "eval":
@@ -315,14 +318,19 @@ def parse_eval_request(path: str) -> EvalRequest | None:
 
     query = parse_qs(parsed.query)
     game_id: str | None = None
-    if len(path_parts) == 2:
+    filename: str | None = None
+    if len(path_parts) == 3 and path_parts[1] == "file":
+        filename = unquote(path_parts[2])
+        if not _is_safe_eval_filename(filename):
+            return None
+    elif len(path_parts) == 2 and path_parts[1] != "file":
         game_id = path_parts[1]
     elif len(path_parts) == 1:
         game_id = _first_query_value(query, "game_id", "game")
     else:
         return None
 
-    if not game_id:
+    if not game_id and not filename:
         return None
 
     player_index = None
@@ -334,12 +342,41 @@ def parse_eval_request(path: str) -> EvalRequest | None:
             return None
 
     return EvalRequest(
-        game_id=str(game_id),
+        game_id=str(game_id) if game_id is not None else None,
         player=_first_query_value(query, "player"),
         player_id=_first_query_value(query, "player_id", "user_id"),
         player_index=player_index,
         bot_name=_first_query_value(query, "bot", "bot_name"),
+        filename=filename,
     )
+
+
+def _is_safe_eval_filename(filename: str) -> bool:
+    """Return whether filename names one direct child of the eval file dir."""
+    return (
+        bool(filename)
+        and "\x00" not in filename
+        and filename not in {".", ".."}
+        and Path(filename).name == filename
+    )
+
+
+def _load_eval_game_file(filename: str) -> dict:
+    """Load an 18xx game export from EVAL_FILE_DIR without allowing escapes."""
+    if not _is_safe_eval_filename(filename):
+        raise ValueError(f"invalid eval filename: {filename!r}")
+
+    eval_dir = EVAL_FILE_DIR.resolve()
+    game_path = (eval_dir / filename).resolve(strict=True)
+    try:
+        game_path.relative_to(eval_dir)
+    except ValueError as exc:
+        raise ValueError(
+            f"eval file must resolve inside {eval_dir}: {filename!r}"
+        ) from exc
+    if not game_path.is_file():
+        raise ValueError(f"eval file is not a regular file: {game_path}")
+    return _load_18xx_game_data(game_path)
 
 
 def _first_query_value(query: dict[str, list[str]], *keys: str) -> str | None:
@@ -3294,7 +3331,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if request is None:
             self._send_json(
                 400,
-                {"error": "missing_game_id", "usage": "/eval/<game_id>"},
+                {
+                    "error": "invalid_eval_request",
+                    "usage": "/eval/<game_id> or /eval/file/<filename>",
+                },
             )
             return
 
@@ -3305,19 +3345,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
             f"player={request.player}, "
             f"player_id={request.player_id}, "
             f"player_index={request.player_index}, "
-            f"bot={request.bot_name}"
+            f"bot={request.bot_name}, "
+            f"filename={request.filename}"
         )
-        self._send_json(
-            202,
-            {
-                "status": "queued",
-                "game_id": request.game_id,
-                "player": request.player,
-                "player_id": request.player_id,
-                "player_index": request.player_index,
-                "bot": request.bot_name,
-            },
-        )
+        response = {
+            "status": "queued",
+            "game_id": request.game_id,
+            "player": request.player,
+            "player_id": request.player_id,
+            "player_index": request.player_index,
+            "bot": request.bot_name,
+        }
+        if request.filename is not None:
+            response["filename"] = request.filename
+        self._send_json(202, response)
 
     def _read_json_body_game_id(self) -> str | None:
         content_length = int(self.headers.get("Content-Length", 0))
@@ -3462,37 +3503,52 @@ class MoveWorker(threading.Thread):
         return bot_name, auth_info
 
     def _process_eval(self, request: EvalRequest):
-        auth_pair = self._auth_for_eval(request)
-        if auth_pair is None:
-            return
-        bot_name, auth_info = auth_pair
-        token = auth_info["token"]
+        if request.filename is not None:
+            eval_name = "eval/file"
+            try:
+                game_data = _load_eval_game_file(request.filename)
+            except (OSError, ValueError) as exc:
+                logger.error(
+                    f"[{eval_name}] Cannot load {request.filename!r}: {exc}"
+                )
+                return
+        else:
+            auth_pair = self._auth_for_eval(request)
+            if auth_pair is None:
+                return
+            bot_name, auth_info = auth_pair
+            eval_name = f"eval/{bot_name}"
+            token = auth_info["token"]
+            assert request.game_id is not None
+            game_data = self._fetch_game_data(eval_name, request.game_id, token)
+            if game_data is None:
+                return
 
-        game_data = self._fetch_game_data(f"eval/{bot_name}", request.game_id, token)
-        if game_data is None:
-            return
+        game_id = str(
+            game_data.get("id", request.game_id or request.filename)
+        )
 
         players = game_data.get("players", [])
         num_players = len(players)
         try:
             engine = self._registry.get_engine(num_players)
         except (ValueError, FileNotFoundError) as e:
-            logger.error(f"[eval/{bot_name}] {e}")
+            logger.error(f"[{eval_name}] {e}")
             return
 
         try:
             printed = engine.evaluate_turn(game_data, request)
         except Exception:
             logger.exception(
-                f"[eval/{bot_name}] Error evaluating game {request.game_id}"
+                f"[{eval_name}] Error evaluating game {game_id}"
             )
             return
 
         if printed:
-            logger.info(f"[eval/{bot_name}] Evaluation complete for {request.game_id}")
+            logger.info(f"[{eval_name}] Evaluation complete for {game_id}")
         else:
             logger.info(
-                f"[eval/{bot_name}] No evaluation printed for {request.game_id}"
+                f"[{eval_name}] No evaluation printed for {game_id}"
             )
 
     def _process(self, bot_name: str, game_id: str):
@@ -3737,6 +3793,10 @@ class LiveService:
         logger.info(
             "Manual eval URL: "
             f"http://<host>:{self._port}/eval/<game_id>"
+        )
+        logger.info(
+            "Manual eval file URL: "
+            f"http://<host>:{self._port}/eval/file/<filename> (reads /tmp)"
         )
 
         try:

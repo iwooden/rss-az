@@ -49,10 +49,21 @@ def test_parse_eval_request_from_query():
     )
 
 
+def test_parse_eval_request_from_tmp_file_path():
+    assert parse_eval_request(
+        "/eval/file/game%20256285.json?player=Alice"
+    ) == EvalRequest(
+        player="Alice",
+        filename="game 256285.json",
+    )
+
+
 def test_parse_eval_request_rejects_other_paths():
     assert parse_eval_request("/webhook/rss-az-1") is None
     assert parse_eval_request("/eval") is None
     assert parse_eval_request("/eval/123/extra") is None
+    assert parse_eval_request("/eval/file") is None
+    assert parse_eval_request("/eval/file/..%2Fsecret.json") is None
 
 
 def test_turn_webhook_text_is_case_insensitive():
@@ -238,6 +249,23 @@ def test_manual_eval_queues_eval_request(monkeypatch):
         player_index=1,
         bot_name="rss-az-1",
     )
+
+
+def test_manual_file_eval_queues_eval_request(monkeypatch):
+    work_queue = queue.Queue()
+
+    monkeypatch.setattr(WebhookHandler, "work_queue", work_queue, raising=False)
+
+    handler = _make_handler("/eval/file/256285.json?player_index=1")
+
+    handler.do_GET()
+
+    assert handler.responses == [202]
+    assert work_queue.get_nowait() == EvalRequest(
+        player_index=1,
+        filename="256285.json",
+    )
+    assert json.loads(handler.wfile.getvalue())["filename"] == "256285.json"
 
 
 def test_manual_eval_is_local_only(monkeypatch):

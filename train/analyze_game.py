@@ -10,6 +10,7 @@ Usage:
     .venv/bin/python -m train.analyze_game latest --checkpoint-dir checkpoints
     .venv/bin/python -m train.analyze_game latest --seed 123 --simulations 200
     .venv/bin/python -m train.analyze_game latest --18xx-seed 560979115
+    .venv/bin/python -m train.analyze_game latest --18xx-game-json game.json
     .venv/bin/python -m train.analyze_game latest --output game_log.md
     .venv/bin/python -m train.analyze_game new --num-players 4 --simulations 50
 """
@@ -135,6 +136,77 @@ def _apply_18xx_seed_setup(
     if setup.cost_level is not None:
         TURN.set_coo_level(state, int(setup.cost_level))
     return setup
+
+
+def _load_18xx_game_data(game_json_path: str | Path) -> dict:
+    """Load and minimally validate an 18xx.games RSS game export."""
+    path = Path(game_json_path)
+    try:
+        game_data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid 18xx game JSON in {path}: {exc}") from exc
+
+    if not isinstance(game_data, dict):
+        raise ValueError(
+            "18xx game JSON must contain an object, got "
+            f"{type(game_data).__name__}"
+        )
+    if game_data.get("title") != "Rolling Stock Stars":
+        raise ValueError(
+            "18xx game JSON must be for Rolling Stock Stars, got "
+            f"{game_data.get('title')!r}"
+        )
+
+    players = game_data.get("players")
+    if not isinstance(players, list) or not players:
+        raise ValueError("18xx game JSON must contain a non-empty players list")
+    if not all(isinstance(player, dict) for player in players):
+        raise ValueError("18xx game JSON players must be objects")
+
+    actions = game_data.get("actions")
+    if not isinstance(actions, list):
+        raise ValueError("18xx game JSON must contain an actions list")
+    return game_data
+
+
+def _18xx_player_names(game_data: dict) -> list[str]:
+    """Return sanitized canonical-order display names from an 18xx game."""
+    names: list[str] = []
+    for player_id, player in enumerate(game_data["players"]):
+        name = str(player.get("name") or "")
+        name = name.replace("\n", " ").replace("\r", " ").strip()
+        names.append(name or f"P{player_id}")
+    return names
+
+
+def _load_18xx_continuation_state(
+    game_data: dict,
+    *,
+    max_players: int,
+) -> GameState:
+    """Replay an 18xx game export and return a model-ready current state."""
+    from utils_18xx.game_session import GameSession, format_state_mismatches
+
+    num_players = len(game_data["players"])
+    session = GameSession(num_players, max_players=max_players)
+    state = session.sync(game_data)
+    mismatches = session.validate_against_18xx(
+        game_data,
+        state,
+        context=f"analyze_game game={game_data.get('id', '?')}",
+    )
+    if mismatches:
+        raise RuntimeError(
+            "18xx/RSS replay mismatch; refusing to continue from this state:\n"
+            f"{format_state_mismatches(mismatches)}"
+        )
+
+    # Historical replay accepts compatibility behavior that the trained
+    # model does not use. Restore the normal model-side rules for the newly
+    # generated continuation.
+    state.acq_same_president = True
+    state.allow_positive_income_closing = False
+    return state
 
 
 def _resolve_eval_dtype_override(
@@ -491,18 +563,41 @@ def analyze_game(
     token_dump: bool = False,
     num_players: int | None = None,
     seed_18xx: int | None = None,
+    game_json_18xx: str | Path | None = None,
     player_names: list[str] | None = None,
 ) -> str:
-    """Play a self-play game with full MCTS and return a detailed log."""
+    """Play a full game or an 18xx JSON continuation and return its MCTS log."""
+    if seed_18xx is not None and game_json_18xx is not None:
+        raise ValueError("seed_18xx and game_json_18xx are mutually exclusive")
+
+    game_data_18xx: dict | None = None
+    if game_json_18xx is not None:
+        game_data_18xx = _load_18xx_game_data(game_json_18xx)
+        game_num_players = len(game_data_18xx["players"])
+        if num_players is not None and int(num_players) != game_num_players:
+            raise ValueError(
+                "num_players must match the 18xx game JSON player count "
+                f"({game_num_players}), got {num_players}"
+            )
+        num_players = game_num_players
+        if player_names is None:
+            player_names = _18xx_player_names(game_data_18xx)
+
     num_players = _resolve_analysis_num_players(config, num_players)
     player_names = _validate_player_names(player_names, num_players)
     max_players = config.effective_max_players
 
-    state = GameState(num_players, max_players=max_players)
-    state.initialize_game(num_players, seed=seed, max_players=max_players)
     setup_18xx: Initial18xxSetup | None = None
-    if seed_18xx is not None:
-        setup_18xx = _apply_18xx_seed_setup(state, seed_18xx, num_players)
+    if game_data_18xx is not None:
+        state = _load_18xx_continuation_state(
+            game_data_18xx,
+            max_players=max_players,
+        )
+    else:
+        state = GameState(num_players, max_players=max_players)
+        state.initialize_game(num_players, seed=seed, max_players=max_players)
+        if seed_18xx is not None:
+            setup_18xx = _apply_18xx_seed_setup(state, seed_18xx, num_players)
 
     terminal_rank_weight = terminal_blend if terminal_blend is not None else config.terminal_blend
     evaluator = NNEvaluator(
@@ -539,14 +634,25 @@ def analyze_game(
             noise_desc += f", dynamic alpha={mcts_config.dirichlet_alpha_numerator}/K"
         else:
             noise_desc += f", alpha={mcts_config.dirichlet_alpha}"
-    title_seed = f"18xx seed={seed_18xx}" if setup_18xx is not None else f"seed={seed}"
+    if game_data_18xx is not None:
+        start_description = (
+            f"18xx game={game_data_18xx.get('id', '?')} continuation"
+        )
+    elif setup_18xx is not None:
+        start_description = f"18xx seed={seed_18xx}"
+    else:
+        start_description = f"seed={seed}"
     if mcts_stats_only:
         lines.append(
-            f"# Self-Play MCTS Stats: {title_seed}, {num_simulations} simulations/move, "
+            f"# Self-Play MCTS Stats: {start_description}, "
+            f"{num_simulations} simulations/move, "
             f"batch={search_batch_size}"
         )
     else:
-        lines.append(f"# Self-Play Analysis: {title_seed}, {num_simulations} simulations/move")
+        lines.append(
+            f"# Self-Play Analysis: {start_description}, "
+            f"{num_simulations} simulations/move"
+        )
     lines.append(f"# Checkpoint: {_format_checkpoint_path(checkpoint_path)}")
     if setup_18xx is not None:
         lines.append(
@@ -554,6 +660,17 @@ def analyze_game(
             f"{', '.join(setup_18xx.initial_offering)} | "
             f"remaining deck: {len(setup_18xx.deck_order)}"
         )
+    if game_data_18xx is not None:
+        start_phase = PHASE_NAMES.get(
+            TURN.get_phase(state),
+            str(TURN.get_phase(state)),
+        )
+        lines.append(
+            f"# 18xx game: {game_data_18xx.get('id', '?')} | "
+            f"recorded actions: {len(game_data_18xx['actions'])} | "
+            f"continuing from turn {TURN.get_turn_number(state)} [{start_phase}]"
+        )
+        lines.append(f"# Search RNG seed: {seed}")
     lines.append(f"# Noise: {noise_desc} | Terminal blend: {terminal_rank_weight}")
     if mcts_stats_only:
         lines.append(
@@ -782,8 +899,9 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument(
         "--num-players", type=int, default=None,
-        help='Actual player count to analyze (3-5). Defaults to 3 for "new"; '
-             "for mixed-player checkpoints, defaults to the configured minimum.",
+        help='Actual player count to analyze (3-5). Derived from '
+             '"--18xx-game-json" when supplied; otherwise defaults to 3 for '
+             '"new" or the configured minimum for mixed-player checkpoints.',
     )
     parser.add_argument(
         "--player-names",
@@ -793,7 +911,8 @@ def main() -> None:
     )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
+    start_group = parser.add_mutually_exclusive_group()
+    start_group.add_argument(
         "--18xx-seed",
         dest="seed_18xx",
         type=int,
@@ -801,6 +920,16 @@ def main() -> None:
         help=(
             "Use the bundled 18xx Rolling Stock Stars engine to generate the "
             "initial deck/offering for this seed before self-play starts"
+        ),
+    )
+    start_group.add_argument(
+        "--18xx-game-json",
+        dest="game_json_18xx",
+        type=str,
+        default=None,
+        help=(
+            "Replay an ongoing 18xx.games Rolling Stock Stars JSON export and "
+            "continue the game from its current state with AI players"
         ),
     )
     parser.add_argument("--simulations", type=int, default=800)
@@ -852,6 +981,27 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    continuation_num_players: int | None = None
+    if args.game_json_18xx is not None:
+        try:
+            continuation_game_data = _load_18xx_game_data(args.game_json_18xx)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        continuation_num_players = len(continuation_game_data["players"])
+        if (
+            args.num_players is not None
+            and args.num_players != continuation_num_players
+        ):
+            parser.error(
+                "--num-players must match --18xx-game-json player count "
+                f"({continuation_num_players})"
+            )
+    analysis_num_players = (
+        args.num_players
+        if args.num_players is not None
+        else continuation_num_players
+    )
+
     # Device
     if args.device:
         device = torch.device(args.device)
@@ -861,7 +1011,11 @@ def main() -> None:
     # Load checkpoint (or build a fresh untrained model when "new")
     checkpoint_path_for_log: str | Path
     if args.checkpoint == "new":
-        new_num_players = args.num_players if args.num_players is not None else 3
+        new_num_players = (
+            analysis_num_players
+            if analysis_num_players is not None
+            else 3
+        )
         assert 3 <= new_num_players <= 5, \
             f"--num-players must be in [3, 5], got {new_num_players}"
         config = TrainingConfig(num_players=new_num_players)
@@ -899,8 +1053,9 @@ def main() -> None:
         eval_dtype=args.eval_dtype,
         mcts_stats_only=args.mcts_stats_only,
         token_dump=args.token_dump,
-        num_players=args.num_players,
+        num_players=analysis_num_players,
         seed_18xx=args.seed_18xx,
+        game_json_18xx=args.game_json_18xx,
         player_names=_parse_player_names_arg(args.player_names),
     )
 

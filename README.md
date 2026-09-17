@@ -124,6 +124,19 @@ Analyze an 18xx.games replay JSON:
   --output replay.html
 ```
 
+Continue an unfinished 18xx.games game from its exported JSON with AI players:
+
+```bash
+.venv/bin/python -m train.analyze_game latest \
+  --checkpoint-dir checkpoints \
+  --18xx-game-json game.json \
+  --simulations 800 \
+  --output continuation.md
+```
+
+The player count and display names come from the game JSON. The
+`--18xx-game-json` and `--18xx-seed` starting modes are mutually exclusive.
+
 Compare checkpoints in a small tournament:
 
 ```bash
@@ -190,6 +203,18 @@ endpoint:
 ```bash
 curl http://localhost:8080/poke/GAME_ID
 ```
+
+The loopback-only eval endpoint can evaluate either a live game or an exported
+18xx.games JSON file without posting an action. File evaluations read a direct
+child of `/tmp`:
+
+```bash
+curl http://localhost:8080/eval/GAME_ID
+curl http://localhost:8080/eval/file/game.json
+```
+
+The existing `player`, `player_id`, and `player_index` query parameters can
+also be used with the file route.
 
 ## Notes
 

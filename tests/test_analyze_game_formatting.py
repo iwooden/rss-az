@@ -1,7 +1,10 @@
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
+import pytest
 import torch
 
 import train.analyze_game as analyze_game_module
@@ -12,7 +15,7 @@ from core.actions import (
     get_decision_phase_py,
 )
 from core.state import GameState
-from core.data import COMPANY_NAMES, CORP_NAMES
+from core.data import COMPANY_NAMES, CORP_NAMES, GamePhases
 from entities.company import COMPANIES
 from entities.turn import TURN
 from nn import create_model
@@ -354,3 +357,188 @@ def test_analyze_game_18xx_seed_logs_applied_initial_setup(monkeypatch) -> None:
     assert "# 18xx seed: 560979115" in rendered
     assert "initial offering: KME, MHE, BSE" in rendered
     assert "remaining deck: 2" in rendered
+
+
+def test_load_18xx_continuation_state_restores_model_rules(monkeypatch) -> None:
+    import utils_18xx.game_session as game_session_module
+
+    state = GameState(3, acq_same_president=False)
+    state.initialize_game(3, seed=42)
+    state.allow_positive_income_closing = True
+    seen: dict[str, Any] = {}
+
+    class FakeSession:
+        def __init__(self, num_players, max_players=None):
+            seen["init"] = (num_players, max_players)
+
+        def sync(self, game_data):
+            seen["sync"] = game_data
+            return state
+
+        def validate_against_18xx(self, game_data, current_state, *, context):
+            seen["validate"] = (game_data, current_state, context)
+            assert current_state.acq_same_president is False
+            assert current_state.allow_positive_income_closing is True
+            return []
+
+    monkeypatch.setattr(game_session_module, "GameSession", FakeSession)
+    game_data = {
+        "id": 123,
+        "title": "Rolling Stock Stars",
+        "players": [{"id": i + 1, "name": f"P{i}"} for i in range(3)],
+        "actions": [],
+    }
+
+    loaded = analyze_game_module._load_18xx_continuation_state(
+        game_data,
+        max_players=5,
+    )
+
+    assert loaded is state
+    assert seen["init"] == (3, 5)
+    assert seen["sync"] is game_data
+    assert seen["validate"][0] is game_data
+    assert loaded.acq_same_president is True
+    assert loaded.allow_positive_income_closing is False
+
+
+def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    game_path = tmp_path / "ongoing.json"
+    game_path.write_text(json.dumps({
+        "id": 24680,
+        "title": "Rolling Stock Stars",
+        "players": [
+            {"id": 10, "name": "Alice"},
+            {"id": 20, "name": "Bob"},
+            {"id": 30, "name": "Carol"},
+        ],
+        "actions": [{"id": 1, "type": "bid"}],
+    }))
+    start_state = _make_state()
+    TURN.set_turn_number(start_state, 7)
+    TURN.set_phase(start_state, int(GamePhases.PHASE_GAME_OVER))
+    seen: dict[str, Any] = {}
+
+    def fake_load_state(game_data, *, max_players):
+        seen["game_data"] = game_data
+        seen["max_players"] = max_players
+        return start_state
+
+    monkeypatch.setattr(
+        analyze_game_module,
+        "_load_18xx_continuation_state",
+        fake_load_state,
+    )
+    config = TrainingConfig(num_players=3)
+    model = create_model(config).to(torch.device("cpu"))
+    model.eval()
+
+    rendered = analyze_game(
+        model,
+        torch.device("cpu"),
+        config,
+        seed=99,
+        num_simulations=1,
+        checkpoint_path="new",
+        game_json_18xx=game_path,
+    )
+
+    assert seen["game_data"]["id"] == 24680
+    assert seen["max_players"] == 3
+    assert rendered.startswith(
+        "# Self-Play Analysis: 18xx game=24680 continuation, 1 simulations/move"
+    )
+    assert "# 18xx game: 24680 | recorded actions: 1 | " in rendered
+    assert "continuing from turn 7 [GAME_OVER]" in rendered
+    assert "# Search RNG seed: 99" in rendered
+    assert "Alice: net worth $" in rendered
+    assert "Bob: net worth $" in rendered
+    assert "Carol: net worth $" in rendered
+    assert "Completed in 0 decision points" in rendered
+
+
+def test_analyze_game_rejects_18xx_seed_with_game_json() -> None:
+    config = TrainingConfig(num_players=3)
+    model = create_model(config).to(torch.device("cpu"))
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        analyze_game(
+            model,
+            torch.device("cpu"),
+            config,
+            seed=1,
+            seed_18xx=123,
+            game_json_18xx="ongoing.json",
+            num_simulations=1,
+            checkpoint_path="new",
+        )
+
+
+def test_analyze_game_cli_18xx_start_modes_are_mutually_exclusive(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", [
+        "train.analyze_game",
+        "new",
+        "--18xx-seed",
+        "123",
+        "--18xx-game-json",
+        "ongoing.json",
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        analyze_game_module.main()
+
+    assert exc_info.value.code == 2
+
+
+def test_analyze_game_cli_derives_new_model_player_count_from_18xx_json(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    game_path = tmp_path / "ongoing-4p.json"
+    game_path.write_text(json.dumps({
+        "id": 13579,
+        "title": "Rolling Stock Stars",
+        "players": [
+            {"id": player_id, "name": f"Player {player_id}"}
+            for player_id in range(4)
+        ],
+        "actions": [],
+    }))
+    seen: dict[str, Any] = {}
+
+    class FakeModel:
+        def to(self, device):
+            seen["device"] = device
+            return self
+
+        def eval(self):
+            return self
+
+    def fake_create_model(config):
+        seen["config"] = config
+        return FakeModel()
+
+    def fake_analyze_game(*args, **kwargs):
+        seen["analyze_args"] = args
+        seen["analyze_kwargs"] = kwargs
+        return "continued"
+
+    monkeypatch.setattr(analyze_game_module, "create_model", fake_create_model)
+    monkeypatch.setattr(analyze_game_module, "analyze_game", fake_analyze_game)
+    monkeypatch.setattr(sys, "argv", [
+        "train.analyze_game",
+        "new",
+        "--18xx-game-json",
+        str(game_path),
+    ])
+
+    analyze_game_module.main()
+
+    assert seen["config"].num_players == 4
+    assert seen["analyze_kwargs"]["num_players"] == 4
+    assert seen["analyze_kwargs"]["game_json_18xx"] == str(game_path)
