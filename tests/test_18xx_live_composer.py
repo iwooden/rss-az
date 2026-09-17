@@ -50,7 +50,7 @@ from utils_18xx.live import (
     prepare_live_decision_state,
 )
 from utils_18xx.game_session import GameSession, StateMismatch
-from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
+from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 
 
 def _game_data():

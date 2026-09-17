@@ -69,30 +69,6 @@ def test_json_config_threads_phase_conditioning() -> None:
     assert '"phase_conditioning": false' in config.to_json()
 
 
-def test_cli_overrides_model_type_and_resnet_hyperparameters() -> None:
-    parser = _build_parser()
-    args = parser.parse_args([
-        "--model-type", "resnet",
-        "--resnet-hidden-dim", "128",
-        "--resnet-num-blocks", "4",
-    ])
-    config = TrainingConfig()
-
-    _apply_overrides(config, args)
-    config.validate()
-
-    assert config.model_type == "resnet"
-    assert config.resnet_hidden_dim == 128
-    assert config.resnet_num_blocks == 4
-
-
-def test_json_config_threads_model_type() -> None:
-    config = TrainingConfig.from_json('{"model_type": "resnet"}')
-
-    assert config.model_type == "resnet"
-    assert '"model_type": "resnet"' in config.to_json()
-
-
 def test_cli_overrides_model_path() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--model-path", "nn/transformer-v2.py"])

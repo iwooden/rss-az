@@ -14,16 +14,15 @@ integration, but the source of truth for RSS rules in this repo is
 The current practical model path is the transformer v2 architecture
 (`nn/transformer-v2.py`), usually through `train_configs/bigger-multi.json`.
 This branch develops a successor to that model using lessons from its games
-against top-level human players. Backward compatibility with old models,
-checkpoints, and configs is not required; the older transformer and ResNet
-paths are not maintenance targets. See [`AGENTS.md`](AGENTS.md) for development
-guidance.
+against top-level human players. Backward compatibility with retired model
+APIs, checkpoints, and configs is not required. See [`AGENTS.md`](AGENTS.md)
+for development guidance.
 
 ## What Is Here
 
 - `RULES.md` - rules reference for Rolling Stock Stars.
 - `core/` - compact Cython game state, static data, action encoding, driver,
-  token extraction, relation extraction, and ResNet vector extraction.
+  token extraction, and relation extraction.
 - `entities/` - stateless handles for players, corporations, companies, market,
   deck, and turn state.
 - `phases/` - phase implementations for investment, bidding, acquisitions,
@@ -40,8 +39,8 @@ guidance.
   live-play webhook server.
 - `tests/` - phase tests, engine invariants, model contract tests, MCTS tests,
   training tests, and 18xx compatibility checks.
-- `token-data.md`, `resnet-data.md`, `VECTORS.md` - implementation notes for
-  model inputs and state/action layout.
+- `token-data.md`, `VECTORS.md` - implementation notes for model inputs and
+  state/action layout.
 
 ## Setup
 

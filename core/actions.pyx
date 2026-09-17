@@ -1155,7 +1155,7 @@ ACTION_ACQ_SELECT_COMPANY_PY = ACTION_ACQ_SELECT_COMPANY
 # ``encode_*`` formulae and the ``ActionSize`` enum in ``core/data.pxd``
 # have fallen out of sync, which would silently corrupt replay alignment.
 # ``core.data`` is the single source of truth — no cross-module comparison
-# to ``nn/transformer.py`` is needed anymore.
+# to the neural-network policy layout is needed anymore.
 
 assert encode_invest_sell(7) == ACTION_SIZE_INVEST - 1
 assert encode_bid_raise(<int>AUCTION_CAP - 1) == ACTION_SIZE_BID - 1

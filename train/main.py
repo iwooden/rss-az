@@ -22,8 +22,7 @@ from core.data import PHASE_ACTION_SIZES
 from core.state import get_layout
 from core.token_data import TokenDataSize, get_num_tokens
 from nn import create_model, get_model_input_spec
-from nn.model_contract import ModelKind
-from nn.transformer import (
+from nn.policy_layout import (
     NUM_PHASES,
     UNIFIED_LOGIT_DIM,
     build_action_lut,
@@ -98,7 +97,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-type",
         type=str,
-        choices=["transformer", "resnet"],
+        choices=["transformer"],
         help="Model family to instantiate",
     )
     parser.add_argument(
@@ -266,13 +265,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Number of fixed Fourier bands for price-like policy slot keys",
     )
-    parser.add_argument(
-        "--price-slot-residual-scale",
-        type=float,
-        help="Blend weight for learned price-slot embeddings: 0=pure Fourier, 1=pure embedding",
-    )
-    parser.add_argument("--resnet-hidden-dim", type=int)
-    parser.add_argument("--resnet-num-blocks", type=int)
     return parser
 
 
@@ -280,8 +272,7 @@ _CLI_FIELDS = (
     "num_players", "min_players", "max_players",
     "eval_dtype", "model_type", "model_path", "phase_conditioning",
     "d_model", "d_proj", "num_heads", "num_layers", "ff_mult",
-    "price_slot_fourier_bands", "price_slot_residual_scale",
-    "resnet_hidden_dim", "resnet_num_blocks",
+    "price_slot_fourier_bands",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
     "num_simulations", "search_batch_size", "check_nonfinite_mcts",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
@@ -1109,26 +1100,17 @@ def main() -> None:
                 for i in range(warmup_n):
                     n = PHASE_ACTION_SIZES[i]
                     dummy_mask[i, lut[i, :n].to(device)] = True
-                if config.model_type == ModelKind.TRANSFORMER.value:
-                    dummy_tokens = torch.randn(
-                        warmup_n, num_tokens, token_dim, device=device,
-                    )
-                    dummy_relations = torch.zeros(
-                        warmup_n, NUM_ATTENTION_RELATIONS, num_tokens, num_tokens,
-                        dtype=torch.uint8, device=device,
-                    )
-                    for _t in (dummy_tokens, dummy_mask, dummy_relations):
-                        mark_unbacked(_t, 0)
-                    model(dummy_tokens, dummy_mask, dummy_relations)
-                    del dummy_tokens, dummy_relations
-                else:
-                    base_model = getattr(model, "_orig_mod", model)
-                    input_dim = int(getattr(base_model.cfg, "input_dim"))
-                    dummy_vectors = torch.randn(warmup_n, input_dim, device=device)
-                    for _t in (dummy_vectors, dummy_mask):
-                        mark_unbacked(_t, 0)
-                    model(dummy_vectors, dummy_mask)
-                    del dummy_vectors
+                dummy_tokens = torch.randn(
+                    warmup_n, num_tokens, token_dim, device=device,
+                )
+                dummy_relations = torch.zeros(
+                    warmup_n, NUM_ATTENTION_RELATIONS, num_tokens, num_tokens,
+                    dtype=torch.uint8, device=device,
+                )
+                for _t in (dummy_tokens, dummy_mask, dummy_relations):
+                    mark_unbacked(_t, 0)
+                model(dummy_tokens, dummy_mask, dummy_relations)
+                del dummy_tokens, dummy_relations
                 del dummy_mask
             torch.cuda.synchronize()
             print("  Model compiled.")

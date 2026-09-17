@@ -406,30 +406,21 @@ class TrainingLogger:
         table.add_row("Games/epoch", f"{config.games_per_epoch:,}")
         table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
         table.add_row("Batch size", str(config.batch_size))
-        if config.model_type == "transformer":
-            raw_d_ff = math.ceil(config.ff_mult * config.d_model)
-            d_ff = ((raw_d_ff + 63) // 64) * 64
-            table.add_row(
-                "Transformer",
-                f"d_model={config.d_model}, d_proj={config.d_proj}, "
-                f"heads={config.num_heads}, layers={config.num_layers}, d_ff={d_ff}",
-            )
-            table.add_row(
-                "Phase conditioning",
-                "adaLN enabled" if config.phase_conditioning else "disabled",
-            )
-            table.add_row(
-                "Price slot keys",
-                f"Fourier bands={config.price_slot_fourier_bands}, "
-                f"embedding blend={config.price_slot_residual_scale:g}",
-            )
-        else:
-            table.add_row(
-                "ResNet",
-                f"hidden={config.resnet_hidden_dim}, "
-                f"blocks={config.resnet_num_blocks}, "
-                "head_layers=2",
-            )
+        raw_d_ff = math.ceil(config.ff_mult * config.d_model)
+        d_ff = ((raw_d_ff + 63) // 64) * 64
+        table.add_row(
+            "Transformer",
+            f"d_model={config.d_model}, d_proj={config.d_proj}, "
+            f"heads={config.num_heads}, layers={config.num_layers}, d_ff={d_ff}",
+        )
+        table.add_row(
+            "Phase conditioning",
+            "adaLN enabled" if config.phase_conditioning else "disabled",
+        )
+        table.add_row(
+            "Price slot keys",
+            f"Fourier bands={config.price_slot_fourier_bands}",
+        )
         decay_end = config.lr_decay_end_epoch or config.num_epochs
         lr_desc = (
             f"{config.learning_rate:.1e} \u2192 {config.lr_min:.1e} "

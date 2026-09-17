@@ -11,7 +11,7 @@ from core.state import (
 from core.token_data import get_num_tokens
 from entities.player import PLAYERS
 from entities.turn import TURN
-from nn.transformer import UNIFIED_LOGIT_DIM
+from nn.policy_layout import UNIFIED_LOGIT_DIM
 from train.replay_buffer import ReplayBuffer
 
 

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from core.state import get_layout
-from nn.transformer import UNIFIED_LOGIT_DIM
+from nn.policy_layout import UNIFIED_LOGIT_DIM
 from train.self_play import GameRecord, StrategyTrace
 from train.strategy_data import _StrategyShardWriter
 

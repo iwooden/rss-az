@@ -44,7 +44,7 @@ from core.data import MAX_ACTION_SIZE, GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_INVALID_PY
 from core.state import GameState, get_layout, get_storage_player_capacity
 from entities.turn import TURN
-from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
+from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
@@ -191,9 +191,8 @@ class StatePool:
     )
 
     def __init__(self, capacity: int, state_size: int) -> None:
-        # Compact int16 state storage. Evaluators build model-specific
-        # buffers lazily from these rows: transformer token/relation tensors
-        # or dense ResNet vectors. The pool itself only owns raw canonical
+        # Compact int16 state storage. Evaluators build token and relation
+        # inputs lazily from these rows. The pool owns only raw canonical
         # state arrays.
         self.states = np.zeros((capacity, state_size), dtype=np.int16)
         self._next = 0

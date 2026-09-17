@@ -13,13 +13,12 @@ from core.attention_relations import (
     NUM_ATTENTION_RELATIONS,
     AttentionRelation,
 )
-from nn.transformer import (
-    UNIFIED_LOGIT_DIM,
+from nn import (
     RSSTransformerNet,
     TransformerBlock,
     TransformerConfig,
-    build_action_lut,
 )
+from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from core.data import (
     ALL_PAR_PRICES,
     PY_COMPANY_PRICE_DIVISOR,
@@ -988,28 +987,21 @@ def test_policy_layout_matches_phase_action_sizes(model: RSSTransformerNet) -> N
     model._validate_policy_layout()
 
 
-def test_price_slot_key_heads_use_fourier_widths_and_slot_embeddings(
+def test_price_slot_keys_use_shared_fourier_projection(
     model: RSSTransformerNet,
 ) -> None:
     bands = model.cfg.price_slot_fourier_bands
-    scalar_width = 1 + 2 * bands
-    pair_width = 2 * scalar_width
+    pair_width = 2 * (1 + 2 * bands)
 
-    assert model.dividend_amount_proj.in_features == scalar_width
-    assert model.bid_offset_proj.in_features == pair_width
-    assert model.acq_price_offset_proj.in_features == pair_width
-    assert model.par_price_proj.in_features == pair_width
-
-    assert model.bid_offset_embed.num_embeddings == int(GameConstants.AUCTION_CAP)
-    assert model.dividend_amount_embed.num_embeddings == int(
-        PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_DIVIDENDS)]
-    )
-    assert model.acq_price_offset_embed.num_embeddings == int(
-        PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)]
-    )
-    assert model.par_price_embed.num_embeddings == int(
-        PHASE_ACTION_SIZES[int(DecisionPhase.DPHASE_PAR)]
-    )
+    assert model.price_slot_proj.in_features == pair_width
+    assert model.price_slot_proj.out_features == model.cfg.d_proj
+    for old_name in (
+        "bid_offset_embed",
+        "dividend_amount_embed",
+        "acq_price_offset_embed",
+        "par_price_embed",
+    ):
+        assert not hasattr(model, old_name)
 
 
 def test_price_slot_static_features_match_action_semantics(
@@ -1049,58 +1041,6 @@ def test_slot_fourier_features_keep_raw_scalars_first(model: RSSTransformerNet) 
     expected_width = features.shape[-1] * (1 + 2 * model.cfg.price_slot_fourier_bands)
     assert tuple(encoded.shape) == (1, 1, expected_width)
     assert torch.allclose(encoded[..., : features.shape[-1]], features)
-
-
-def test_price_slot_residual_scale_blends_fourier_keys_and_embeddings() -> None:
-    cfg = TransformerConfig(
-        num_players=NUM_PLAYERS,
-        d_model=48,
-        num_heads=3,
-        num_layers=1,
-        ff_mult=2.0,
-        price_slot_residual_scale=0.5,
-    )
-    model = RSSTransformerNet(cfg)
-    assert "price_slot_residual_scale" not in dict(model.named_parameters())
-
-    keys = torch.randn(2, int(GameConstants.AUCTION_CAP), cfg.d_proj)
-    learned = model.bid_offset_embed.weight.unsqueeze(0).expand_as(keys)
-    actual = model._blend_price_slot_keys(keys, model.bid_offset_embed)
-    expected = 0.5 * keys + 0.5 * learned
-    assert torch.allclose(actual, expected)
-
-    zero_cfg = TransformerConfig(
-        num_players=NUM_PLAYERS,
-        d_model=48,
-        num_heads=3,
-        num_layers=1,
-        ff_mult=2.0,
-        price_slot_residual_scale=0.0,
-    )
-    zero_model = RSSTransformerNet(zero_cfg)
-    untouched = zero_model._blend_price_slot_keys(keys, zero_model.bid_offset_embed)
-    assert torch.equal(untouched, keys)
-
-    one_cfg = TransformerConfig(
-        num_players=NUM_PLAYERS,
-        d_model=48,
-        num_heads=3,
-        num_layers=1,
-        ff_mult=2.0,
-        price_slot_residual_scale=1.0,
-    )
-    one_model = RSSTransformerNet(one_cfg)
-    pure_embedding = one_model._blend_price_slot_keys(keys, one_model.bid_offset_embed)
-    expected_embedding = one_model.bid_offset_embed.weight.unsqueeze(0).expand_as(keys)
-    assert torch.equal(pure_embedding, expected_embedding)
-
-
-def test_price_slot_residual_scale_must_be_blend_weight() -> None:
-    with pytest.raises(AssertionError, match="price_slot_residual_scale"):
-        TransformerConfig(num_players=NUM_PLAYERS, price_slot_residual_scale=-0.1)
-
-    with pytest.raises(AssertionError, match="price_slot_residual_scale"):
-        TransformerConfig(num_players=NUM_PLAYERS, price_slot_residual_scale=1.1)
 
 
 def test_projection_widths_consume_declared_token_features(model: RSSTransformerNet) -> None:

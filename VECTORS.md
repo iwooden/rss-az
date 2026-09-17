@@ -284,7 +284,7 @@ Stored as a raw integer at `LAYOUT.turn_offset + TURN_OFFSETS.phase`. Defined in
 
 ## Action Space
 
-The old global dense `action_dim` vector is gone. The new action space is **per-phase and phase-local**: the same integer means different things in different phases, so callers must always carry `phase_id` alongside `action_id`. The canonical per-phase sizes live in `core/data.pxd` as the `ActionSize` `cpdef enum`; `core/actions.pxd` cimports them for its encode/decode arithmetic, and `nn/transformer.py` imports the `PHASE_ACTION_SIZES` Python list and `MAX_ACTION_SIZE` from `core.data`. Single source of truth — no cross-file sync. An import-time roundtrip assert in `core/actions.pyx` catches encode-formula drift against those sizes.
+The old global dense `action_dim` vector is gone. The new action space is **per-phase and phase-local**: the same integer means different things in different phases, so callers must always carry `phase_id` alongside `action_id`. The canonical per-phase sizes live in `core/data.pxd` as the `ActionSize` `cpdef enum`; `core/actions.pxd` cimports them for its encode/decode arithmetic, and `nn/policy_layout.py` imports the `PHASE_ACTION_SIZES` Python list and `MAX_ACTION_SIZE` from `core.data`. Single source of truth — no cross-file sync. An import-time roundtrip assert in `core/actions.pyx` catches encode-formula drift against those sizes.
 
 ### Decision phases
 

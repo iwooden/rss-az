@@ -12,7 +12,7 @@ that the relation is present for that ordered token pair.
 IPC path. The model still consumes dense relation planes; the eval server
 materializes the dense tensor on-device before the forward pass.
 
-The token indices mirror ``core.token_data`` / ``nn.transformer``:
+The token indices mirror ``core.token_data`` / ``nn/transformer-v2.py``:
 companies live at rows [1, 37), corps at rows [46, 54), players after the
 fixed 54-token prefix.
 """
@@ -47,7 +47,7 @@ from entities.corp cimport (
 )
 
 
-# Fixed token layout constants, matching core.token_data and nn.transformer.
+# Fixed token layout constants, matching core.token_data and transformer v2.
 DEF NUM_CORPS = 8
 DEF NUM_COMPANIES = 36
 DEF NUM_FIXED_TOKENS = 54

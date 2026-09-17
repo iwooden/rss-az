@@ -1,4 +1,4 @@
-"""Neural network models for Rolling Stock Stars AlphaZero training."""
+"""Neural network model loading and contract helpers."""
 
 from __future__ import annotations
 
@@ -8,30 +8,23 @@ import importlib
 import importlib.abc
 import importlib.machinery
 import importlib.util
+import inspect
 import os
 from pathlib import Path
 import sys
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch.nn as nn
 
-from core.resnet_data import get_resnet_vector_size
 from core.token_data import TokenDataSize, get_num_tokens
-from nn.model_contract import (
-    ModelInputSpec,
-    ModelKind,
-    canonical_player_for_relative,
-    normalize_model_type,
-    relative_slot_for_canonical,
-    rotate_values_to_relative,
-    unrotate_values_to_canonical,
-)
-from nn.resnet import RSSResNet, RSSResNetConfig
-from nn.transformer import RSSTransformerNet, TransformerConfig, UNIFIED_LOGIT_DIM
+from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
+from nn.policy_layout import UNIFIED_LOGIT_DIM
+
 
 _MODEL_IMPL_MODULE_PREFIX = "_rss_model_impl_"
 _MODEL_IMPL_ENV_PREFIX = "RSS_MODEL_IMPL_PATH_"
+_DEFAULT_MODEL_PATH = Path(__file__).with_name("transformer-v2.py")
 
 
 class _ModelPathFinder(importlib.abc.MetaPathFinder):
@@ -60,36 +53,6 @@ def _ensure_model_path_finder() -> None:
         sys.meta_path.insert(0, _ModelPathFinder())
 
 
-_ensure_model_path_finder()
-
-__all__ = [
-    "ModelInputSpec",
-    "ModelKind",
-    "RSSResNet",
-    "RSSResNetConfig",
-    "RSSTransformerNet",
-    "TransformerConfig",
-    "canonical_player_for_relative",
-    "create_model",
-    "get_model_input_spec",
-    "relative_slot_for_canonical",
-    "rotate_values_to_relative",
-    "unrotate_values_to_canonical",
-]
-
-
-def _config_value(config: object, name: str, default: Any) -> Any:
-    return getattr(config, name, default)
-
-
-def _effective_max_players(config: object) -> int:
-    """Return the model/storage player capacity for transformer inputs."""
-    value = _config_value(config, "effective_max_players", None)
-    if value is not None:
-        return int(value)
-    return int(_config_value(config, "num_players", 3))
-
-
 def _load_model_module(model_path: str) -> ModuleType:
     """Load a model implementation from a module name or Python file path."""
     looks_like_file = model_path.endswith(".py") or "/" in model_path or "\\" in model_path
@@ -116,81 +79,103 @@ def _load_model_module(model_path: str) -> ModuleType:
     return importlib.import_module(model_path)
 
 
-def _model_module(config: object) -> ModuleType | None:
+def _require_symbol(module: ModuleType, name: str, model_path: str) -> Any:
+    try:
+        return getattr(module, name)
+    except AttributeError as exc:
+        raise ValueError(f"model_path {model_path!r} must define {name}") from exc
+
+
+_ensure_model_path_finder()
+_default_model_module = _load_model_module(str(_DEFAULT_MODEL_PATH))
+if TYPE_CHECKING:
+    # The implementation filename is intentionally file-loadable rather than
+    # importable as a Python module. Its source is still checked directly;
+    # these declarations describe the open implementation surface exported by
+    # this loader without duplicating v2's model definition.
+    class TransformerConfig:
+        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+        def __getattr__(self, name: str) -> Any: ...
+
+    class TransformerBlock(nn.Module):
+        def __getattr__(self, name: str) -> Any: ...
+
+    class RSSTransformerNet(nn.Module):
+        cfg: TransformerConfig
+
+        def __init__(self, cfg: TransformerConfig) -> None: ...
+        def __getattr__(self, name: str) -> Any: ...
+else:
+    RSSTransformerNet = _require_symbol(
+        _default_model_module, "RSSTransformerNet", str(_DEFAULT_MODEL_PATH)
+    )
+    TransformerBlock = _require_symbol(
+        _default_model_module, "TransformerBlock", str(_DEFAULT_MODEL_PATH)
+    )
+    TransformerConfig = _require_symbol(
+        _default_model_module, "TransformerConfig", str(_DEFAULT_MODEL_PATH)
+    )
+
+
+__all__ = [
+    "ModelInputSpec",
+    "ModelKind",
+    "RSSTransformerNet",
+    "TransformerBlock",
+    "TransformerConfig",
+    "create_model",
+    "get_model_input_spec",
+]
+
+
+def _config_value(config: object, name: str, default: Any) -> Any:
+    return getattr(config, name, default)
+
+
+def _effective_max_players(config: object) -> int:
+    """Return the model/storage player capacity for transformer inputs."""
+    value = _config_value(config, "effective_max_players", None)
+    if value is not None:
+        return int(value)
+    return int(_config_value(config, "num_players", 3))
+
+
+def _model_module(config: object) -> tuple[ModuleType, str]:
     model_path = _config_value(config, "model_path", None)
     if model_path is None:
-        return None
-    return _load_model_module(str(model_path))
-
-
-def _resnet_input_dim(num_players: int) -> int:
-    return get_resnet_vector_size(num_players)
+        return _default_model_module, str(_DEFAULT_MODEL_PATH)
+    path = str(model_path)
+    return _load_model_module(path), path
 
 
 def _config_kwargs(config_cls: type[object], values: dict[str, Any]) -> dict[str, Any]:
     """Filter unified TrainingConfig-derived values to a model config schema."""
     if is_dataclass(config_cls):
-        valid = {
-            field.name
-            for field in fields(config_cls)
-            if field.init
-        }
-        return {k: v for k, v in values.items() if k in valid}
-
-    # Fallback for config classes that are not dataclasses.
-    import inspect
+        valid = {field.name for field in fields(config_cls) if field.init}
+        return {key: value for key, value in values.items() if key in valid}
 
     signature = inspect.signature(config_cls)
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()):
+    if any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
         return values
-    return {k: v for k, v in values.items() if k in signature.parameters}
-
-
-def _require_symbol(module: ModuleType, name: str, model_path: str) -> Any:
-    try:
-        return getattr(module, name)
-    except AttributeError as exc:
-        raise ValueError(
-            f"model_path {model_path!r} must define {name}"
-        ) from exc
+    return {key: value for key, value in values.items() if key in signature.parameters}
 
 
 def get_model_input_spec(config: object) -> ModelInputSpec:
-    """Resolve model input/output dimensions from a training config."""
-    num_players = int(_config_value(config, "num_players", 3))
-    max_players = _effective_max_players(config)
+    """Resolve the active model's input/output dimensions."""
     model_kind = normalize_model_type(
         str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
     )
-
-    if model_kind is ModelKind.TRANSFORMER:
-        return ModelInputSpec(
-            model_type=model_kind.value,
-            num_players=max_players,
-            policy_dim=int(UNIFIED_LOGIT_DIM),
-            value_dim=max_players,
-            input_dim=None,
-            num_tokens=get_num_tokens(max_players),
-            token_dim=int(TokenDataSize.TOKEN_DIM),
-            uses_relations=True,
-            values_are_active_relative=False,
-        )
-
-    if num_players == 0:
-        raise ValueError(
-            "mixed player-count training is only supported by transformer models; "
-            "ResNet requires a single num_players value"
-        )
+    max_players = _effective_max_players(config)
     return ModelInputSpec(
         model_type=model_kind.value,
-        num_players=num_players,
+        num_players=max_players,
         policy_dim=int(UNIFIED_LOGIT_DIM),
-        value_dim=num_players,
-        input_dim=_resnet_input_dim(num_players),
-        num_tokens=None,
-        token_dim=None,
-        uses_relations=False,
-        values_are_active_relative=True,
+        value_dim=max_players,
+        num_tokens=get_num_tokens(max_players),
+        token_dim=int(TokenDataSize.TOKEN_DIM),
     )
 
 
@@ -205,15 +190,9 @@ def create_model(
     ff_mult: float = 3.0,
     phase_conditioning: bool = False,
     price_slot_fourier_bands: int = 4,
-    price_slot_residual_scale: float = 1.0,
     model_path: str | None = None,
 ) -> nn.Module:
-    """Instantiate the configured model family.
-
-    Preferred usage is ``create_model(training_config)``. The legacy
-    ``create_model(num_players=..., ...)`` path is retained for targeted tests
-    and utility callers that still construct the transformer directly.
-    """
+    """Instantiate the configured transformer implementation."""
     if isinstance(config, int):
         if num_players is not None:
             raise TypeError("Pass num_players either positionally or by keyword, not both")
@@ -223,13 +202,8 @@ def create_model(
     if config is None:
         if num_players is None:
             raise TypeError("create_model requires a TrainingConfig or num_players")
-        if model_path is not None:
-            module = _load_model_module(model_path)
-            net_cls = _require_symbol(module, "RSSTransformerNet", model_path)
-            config_cls = _require_symbol(module, "TransformerConfig", model_path)
-        else:
-            net_cls = RSSTransformerNet
-            config_cls = TransformerConfig
+        selected_path = model_path or str(_DEFAULT_MODEL_PATH)
+        module = _load_model_module(selected_path)
         values: dict[str, Any] = {
             "num_players": num_players,
             "d_model": d_model,
@@ -239,34 +213,14 @@ def create_model(
             "ff_mult": ff_mult,
             "phase_conditioning": phase_conditioning,
             "price_slot_fourier_bands": price_slot_fourier_bands,
-            "price_slot_residual_scale": price_slot_residual_scale,
         }
-        return net_cls(config_cls(**_config_kwargs(config_cls, values)))
-
-    cfg_num_players = int(_config_value(config, "num_players", 3))
-    cfg_max_players = _effective_max_players(config)
-    model_kind = normalize_model_type(
-        str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
-    )
-    if model_kind is not ModelKind.TRANSFORMER and cfg_num_players == 0:
-        raise ValueError(
-            "mixed player-count training is only supported by transformer models; "
-            "ResNet requires a single num_players value"
+    else:
+        normalize_model_type(
+            str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
         )
-    module = _model_module(config)
-    cfg_model_path = str(_config_value(config, "model_path", "")) if module is not None else ""
-
-    if model_kind is ModelKind.TRANSFORMER:
-        net_cls = (
-            _require_symbol(module, "RSSTransformerNet", cfg_model_path)
-            if module is not None else RSSTransformerNet
-        )
-        config_cls = (
-            _require_symbol(module, "TransformerConfig", cfg_model_path)
-            if module is not None else TransformerConfig
-        )
-        values: dict[str, Any] = {
-            "num_players": cfg_max_players,
+        module, selected_path = _model_module(config)
+        values = {
+            "num_players": _effective_max_players(config),
             "d_model": int(_config_value(config, "d_model", 256)),
             "d_proj": int(_config_value(config, "d_proj", 64)),
             "num_heads": int(_config_value(config, "num_heads", 4)),
@@ -278,24 +232,8 @@ def create_model(
             "price_slot_fourier_bands": int(
                 _config_value(config, "price_slot_fourier_bands", 4)
             ),
-            "price_slot_residual_scale": float(
-                _config_value(config, "price_slot_residual_scale", 1.0)
-            ),
         }
-        return net_cls(config_cls(**_config_kwargs(config_cls, values)))
 
-    net_cls = (
-        _require_symbol(module, "RSSResNet", cfg_model_path)
-        if module is not None else RSSResNet
-    )
-    config_cls = (
-        _require_symbol(module, "RSSResNetConfig", cfg_model_path)
-        if module is not None else RSSResNetConfig
-    )
-    values: dict[str, Any] = {
-        "num_players": cfg_num_players,
-        "input_dim": _resnet_input_dim(cfg_num_players),
-        "hidden_dim": int(_config_value(config, "resnet_hidden_dim", 256)),
-        "num_blocks": int(_config_value(config, "resnet_num_blocks", 8)),
-    }
+    net_cls = _require_symbol(module, "RSSTransformerNet", selected_path)
+    config_cls = _require_symbol(module, "TransformerConfig", selected_path)
     return net_cls(config_cls(**_config_kwargs(config_cls, values)))

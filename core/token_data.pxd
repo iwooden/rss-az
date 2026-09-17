@@ -5,14 +5,14 @@ Declaration file for token data extraction.
 (num_tokens, TOKEN_DIM) float32 buffer with normalized per-token
 features from a compact GameState. Feature layout per token type is
 documented in ``token-data.md`` and matches the order expected by
-``nn/transformer.py``.
+``nn/transformer-v2.py``.
 """
 
 from core.state cimport GameState
 
 
 # Maximum feature count across all token types (== raw token_dim input
-# to ``nn/transformer.py``). All tokens are zero-padded to this width.
+# to ``nn/transformer-v2.py``). All tokens are zero-padded to this width.
 # Equals ``max(TokenWidth.*)``; currently pinned by ``TW_CORP = 95``.
 # See the companion .pyx for the per-token feature layout and counts.
 cpdef enum TokenDataSize:

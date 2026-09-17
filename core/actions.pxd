@@ -7,7 +7,7 @@ encoding defined here is the single source of truth for:
   - what integer represents what game action in each decision phase
   - how replay buffers serialize ``(phase_id, action_id)`` pairs
   - how the engine decodes a sparse legal candidate into a phase handler call
-  - how ``nn/transformer.py`` interprets its policy head outputs
+  - how ``nn/policy_layout.py`` maps policy head outputs
 
 The per-phase action *counts* themselves live in ``core/data.pxd`` as the
 ``ActionSize`` ``cpdef enum`` — single source of truth shared with the model

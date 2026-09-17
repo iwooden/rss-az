@@ -8,7 +8,7 @@ import numpy as np
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import GameState, get_layout, get_turn_fields
 from core.token_data import get_num_tokens
-from nn.transformer import UNIFIED_LOGIT_DIM
+from nn.policy_layout import UNIFIED_LOGIT_DIM
 from train.replay_buffer import ReplayBuffer
 
 

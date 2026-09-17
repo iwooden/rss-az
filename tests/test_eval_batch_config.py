@@ -207,25 +207,10 @@ def test_training_config_rejects_inverted_policy_target_temp_schedule() -> None:
         )
 
 
-def test_training_config_rejects_price_slot_residual_blend_out_of_range() -> None:
-    with pytest.raises(ValueError, match="price_slot_residual_scale"):
-        TrainingConfig(price_slot_residual_scale=-0.1)
-
-    with pytest.raises(ValueError, match="price_slot_residual_scale"):
-        TrainingConfig(price_slot_residual_scale=1.1)
-
-
-def test_training_config_rejects_unknown_model_type() -> None:
+@pytest.mark.parametrize("model_type", ["mlp", "cnn"])
+def test_training_config_rejects_unknown_model_type(model_type: str) -> None:
     with pytest.raises(ValueError, match="model_type"):
-        TrainingConfig(model_type="mlp")
-
-
-def test_training_config_rejects_invalid_resnet_hyperparameters() -> None:
-    with pytest.raises(ValueError, match="resnet_hidden_dim"):
-        TrainingConfig(model_type="resnet", resnet_hidden_dim=0)
-
-    with pytest.raises(ValueError, match="resnet_num_blocks"):
-        TrainingConfig(model_type="resnet", resnet_num_blocks=-1)
+        TrainingConfig(model_type=model_type)
 
 
 def test_training_config_rejects_eval_max_batch_size_in_dynamic_mode() -> None:

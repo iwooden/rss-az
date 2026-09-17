@@ -10,7 +10,7 @@ from core.state import get_layout
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from nn import get_model_input_spec
-from nn.transformer import UNIFIED_LOGIT_DIM
+from nn.policy_layout import UNIFIED_LOGIT_DIM
 from train.config import TrainingConfig
 from train.eval_server import EvaluationServer, SharedEvalBuffers
 from train.main import (

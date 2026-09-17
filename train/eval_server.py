@@ -10,12 +10,9 @@ snapshot after each training phase.
 Communication uses shared memory (torch tensors with share_memory_()):
 
   Worker → Server (inputs)
-      states      : transformer:
-                    float16 (W, B, num_tokens, token_dim)
-                    ResNet:
-                    float16 (W, B, resnet_vector_dim)
+      states      : float16 (W, B, num_tokens, token_dim)
       legal_mask  : uint8   (W, B, UNIFIED_LOGIT_DIM)  — 1=legal slot
-      relation_coords (transformer only)
+      relation_coords
                  : uint8   (W, B, MAX_ATTENTION_RELATION_EDGES, 3)
                     — sparse (relation_id, query_token, key_token) triplets.
                     The model builds per-layer attention bias directly from
@@ -23,10 +20,7 @@ Communication uses shared memory (torch tensors with share_memory_()):
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
       priors  : float32 (W, B, UNIFIED_LOGIT_DIM)  — legal slots sum to 1
-      values  : float32 (W, B, num_players)
-                transformer: canonical order
-                ResNet: active-relative order on the wire; the worker
-                unrotates before returning values to MCTS
+      values  : float32 (W, B, num_players) — canonical player order
 
 Transformer token buffers are fp16 on the wire (half the shm + pinned + H→D
 bytes of the old fp32 path). Cython's ``get_token_data`` still fills fp32, and
@@ -35,8 +29,6 @@ astype per eval request). Model-side the fp16 input is upcast to bf16 at
 trunk entry, matching the autocast dtype the rest of the forward runs
 under; all token feature values sit in [-1, ~3] post-normalization, so
 fp16 round-trip error is <1e-3 absolute (see scratchpad/fp16_token_precision.py).
-ResNet vector buffers use the same fp16 wire representation, then the server
-upcasts them to fp32 before calling the ResNet.
 
 The unified policy tensor (width ``UNIFIED_LOGIT_DIM``) is the wire format.
 Workers build a dense legal-mask (via the same ``build_action_lut`` mapping
@@ -83,9 +75,7 @@ inference buffers uses Cython nogil memcpy (no per-worker Python loop).
 
 Workers do zero torch operations on the hot path — pure numpy writes
 into the shared input buffers, a single bitmap publish + Event wait,
-then numpy reads of the already-softmaxed sparse priors / values. ResNet
-workers unrotate active-relative values to canonical order before handing
-them to MCTS; transformer workers pass canonical values through unchanged.
+then numpy reads of the already-softmaxed sparse priors and canonical values.
 
 RemoteEvaluator is the worker-side proxy that implements the same
 ``evaluate`` / ``evaluate_leaves`` / ``evaluate_terminal`` interface as
@@ -117,11 +107,6 @@ from core.attention_relations import (
 )
 from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES
 from core.relations import get_relation_coord_data, get_relation_coord_data_batch
-from core.resnet_data import (
-    get_resnet_data,
-    get_resnet_data_batch,
-    get_resnet_vector_size,
-)
 from core.token_data import (
     TokenDataSize,
     get_num_tokens,
@@ -133,9 +118,8 @@ from nn.model_contract import (
     ModelInputSpec,
     ModelKind,
     normalize_model_type,
-    unrotate_values_to_canonical,
 )
-from nn.transformer import NUM_PHASES, UNIFIED_LOGIT_DIM, build_action_lut
+from nn.policy_layout import NUM_PHASES, UNIFIED_LOGIT_DIM, build_action_lut
 from train.profile_stats import EvalClientStats, EvalServerStats
 
 TOKEN_DIM=int(TokenDataSize.TOKEN_DIM)
@@ -270,20 +254,15 @@ class SharedEvalBuffers:
     outputs back into the same per-worker slot.
 
     Inputs (worker → server):
-        states      transformer:
-                    (W, B, num_tokens, token_dim)       float16
-                    ResNet:
-                    (W, B, resnet_vector_dim)           float16
+        states      (W, B, num_tokens, token_dim)       float16
         legal_mask  (W, B, UNIFIED_LOGIT_DIM)           uint8 (1=legal slot)
-        relation_coords (transformer only)
+        relation_coords
                     (W, B, MAX_ATTENTION_RELATION_EDGES, 3)
                     uint8 sparse relation triplets
 
     Outputs (server → worker):
         priors  (W, B, UNIFIED_LOGIT_DIM)  float32  (softmaxed over legal slots)
-        values  (W, B, num_players)        float32
-                transformer: canonical order
-                ResNet: active-relative order until RemoteEvaluator unrotates
+        values  (W, B, num_players)        float32 (canonical player order)
 
     The dense unified representation carries legality via a per-slot mask
     — no sparse action-id buffer appears in any shape here. Shared-mem
@@ -307,11 +286,8 @@ class SharedEvalBuffers:
                 num_players=num_players,
                 policy_dim=int(UNIFIED_LOGIT_DIM),
                 value_dim=num_players,
-                input_dim=None,
                 num_tokens=get_num_tokens(num_players),
                 token_dim=TOKEN_DIM,
-                uses_relations=True,
-                values_are_active_relative=False,
             )
         model_kind = normalize_model_type(input_spec.model_type)
         if int(input_spec.num_players) != num_players:
@@ -330,85 +306,42 @@ class SharedEvalBuffers:
                 f"match num_players ({num_players})"
             )
         self.model_type = model_kind.value
-        self.uses_relations = bool(input_spec.uses_relations)
-        self.values_are_active_relative = bool(
-            input_spec.values_are_active_relative
-        )
-        self.num_tokens = int(input_spec.num_tokens or 0)
-        self.token_dim = int(input_spec.token_dim or 0)
-        self.input_dim = int(input_spec.input_dim or 0)
+        self.num_tokens = int(input_spec.num_tokens)
+        self.token_dim = int(input_spec.token_dim)
 
-        if model_kind is ModelKind.TRANSFORMER:
-            expected_tokens = get_num_tokens(num_players)
-            if self.num_tokens != expected_tokens:
-                raise ValueError(
-                    f"Transformer num_tokens ({self.num_tokens}) does not "
-                    f"match get_num_tokens({num_players}) ({expected_tokens})"
-                )
-            if self.token_dim != TOKEN_DIM:
-                raise ValueError(
-                    f"Transformer token_dim ({self.token_dim}) does not "
-                    f"match TOKEN_DIM ({TOKEN_DIM})"
-                )
-            if self.input_dim != 0:
-                raise ValueError("Transformer input_dim must be unset")
-            if not self.uses_relations:
-                raise ValueError("Transformer shared buffers require relations")
-            if self.values_are_active_relative:
-                raise ValueError("Transformer values must be canonical")
-        else:
-            expected_input_dim = get_resnet_vector_size(num_players)
-            if self.input_dim != expected_input_dim:
-                raise ValueError(
-                    f"ResNet input_dim ({self.input_dim}) does not match "
-                    f"get_resnet_vector_size({num_players}) "
-                    f"({expected_input_dim})"
-                )
-            if self.num_tokens != 0 or self.token_dim != 0:
-                raise ValueError("ResNet token dimensions must be unset")
-            if self.uses_relations:
-                raise ValueError("ResNet shared buffers do not use relations")
-            if not self.values_are_active_relative:
-                raise ValueError("ResNet values must be active-relative")
+        expected_tokens = get_num_tokens(num_players)
+        if self.num_tokens != expected_tokens:
+            raise ValueError(
+                f"Transformer num_tokens ({self.num_tokens}) does not "
+                f"match get_num_tokens({num_players}) ({expected_tokens})"
+            )
+        if self.token_dim != TOKEN_DIM:
+            raise ValueError(
+                f"Transformer token_dim ({self.token_dim}) does not "
+                f"match TOKEN_DIM ({TOKEN_DIM})"
+            )
 
-        self.num_relations = (
-            NUM_ATTENTION_RELATIONS if self.uses_relations else 0
-        )
-        self.max_relation_edges = (
-            MAX_ATTENTION_RELATION_EDGES if self.uses_relations else 0
-        )
-        self.relation_coord_width = (
-            ATTENTION_RELATION_COORD_WIDTH if self.uses_relations else 0
-        )
+        self.num_relations = NUM_ATTENTION_RELATIONS
+        self.max_relation_edges = MAX_ATTENTION_RELATION_EDGES
+        self.relation_coord_width = ATTENTION_RELATION_COORD_WIDTH
 
         # --- Inputs (worker → server) ---
-        if model_kind is ModelKind.TRANSFORMER:
-            # fp16 on the wire: halves shm footprint + pinned→GPU copy vs.
-            # the old fp32 buffer. Cython's ``get_token_data`` still writes
-            # fp32 into a per-worker scratch; the worker casts into this fp16
-            # slot at the shm boundary.
-            self._states = torch.zeros(
-                num_workers, batch_size, self.num_tokens, self.token_dim,
-                dtype=torch.float16,
-            ).share_memory_()
-        else:
-            self._states = torch.zeros(
-                num_workers, batch_size, self.input_dim, dtype=torch.float16,
-            ).share_memory_()
+        # fp16 on the wire halves shared-memory and transfer volume. Cython
+        # fills fp32 scratch and the worker casts once at the boundary.
+        self._states = torch.zeros(
+            num_workers, batch_size, self.num_tokens, self.token_dim,
+            dtype=torch.float16,
+        ).share_memory_()
         self._legal_mask = torch.zeros(
             num_workers, batch_size, self.unified_dim, dtype=torch.uint8,
         ).share_memory_()
-        if self.uses_relations:
-            # Sparse Graphormer-style directed relation coordinates. The eval
-            # model consumes these directly and builds dense SDPA bias tensors
-            # per layer, avoiding dense relation planes on the IPC/server path.
-            self._relation_coords: torch.Tensor | None = torch.zeros(
-                num_workers, batch_size,
-                self.max_relation_edges, self.relation_coord_width,
-                dtype=torch.uint8,
-            ).share_memory_()
-        else:
-            self._relation_coords = None
+        # Sparse Graphormer-style directed relation coordinates. The eval
+        # model consumes these directly and builds dense SDPA bias tensors.
+        self._relation_coords = torch.zeros(
+            num_workers, batch_size,
+            self.max_relation_edges, self.relation_coord_width,
+            dtype=torch.uint8,
+        ).share_memory_()
 
         # --- Outputs (server → worker) ---
         # Dense priors over unified slots, already masked + softmaxed on the
@@ -449,15 +382,8 @@ class SharedEvalBuffers:
     def get_input_states_np(self, worker_idx: int) -> np.ndarray:
         """View into this worker's model-input slot.
 
-        Transformer shape is ``(batch, num_tokens, token_dim)`` float16.
-        ResNet shape is ``(batch, resnet_vector_dim)`` float16.
+        Shape is ``(batch, num_tokens, token_dim)`` float16.
         """
-        return self._states[worker_idx].numpy()
-
-    def get_input_vectors_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, resnet_vector_dim) float16 view into a ResNet input slot."""
-        if self.model_type != ModelKind.RESNET.value:
-            raise RuntimeError("input vectors are only allocated for ResNet")
         return self._states[worker_idx].numpy()
 
     def get_input_legal_mask_np(self, worker_idx: int) -> np.ndarray:
@@ -466,10 +392,6 @@ class SharedEvalBuffers:
 
     def get_input_relation_coords_np(self, worker_idx: int) -> np.ndarray:
         """(batch, max_relation_edges, 3) uint8 sparse relation coordinates."""
-        if self._relation_coords is None:
-            raise RuntimeError(
-                "relation coordinates are only allocated for transformer"
-            )
         return self._relation_coords[worker_idx].numpy()
 
     # ------------------------------------------------------------------
@@ -691,11 +613,9 @@ def _eval_server_serve(
         max_batch_size=max_batch_size,
     )
 
-    model_kind = normalize_model_type(shared_bufs.model_type)
-    uses_resnet_vectors = model_kind is ModelKind.RESNET
+    normalize_model_type(shared_bufs.model_type)
     num_tokens = shared_bufs.num_tokens
     token_dim = shared_bufs.token_dim
-    input_dim = shared_bufs.input_dim
     u_dim = shared_bufs.unified_dim
     npl = shared_bufs.num_players
 
@@ -730,21 +650,15 @@ def _eval_server_serve(
             cache_enabled=False,
         ):
             for warmup_n in warmup_batches:
-                if uses_resnet_vectors:
-                    dummy_s = torch.randn(
-                        warmup_n, input_dim, device=device, dtype=torch.float32,
-                    )
-                    dummy_rel = None
-                else:
-                    dummy_s = torch.randn(
-                        warmup_n, num_tokens, token_dim, device=device,
-                        dtype=torch.float16,
-                    )
-                    dummy_rel = torch.zeros(
-                        warmup_n, shared_bufs.max_relation_edges,
-                        shared_bufs.relation_coord_width,
-                        dtype=torch.uint8, device=device,
-                    )
+                dummy_s = torch.randn(
+                    warmup_n, num_tokens, token_dim, device=device,
+                    dtype=torch.float16,
+                )
+                dummy_rel = torch.zeros(
+                    warmup_n, shared_bufs.max_relation_edges,
+                    shared_bufs.relation_coord_width,
+                    dtype=torch.uint8, device=device,
+                )
                 # Build one legal mask per phase so every phase's slots get
                 # exercised at least once during compilation.
                 dummy_mask = torch.zeros(
@@ -755,17 +669,9 @@ def _eval_server_serve(
                     n = PHASE_ACTION_SIZES[phase_id]
                     dummy_mask[i, lut[phase_id, :n].to(device)] = True
                 if batch_shape_mode == "dynamic":
-                    mark_tensors = (
-                        (dummy_s, dummy_mask)
-                        if uses_resnet_vectors
-                        else (dummy_s, dummy_mask, dummy_rel)
-                    )
-                    for _t in mark_tensors:
+                    for _t in (dummy_s, dummy_mask, dummy_rel):
                         mark_unbacked(_t, 0)
-                if uses_resnet_vectors:
-                    model(dummy_s, dummy_mask)
-                else:
-                    model(dummy_s, dummy_mask, dummy_rel)
+                model(dummy_s, dummy_mask, dummy_rel)
                 del dummy_s, dummy_mask, dummy_rel
         torch.cuda.synchronize()
 
@@ -780,12 +686,8 @@ def _eval_server_serve(
     buf_depth = 2 if use_cuda else 1
 
     # --- Inputs: pinned CPU + GPU side ---
-    if uses_resnet_vectors:
-        input_shape = (alloc_batch, input_dim)
-        input_flat_width = input_dim
-    else:
-        input_shape = (alloc_batch, num_tokens, token_dim)
-        input_flat_width = num_tokens * token_dim
+    input_shape = (alloc_batch, num_tokens, token_dim)
+    input_flat_width = num_tokens * token_dim
     input_dtype = torch.float16
     states_row_bytes = input_flat_width * 2  # fp16 == 2 bytes
 
@@ -800,37 +702,26 @@ def _eval_server_serve(
         for p in pin_s_np_list
     ]
     gpu_s = torch.empty(*input_shape, dtype=input_dtype, device=device)
-    gpu_s_model = (
-        torch.empty(alloc_batch, input_dim, dtype=torch.float32, device=device)
-        if uses_resnet_vectors else None
-    )
 
-    if uses_resnet_vectors:
-        relation_coord_row_bytes = 0
-        pin_rel_coord_list: list[torch.Tensor] = []
-        pin_rel_coord_np_list: list[np.ndarray] = []
-        pin_rel_coord_flat_bytes_list: list[np.ndarray] = []
-        gpu_rel_coord = None
-    else:
-        max_relation_edges = shared_bufs.max_relation_edges
-        relation_coord_width = shared_bufs.relation_coord_width
-        relation_coord_row_bytes = max_relation_edges * relation_coord_width
-        pin_rel_coord_list = [
-            torch.empty(
-                alloc_batch, max_relation_edges, relation_coord_width,
-                dtype=torch.uint8, pin_memory=use_cuda,
-            )
-            for _ in range(buf_depth)
-        ]
-        pin_rel_coord_np_list = [p.numpy() for p in pin_rel_coord_list]
-        pin_rel_coord_flat_bytes_list = [
-            p.reshape(alloc_batch, relation_coord_row_bytes).view(np.int8)
-            for p in pin_rel_coord_np_list
-        ]
-        gpu_rel_coord = torch.empty(
+    max_relation_edges = shared_bufs.max_relation_edges
+    relation_coord_width = shared_bufs.relation_coord_width
+    relation_coord_row_bytes = max_relation_edges * relation_coord_width
+    pin_rel_coord_list = [
+        torch.empty(
             alloc_batch, max_relation_edges, relation_coord_width,
-            dtype=torch.uint8, device=device,
+            dtype=torch.uint8, pin_memory=use_cuda,
         )
+        for _ in range(buf_depth)
+    ]
+    pin_rel_coord_np_list = [p.numpy() for p in pin_rel_coord_list]
+    pin_rel_coord_flat_bytes_list = [
+        p.reshape(alloc_batch, relation_coord_row_bytes).view(np.int8)
+        for p in pin_rel_coord_np_list
+    ]
+    gpu_rel_coord = torch.empty(
+        alloc_batch, max_relation_edges, relation_coord_width,
+        dtype=torch.uint8, device=device,
+    )
     # Shared-memory mask gather stays uint8, but bucketed launches use a
     # preallocated bool tensor at the model call site so the GPU-visible
     # invocation shape is static apart from the chosen bucket size.
@@ -874,19 +765,14 @@ def _eval_server_serve(
     )
     # Contiguous views of the shared-memory tensors (views don't survive
     # pickling, so they're built per-process here).
-    # states: transformer fp16 tokens or ResNet fp16 vectors → flatten input
-    # dims and view as bytes so the Cython gather is dtype-agnostic (matches
-    # scatter_results).
+    # Flatten token inputs and view them as bytes so the Cython gather is
+    # dtype-agnostic (matching scatter_results).
     all_states_bytes = shared_bufs._states.numpy().reshape(
         shared_bufs.num_workers, shared_bufs.batch_size, input_flat_width,
     ).view(np.int8)
-    if uses_resnet_vectors:
-        all_relation_coords_bytes = None
-    else:
-        assert shared_bufs._relation_coords is not None
-        all_relation_coords_bytes = shared_bufs._relation_coords.numpy().reshape(
-            shared_bufs.num_workers, shared_bufs.batch_size, relation_coord_row_bytes,
-        ).view(np.int8)
+    all_relation_coords_bytes = shared_bufs._relation_coords.numpy().reshape(
+        shared_bufs.num_workers, shared_bufs.batch_size, relation_coord_row_bytes,
+    ).view(np.int8)
     all_masks_np = shared_bufs._legal_mask.numpy()
     all_priors_np = shared_bufs._priors.numpy()
     all_values_np = shared_bufs._values.numpy()
@@ -994,36 +880,28 @@ def _eval_server_serve(
 
         pin_s_slot = pin_s_list[slot]
         pin_s_flat_bytes = pin_s_flat_bytes_list[slot]
-        if uses_resnet_vectors:
-            pin_rel_coord_slot = None
-            pin_rel_coord_flat_bytes = None
-        else:
-            pin_rel_coord_slot = pin_rel_coord_list[slot]
-            pin_rel_coord_flat_bytes = pin_rel_coord_flat_bytes_list[slot]
+        pin_rel_coord_slot = pin_rel_coord_list[slot]
+        pin_rel_coord_flat_bytes = pin_rel_coord_flat_bytes_list[slot]
         pin_mask_slot = pin_mask_list[slot]
         pin_mask_np = pin_mask_np_list[slot]
         pin_priors_slot = pin_priors_list[slot]
         pin_val_slot = pin_val_list[slot]
 
         # Gather model inputs + masks into the pinned buffers via Cython
-        # memcpy. Inputs go through the byte-level path: transformer fp16
-        # token rows or ResNet fp16 vector rows.
+        # memcpy. Inputs go through the byte-level fp16 token-row path.
         actual_n = _gather_states(
             pin_s_flat_bytes, all_states_bytes, widx, cnts, n_req,
             states_row_bytes,
         )
-        if not uses_resnet_vectors:
-            assert pin_rel_coord_flat_bytes is not None
-            assert all_relation_coords_bytes is not None
-            relation_coord_n = _gather_states(
-                pin_rel_coord_flat_bytes, all_relation_coords_bytes,
-                widx, cnts, n_req, relation_coord_row_bytes,
+        relation_coord_n = _gather_states(
+            pin_rel_coord_flat_bytes, all_relation_coords_bytes,
+            widx, cnts, n_req, relation_coord_row_bytes,
+        )
+        if relation_coord_n != actual_n:
+            raise AssertionError(
+                f"relation coord gather count {relation_coord_n} "
+                f"!= state gather count {actual_n}"
             )
-            if relation_coord_n != actual_n:
-                raise AssertionError(
-                    f"relation coord gather count {relation_coord_n} "
-                    f"!= state gather count {actual_n}"
-                )
         _gather_masks(pin_mask_np, all_masks_np, widx, cnts, n_req)
         launch_n = _resolve_launch_batch_size(
             actual_n=actual_n,
@@ -1039,19 +917,14 @@ def _eval_server_serve(
 
         gpu_s_batch = gpu_s[:launch_n]
         gpu_s_batch[:actual_n].copy_(pin_s_slot[:actual_n], non_blocking=True)
-        if not uses_resnet_vectors:
-            assert gpu_rel_coord is not None
-            assert pin_rel_coord_slot is not None
-            gpu_rel_coord[:actual_n].copy_(
-                pin_rel_coord_slot[:actual_n],
-                non_blocking=True,
-            )
+        gpu_rel_coord[:actual_n].copy_(
+            pin_rel_coord_slot[:actual_n],
+            non_blocking=True,
+        )
         gpu_mask[:actual_n].copy_(pin_mask_slot[:actual_n], non_blocking=True)
         if launch_n > actual_n:
             gpu_s_batch[actual_n:launch_n].zero_()
-            if not uses_resnet_vectors:
-                assert gpu_rel_coord is not None
-                gpu_rel_coord[actual_n:launch_n].zero_()
+            gpu_rel_coord[actual_n:launch_n].zero_()
             gpu_mask[actual_n:launch_n].zero_()
             gpu_mask_bool[actual_n:launch_n].zero_()
 
@@ -1066,15 +939,9 @@ def _eval_server_serve(
             # serve loop). The model sees ``launch_n`` rows, but only the first
             # ``actual_n`` rows contain real gathered work and only those rows
             # are copied back to shared memory.
-            if uses_resnet_vectors:
-                assert gpu_s_model is not None
-                gpu_s_model[:launch_n].copy_(gpu_s_batch, non_blocking=True)
-                logits, values = model(gpu_s_model[:launch_n], mask_batch)
-            else:
-                assert gpu_rel_coord is not None
-                logits, values = model(
-                    gpu_s_batch, mask_batch, gpu_rel_coord[:launch_n],
-                )
+            logits, values = model(
+                gpu_s_batch, mask_batch, gpu_rel_coord[:launch_n],
+            )
             gpu_priors[:actual_n] = (
                 logits[:actual_n].softmax(dim=1).to(torch.float32)
             )
@@ -1466,17 +1333,11 @@ class RemoteEvaluator(BaseEvaluator):
     Implements the same evaluate / evaluate_leaves / evaluate_terminal
     interface as NNEvaluator, so it can be used as a drop-in replacement.
 
-    Hot path is pure numpy: workers fill transformer token buffers via
-    ``core.token_data.get_token_data`` or ResNet vector buffers via
-    ``core.resnet_data.get_resnet_data`` plus a dense ``UNIFIED_LOGIT_DIM``
-    legal mask into their shared-mem slots, publish a bitmap bit, and sleep
-    on the per-server done-condition until a shared-memory done flag flips.
-    The returned priors are already masked + softmaxed on the GPU — no
-    worker-side softmax.
-
-    ResNet values are active-relative on the wire. The worker already has the
-    source state rows, so it unrotates those values to canonical order before
-    returning them to MCTS. Transformer values are canonical already.
+    Hot path is pure numpy: workers fill transformer token buffers and a dense
+    ``UNIFIED_LOGIT_DIM`` legal mask into shared-memory slots, publish a bitmap
+    bit, and sleep on the per-server done-condition until a shared-memory done
+    flag flips. Returned priors are already masked and softmaxed on the GPU;
+    values are in canonical player order.
 
     Communication uses per-server uint64 bitmap arrays (W cache-line-padded
     words each) for lockfree request submission (atomic fetch-or) and a
@@ -1503,26 +1364,21 @@ class RemoteEvaluator(BaseEvaluator):
     ) -> None:
         super().__init__(num_players, terminal_rank_weight)
         self._worker_idx = worker_idx
-        self._model_kind = normalize_model_type(shared_bufs.model_type)
-        self._uses_resnet_vectors = self._model_kind is ModelKind.RESNET
-        self._values_are_active_relative = shared_bufs.values_are_active_relative
+        normalize_model_type(shared_bufs.model_type)
 
         # Input views (worker writes these).
-        # Transformer ``_in_states_np`` is fp16 (wire dtype);
-        # ``get_token_data`` and ``get_resnet_data`` write fp32, so we keep a
-        # per-worker fp32 scratch and cast into the shm slot at the boundary.
+        # ``_in_states_np`` is fp16 on the wire. ``get_token_data`` writes
+        # fp32, so keep scratch and cast into the slot at the boundary.
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._in_legal_mask_np = shared_bufs.get_input_legal_mask_np(worker_idx)
-        self._in_relation_coords_np = (
-            shared_bufs.get_input_relation_coords_np(worker_idx)
-            if shared_bufs.uses_relations else None
+        self._in_relation_coords_np = shared_bufs.get_input_relation_coords_np(
+            worker_idx
         )
         self._states_scratch_fp32 = np.empty(
             self._in_states_np.shape, dtype=np.float32,
         )
-        self._active_players_np = np.empty(shared_bufs.batch_size, dtype=np.int16)
 
-        # Output views (worker reads these; values may still need unrotation).
+        # Output views (worker reads these).
         self._out_priors_np = shared_bufs.get_output_priors_np(worker_idx)
         self._out_values_np = shared_bufs.get_output_values_np(worker_idx)
 
@@ -1553,22 +1409,6 @@ class RemoteEvaluator(BaseEvaluator):
         self._done_cond = shared_bufs.done_conds[self._server_id]
         self._done_flags_np = shared_bufs.get_done_flags_np()
         self._server_event = shared_bufs.server_events[self._server_id]
-
-    def _unrotate_values_if_needed(
-        self,
-        values: np.ndarray,
-        n: int,
-    ) -> np.ndarray:
-        """Return canonical values for the worker-facing evaluator contract."""
-        if not self._values_are_active_relative:
-            return values
-        for i in range(n):
-            values[i] = unrotate_values_to_canonical(
-                values[i],
-                int(self._active_players_np[i]),
-                self.num_players,
-            )
-        return values
 
     def _fill_mask_row(
         self, i: int, phase_id: int, action_ids_legal: np.ndarray,
@@ -1630,23 +1470,15 @@ class RemoteEvaluator(BaseEvaluator):
         """
         actual_num_players = self._actual_num_players(state)
         phase_id = get_decision_phase_py(state)
-        self._active_players_np[0] = int(
-            state._array[self._active_player_state_offset]
+        get_token_data(
+            state, self._states_scratch_fp32[0],
+            max_players=self.num_players,
         )
-        if self._uses_resnet_vectors:
-            get_resnet_data(state, self._states_scratch_fp32[0])
-            self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
-        else:
-            assert self._in_relation_coords_np is not None
-            get_token_data(
-                state, self._states_scratch_fp32[0],
-                max_players=self.num_players,
-            )
-            self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
-            get_relation_coord_data(
-                state, self._in_relation_coords_np[0],
-                max_players=self.num_players,
-            )
+        self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
+        get_relation_coord_data(
+            state, self._in_relation_coords_np[0],
+            max_players=self.num_players,
+        )
         n = enumerate_legal_actions_py(state, self._enum_scratch)
         self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
@@ -1654,7 +1486,6 @@ class RemoteEvaluator(BaseEvaluator):
 
         slots = self._action_lut_np[phase_id, self._enum_scratch[:n]]
         values = self._out_values_np[:1].copy()
-        self._unrotate_values_if_needed(values, 1)
         return (
             self._out_priors_np[0, slots].copy(),
             values[0, :actual_num_players].copy(),
@@ -1703,36 +1534,19 @@ class RemoteEvaluator(BaseEvaluator):
         if _stats is not None:
             _t0 = perf_counter()
 
-        if self._uses_resnet_vectors:
-            # ResNet vectors are active-relative; keep active-player ids
-            # worker-local for post-read value unrotation.
-            get_resnet_data_batch(
-                state_arrays, self.num_players, self._states_scratch_fp32[:n],
-            )
-            self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(
-                np.float16
-            )
-            for i, state_array in enumerate(state_arrays):
-                self._active_players_np[i] = int(
-                    state_array[self._active_player_state_offset]
-                )
-        else:
-            assert self._in_relation_coords_np is not None
-            # Batched token fill — single Cython entry amortizes per-leaf
-            # Python dispatch + GameState wrapper construction (rebind across
-            # rows internally). Fill fp32 scratch first, then cast into the
-            # fp16 shm slot at the boundary (one vectorized astype, ~tens of μs).
-            get_token_data_batch(
-                state_arrays, self._states_scratch_fp32[:n],
-                max_players=self.num_players,
-            )
-            self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(
-                np.float16
-            )
-            get_relation_coord_data_batch(
-                state_arrays, self._in_relation_coords_np[:n],
-                max_players=self.num_players,
-            )
+        # Batched token fill amortizes Python dispatch and GameState wrapper
+        # construction. Cast the fp32 scratch into the fp16 wire slot once.
+        get_token_data_batch(
+            state_arrays, self._states_scratch_fp32[:n],
+            max_players=self.num_players,
+        )
+        self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(
+            np.float16
+        )
+        get_relation_coord_data_batch(
+            state_arrays, self._in_relation_coords_np[:n],
+            max_players=self.num_players,
+        )
         # Caller already has the dense mask — copy it straight into shm.
         np.copyto(self._in_legal_mask_np[:n], legal_mask, casting="unsafe")
 
@@ -1748,7 +1562,6 @@ class RemoteEvaluator(BaseEvaluator):
 
         priors = self._out_priors_np[:n].copy()
         values = self._out_values_np[:n].copy()
-        self._unrotate_values_if_needed(values, n)
 
         if _stats is not None:
             _stats.result_secs += perf_counter() - _t2

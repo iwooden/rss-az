@@ -4,9 +4,7 @@ Post-refactor contract: dense unified-slot policy targets + legal masks,
 raw canonical int16 game state stored on examples, and canonical value
 targets. The trainer consumes
 ``(state, phase_id, legal_mask, policy_target, value_target)`` and
-materializes model inputs from the raw state at training time: transformer
-runs token/relation extraction, while ResNet runs dense active-relative
-vector extraction and rotates canonical value targets at the loss boundary.
+materializes token and relation inputs from the raw state at training time.
 Policy cross-entropy is computed over the full unified-logit slot space
 (illegal slots are already zero in ``policy_target`` and masked to -1e9
 inside the model).
@@ -57,7 +55,7 @@ from mcts.search import (
     run_search,
     scale_visit_counts_by_temperature,
 )
-from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
+from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import EpochConfig, TrainingConfig
 from train.eval_server import RemoteEvaluator
 from train.profile_stats import EvalClientStats, GameProfileData, SearchStats

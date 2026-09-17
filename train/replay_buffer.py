@@ -6,10 +6,9 @@ TB reporting, dense ``legal_mask`` + ``policy_target`` rows over
 ``UNIFIED_LOGIT_DIM`` unified logit slots, and canonical-order per-player
 ``value_target``.
 
-The trainer is responsible for materializing model-family-specific inputs per
-sampled state at training time: transformer token/relation tensors or ResNet
-dense vectors. Keeping replay in compact state form avoids storing derived NN
-inputs twice and keeps canonical value targets shared by both model families.
+The trainer materializes token and relation inputs per sampled state at
+training time. Keeping replay in compact state form avoids storing derived NN
+inputs twice.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.relations import get_relation_data_batch
 from core.state import get_layout
 from core.token_data import get_num_tokens
-from nn.transformer import UNIFIED_LOGIT_DIM
+from nn.policy_layout import UNIFIED_LOGIT_DIM
 
 
 class TrainingExample(NamedTuple):
@@ -287,7 +286,7 @@ class ReplayBuffer:
         wider than the stored dtype (e.g. int64); widening happens
         during the fancy-index copy. If ``relations_out`` is supplied,
         relation planes are generated from the sampled states into that
-        caller-owned scratch buffer; ResNet callers leave it as ``None``.
+        caller-owned scratch buffer.
         """
         if batch_size > self._size:
             raise ValueError(

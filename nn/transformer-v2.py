@@ -1,4 +1,4 @@
-"""Transformer model for Rolling Stock Stars AlphaZero training.
+"""Transformer v2 model for Rolling Stock Stars AlphaZero training.
 
 Token-based architecture: each game entity is a separate input token. Type-specific
 linear projections feed a pre-LN transformer trunk, actor-conditioned policy
@@ -33,12 +33,18 @@ from core.data import (
     ALL_PAR_PRICES,
     AUCTION_CAP,
     GameConstants,
-    MAX_ACTION_SIZE,
     PHASE_ACTION_SIZES,
     DecisionPhase,
     PY_COMPANY_PRICE_DIVISOR,
 )
 from core.token_data import TokenDataSize, TokenWidth, get_num_tokens, get_token_widths
+from nn.policy_layout import (
+    NUM_PHASES,
+    PHASE_OFFSETS,
+    PHASES_WITH_PASS_SLOT,
+    UNIFIED_LOGIT_DIM,
+    build_action_lut,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -47,37 +53,6 @@ from core.token_data import TokenDataSize, TokenWidth, get_num_tokens, get_token
 # Decision phases / action sizes all live in ``core.data`` and are imported
 # above. This module is strictly a consumer; editing policy readout widths or
 # adding token types happens over there.
-
-NUM_PHASES = int(GameConstants.NUM_DECISION_PHASES)
-
-# Unified policy slot layout. Every per-phase readout emits its logits
-# into a single (B, UNIFIED_LOGIT_DIM) tensor; callers pass a matching
-# (B, UNIFIED_LOGIT_DIM) legal-mask so illegal slots can be suppressed before
-# softmax. Each DecisionPhase owns a contiguous, non-overlapping block —
-# laid out in DecisionPhase order with block widths from PHASE_ACTION_SIZES.
-# Readout weights are unshared across phases (no cross-phase gradient
-# interference on shared readouts), so the LUT reduces to
-# ``lut[phase, i] = cumsum_offset[phase] + i``. ``build_action_lut`` is the
-# sole public pointer into the layout — callers never import per-block
-# offsets, which keeps this internal.
-_PHASE_OFFSETS: list[int] = [0]
-for _size in PHASE_ACTION_SIZES:
-    _PHASE_OFFSETS.append(_PHASE_OFFSETS[-1] + int(_size))
-UNIFIED_LOGIT_DIM = _PHASE_OFFSETS[-1]  # 255
-
-# Decision phases whose phase-local slot 0 is a pass/no-op action followed by
-# one or more non-pass action slots. Used for the pass-vs-action logit-scale
-# TB diagnostic.
-PHASES_WITH_PASS_SLOT: list[int] = [
-    int(DecisionPhase.DPHASE_INVEST),
-    int(DecisionPhase.DPHASE_BID),
-    int(DecisionPhase.DPHASE_ACQ_SELECT_CORP),
-    int(DecisionPhase.DPHASE_CLOSING),
-    int(DecisionPhase.DPHASE_IPO),
-]
-# Backward-compatible public name used by trainer diagnostics. In v2 these
-# phases no longer have separate pass heads; slot 0 is just another key.
-PHASES_WITH_PASS_HEAD = PHASES_WITH_PASS_SLOT
 
 # Input-buffer token-type taxonomy. Index order must stay stable — the static
 # ``_type_ids`` buffer built in ``RSSTransformerNet.__init__`` indexes into
@@ -143,29 +118,6 @@ def _round_up_to_multiple(value: int, multiple: int) -> int:
 def _ffn_hidden_dim(cfg: TransformerConfig) -> int:
     """SwiGLU hidden width, rounded for tensor-core-friendly matmuls."""
     return _round_up_to_multiple(math.ceil(cfg.ff_mult * cfg.d_model), 64)
-
-
-def build_action_lut() -> torch.Tensor:
-    """Static (NUM_PHASES, MAX_ACTION_SIZE) int64 LUT mapping each
-    phase's phase-local action id to a slot in the unified logit tensor.
-
-    Used externally by workers (to build (B, UNIFIED_LOGIT_DIM) legal masks
-    from sparse (phase_id, action_ids[:n]) tuples) and by the trainer (to
-    scatter sparse MCTS visit probabilities into dense (B, UNIFIED_LOGIT_DIM)
-    policy targets). Tail entries (id >= PHASE_ACTION_SIZES[phase]) are 0 —
-    a sentinel slot that workers must never mark as legal.
-
-    Layout is block-per-phase in DecisionPhase order: each phase owns
-    ``PHASE_ACTION_SIZES[phase]`` contiguous slots starting at
-    ``_PHASE_OFFSETS[phase]``. The phase-local action id *is* the
-    intra-block offset, so the per-phase action encoding in
-    ``core/actions.pxd`` is preserved 1:1 inside each block.
-    """
-    lut = torch.zeros(NUM_PHASES, int(MAX_ACTION_SIZE), dtype=torch.long)
-    for phase in range(NUM_PHASES):
-        size = int(PHASE_ACTION_SIZES[phase])
-        lut[phase, :size] = _PHASE_OFFSETS[phase] + torch.arange(size)
-    return lut
 
 
 def _slice_proj(x: torch.Tensor, proj: nn.Linear, idx: int | slice) -> torch.Tensor:
@@ -265,7 +217,7 @@ def _validate_layout(num_players: int) -> None:
     )
     actual = get_token_widths(num_players).tolist()
     assert actual == expected, (
-        f"token layout drift between nn/transformer.py and core/token_data.pyx "
+        f"token layout drift between nn/transformer-v2.py and core/token_data.pyx "
         f"for {num_players}p: actual widths {actual} vs expected {expected}"
     )
 
@@ -1627,7 +1579,7 @@ class RSSTransformerNet(nn.Module):
         abs_logits = policy_logits.detach().abs()
         stats: list[torch.Tensor] = []
         for phase in PHASES_WITH_PASS_SLOT:
-            offset = _PHASE_OFFSETS[phase]
+            offset = PHASE_OFFSETS[phase]
             size = int(PHASE_ACTION_SIZES[phase])
             pass_slot = offset
             action_start = offset + 1

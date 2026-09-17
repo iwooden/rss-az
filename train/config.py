@@ -104,14 +104,8 @@ class TrainingConfig:
     num_heads: int = 4
     num_layers: int = 15
     ff_mult: float = 3.0
-    # Price-like policy slots blend fixed Fourier projections for smoothness
-    # with learned per-slot embeddings for slot identity.
+    # Fourier features used by price-like policy slots.
     price_slot_fourier_bands: int = 4
-    # 0.0 = pure Fourier projection, 1.0 = pure learned slot embedding.
-    price_slot_residual_scale: float = 1.0
-    # Residual MLP model hyperparameters.
-    resnet_hidden_dim: int = 256
-    resnet_num_blocks: int = 10
 
     # --- Self-Play ---
     games_per_epoch: int = 500
@@ -299,20 +293,6 @@ class TrainingConfig:
                 "price_slot_fourier_bands must be >= 0, "
                 f"got {self.price_slot_fourier_bands}"
             )
-        if not 0.0 <= self.price_slot_residual_scale <= 1.0:
-            raise ValueError(
-                "price_slot_residual_scale must be in [0, 1], "
-                f"got {self.price_slot_residual_scale}"
-            )
-        if self.resnet_hidden_dim < 1:
-            raise ValueError(
-                f"resnet_hidden_dim must be >= 1, got {self.resnet_hidden_dim}"
-            )
-        if self.resnet_num_blocks < 0:
-            raise ValueError(
-                f"resnet_num_blocks must be >= 0, got {self.resnet_num_blocks}"
-            )
-
         # Game fields
         self._validate_player_count_mode()
 

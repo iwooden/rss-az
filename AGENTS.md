@@ -6,9 +6,8 @@
   A v2 checkpoint performed well against top-level human players over summer
   2026; use it as the baseline for incorporating lessons from those games.
 - Backward compatibility is not a requirement here: old model APIs,
-  checkpoints, and configs may break. ResNet and the original transformer are
-  not maintenance targets. Update active consumers together when contracts
-  change; shared code may still live in legacy modules.
+  checkpoints, and configs may break. Update active consumers together when
+  contracts change.
 - Current engine support is 2-6 players; model/search/training support is 3-5,
   including mixed-player transformer training.
 
@@ -35,7 +34,8 @@ affected producers, consumers, tests, and documentation together.
   Raw writes belong in owning low-level modules or tightly scoped test setup;
   avoid importing layout structs into phases just to bypass handles.
 - Query layout helpers and exported constants for dimensions and action sizes
-  (e.g. `get_layout`, `TokenDataSize`, `MAX_ACTION_SIZE`, `build_action_lut`).
+  (e.g. `get_layout`, `TokenDataSize`, `MAX_ACTION_SIZE`,
+  `nn.policy_layout.build_action_lut`).
 - Legality belongs in `core/actions.pyx`; the driver checks it before dispatch.
   Phase handlers assume legal actions. Engine/MCTS use sparse phase-local
   actions; NN/eval/trainer boundaries use dense unified masks and targets.

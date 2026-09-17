@@ -33,8 +33,7 @@ from entities.corp import CORPS
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from nn import create_model, get_model_input_spec
-from nn.model_contract import ModelKind
-from nn.transformer import UNIFIED_LOGIT_DIM, build_action_lut
+from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from train.checkpoint import find_latest_checkpoint, load_checkpoint
 from train.config import EpochConfig, TrainingConfig
 from train.eval_server import EvaluationServer, RemoteEvaluator, SharedEvalBuffers
@@ -166,16 +165,6 @@ def _collection_config(
             f"checkpoint model capacity is {max_capacity} players, but "
             f"requested {max_requested}p collection"
         )
-
-    if config.model_type == ModelKind.RESNET.value and len(player_counts) != 1:
-        raise ValueError("ResNet checkpoints can only collect one player count")
-
-    if config.model_type == ModelKind.RESNET.value:
-        config.num_players = player_counts[0]
-        config.min_players = 0
-        config.max_players = 0
-        config.validate()
-        return config
 
     # Preserve transformer model/storage capacity so checkpoint weights load.
     if min_requested == max_capacity and len(player_counts) == 1:

@@ -102,7 +102,7 @@ globals()["ENGINE_TO_DECISION_PHASE"] = _engine_to_decision_phase_pylist()
 # value (e.g. ``ACTION_SIZE_ISSUE`` / ``ACTION_SIZE_ACQ_OFFER`` both == 2)
 # alias in ``repr`` which is ugly. So we inject plain-int mirrors into
 # ``globals()`` at import so that Python consumers
-# (``nn/transformer.py``, trainer, replay) can do a straightforward
+# (``nn/policy_layout.py``, trainer, replay) can do a straightforward
 # ``from core.data import PHASE_ACTION_SIZES, MAX_ACTION_SIZE``. Cython
 # callers still ``cimport`` the enum members directly.
 #

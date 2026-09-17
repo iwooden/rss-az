@@ -44,7 +44,6 @@
   "eval_dtype": "bfloat16",
   "phase_conditioning": false,
   "price_slot_fourier_bands": 4,
-  "price_slot_residual_scale": 0.0,
   "optimizer": "adamw",
   "weight_decay": 0.01,
   "grad_clip": 5,

@@ -65,7 +65,7 @@ from mcts.search import (
     run_search,
 )
 from nn import get_model_input_spec
-from nn.transformer import build_action_lut
+from nn.policy_layout import build_action_lut
 from train.analyze_game import (
     _apply_player_names as _apply_analyze_player_names,
     _format_mcts_visits as _format_analyze_mcts_visits,

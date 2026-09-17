@@ -16,7 +16,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from nn.transformer import RSSTransformerNet, TransformerConfig
+from nn import RSSTransformerNet, TransformerConfig
 from train.config import TrainingConfig
 from train.trainer import Trainer
 

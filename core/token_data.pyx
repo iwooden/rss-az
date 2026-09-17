@@ -6,7 +6,7 @@ Token data extraction: compact GameState -> transformer eval buffer.
 features from a compact GameState. It is called once per NN evaluation,
 so the trunk + MCTS throughput depends on this being fast.
 
-Token order (matches ``nn/transformer.py``):
+Token order (matches ``nn/transformer-v2.py``):
     # Informational tokens. Every token carries at least some dynamic
     # data, so there is no pure-static prefix to prefill once per worker.
     [market_info, companies..., FI, global_info,
@@ -194,7 +194,7 @@ from entities.player cimport refresh_player_cache_if_dirty
 # PER-TOKEN FEATURE COUNTS (single source of truth for offset arithmetic)
 # =============================================================================
 
-# Fixed token layout constants (see nn/transformer.py). These match the
+# Fixed token layout constants (see nn/transformer-v2.py). These match the
 # token slicing bookkeeping in ``RSSTransformerNet.__init__`` for 3-5p.
 DEF NUM_CORPS = 8
 DEF NUM_COMPANIES = 36

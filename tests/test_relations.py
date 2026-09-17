@@ -22,7 +22,7 @@ from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 from entities.deck import DECK
 from entities.player import PLAYERS
-from nn.transformer import UNIFIED_LOGIT_DIM
+from nn.policy_layout import UNIFIED_LOGIT_DIM
 from train.eval_server import RemoteEvaluator, SharedEvalBuffers
 from train.replay_buffer import ReplayBuffer
 

@@ -58,7 +58,8 @@ from mcts.search import (
     run_search,
     scale_visit_counts_by_temperature,
 )
-from nn.transformer import RSSTransformerNet, TransformerConfig, UNIFIED_LOGIT_DIM, build_action_lut
+from nn import RSSTransformerNet, TransformerConfig
+from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import MCTSConfig
 
 

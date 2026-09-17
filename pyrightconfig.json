@@ -1,0 +1,17 @@
+{
+  "include": ["**/*.py"],
+  "exclude": [
+    "**/.*",
+    "**/__pycache__",
+    "**/venv",
+    "**/submodules",
+    "**/vendor",
+    "**/node_modules",
+    "build",
+    "dist",
+    "scratchpad"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12"
+}

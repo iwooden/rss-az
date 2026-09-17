@@ -90,7 +90,7 @@ cpdef enum CorpIndices:
 # Per-decision-phase action-space sizes.
 #
 # Single source of truth for the policy head output widths. ``core/actions``
-# cimports these to build its encode/decode formulae; ``nn/transformer.py``
+# cimports these to build its encode/decode formulae; ``nn/policy_layout.py``
 # imports them to size its per-phase policy heads. Keeping them here (rather
 # than in ``core/actions.pxd``) means the model module doesn't need to touch
 # the actions Cython layer, and the import-time drift check between the two
