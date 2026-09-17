@@ -18,7 +18,7 @@ Implement tests for the **$ARGUMENTS** phase in `tests/phases/`.
 - **Use `find_legal_action` to locate actions.** Don't hardcode action IDs. Use `find_legal_action(state, action_type=..., corp_id=..., company_id=..., amount=...)` to find the right action by its decoded semantics.
 - **Use `get_legal_actions` to inspect the full legal set.** Returns list of `(action_id, decoded_info)` tuples for the current state.
 - **Encode action IDs when the mapping is simple.** For phases with trivial encoding (e.g., CLOSING where action 0 = pass, action N = close company N), you can construct action IDs directly using the encode helpers from `core.actions` — but prefer `find_legal_action` for complex encodings.
-- **No hacks to work around entity handle gaps.** If a test requires data or behavior that isn't accessible through the entity handles (e.g., looking up a static price, computing a derived value), do NOT work around it by temporarily mutating state, hardcoding data constants, or importing `cdef`-only symbols. Instead, stop and propose the missing method/accessor to the user. A clean entity handle addition is always preferable to a fragile test workaround.
+- **Use existing entity APIs and constants.** If the task needs a missing accessor or semantic mutation, extend the owning entity API and preserve its cache and ownership invariants. Avoid temporary state mutations or hardcoded constants as test workarounds.
 
 ## What to test
 
@@ -55,4 +55,4 @@ After writing the tests, run them:
 .venv/bin/python -m pytest tests/phases/test_$ARGUMENTS.py -v 2>&1 | tail -60
 ```
 
-All tests must pass. If a test fails, investigate whether it's a test bug or an implementation bug (per CLAUDE.md: "assume the implementation is broken until proven otherwise"). Fix test bugs; file a beads issue for implementation bugs.
+Investigate failures against `RULES.md` and the intended behavior. Fix failures within the task's scope and report unrelated failures with enough detail to reproduce them. See `AGENTS.md` for repository guidance.

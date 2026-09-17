@@ -13,8 +13,7 @@ Covers the four MCTS modules on the sparse-policy contract:
   leaf eval, ``StatePool`` (int16 compact rows), A0GB greedy leaf
   value, propagation lock/unlock, and subtree reuse.
 
-All tests here target 3-player games (the NN/MCTS/training scope is 3-5p,
-per CLAUDE.md; 3p is the canonical smoke config).
+All tests here target 3-player games, within the NN/MCTS/training scope of 3-5p.
 """
 
 from __future__ import annotations

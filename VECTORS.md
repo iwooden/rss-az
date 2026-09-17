@@ -34,7 +34,7 @@ Layout offsets are computed once at module load and exposed as Cython `cdef` str
 
 Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSETS, PLAYER_FIELDS, CORP_FIELDS, COMPANY_OFFSETS, DECK_OFFSETS, FI_OFFSETS`. Python code uses the namedtuple accessors `core.state.get_layout(num_players)`, `get_player_fields()`, `get_corp_fields()`, `get_turn_fields()`, `get_company_fields()`, `get_deck_fields()`, `get_fi_fields()` (none of the field accessors take a `num_players` argument since the fields are fixed-size).
 
-> **Direct layout access is for entity handles only.** See `CLAUDE.md` "Code Conventions". Phase handlers, MCTS code, trainer code, tests, and anything outside `entities/` should go through the handle methods (`PLAYERS[i].get_cash(state)`, etc.) rather than cimporting these constants or indexing `state._data` directly.
+> **Use entity/phase APIs for semantic mutations.** They maintain dirty caches and ownership/location consistency. See [AGENTS.md](AGENTS.md) for implementation boundaries. Direct storage access belongs in owning low-level modules or tightly scoped test setup; phase code should use entity methods or exported primitives rather than bypassing them with layout offsets.
 
 `get_turn_fields()` exposes only the public turn-state slots. The final two turn-block slots (`TURN_OFFSETS.player_cache_dirty` and `TURN_OFFSETS.corp_cache_dirty`) are internal dirty masks used by the lazy derived-state caches and remain Cython-only.
 

@@ -13,8 +13,11 @@ integration, but the source of truth for RSS rules in this repo is
 
 The current practical model path is the transformer v2 architecture
 (`nn/transformer-v2.py`), usually through `train_configs/bigger-multi.json`.
-The older transformer and ResNet paths are still present for compatibility and
-experiments, but they are not the main training target.
+This branch develops a successor to that model using lessons from its games
+against top-level human players. Backward compatibility with old models,
+checkpoints, and configs is not required; the older transformer and ResNet
+paths are not maintenance targets. See [`AGENTS.md`](AGENTS.md) for development
+guidance.
 
 ## What Is Here
 
