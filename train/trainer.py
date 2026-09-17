@@ -20,7 +20,7 @@ import torch.nn.functional as F
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import get_layout
-from core.token_data import TokenDataSize, get_num_tokens, get_token_data_batch
+from core.token_data import get_token_dim, get_num_tokens, get_token_data_batch
 from nn.policy_layout import (
     NUM_PHASES,
     PHASES_WITH_PASS_SLOT,
@@ -29,7 +29,6 @@ from nn.policy_layout import (
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
 
-TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
 U_DIM = int(UNIFIED_LOGIT_DIM)
 
 # Matches core.data.DecisionPhase order. DPHASE_INVEST..DPHASE_PAR occupy
@@ -60,6 +59,9 @@ class Trainer:
         self.device = device
         self._global_step = 0
 
+        model_cfg = getattr(self._base_model, "cfg", None)
+        self._layout_version = int(getattr(model_cfg, "layout_version", 2))
+        self._token_dim = get_token_dim(self._layout_version)
         self._num_players = config.effective_max_players
         self._num_tokens = get_num_tokens(self._num_players)
         layout = get_layout(self._num_players)
@@ -209,7 +211,7 @@ class Trainer:
             return
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
-        nt, td = self._num_tokens, TOKEN_DIM
+        nt, td = self._num_tokens, self._token_dim
         nr = NUM_ATTENTION_RELATIONS
         N = self._num_players
 
@@ -287,6 +289,7 @@ class Trainer:
             [self._states_np[i] for i in range(n)],
             self._tok_h_np[:n],
             max_players=self._num_players,
+            layout_version=self._layout_version,
         )
 
     def _pass_action_logit_abs(

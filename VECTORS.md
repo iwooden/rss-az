@@ -1,6 +1,6 @@
 # Cython Core Vector Documentation
 
-This document describes the in-memory game state layout. The state is the engine's only authoritative game data; per-token features for the neural network are produced lazily by `get_token_data()` in `core/token_data.{pyx,pxd}` — see [token-data.md](token-data.md) for the per-token feature spec and `transformers.md` for how the model consumes them.
+This document describes the in-memory game state layout. The state is the engine's only authoritative game data; per-token features for the neural network are produced lazily by `get_token_data()` in `core/token_data.{pyx,pxd}` — see the [v2 token specification](token-data.md) or [v3 token specification](token-data-v3.md) for the model's feature layout.
 
 ---
 
@@ -75,6 +75,11 @@ Stride: **30**. Player `i` lives at `players_offset + i * 30`. Field offsets via
 | 29 | has_passed      | 1 | `1` once this player has passed in the current phase |
 
 All per-player tracking lives inside one player block, so a single pointer hop reaches everything for player `i`. Presidency is tracked per-corp via `CORP_FIELDS.president_id` (see [Corp block](#corp-block)), not in the player block. Round-trip counts are derived on demand from `min(share_buys, share_sells)` per corp — no dedicated slot. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.
+
+Buy/sell counters persist through every phase of the turn and clear at the
+IPO-to-INVEST transition that starts the next turn, not on auction returns
+to INVEST. Input layout selection belongs to the model/evaluator; both v2
+and v3 read this same raw state layout (see [Model Input Layouts](README.md#model-input-layouts)).
 
 ---
 

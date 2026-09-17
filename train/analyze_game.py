@@ -627,7 +627,7 @@ def analyze_game(
     rng = np.random.default_rng(seed)
 
     lines: list[str] = []
-    token_normalization = TokenNormalizationAccumulator(num_players) if token_dump else None
+    token_normalization = TokenNormalizationAccumulator(num_players, layout_version=evaluator.layout_version) if token_dump else None
     noise_desc = f"epsilon={mcts_config.dirichlet_epsilon}"
     if mcts_config.dirichlet_epsilon > 0:
         if mcts_config.dirichlet_dynamic:
@@ -714,6 +714,7 @@ def analyze_game(
                 token_buffer,
                 token_normalization.widths,
                 token_normalization.labels,
+                layout_version=evaluator.layout_version,
             )
 
         # Raw NN evaluation for the log. Only needed for the full log mode;

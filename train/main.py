@@ -20,7 +20,7 @@ from torch._dynamo.decorators import mark_unbacked
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.data import PHASE_ACTION_SIZES
 from core.state import get_layout
-from core.token_data import TokenDataSize, get_num_tokens
+from core.token_data import get_num_tokens
 from nn import create_model, get_model_input_spec
 from nn.policy_layout import (
     NUM_PHASES,
@@ -911,7 +911,7 @@ def main() -> None:
     max_players = config.effective_max_players
     state_size_int16 = get_layout(max_players).total_size
     num_tokens = get_num_tokens(max_players)
-    token_dim = int(TokenDataSize.TOKEN_DIM)
+    token_dim = model_input_spec.token_dim
     buffer = ReplayBuffer(
         config.buffer_capacity,
         state_size_int16,

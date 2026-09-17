@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch.nn as nn
 
-from core.token_data import TokenDataSize, get_num_tokens
+from core.token_data import get_token_dim, get_num_tokens
 from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
 from nn.policy_layout import UNIFIED_LOGIT_DIM
 
@@ -169,13 +169,16 @@ def get_model_input_spec(config: object) -> ModelInputSpec:
         str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
     )
     max_players = _effective_max_players(config)
+    module, _ = _model_module(config)
+    layout_version = int(getattr(module, "INPUT_LAYOUT_VERSION", 2))
     return ModelInputSpec(
         model_type=model_kind.value,
         num_players=max_players,
         policy_dim=int(UNIFIED_LOGIT_DIM),
         value_dim=max_players,
         num_tokens=get_num_tokens(max_players),
-        token_dim=int(TokenDataSize.TOKEN_DIM),
+        token_dim=get_token_dim(layout_version),
+        layout_version=layout_version,
     )
 
 

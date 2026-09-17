@@ -877,7 +877,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                           shares, T_SCALE, f"{pm}: shares[{c}]")
             total_shares += shares
 
-            if buys >= 2 or sells >= 2:
+            if phase in (int(GamePhases.PHASE_INVEST), int(GamePhases.PHASE_BID)) and (buys >= 2 or sells >= 2):
                 any_roundtrip = True
 
             if (

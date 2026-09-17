@@ -11,12 +11,11 @@ documented in ``token-data.md`` and matches the order expected by
 from core.state cimport GameState
 
 
-# Maximum feature count across all token types (== raw token_dim input
-# to ``nn/transformer-v2.py``). All tokens are zero-padded to this width.
-# Equals ``max(TokenWidth.*)``; currently pinned by ``TW_CORP = 95``.
-# See the companion .pyx for the per-token feature layout and counts.
+# Padded widths per input layout. Unqualified constants retain v2 meanings.
+# Call get_token_dim(layout_version) at model/evaluator boundaries.
 cpdef enum TokenDataSize:
     TOKEN_DIM = 95
+    TOKEN_DIM_V3 = 98
 
 
 # Non-padded feature width per token type (single source of truth for the
@@ -40,6 +39,7 @@ cpdef enum TokenWidth:
     TW_ACQ_OFFER             = 4
     TW_ACQ_PRICE             = 4
     TW_CORP                  = 95
+    TW_CORP_V3               = 98
     TW_PLAYER                = 62
 
 
@@ -48,20 +48,22 @@ cpdef enum TokenWidth:
 cpdef int get_num_tokens(int max_players) noexcept nogil
 
 
-# Per-position non-padded feature widths matching ``_fill_buffer``'s layout.
+# Padded width and per-position feature widths for the selected layout.
+# layout_version defaults to 2 in all extraction APIs for v2 compatibility.
 # Returns a ``(max_players + 54,)`` uint8 numpy array; each entry is the
-# width of the corresponding buffer row (<= TOKEN_DIM). The model can use
+# width of the corresponding buffer row (<= get_token_dim(version)). The model can use
 # this to slice ``buffer[i, :widths[i]]`` into the per-type projection.
-cpdef object get_token_widths(int max_players)
+cpdef int get_token_dim(int layout_version=*) except -1
+cpdef object get_token_widths(int max_players, int layout_version=*)
 
 
-# Fill a (num_tokens, TOKEN_DIM) float32 memoryview with per-token features.
+# Fill a (num_tokens, get_token_dim(layout_version)) float32 memoryview.
 # The buffer is zeroed by the function; phase-specific tokens remain zero
 # when the current engine phase does not match. Requires a C-contiguous
 # float32 memoryview sized for at least (max_players + 54, TOKEN_DIM) when
 # max_players is provided. max_players=0 uses the state's actual player count.
 cpdef void get_token_data(
-    GameState state, float[:, ::1] buffer, int max_players=*,
+    GameState state, float[:, ::1] buffer, int max_players=*, int layout_version=*,
 )
 
 
@@ -75,5 +77,5 @@ cpdef void get_token_data(
 # The legacy ``(state_arrays, num_players, buffer)`` shape remains accepted.
 # Requires a C-contiguous (n, max_players + 54, TOKEN_DIM) float32 buffer.
 cpdef void get_token_data_batch(
-    list state_arrays, object arg2, object arg3=*, int max_players=*,
+    list state_arrays, object arg2, object arg3=*, int max_players=*, int layout_version=*,
 )

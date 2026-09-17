@@ -1,9 +1,9 @@
-# Transformer V2 Token Data Spec
+# Transformer V3 Token Data Spec
 
-This document specifies layout 2, consumed by `nn/transformer-v2.py`.
+This document specifies layout 3, consumed by `nn/transformer-v3.py`.
 `core/token_data.pyx:get_token_data(...)` and `get_token_data_batch(...)`
-fill this layout when called with `layout_version=2` (the default). Use
-`get_token_dim(2)` and `get_token_widths(max_players, layout_version=2)`
+fill this layout when called with `layout_version=3`. Use
+`get_token_dim(3)` and `get_token_widths(max_players, layout_version=3)`
 for its padded width and per-token widths.
 
 ## Token Order
@@ -46,8 +46,8 @@ player rows and remain all-zero.
 The model consumes exactly these engine-side rows; it does not append
 synthetic model-side tokens after projection.
 
-Each token row is zero-padded to `TOKEN_DIM = 95`, currently pinned by the
-Corp token. Per-type widths live in `TokenWidth`:
+Each token row is zero-padded to 98 features (`TOKEN_DIM_V3`), the width of
+the Corp token. Per-type widths live in `TokenWidth`:
 
 - `TW_MARKET_INFO = 55`
 - `TW_COMPANY = 28`
@@ -60,12 +60,13 @@ Corp token. Per-type widths live in `TokenWidth`:
 - `TW_PAR = 43`
 - `TW_ACQ_OFFER = 4`
 - `TW_ACQ_PRICE = 4`
-- `TW_CORP = 95`
+- `TW_CORP_V3 = 98`
 - `TW_PLAYER = 62`
 
 **Relational summary scalars.** Corp, player, and FI tokens carry a small
 group of aggregate scalars (owned-company counts, presidency count, total
-shares) immediately before their relational tail. The relational tail is
+shares) before their relational tail. Corp trade-history scalars follow the
+corp summary scalars and also stay in the projection. The relational tail is
 dropped on the model side in favour of Graphormer-style attention biases;
 the summary scalars stay in the projection so the trunk has a direct
 aggregate view of the data the multihots encode.
@@ -229,7 +230,7 @@ in both `PHASE_IPO` and `PHASE_PAR`.
 - `fi_flag`. 1 if the target company is FI-owned.
 - `total_synergies`, normalized by `ENTITY_INCOME_DIVISOR`
 
-## Corp Tokens (95, x8)
+## Corp Tokens (98, x8)
 
 Corp identity is inferred from row order.
 
@@ -275,10 +276,27 @@ matching the rest of the active-gated fields):
   `OWNED_COMPANIES_DIVISOR`. Redundant by construction; saves the
   projection from learning the addition.
 
+Trade history (raw slots 54..56, included in the corp projection):
+
+| Slot | Feature | Value |
+| --- | --- | --- |
+| 54 | `actor_share_buys` | Current acting player's buys of this corp / 4 |
+| 55 | `actor_share_sells` | Current acting player's sells of this corp / 4 |
+| 56 | `actor_round_trip` | 1 iff that player bought AND sold this corp at least once |
+
+These features use the current `active_player`, so their values can change
+when the actor changes. They are populated in every phase, including for
+inactive corps. All three are zero when there is no valid actor. Counts are
+normalized without clipping: five buys is represented as 1.25.
+
+Buy/sell counters start at zero and persist throughout the turn. They reset
+when IPO finishes and the next turn's INVEST begins. Returning from BID to
+INVEST does not reset them.
+
 Relational tail:
 
-- President ID (slots 54..58). All zero if inactive / receivership.
-- Owned companies (slots 59..94). Includes companies in the acquisition pile.
+- President ID (slots 57..61). All zero if inactive / receivership.
+- Owned companies (slots 62..97). Includes companies in the acquisition pile.
 
 ## Player Tokens (62, xM, M in {3, 4, 5})
 
@@ -286,7 +304,7 @@ Player identity is inferred from row order.
 
 Rows `[0, num_players)` within the player-token block are filled from the
 actual game state. Rows `[num_players, max_players)` are padding rows and stay
-all-zero. `get_token_widths(max_players, layout_version=2)` reports
+all-zero. `get_token_widths(max_players, layout_version=3)` reports
 `TW_PLAYER` for every reserved player-token row so the model projection layout
 is stable.
 
@@ -301,10 +319,12 @@ is stable.
 - `auction_high_bidder`. During `PHASE_BID`, 1 on the high bidder; all zero
   on the opening bid before a bid has been placed.
 - `auction_starter`. During `PHASE_BID`, 1 on the auction starter.
-- Round-trip activity flag (raw slot 14). During INVEST/BID, 1 if any
-  corporation has this player's buys >= 2 OR sells >= 2; zero in all other
-  phases. This is a coarse activity flag, not the legality check: the
-  engine blocks further trades only when both counts reach 2.
+- `any_round_trip` (raw slot 14). 1 iff this player has bought AND sold
+  at least one share of the same corporation during the current turn's
+  INVEST. Buying one corp and selling a different corp does not qualify.
+  This flag uses the token's own player identity regardless of who is
+  acting. It persists through every phase and resets with the counters at
+  the beginning of the next turn's INVEST.
 - Owned shares (8 slots), normalized by `SHARE_DIVISOR`. Per-corp share
   counts are scalar quantities, not just relation presence, so they stay
   in the projection rather than the relational tail.

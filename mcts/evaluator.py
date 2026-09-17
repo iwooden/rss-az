@@ -18,6 +18,7 @@ from core.relations import get_relation_data, get_relation_data_batch
 from core.state import get_layout, get_turn_fields
 from core.token_data import (
     get_num_tokens,
+    get_token_dim,
     TokenDataSize,
     get_token_data,
     get_token_data_batch,
@@ -40,14 +41,15 @@ def _unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
     return getattr(model, "_orig_mod", model)
 
 
-def _transformer_input_spec(num_players: int) -> ModelInputSpec:
+def _transformer_input_spec(num_players: int, layout_version: int = 2) -> ModelInputSpec:
     return ModelInputSpec(
         model_type=ModelKind.TRANSFORMER.value,
         num_players=num_players,
         policy_dim=int(UNIFIED_LOGIT_DIM),
         value_dim=num_players,
         num_tokens=get_num_tokens(num_players),
-        token_dim=TOKEN_DIM,
+        token_dim=get_token_dim(layout_version),
+        layout_version=layout_version,
     )
 
 
@@ -71,7 +73,7 @@ def _infer_model_input_spec(
             f"evaluator num_players ({num_players})"
         )
 
-    return _transformer_input_spec(num_players)
+    return _transformer_input_spec(num_players, int(getattr(cfg, "layout_version", 2)))
 
 
 def _validate_model_input_spec(
@@ -101,10 +103,11 @@ def _validate_model_input_spec(
             f"Transformer input_spec.num_tokens ({input_spec.num_tokens}) "
             f"does not match get_num_tokens({num_players})"
         )
-    if int(input_spec.token_dim) != TOKEN_DIM:
+    expected_dim = get_token_dim(input_spec.layout_version)
+    if int(input_spec.token_dim) != expected_dim:
         raise ValueError(
             f"Transformer input_spec.token_dim ({input_spec.token_dim}) "
-            f"does not match TOKEN_DIM ({TOKEN_DIM})"
+            f"does not match layout {input_spec.layout_version} width ({expected_dim})"
         )
     return input_spec
 
@@ -114,6 +117,7 @@ def fill_token_buffer(
     buf2d: np.ndarray,
     *,
     max_players: int = 0,
+    layout_version: int = 2,
 ) -> None:
     """Fill a ``(num_tokens, TOKEN_DIM)`` float32 buffer from a GameState.
 
@@ -122,11 +126,12 @@ def fill_token_buffer(
     point lives. ``num_players ∉ {3, 4, 5}`` is rejected inside
     ``get_token_data`` via assert.
     """
-    get_token_data(state, buf2d, max_players=max_players)
+    get_token_data(state, buf2d, max_players=max_players, layout_version=layout_version)
 
 
 def fill_token_buffer_batch(
     state_arrays: list[np.ndarray], num_players: int, buf3d: np.ndarray,
+    *, layout_version: int = 2,
 ) -> None:
     """Fill a ``(n, num_tokens, TOKEN_DIM)`` buffer from ``n`` state arrays.
 
@@ -136,7 +141,7 @@ def fill_token_buffer_batch(
     Cython entry. Mixed-player batches are not supported (``num_players``
     is shared across the batch).
     """
-    get_token_data_batch(state_arrays, num_players, buf3d)
+    get_token_data_batch(state_arrays, num_players, buf3d, layout_version=layout_version)
 
 
 def fill_token_buffer_batch_padded(
@@ -144,9 +149,12 @@ def fill_token_buffer_batch_padded(
     buf3d: np.ndarray,
     *,
     max_players: int,
+    layout_version: int = 2,
 ) -> None:
     """Fill a padded token batch using each row's actual player count."""
-    get_token_data_batch(state_arrays, buf3d, max_players=max_players)
+    get_token_data_batch(
+        state_arrays, buf3d, max_players=max_players, layout_version=layout_version,
+    )
 
 
 def fill_relation_buffer(
@@ -321,9 +329,14 @@ class NNEvaluator(BaseEvaluator):
         self.device = device
         self._autocast_dtype = self._DTYPE_MAP.get(eval_dtype) if eval_dtype else None
         self.model.eval()
+        inferred_spec = _infer_model_input_spec(model, num_players)
         if input_spec is None:
-            input_spec = _infer_model_input_spec(model, num_players)
+            input_spec = inferred_spec
+        elif input_spec != inferred_spec:
+            raise ValueError("input_spec does not match the model input contract")
         self.input_spec = _validate_model_input_spec(input_spec, num_players)
+        self.token_dim = input_spec.token_dim
+        self.layout_version = input_spec.layout_version
 
         # Preallocated scratch — grows lazily via ``_ensure_scratch``.
         self._scratch_cap: int = 0
@@ -437,6 +450,7 @@ class NNEvaluator(BaseEvaluator):
         self._ensure_scratch(1)
         fill_token_buffer(
             state, self._tok_h_np[0], max_players=self.num_players,
+            layout_version=self.layout_version,
         )
         fill_relation_buffer(
             state, self._rel_h_np[0], max_players=self.num_players,
@@ -481,6 +495,7 @@ class NNEvaluator(BaseEvaluator):
         fill_token_buffer_batch_padded(
             state_arrays, self._tok_h_np[:n],
             max_players=self.num_players,
+            layout_version=self.layout_version,
         )
         fill_relation_buffer_batch_padded(
             state_arrays, self._rel_h_np[:n],
@@ -558,6 +573,7 @@ class NNEvaluator(BaseEvaluator):
         fill_token_buffer_batch_padded(
             state_arrays, self._tok_h_np[:n],
             max_players=self.num_players,
+            layout_version=self.layout_version,
         )
         fill_relation_buffer_batch_padded(
             state_arrays, self._rel_h_np[:n],

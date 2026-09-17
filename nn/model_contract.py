@@ -31,6 +31,8 @@ class ModelInputSpec:
     value_dim: int
     num_tokens: int
     token_dim: int
+    # Versions 2 and 3 share relation planes and token order.
+    layout_version: int = 2
 
 
 def normalize_model_type(model_type: str) -> ModelKind:

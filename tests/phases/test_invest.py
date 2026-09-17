@@ -91,8 +91,8 @@ class TestPassAction:
         assert TURN.get_turn_number(game_state) == 2
         assert TURN.get_consecutive_passes(game_state) == 0
 
-    def test_pass_clears_roundtrip_tracking_on_phase_end(self, game_state):
-        """Round-trip counters are cleared when all players pass."""
+    def test_trade_history_persists_until_next_invest(self, game_state):
+        """Counters survive later phases and clear only on the new turn."""
         _make_trade_state(game_state, corp_id=0, player_id=0)
         num_players = TURN.get_num_players(game_state)
 
@@ -104,6 +104,15 @@ class TestPassAction:
             pass_id = find_legal_action(game_state, action_type=ACTION_PASS)
             apply_and_verify(game_state, pass_id)
 
+        assert TURN.get_turn_number(game_state) == 1
+        assert PLAYERS[0].get_share_buys(game_state, 0) == 1
+        for _ in range(100):
+            if TURN.get_turn_number(game_state) == 2:
+                break
+            assert PLAYERS[0].get_share_buys(game_state, 0) == 1
+            apply_and_verify(game_state, get_legal_actions(game_state)[0][0])
+        assert TURN.get_turn_number(game_state) == 2
+        assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)
         assert PLAYERS[0].get_share_buys(game_state, 0) == 0
         assert PLAYERS[0].get_share_sells(game_state, 0) == 0
 

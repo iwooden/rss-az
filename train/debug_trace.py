@@ -44,7 +44,13 @@ from core.data import (
     PY_SHARE_PRICE_DIVISOR,
 )
 from core.state import GameState
-from core.token_data import TokenDataSize, get_num_tokens, get_token_data, get_token_widths
+from core.token_data import (
+    PY_TRADE_COUNT_DIVISOR,
+    get_num_tokens,
+    get_token_data,
+    get_token_dim,
+    get_token_widths,
+)
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.deck import DECK
@@ -131,7 +137,7 @@ def _field_names(prefix: str, count: int) -> list[str]:
     return [f"{prefix}[{idx}]" for idx in range(count)]
 
 
-def _token_field_labels(token_label: str) -> list[str]:
+def _token_field_labels(token_label: str, layout_version: int = 2) -> list[str]:
     if token_label == "market_info":
         return (
             ["attn_mask"]
@@ -215,6 +221,7 @@ def _token_field_labels(token_label: str) -> list[str]:
                 "num_acq_pile_companies",
                 "num_total_companies",
             ]
+            + (["actor_share_buys", "actor_share_sells", "actor_round_trip"] if layout_version == 3 else [])
             + _field_names("president_id", NUM_PLAYER_SLOTS)
             + _field_names("owned_company", NUM_COMPANIES)
         )
@@ -223,7 +230,8 @@ def _token_field_labels(token_label: str) -> list[str]:
             ["attn_mask", "is_selected"]
             + _field_names("turn_order", NUM_PLAYER_SLOTS)
             + ["has_passed", "cash", "net_worth", "liquidity", "income"]
-            + ["auction_high_bidder", "auction_starter", "round_trips"]
+            + ["auction_high_bidder", "auction_starter",
+               "any_round_trip" if layout_version == 3 else "round_trips"]
             + _field_names("owned_share", NUM_CORPS)
             + ["num_owned_companies", "num_presidencies", "total_owned_shares"]
             + _field_names("owned_company", NUM_COMPANIES)
@@ -231,21 +239,21 @@ def _token_field_labels(token_label: str) -> list[str]:
     raise ValueError(f"unknown token label: {token_label}")
 
 
-def _extract_token_buffer(state: GameState) -> tuple[np.ndarray, np.ndarray, list[str]]:
+def _extract_token_buffer(state: GameState, layout_version: int = 2) -> tuple[np.ndarray, np.ndarray, list[str]]:
     num_players = TURN.get_num_players(state)
     if not (3 <= num_players <= 5):
         raise ValueError(f"token dump unavailable for num_players={num_players}")
 
     num_tokens = get_num_tokens(num_players)
-    token_dim = int(TokenDataSize.TOKEN_DIM)
+    token_dim = get_token_dim(layout_version)
     buffer = np.zeros((num_tokens, token_dim), dtype=np.float32)
-    get_token_data(state, buffer)
-    widths = np.asarray(get_token_widths(num_players), dtype=np.int32)
+    get_token_data(state, buffer, layout_version=layout_version)
+    widths = np.asarray(get_token_widths(num_players, layout_version=layout_version), dtype=np.int32)
     labels = _token_labels(num_players)
     return buffer, widths, labels
 
 
-def _denormalize_token_values(token_label: str, row: np.ndarray) -> list[int]:
+def _denormalize_token_values(token_label: str, row: np.ndarray, layout_version: int = 2) -> list[int]:
     if token_label == "market_info":
         return (
             _round_values(row[:1])
@@ -329,8 +337,10 @@ def _denormalize_token_values(token_label: str, row: np.ndarray) -> list[int]:
             + _round_values(row[45:49])
             + _round_values(row[49:51], PY_IMPACT_DIVISOR)
             + _round_values(row[51:54], OWNED_COMPANIES_DIVISOR)
-            + _round_values(row[54:59])
-            + _round_values(row[59:95])
+            + (
+                _round_values(row[54:56], PY_TRADE_COUNT_DIVISOR) + _round_values(row[56:98])
+                if layout_version == 3 else _round_values(row[54:95])
+            )
         )
     if token_label.startswith("player["):
         return (
@@ -415,8 +425,13 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
     if token_label == "acq_price":
         return f"attn={values[0]} max_offset={values[1]} fi_flag={values[2]} total_synergies={values[3]}"
     if token_label.startswith("corp["):
+        history = ""
+        if len(values) == 98:
+            history = f"actor_buys={values[54]} actor_sells={values[55]} actor_round_trip={values[56]} "
+            values = values[:54] + values[57:]
         return (
-            f"attn={values[0]} selected={values[1]} active={values[2]} recv={values[3]} "
+            history
+            + f"attn={values[0]} selected={values[1]} active={values[2]} recv={values[3]} "
             f"passed_acq={values[4]} unissued={values[5]} issued={values[6]} bank={values[7]} "
             f"price_idx={_one_hot_index(values[8:35])} share_price={values[35]} pending_move={values[36]} "
             f"cash={values[37]} acq_proceeds={values[38]} income={values[39]} stars={values[40]} "
@@ -439,24 +454,26 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
     return str(values)
 
 
-def format_token_dump(state: GameState) -> str:
+def format_token_dump(state: GameState, layout_version: int = 2) -> str:
     try:
-        buffer, widths, labels = _extract_token_buffer(state)
+        buffer, widths, labels = _extract_token_buffer(state, layout_version=layout_version)
     except ValueError as exc:
         return str(exc)
-    return format_token_dump_from_buffer(buffer, widths, labels)
+    return format_token_dump_from_buffer(buffer, widths, labels, layout_version=layout_version)
 
 
 def format_token_dump_from_buffer(
     buffer: np.ndarray,
     widths: np.ndarray,
     labels: list[str],
+    *,
+    layout_version: int = 2,
 ) -> str:
     lines = ["idx | token | width | values", "--- | --- | ---: | ---"]
     for token_index in range(len(labels)):
         label = labels[token_index]
         width_int = int(widths[token_index])
-        values = _denormalize_token_values(label, buffer[token_index, :width_int])
+        values = _denormalize_token_values(label, buffer[token_index, :width_int], layout_version)
         lines.append(f"{token_index:02d} | {label} | {width_int} | {_summarize_token_values(label, values)}")
     return "\n".join(lines)
 
@@ -464,19 +481,20 @@ def format_token_dump_from_buffer(
 class TokenNormalizationAccumulator:
     THRESHOLDS = (1.00, 1.10, 1.25)
 
-    def __init__(self, num_players: int):
+    def __init__(self, num_players: int, layout_version: int = 2):
+        self.layout_version = layout_version
         if not (3 <= num_players <= 5):
             raise ValueError(f"token normalization unavailable for num_players={num_players}")
         self.labels = _token_labels(num_players)
-        self.widths = np.asarray(get_token_widths(num_players), dtype=np.int32)
-        token_dim = int(TokenDataSize.TOKEN_DIM)
+        self.widths = np.asarray(get_token_widths(num_players, layout_version=layout_version), dtype=np.int32)
+        token_dim = get_token_dim(layout_version)
         self._mins = np.full((len(self.labels), token_dim), np.inf, dtype=np.float64)
         self._maxs = np.full((len(self.labels), token_dim), -np.inf, dtype=np.float64)
         self._sums = np.zeros((len(self.labels), token_dim), dtype=np.float64)
         self.samples = 0
 
     def add_state(self, state: GameState) -> np.ndarray:
-        buffer, widths, labels = _extract_token_buffer(state)
+        buffer, widths, labels = _extract_token_buffer(state, layout_version=self.layout_version)
         assert labels == self.labels
         if not np.array_equal(widths, self.widths):
             raise ValueError("token width mismatch while accumulating normalization stats")
@@ -494,7 +512,7 @@ class TokenNormalizationAccumulator:
     def _iter_field_stats(self):
         for token_index in range(len(self.labels)):
             token_label = self.labels[token_index]
-            field_labels = _token_field_labels(token_label)
+            field_labels = _token_field_labels(token_label, self.layout_version)
             width_int = int(self.widths[token_index])
             if len(field_labels) != width_int:
                 raise ValueError(

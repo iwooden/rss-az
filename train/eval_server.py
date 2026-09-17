@@ -111,6 +111,7 @@ from core.token_data import (
     TokenDataSize,
     get_num_tokens,
     get_token_data,
+    get_token_dim,
     get_token_data_batch,
 )
 from mcts.evaluator import BaseEvaluator
@@ -308,6 +309,7 @@ class SharedEvalBuffers:
         self.model_type = model_kind.value
         self.num_tokens = int(input_spec.num_tokens)
         self.token_dim = int(input_spec.token_dim)
+        self.layout_version = input_spec.layout_version
 
         expected_tokens = get_num_tokens(num_players)
         if self.num_tokens != expected_tokens:
@@ -315,10 +317,11 @@ class SharedEvalBuffers:
                 f"Transformer num_tokens ({self.num_tokens}) does not "
                 f"match get_num_tokens({num_players}) ({expected_tokens})"
             )
-        if self.token_dim != TOKEN_DIM:
+        expected_dim = get_token_dim(self.layout_version)
+        if self.token_dim != expected_dim:
             raise ValueError(
                 f"Transformer token_dim ({self.token_dim}) does not "
-                f"match TOKEN_DIM ({TOKEN_DIM})"
+                f"match layout {self.layout_version} width ({expected_dim})"
             )
 
         self.num_relations = NUM_ATTENTION_RELATIONS
@@ -1365,6 +1368,8 @@ class RemoteEvaluator(BaseEvaluator):
         super().__init__(num_players, terminal_rank_weight)
         self._worker_idx = worker_idx
         normalize_model_type(shared_bufs.model_type)
+        self.layout_version = shared_bufs.layout_version
+        self.token_dim = shared_bufs.token_dim
 
         # Input views (worker writes these).
         # ``_in_states_np`` is fp16 on the wire. ``get_token_data`` writes
@@ -1473,6 +1478,7 @@ class RemoteEvaluator(BaseEvaluator):
         get_token_data(
             state, self._states_scratch_fp32[0],
             max_players=self.num_players,
+            layout_version=self.layout_version,
         )
         self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
         get_relation_coord_data(
@@ -1539,6 +1545,7 @@ class RemoteEvaluator(BaseEvaluator):
         get_token_data_batch(
             state_arrays, self._states_scratch_fp32[:n],
             max_players=self.num_players,
+            layout_version=self.layout_version,
         )
         self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(
             np.float16

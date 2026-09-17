@@ -27,6 +27,7 @@ from entities.company cimport (
 )
 
 from entities import turn as turn_module
+from entities import player as player_module
 
 
 # =============================================================================
@@ -67,6 +68,10 @@ cdef int _find_next_ipo_company(GameState state) noexcept:
 
 cdef void _transition_out_of_ipo(GameState state) noexcept:
     """End-of-phase cleanup; starts a new turn."""
+    cdef int player_id
+    for player_id in range(turn_module.TURN.get_num_players(state)):
+        player_module.PLAYERS[player_id].clear_roundtrip_tracking(state)
+
     # Clear IPO state
     turn_module.TURN.clear_active_company(state)
 

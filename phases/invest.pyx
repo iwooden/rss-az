@@ -3,8 +3,7 @@
 Handles the four INVEST actions: PASS, AUCTION (select), BUY_SHARE, SELL_SHARE.
 
 - PASS: increments consecutive_passes. Once all players have passed in a row,
-  clears per-player round-trip tracking scratch and transitions to
-  ``PHASE_WRAP_UP``.
+  transitions to ``PHASE_WRAP_UP``. Trade history persists until the next turn.
 - AUCTION: select a LOC_AUCTION company to put up for bidding. Seeds only
   the auction *target* (active_company, starter) — the opening bid is placed
   in BID. auction_price is 0 and auction_high_bidder is -1 on BID entry so
@@ -68,18 +67,12 @@ cdef inline void _advance_active_player(GameState state) noexcept:
 
 cdef void _handle_pass(GameState state) noexcept:
     """INVEST pass: bump consecutive_passes; end phase if all have passed."""
-    cdef int i, num_players
+    cdef int num_players
 
     turn_module.TURN.increment_consecutive_passes(state)
     num_players = turn_module.TURN.get_num_players(state)
 
     if turn_module.TURN.get_consecutive_passes(state) >= num_players:
-        # All players passed consecutively. INVEST owns the per-player
-        # round-trip scratch fields (share_buys / share_sells),
-        # so clear them here before handing control to WRAP_UP — the token
-        # features for later phases should not see stale INVEST-turn data.
-        for i in range(num_players):
-            player_module.PLAYERS[i].clear_roundtrip_tracking(state)
         turn_module.TURN.set_phase(state, <int>GamePhases.PHASE_WRAP_UP)
         return
 

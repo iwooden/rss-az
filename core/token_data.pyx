@@ -25,8 +25,13 @@ Active-entity selectors (active_player / active_corp / active_company
 in TURN_OFFSETS) are surfaced as ``is_selected`` scalar flags on each
 entity's own token, not as standalone one-hot tokens.
 
-Per-token feature layouts (sum of widths ≤ TOKEN_DIM = 95 = max width,
-currently pinned by the Corp token):
+The default layout_version=2 preserves v2 checkpoint inputs (width 95).
+Layout 3 has width 98: corp slots 54..56 hold actor buys/4, sells/4,
+and buys>=1 && sells>=1, shifting the relation tail to 57. Player slot 14
+becomes any-corp round-trip history. History persists until the next turn.
+Token order and attention relation planes are identical in both versions.
+
+V2 per-token feature layouts (max width 95, pinned by the Corp token):
 
   Every token starts with attn_mask (1), a 0/1 scalar that marks whether
                 the token should be visible to model attention. Entity rows,
@@ -208,6 +213,8 @@ DEF MAX_DIVIDEND = 26              # dividend amounts 0..25 (26 slots)
 DEF ACQ_PRICE_OFFSETS = 51         # acquisition price offsets (matches action encoding)
 DEF FLOAT_SHARES_MAX = 4.0         # max issued shares at float (face>par → 4)
 DEF ROUNDTRIP_LIMIT = 2            # share buy+sell limit per corp per turn
+DEF TRADE_COUNT_DIVISOR = 4.0      # typical INVEST activity, not a clipping limit
+PY_TRADE_COUNT_DIVISOR = TRADE_COUNT_DIVISOR
 
 # Normalization constant for the invest token's consecutive_passes slot.
 # Matches the max training player count (5).
@@ -234,7 +241,16 @@ cpdef int get_num_tokens(int max_players) noexcept nogil:
     return max_players + 54
 
 
-cpdef object get_token_widths(int max_players):
+cpdef int get_token_dim(int layout_version=2) except -1:
+    """Padded feature width for a model-owned input layout version."""
+    if layout_version == 2:
+        return <int>TokenDataSize.TOKEN_DIM
+    if layout_version == 3:
+        return <int>TokenDataSize.TOKEN_DIM_V3
+    raise ValueError(f"Unsupported token layout version: {layout_version}")
+
+
+cpdef object get_token_widths(int max_players, int layout_version=2):
     """Per-position non-padded feature widths matching ``_fill_buffer``.
 
     Each ``buffer[i]`` row is TOKEN_DIM wide but only the first
@@ -250,6 +266,7 @@ cpdef object get_token_widths(int max_players):
     assert 3 <= max_players <= 5, \
         f"get_token_widths: max_players must be 3-5, got {max_players}"
 
+    cdef int token_dim = get_token_dim(layout_version)
     cdef int num_tokens = max_players + 54
     widths = np.empty(num_tokens, dtype=np.uint8)
     cdef unsigned char[::1] w = widths
@@ -289,7 +306,7 @@ cpdef object get_token_widths(int max_players):
 
     # Corp tokens
     for i in range(NUM_CORPS):
-        w[tok] = <unsigned char>TokenWidth.TW_CORP
+        w[tok] = <unsigned char>token_dim  # Corp is the widest token in v2/v3.
         tok += 1
 
     # Player tokens (trailing)
@@ -304,6 +321,7 @@ cpdef void get_token_data(
     GameState state,
     float[:, ::1] buffer,
     int max_players=0,
+    int layout_version=2,
 ):
     """Fill ``buffer`` with per-token NN features for ``state``.
 
@@ -319,6 +337,7 @@ cpdef void get_token_data(
     ``PLAYERS[i].get_net_worth(state)`` lookup it used to.
     """
     cdef int num_players = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.num_players]
+    cdef int token_dim = get_token_dim(layout_version)
     cdef int num_tokens
     cdef int i
     max_players = _resolve_output_max_players(
@@ -328,16 +347,15 @@ cpdef void get_token_data(
 
     assert buffer.shape[0] >= num_tokens, \
         f"get_token_data: buffer rows {buffer.shape[0]} < num_tokens {num_tokens}"
-    # Exact-match on the padded width: the nogil memset in ``_fill_buffer``
-    # writes ``num_tokens * TOKEN_DIM * 4`` contiguous bytes, so a wider
-    # buffer would silently clobber across rows.
-    assert buffer.shape[1] == <int>TokenDataSize.TOKEN_DIM, \
-        f"get_token_data: buffer cols {buffer.shape[1]} != TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
+    # Require the model-selected width, including padding, so a caller
+    # cannot accidentally supply a buffer for another layout version.
+    assert buffer.shape[1] == token_dim, \
+        f"get_token_data: buffer cols {buffer.shape[1]} != token_dim {token_dim}"
 
     with nogil:
         for i in range(num_players):
             refresh_player_cache_if_dirty(state, i)
-        _fill_buffer(state, buffer, num_players, num_tokens)
+        _fill_buffer(state, buffer, num_players, num_tokens, layout_version)
 
 
 cpdef void get_token_data_batch(
@@ -345,6 +363,7 @@ cpdef void get_token_data_batch(
     object arg2,
     object arg3=None,
     int max_players=0,
+    int layout_version=2,
 ):
     """Batched ``get_token_data``: fill ``buffer[i]`` for each ``state_arrays[i]``.
 
@@ -364,6 +383,7 @@ cpdef void get_token_data_batch(
             buffer row count for the preferred call shape.
         buffer: ``(n, max_players + 54, TOKEN_DIM)`` float32 output, C-contig.
     """
+    cdef int token_dim = get_token_dim(layout_version)
     cdef int n = len(state_arrays)
     cdef object buffer_obj
     cdef int legacy_num_players = 0
@@ -396,8 +416,8 @@ cpdef void get_token_data_batch(
         f"get_token_data_batch: buffer rows {buffer.shape[1]} < num_tokens {num_tokens}"
     # Exact-match on the padded width: see ``get_token_data`` for the same
     # constraint — memset writes assume rows are tightly packed at TOKEN_DIM.
-    assert buffer.shape[2] == <int>TokenDataSize.TOKEN_DIM, \
-        f"get_token_data_batch: buffer cols {buffer.shape[2]} != TOKEN_DIM {<int>TokenDataSize.TOKEN_DIM}"
+    assert buffer.shape[2] == token_dim, \
+        f"get_token_data_batch: buffer cols {buffer.shape[2]} != token_dim {token_dim}"
 
     actual_num_players = _read_state_array_num_players(state_arrays[0])
     _resolve_output_max_players(
@@ -422,7 +442,7 @@ cpdef void get_token_data_batch(
         with nogil:
             for p in range(actual_num_players):
                 refresh_player_cache_if_dirty(scratch_gs, p)
-            _fill_buffer(scratch_gs, buffer[i], actual_num_players, num_tokens)
+            _fill_buffer(scratch_gs, buffer[i], actual_num_players, num_tokens, layout_version)
 
 
 cdef int _validate_output_max_players(int max_players, object func_name) except -1:
@@ -464,6 +484,7 @@ cdef void _fill_buffer(
     float[:, ::1] buffer,
     int num_players,
     int num_tokens,
+    int layout_version,
 ) noexcept nogil:
     cdef int i, tok
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
@@ -473,7 +494,7 @@ cdef void _fill_buffer(
     # owner/location groups outside the current location, ACQ_SELECT_COMPANY
     # synergy slots for companies already in the portfolio, etc.) and rely
     # on a zeroed baseline.
-    memset(&buffer[0, 0], 0, num_tokens * <int>TokenDataSize.TOKEN_DIM * sizeof(float))
+    memset(&buffer[0, 0], 0, num_tokens * buffer.shape[1] * sizeof(float))
 
     tok = 0
 
@@ -524,12 +545,12 @@ cdef void _fill_buffer(
 
     # --- Corp tokens ---
     for i in range(NUM_CORPS):
-        _fill_corp_token(state, buffer, tok, i, num_players)
+        _fill_corp_token(state, buffer, tok, i, num_players, layout_version)
         tok += 1
 
     # --- Player tokens (last; trailing slot makes higher-player padding easy) ---
     for i in range(num_players):
-        _fill_player_token(state, buffer, tok, i, num_players)
+        _fill_player_token(state, buffer, tok, i, num_players, layout_version)
         tok += 1
 
 
@@ -543,6 +564,7 @@ cdef void _fill_player_token(
     int tok,
     int player_id,
     int num_players,
+    int layout_version,
 ) noexcept nogil:
     # Feature offsets within the player token. ``OFF_IS_SELECTED`` is set iff
     # this player is the current active_player selector. The three
@@ -632,10 +654,14 @@ cdef void _fill_player_token(
         buffer[tok, OFF_SHARES + c] = <float>shares / SHARE_DIVISOR
         total_shares += shares
 
-        # Round-trip threshold: once the player hits the buy+sell cap on
-        # any corp, any further buy/sell in that corp is illegal this turn.
-        if buys >= ROUNDTRIP_LIMIT or sells >= ROUNDTRIP_LIMIT:
-            roundtrip_flag = 1
+        if layout_version == 3:
+            if buys >= 1 and sells >= 1:
+                roundtrip_flag = 1
+        elif phase == <int>GamePhases.PHASE_INVEST or phase == <int>GamePhases.PHASE_BID:
+            # Preserve the v2 checkpoint's coarse flag, including its OR
+            # threshold. Old counters were cleared upon leaving INVEST.
+            if buys >= ROUNDTRIP_LIMIT or sells >= ROUNDTRIP_LIMIT:
+                roundtrip_flag = 1
 
         if (
             corp_is_active(state, c)
@@ -680,6 +706,7 @@ cdef void _fill_corp_token(
     int tok,
     int corp_id,
     int num_players,
+    int layout_version,
 ) noexcept nogil:
     # Feature offsets within the corp token. Two distinct "active"-ish
     # bits: ``OFF_ACTIVE`` is the lifecycle float flag
@@ -718,9 +745,12 @@ cdef void _fill_corp_token(
     cdef int OFF_NUM_OPERATIONAL   = 51
     cdef int OFF_NUM_ACQ_PILE      = 52
     cdef int OFF_NUM_TOTAL         = 53
-    # --- relational tail ---
-    cdef int OFF_PRESIDENT         = 54   # 5 slots
-    cdef int OFF_COMPANIES         = 59   # 36 slots
+    # V3 inserts actor-relative trade history before the relation tail.
+    cdef int OFF_ACTOR_BUYS        = 54
+    cdef int OFF_ACTOR_SELLS       = 55
+    cdef int OFF_ACTOR_ROUND_TRIP   = 56
+    cdef int OFF_PRESIDENT         = 57 if layout_version == 3 else 54  # 5 slots
+    cdef int OFF_COMPANIES         = OFF_PRESIDENT + 5  # 36 slots
 
     cdef bint active = corp_is_active(state, corp_id)
     cdef int price_idx, president, company_id, current_idx, new_idx, delta
@@ -728,6 +758,17 @@ cdef void _fill_corp_token(
     cdef int phase = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.phase]
     cdef int active_corp = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_corp]
     cdef int offer_corp
+    cdef int actor, player_base, buys, sells
+
+    if layout_version == 3:
+        actor = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
+        if 0 <= actor < num_players:
+            player_base = LAYOUT.players_offset + actor * PLAYER_FIELDS.size
+            buys = <int>state._data[player_base + PLAYER_FIELDS.share_buys + corp_id]
+            sells = <int>state._data[player_base + PLAYER_FIELDS.share_sells + corp_id]
+            buffer[tok, OFF_ACTOR_BUYS] = <float>buys / TRADE_COUNT_DIVISOR
+            buffer[tok, OFF_ACTOR_SELLS] = <float>sells / TRADE_COUNT_DIVISOR
+            buffer[tok, OFF_ACTOR_ROUND_TRIP] = 1.0 if buys >= 1 and sells >= 1 else 0.0
 
     assert -1 <= active_corp < NUM_CORPS, \
         f"_fill_corp_token: active_corp {active_corp} out of [-1, {NUM_CORPS})"

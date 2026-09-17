@@ -39,8 +39,36 @@ for development guidance.
   live-play webhook server.
 - `tests/` - phase tests, engine invariants, model contract tests, MCTS tests,
   training tests, and 18xx compatibility checks.
-- `token-data.md`, `VECTORS.md` - implementation notes for model inputs and
-  state/action layout.
+- [`token-data.md`](token-data.md) - transformer v2 input layout specification.
+- [`token-data-v3.md`](token-data-v3.md) - transformer v3 input layout specification.
+- [`VECTORS.md`](VECTORS.md) - shared raw state and action layout.
+
+## Model Input Layouts
+
+Each model version has a standalone token specification. Update the matching
+document when changing a model's layout; each describes its complete current
+layout rather than differences from another version.
+
+| Model implementation (`model_path`) | Input `layout_version` | Token specification |
+| --- | --- | --- |
+| `nn/transformer-v2.py` | 2 | [V2 token data](token-data.md) |
+| `nn/transformer-v3.py` | 3 | [V3 token data](token-data-v3.md) |
+
+Set `model_path` in the training config to select the model. The model declares
+its input version; evaluators, training, IPC, and diagnostics use that contract
+to select the layout. Query `get_token_dim(layout_version)` and
+`get_token_widths(max_players, layout_version)` for dimensions. The default
+model and extraction calls without a version remain v2 for checkpoint
+compatibility; v2 is retained as the evaluation baseline for v3.
+
+`GameState` flags control engine behavior independently of model inputs. Both
+models read the same raw state, currently use the same token order and relation
+planes, and play under the same chosen rules. Input layout selection does not
+change the engine's two-round-trip INVEST cap.
+
+Replay stores raw counters, so newly generated replay can supply either layout.
+Older replay rows saved after INVEST already lost that turn's trade counters;
+the persistent history features cannot be recovered from those rows.
 
 ## Setup
 

@@ -74,6 +74,8 @@ class _TokenType(IntEnum):
     PLAYER = 12
 
 
+INPUT_LAYOUT_VERSION = 2
+
 _GELU_APPROX = "tanh"
 _TOKEN_FEATURE_START = 1
 _IS_SELECTED_OFFSET = 1
@@ -160,6 +162,7 @@ class TransformerConfig:
     # Raw feature width per token (zero-padded to same size across types).
     # Sourced from core.token_data so the model and the Cython extractor
     # can't drift out of sync.
+    layout_version: int = field(default=INPUT_LAYOUT_VERSION, init=False)
     token_dim: int = int(TokenDataSize.TOKEN_DIM)
 
     _num_tokens: int = field(init=False, repr=False)
