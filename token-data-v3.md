@@ -51,6 +51,27 @@ player rows and remain all-zero.
 The model consumes exactly these engine-side rows; it does not append
 synthetic model-side tokens after projection.
 
+After type-specific projection and identity/type embeddings, v3 applies one
+simultaneous round of directed relation messages before the transformer trunk.
+A shared RMSNorm and two-layer GELU MLP transform each source token. For each
+of the ten existing relations, each recipient sums its visible neighbors,
+divides by the square root of their count (clamped to at least one), and
+applies a separate bias-free linear projection. Independent learned signed
+gains, initialized to 0.1, scale these relation contributions before adding
+them to the original recipient embedding. Like attention relation biases,
+these gains are exempt from weight decay; the MLP and relation projection
+matrices receive normal weight decay. Empty neighborhoods contribute zero;
+hidden/padded tokens neither send nor receive messages. There is no post-sum
+normalization, so neighborhood magnitude remains available. Square-root
+scaling moderates growth but does not make correlated neighbors scale-invariant.
+
+This stage uses the same binary relations as attention, including additive
+shareholding and presidency edges. It accepts both dense planes and sparse
+coordinates, aggregating sparse messages directly. Existing per-layer/head
+attention biases remain independent of the input-mixing gains. Input layout,
+IPC, and policy/value outputs are unchanged; model checkpoints now include
+the additional input-mixing parameters.
+
 Each token row is zero-padded to 98 features (`TokenDataSize.TOKEN_DIM`), the
 width of the Corp token. Per-type widths live in `core.token_data_v3.TokenWidth`:
 

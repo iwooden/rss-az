@@ -1,8 +1,8 @@
 """Transformer v3 model for Rolling Stock Stars AlphaZero training.
 
 Token-based architecture: each game entity is a separate input token. Type-specific
-linear projections feed a pre-LN transformer trunk, actor-conditioned policy
-readouts, and a value head.
+linear projections feed one nonlinear relation-aggregation residual, a pre-LN
+transformer trunk, actor-conditioned policy readouts, and a value head.
 
 INVEST uses separate auction, trade, and pass MLPs with one GELU hidden
 layer of width d_model. Auction/trade scorers share weights across candidates;
@@ -317,8 +317,80 @@ class _PolicyContext:
 @dataclass(frozen=True)
 class _SparseRelationContext:
     relation_ids: torch.Tensor
+    query_tokens: torch.Tensor
+    key_tokens: torch.Tensor
     flat_indices: torch.Tensor
     valid_edges: torch.Tensor
+
+
+class RelationInputMixing(nn.Module):
+    """One simultaneous round of directed messages before the transformer.
+
+    A shared nonlinear map encodes sources; each relation sums its neighbors,
+    divides by sqrt(neighbor count), and applies its own bias-free projection
+    and independent signed gain. Empty neighborhoods contribute exactly zero.
+    Source RMSNorm controls feature scale without erasing aggregate magnitude.
+    Sparse inputs aggregate directly, without materializing relation planes.
+    """
+
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+        self.source_norm = nn.RMSNorm(d_model)
+        self.source_mlp = nn.Sequential(
+            nn.Linear(d_model, d_model, bias=False),
+            nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d_model, d_model, bias=False),
+        )
+        self.relation_projs = nn.ModuleList([
+            nn.Linear(d_model, d_model, bias=False)
+            for _ in range(NUM_ATTENTION_RELATIONS)
+        ])
+        # Nonzero gains let the message weights learn on the first step.
+        self.relation_gains = nn.Parameter(torch.full((NUM_ATTENTION_RELATIONS,), 0.1))
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        visible: torch.Tensor,
+        relation_flags: torch.Tensor | None,
+        sparse_ctx: _SparseRelationContext | None,
+    ) -> torch.Tensor:
+        sources = self.source_mlp(self.source_norm(tokens))
+        gains = self.relation_gains.to(dtype=sources.dtype)
+        messages = torch.zeros_like(tokens)
+
+        edge_sources: torch.Tensor | None = None
+        edge_visible: torch.Tensor | None = None
+        if sparse_ctx is not None:
+            edge_sources = sources.gather(
+                1, sparse_ctx.key_tokens.unsqueeze(-1).expand(-1, -1, sources.shape[-1]),
+            )
+            edge_visible = sparse_ctx.valid_edges & visible.gather(1, sparse_ctx.key_tokens)
+
+        for relation_id, proj in enumerate(self.relation_projs):
+            if relation_flags is not None:
+                adjacency = relation_flags[:, relation_id].to(dtype=sources.dtype)
+                adjacency = adjacency * visible[:, None, :].to(dtype=sources.dtype)
+                aggregate = torch.bmm(adjacency, sources)
+                count = adjacency.sum(-1, keepdim=True, dtype=torch.float32)
+            else:
+                assert sparse_ctx is not None and edge_sources is not None
+                assert edge_visible is not None
+                selected = edge_visible & (sparse_ctx.relation_ids == relation_id)
+                edge_messages = edge_sources.masked_fill(~selected.unsqueeze(-1), 0)
+                query_indices = sparse_ctx.query_tokens.unsqueeze(-1)
+                aggregate = torch.zeros_like(sources).scatter_add(
+                    1, query_indices.expand_as(edge_messages), edge_messages,
+                )
+                count = sources.new_zeros(
+                    sources.shape[0], sources.shape[1], 1, dtype=torch.float32,
+                ).scatter_add(1, query_indices, selected.unsqueeze(-1).float())
+
+            scale = count.clamp_min(1).rsqrt().to(dtype=aggregate.dtype)
+            messages = messages + gains[relation_id] * proj(aggregate * scale)
+
+        # Neither padded/hidden sources nor padded/hidden recipients communicate.
+        return tokens + messages.masked_fill(~visible.unsqueeze(-1), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +609,9 @@ class RSSTransformerNet(nn.Module):
             torch.arange(num_acq_prices, dtype=torch.float32) / float(PY_CASH_DIVISOR),
             persistent=False,
         )
+
+        # Explicit relation messages enrich projected tokens before attention.
+        self.relation_input_mixing = RelationInputMixing(d)
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -771,6 +846,8 @@ class RSSTransformerNet(nn.Module):
 
         return _SparseRelationContext(
             relation_ids=relation_ids,
+            query_tokens=query_tokens,
+            key_tokens=key_tokens,
             flat_indices=flat_indices,
             valid_edges=valid_edges,
         )
@@ -921,8 +998,8 @@ class RSSTransformerNet(nn.Module):
         Token rows receive a learned token-type embed after projection, and
         corp rows also receive learned row-order corp ID embeds. Entity
         ownership/share/presidency reference tails are intentionally excluded
-        from projection because the same relations are supplied as attention
-        bias planes. Other entity IDs, active-entity refs, and phase refs are
+        from projection because the same relations supply input messages and
+        attention biases. Other entity IDs, active-entity refs, and phase refs are
         left as raw projected features rather than learned additive embeddings.
 
         Args:
@@ -1457,6 +1534,9 @@ class RSSTransformerNet(nn.Module):
                 f"got {tuple(relations.shape)}"
             )
         attn_mask = self._attention_mask(x)
+        tokens = self.relation_input_mixing(
+            tokens, attn_mask[:, 0, 0, :], relation_flags, sparse_relation_ctx,
+        )
 
         for layer_idx, block in enumerate(self.blocks):
             if relation_flags is not None:
@@ -1561,6 +1641,7 @@ class RSSTransformerNet(nn.Module):
         # Relation attention starts behavior-preserving; training can learn
         # positive or negative head/layer-specific biases from zero.
         nn.init.zeros_(self.relation_bias_mult)
+        nn.init.constant_(self.relation_input_mixing.relation_gains, 0.1)
 
 
 # ---------------------------------------------------------------------------
@@ -1620,6 +1701,8 @@ if __name__ == "__main__":
         ("Input projections", proj_params),
         ("Corp ID embeds", corp_id_params),
         ("Type embeds", type_params),
+        ("Relation input mixing", count_parameters(model.relation_input_mixing)),
+        ("Relation attention bias", model.relation_bias_mult.numel()),
         ("Transformer trunk", trunk_params),
         ("Policy heads", policy_params),
         ("Value head", value_params),

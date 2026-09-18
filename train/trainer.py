@@ -123,7 +123,7 @@ class Trainer:
                     )
                     or pname == "bias"
                     or pname.endswith("embeds")
-                    or pname == "relation_bias_mult"
+                    or pname in ("relation_bias_mult", "relation_gains")
                     or (module_name.endswith("phase_mod") and pname == "weight")
                 )
                 if no_weight_decay:
@@ -160,7 +160,7 @@ class Trainer:
                     is_norm
                     or is_embedding
                     or pname == "bias"
-                    or pname == "relation_bias_mult"
+                    or pname in ("relation_bias_mult", "relation_gains")
                     or (module_name.endswith("phase_mod") and pname == "weight")
                 )
                 # Muon only supports 2D matrix params. Stacked (3D+) tensors —

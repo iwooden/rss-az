@@ -5,6 +5,7 @@ Regressions this catches:
 - bias params routed to a decay group
 - embedding/anchor tables routed to a decay group
 - relation attention-bias multipliers routed to a decay group
+- relation input-mixing gains routed to a decay group
 - phase-conditioning modulation weights routed to a decay group
 - Muon claiming embedding/anchor tables instead of leaving them to AdamW
 - any trainable param orphaned from, or double-claimed by, the optimizer(s)
@@ -16,7 +17,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from nn import RSSTransformerNet, TransformerConfig
+from nn import RSSTransformerNet, TransformerConfig, _load_model_module
 from train.config import TrainingConfig
 from train.trainer import Trainer
 
@@ -25,10 +26,16 @@ NUM_PLAYERS = 3
 _NORM_TYPES: tuple[type[nn.Module], ...] = (nn.LayerNorm, nn.RMSNorm)
 
 
-def _make_trainer(optimizer: str) -> Trainer:
-    model = RSSTransformerNet(
-        TransformerConfig(num_players=NUM_PLAYERS, phase_conditioning=True)
-    )
+def _make_trainer(optimizer: str, *, v3: bool = False) -> Trainer:
+    if v3:
+        module = _load_model_module("nn/transformer-v3.py")
+        model = module.RSSTransformerNet(module.TransformerConfig(
+            num_players=NUM_PLAYERS, d_model=32, num_heads=4, num_layers=1,
+        ))
+    else:
+        model = RSSTransformerNet(
+            TransformerConfig(num_players=NUM_PLAYERS, phase_conditioning=True)
+        )
     cfg = TrainingConfig(
         num_players=NUM_PLAYERS,
         optimizer=optimizer,
@@ -180,6 +187,25 @@ def test_relation_bias_params_are_not_decayed(optimizer: str) -> None:
         assert g["weight_decay"] == 0.0, (
             f"{name} routed to weight_decay={g['weight_decay']} group"
         )
+
+
+@pytest.mark.parametrize("optimizer", ["adamw", "muon"])
+def test_v3_relation_gains_and_norm_exempt_but_message_weights_decay(optimizer: str) -> None:
+    trainer = _make_trainer(optimizer, v3=True)
+    groups = _all_groups(trainer)
+    for name, parameter in trainer.model.named_parameters():
+        if not (name.startswith("relation_input_mixing.") or name == "relation_bias_mult"):
+            continue
+        group = _group_of(id(parameter), groups)
+        assert group is not None, f"{name} missing from optimizer"
+        exempt = name.endswith(("relation_gains", "relation_bias_mult", "source_norm.weight"))
+        assert group["weight_decay"] == (0.0 if exempt else 0.01), name
+        if optimizer == "muon":
+            assert trainer._aux_optimizer is not None
+            expected_groups = (
+                trainer._aux_optimizer.param_groups if exempt else trainer.optimizer.param_groups
+            )
+            assert _group_of(id(parameter), expected_groups) is not None, name
 
 
 @pytest.mark.parametrize("optimizer", ["adamw", "muon"])
