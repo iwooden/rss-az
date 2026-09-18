@@ -7,7 +7,14 @@ readouts, and a value head.
 INVEST uses separate auction, trade, and pass MLPs with one GELU hidden
 layer of width d_model. Auction/trade scorers share weights across candidates;
 the trade scorer emits buy/sell together and also receives the actor's
-normalized share count for that corporation. Other phases use query/key scoring.
+normalized share count for that corporation. CLOSING uses player/company and
+player-only pass MLPs with the same hidden-layer design. BID jointly scores
+leaving and all bid levels from player/company/auction embeddings and raw
+per-price bid and remaining-cash features. IPO uses corporation and pass MLPs;
+PAR scores all prices jointly with the engine's raw capitalization previews.
+DIVIDENDS jointly scores all amounts with payout, cash, and nominal-move features.
+Acquisition uses corporation/company candidate MLPs and a joint price MLP.
+Only ISSUE and ACQ_OFFER retain query/key scoring.
 
 V3 adds actor-relative INVEST trade history to corp tokens and persistent
 per-player round-trip flags. Layout 3 is selected by this model's contract;
@@ -16,7 +23,7 @@ the game state and attention relation planes are shared with v2.
 Key differences from the MLP model (nn/template.py):
   - Input: (batch, num_tokens, token_dim) token features, not flat state vector
   - No state rotation: active player marked with is_active flag
-  - Actor-conditioned policy: actor queries score entity/action keys
+  - Actor-conditioned policy: MLP readouts and remaining query/key heads
   - ACQ factored into three single-entity sub-phases (corp/company/price)
   - Unified policy output: every readout writes into a static
     (B, UNIFIED_LOGIT_DIM) tensor, with illegal slots masked by caller input
@@ -44,7 +51,9 @@ from core.data import (
     GameConstants,
     PHASE_ACTION_SIZES,
     DecisionPhase,
+    PY_CASH_DIVISOR,
     PY_COMPANY_PRICE_DIVISOR,
+    PY_SHARE_DIVISOR,
 )
 from core.token_data import TokenWidth, get_num_tokens, get_token_dim, get_token_widths
 from nn.policy_layout import (
@@ -93,6 +102,7 @@ _GLOBAL_PHASE_STOP = _GLOBAL_PHASE_OFFSET + NUM_PHASES
 # Offsets inside a company feature slice after the attention-mask slot is dropped.
 _COMPANY_LOW_PRICE_FEATURE_OFFSET = 1
 _COMPANY_FACE_VALUE_FEATURE_OFFSET = 2
+_COMPANY_ACQ_SYNERGY_OFFSET = 13  # Raw company-token slot.
 # Raw token offsets where relation/reference tails begin. The engine still
 # emits these fields for compatibility and diagnostics, but the model ignores
 # them in token projection now that relation matrices feed attention directly.
@@ -106,17 +116,18 @@ _CORP_REL_TAIL_START = 57
 # keep OFF_SHARES (8 slots) in projected token features and drop only the
 # owned-company relation tail.
 _PLAYER_REL_TAIL_START = 26
-# Raw player-token offset; matches core.token_data::_fill_player_token.
+# Raw player-token offsets; match core.token_data::_fill_player_token.
 _PLAYER_SHARES_START = 15
+_PLAYER_CASH_OFFSET = 8
+# Raw corporation-token offsets; match core.token_data::_fill_corp_token.
+_CORP_ISSUED_OFFSET = 6
+_CORP_BANK_SHARES_OFFSET = 7
+_CORP_CASH_OFFSET = 37
+_CORP_ACQ_PROCEEDS_OFFSET = 38
 
 
 def _phase_action_size(phase: DecisionPhase) -> int:
     return int(PHASE_ACTION_SIZES[int(phase)])
-
-
-def _fourier_feature_width(input_width: int, num_bands: int) -> int:
-    """Width after appending fixed sin/cos bands to raw scalar features."""
-    return input_width * (1 + 2 * num_bands)
 
 
 def _round_up_to_multiple(value: int, multiple: int) -> int:
@@ -168,7 +179,6 @@ class TransformerConfig:
     num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension is rounded up to a multiple of 64.
     phase_conditioning: bool = False
-    price_slot_fourier_bands: int = 4
 
     # Raw feature width per token (zero-padded to same size across types).
     # Sourced from core.token_data so the model and the Cython extractor
@@ -190,10 +200,6 @@ class TransformerConfig:
         )
         assert isinstance(self.phase_conditioning, bool), (
             f"phase_conditioning must be bool, got {self.phase_conditioning!r}"
-        )
-        assert self.price_slot_fourier_bands >= 0, (
-            "price_slot_fourier_bands must be >= 0, "
-            f"got {self.price_slot_fourier_bands}"
         )
         object.__setattr__(self, "_num_tokens", int(get_num_tokens(self.num_players)))
 
@@ -372,12 +378,10 @@ class RSSTransformerNet(nn.Module):
     # ``type_embeds(self._type_ids)`` lookups.
     _type_ids: torch.Tensor
     _corp_ids: torch.Tensor
-    _bid_offset_features: torch.Tensor
     _bid_offset_dollar_norm: torch.Tensor
-    _dividend_amount_features: torch.Tensor
-    _par_price_features: torch.Tensor
-    _acq_price_offset_features: torch.Tensor
-    _fourier_band_freqs: torch.Tensor
+    _dividend_amounts: torch.Tensor
+    _par_prices: torch.Tensor
+    _acq_price_offsets: torch.Tensor
 
     def __init__(self, cfg: TransformerConfig) -> None:
         super().__init__()
@@ -548,18 +552,9 @@ class RSSTransformerNet(nn.Module):
         self.register_buffer(
             "_corp_ids", torch.arange(num_corps, dtype=torch.long), persistent=False,
         )
-        bid_offset_features = (
-            torch.arange(int(AUCTION_CAP), dtype=torch.float32).view(1, int(AUCTION_CAP), 1)
-            / float(int(AUCTION_CAP) - 1)
-        )
-        self.register_buffer(
-            "_bid_offset_features",
-            bid_offset_features,
-            persistent=False,
-        )
         # Per-slot dollar offset in /COMPANY_PRICE_DIVISOR units; added to the
         # active company's normalized face_value at runtime to form the actual
-        # candidate-bid price channel for the BID slot-key projection.
+        # candidate-bid price channel for the BID MLP.
         bid_offset_dollar_norm = (
             torch.arange(int(AUCTION_CAP), dtype=torch.float32).view(1, int(AUCTION_CAP), 1)
             / float(PY_COMPANY_PRICE_DIVISOR)
@@ -569,73 +564,26 @@ class RSSTransformerNet(nn.Module):
             bid_offset_dollar_norm,
             persistent=False,
         )
-        # Normalize by max actual amount (MAX_DIVIDEND - 1 = 25), not slot
-        # count, so the feature is literally amount / max_amount and matches
-        # the price-domain normalization used by BID / ACQ_PRICE / PAR.
-        dividend_amount_norm = (
-            torch.arange(
-                _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS),
-                dtype=torch.float32,
-            ).view(1, _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS), 1)
-            / float(int(GameConstants.MAX_DIVIDEND) - 1)
-        )
-        dividend_amount_features = torch.cat(
-            [dividend_amount_norm, dividend_amount_norm],
-            dim=-1,
-        )
+        # All monetary dividend features use /CASH_DIVISOR. Multiplying these
+        # amounts by raw share counts gives payouts in the same units as cash.
+        num_dividends = _phase_action_size(DecisionPhase.DPHASE_DIVIDENDS)
         self.register_buffer(
-            "_dividend_amount_features",
-            dividend_amount_features,
+            "_dividend_amounts",
+            torch.arange(num_dividends, dtype=torch.float32) / float(PY_CASH_DIVISOR),
             persistent=False,
         )
-        # Slot-identity inputs for the PAR structured projection: per-slot
-        # ``[normalized_index, par_price / max_par_price]``. Both channels
-        # are static (par prices are a fixed table), so we precompute the
-        # buffer at init and reuse on every forward.
+        # PAR prices share /CASH_DIVISOR units with the raw float previews.
         num_par_prices = _phase_action_size(DecisionPhase.DPHASE_PAR)
-        par_price_max = float(max(ALL_PAR_PRICES))
-        par_index_norm = torch.arange(num_par_prices, dtype=torch.float32) / float(
-            num_par_prices - 1
-        )
-        par_price_norm = torch.tensor(
-            [float(p) / par_price_max for p in ALL_PAR_PRICES],
-            dtype=torch.float32,
-        )
-        par_price_features = torch.stack([par_index_norm, par_price_norm], dim=-1)
         self.register_buffer(
-            "_par_price_features",
-            par_price_features,
+            "_par_prices",
+            torch.tensor(ALL_PAR_PRICES, dtype=torch.float32) / float(PY_CASH_DIVISOR),
             persistent=False,
         )
-        # Two per-slot channels for ACQ_SELECT_PRICE:
-        #   [0] slot_position_norm = offset / (K-1)        — 0-indexed [0,1],
-        #       feeds the Fourier slot-key projection (matches BID/PAR/DIVIDENDS).
-        #   [1] offset_price_delta = offset / 80           — added to the
-        #       active company's normalized ``low_price`` to recover the
-        #       candidate price in the same /COMPANY_PRICE_DIVISOR units.
-        K = _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
-        acq_price_offsets = torch.arange(K, dtype=torch.float32).view(1, K, 1)
-        acq_price_offset_features = torch.cat(
-            [
-                acq_price_offsets / float(K - 1),
-                acq_price_offsets / float(PY_COMPANY_PRICE_DIVISOR),
-            ],
-            dim=-1,
-        )
+        # Acquisition prices and buyer cash use /CASH_DIVISOR units.
+        num_acq_prices = _phase_action_size(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
         self.register_buffer(
-            "_acq_price_offset_features",
-            acq_price_offset_features,
-            persistent=False,
-        )
-        # Pre-multiplied Fourier band frequencies for price-slot identity:
-        # ``2^k * 2π`` for k in [0, price_slot_fourier_bands). Empty when bands=0.
-        fourier_band_freqs = torch.pow(
-            torch.tensor(2.0),
-            torch.arange(cfg.price_slot_fourier_bands, dtype=torch.float32),
-        ) * (2.0 * math.pi)
-        self.register_buffer(
-            "_fourier_band_freqs",
-            fourier_band_freqs,
+            "_acq_price_offsets",
+            torch.arange(num_acq_prices, dtype=torch.float32) / float(PY_CASH_DIVISOR),
             persistent=False,
         )
 
@@ -672,35 +620,72 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(d, 1),
         )
 
-        # --- Query/key readouts for the remaining phases ---
+        # --- CLOSING candidate MLP readouts (no phase context token) ---
+        self.closing_company_head = nn.Sequential(
+            nn.Linear(2 * d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
+        )
+        self.closing_pass_head = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
+        )
+
+        # --- BID: one price-selection MLP, including leave-auction ---
+        self.bid_head = nn.Sequential(
+            nn.Linear(3 * d + 2 * int(AUCTION_CAP), d),
+            nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, _phase_action_size(DecisionPhase.DPHASE_BID)),
+        )
+
+        # --- IPO corporation selection and PAR price selection ---
+        self.ipo_corp_head = nn.Sequential(
+            nn.Linear(4 * d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
+        )
+        self.ipo_pass_head = nn.Sequential(
+            nn.Linear(3 * d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
+        )
+        self.par_head = nn.Sequential(
+            nn.Linear(4 * d + 5 * num_par_prices, d),
+            nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, num_par_prices),
+        )
+
+        # --- DIVIDENDS: zero payout is a candidate, not a separate pass ---
+        self.dividend_head = nn.Sequential(
+            nn.Linear(3 * d + 7 * num_dividends, d),
+            nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, num_dividends),
+        )
+
+        # --- Acquisition: candidate selection followed by price selection ---
+        self.acq_corp_head = nn.Sequential(
+            nn.Linear(2 * d + 1, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
+        )
+        self.acq_pass_head = nn.Sequential(
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
+        )
+        self.acq_company_head = nn.Sequential(
+            nn.Linear(3 * d + 1, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
+        )
+        self.acq_price_head = nn.Sequential(
+            nn.Linear(4 * d + 3 * num_acq_prices, d),
+            nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, num_acq_prices),
+        )
+
+        # --- Query/key readouts for the remaining binary decisions ---
         dp = cfg.d_proj
-        slot_fourier_2 = _fourier_feature_width(2, cfg.price_slot_fourier_bands)
-        self.price_slot_proj = nn.Linear(slot_fourier_2, dp, bias=False)
-        self.closing_query_proj = nn.Linear(d, dp, bias=False)
-        self.closing_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.closing_company_proj = nn.Linear(d, dp, bias=False)
-        self.acq_select_company_query_proj = nn.Linear(2 * d, dp, bias=False)
-        self.acq_select_company_company_proj = nn.Linear(d, dp, bias=False)
-        self.acq_select_corp_query_proj = nn.Linear(d, dp, bias=False)
-        self.acq_select_corp_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.acq_select_corp_corp_proj = nn.Linear(d, dp, bias=False)
-        self.ipo_query_proj = nn.Linear(3 * d, dp, bias=False)
-        self.ipo_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.ipo_corp_proj = nn.Linear(d, dp, bias=False)
-
-        self.bid_query_proj = nn.Linear(3 * d, dp, bias=False)
-        self.bid_pass_key_proj = nn.Linear(d, dp, bias=False)
-
-        self.dividend_query_proj = nn.Linear(3 * d, dp, bias=False)
         self.issue_query_proj = nn.Linear(3 * d, dp, bias=False)
         self.issue_pass_key_proj = nn.Linear(d, dp, bias=False)
         self.issue_share_key_proj = nn.Linear(d, dp, bias=False)
         self.acq_offer_query_proj = nn.Linear(4 * d, dp, bias=False)
         self.acq_offer_pass_key_proj = nn.Linear(d, dp, bias=False)
         self.acq_offer_accept_key_proj = nn.Linear(d, dp, bias=False)
-
-        self.acq_price_query_proj = nn.Linear(4 * d, dp, bias=False)
-        self.par_query_proj = nn.Linear(4 * d, dp, bias=False)
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
@@ -716,20 +701,6 @@ class RSSTransformerNet(nn.Module):
     def _match_dtype_device(tensor: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
         """Move small buffers/raw slices to the current runtime dtype and device."""
         return tensor.to(device=ref.device, dtype=ref.dtype)
-
-    def _slot_fourier_features(self, features: torch.Tensor) -> torch.Tensor:
-        """Apply the configured fixed Fourier expansion to slot scalars.
-
-        Raw features stay first so the key projection can still learn monotone
-        price/offset effects directly; sin/cos bands add slot-distinguishing
-        high-frequency structure without making every slot fully independent.
-        """
-        if self.cfg.price_slot_fourier_bands == 0:
-            return features
-        bands = self._match_dtype_device(self._fourier_band_freqs, features)
-        angles = features.unsqueeze(-1) * bands
-        sincos = torch.stack((torch.sin(angles), torch.cos(angles)), dim=-1)
-        return torch.cat([features, sincos.flatten(start_dim=-3)], dim=-1)
 
     def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project company tokens from their raw feature fields."""
@@ -965,7 +936,7 @@ class RSSTransformerNet(nn.Module):
             + num_companies
         )
         block_widths[int(DecisionPhase.DPHASE_DIVIDENDS)] = (
-            int(self._dividend_amount_features.shape[1])
+            int(self._dividend_amounts.shape[0])
         )
         if _phase_action_size(DecisionPhase.DPHASE_ISSUE) != 2:
             raise AssertionError(
@@ -977,7 +948,7 @@ class RSSTransformerNet(nn.Module):
             1
             + num_corps
         )
-        num_par_prices = int(self._par_price_features.shape[0])
+        num_par_prices = int(self._par_prices.shape[0])
         par_feature_width = int(TokenWidth.TW_PAR) - self._token_feature_start
         if par_feature_width != num_par_prices * 3:
             raise AssertionError(
@@ -987,7 +958,7 @@ class RSSTransformerNet(nn.Module):
         block_widths[int(DecisionPhase.DPHASE_PAR)] = num_par_prices
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY)] = num_companies
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)] = (
-            int(self._acq_price_offset_features.shape[1])
+            int(self._acq_price_offsets.shape[0])
         )
 
         expected = [int(size) for size in PHASE_ACTION_SIZES]
@@ -1093,6 +1064,17 @@ class RSSTransformerNet(nn.Module):
         logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
         return logits / math.sqrt(self.cfg.d_proj)
 
+    def _actor_corp_shares(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Current actor's per-corp holdings, retaining /SHARE_DIVISOR units."""
+        player_shares = self._match_dtype_device(
+            ctx.raw_tokens[
+                :, self._player_slice,
+                _PLAYER_SHARES_START:_PLAYER_SHARES_START + ctx.corp_tokens.shape[1],
+            ],
+            ctx.tokens,
+        )
+        return self._active_token(ctx.raw_tokens, self._player_slice, player_shares)
+
     def _invest_logits(
         self,
         ctx: _PolicyContext,
@@ -1114,18 +1096,7 @@ class RSSTransformerNet(nn.Module):
         )
         auction_company = self.invest_auction_head(auction_inputs).squeeze(-1)
 
-        # Gather only the current actor's holdings, already /SHARE_DIVISOR.
-        # A zero selector (e.g. an eval-server scratch row) yields zero shares.
-        player_shares = self._match_dtype_device(
-            ctx.raw_tokens[
-                :, self._player_slice,
-                _PLAYER_SHARES_START:_PLAYER_SHARES_START + num_corps,
-            ],
-            ctx.tokens,
-        )
-        actor_shares = self._active_token(
-            ctx.raw_tokens, self._player_slice, player_shares,
-        )
+        actor_shares = self._actor_corp_shares(ctx)
         trade_inputs = torch.cat(
             [
                 ctx.active_player[:, None, :].expand(-1, num_corps, -1),
@@ -1143,145 +1114,152 @@ class RSSTransformerNet(nn.Module):
         )
 
     def _acq_select_corp_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build ACQ_SELECT_CORP logits: pass plus one logit per corp."""
-        keys = torch.cat(
-            [
-                self.acq_select_corp_pass_key_proj(ctx.active_player).unsqueeze(1),
-                self.acq_select_corp_corp_proj(ctx.corp_tokens),
-            ],
-            dim=1,
+        """Pass or select a buying corp, with the actor's candidate holding."""
+        num_corps = ctx.corp_tokens.shape[1]
+        corp_inputs = torch.cat(
+            [ctx.active_player[:, None, :].expand(-1, num_corps, -1),
+             ctx.corp_tokens, self._actor_corp_shares(ctx).unsqueeze(-1)],
+            dim=-1,
         )
-        return self._query_key_logits(
-            ctx.active_player,
-            self.acq_select_corp_query_proj,
-            keys,
+        return torch.cat(
+            [self.acq_pass_head(ctx.active_player),
+             self.acq_corp_head(corp_inputs).squeeze(-1)],
+            dim=-1,
         )
 
     def _acq_select_company_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build ACQ_SELECT_COMPANY logits: one active-player/corp logit per company."""
-        query_input = torch.cat([ctx.active_player, ctx.active_corp], dim=-1)
-        return self._query_key_logits(
-            query_input,
-            self.acq_select_company_query_proj,
-            self.acq_select_company_company_proj(ctx.company_tokens),
+        """Score each target company, including its raw marginal synergy gain."""
+        num_companies = ctx.company_tokens.shape[1]
+        synergy = self._match_dtype_device(
+            ctx.raw_tokens[:, self._company_slice, _COMPANY_ACQ_SYNERGY_OFFSET],
+            ctx.tokens,
         )
+        company_inputs = torch.cat(
+            [ctx.active_player[:, None, :].expand(-1, num_companies, -1),
+             ctx.active_corp[:, None, :].expand(-1, num_companies, -1),
+             ctx.company_tokens, synergy.unsqueeze(-1)],
+            dim=-1,
+        )
+        return self.acq_company_head(company_inputs).squeeze(-1)
 
     def _closing_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build CLOSING logits: pass plus one logit per company."""
-        keys = torch.cat(
+        pass_logit = self.closing_pass_head(ctx.active_player)
+        company_inputs = torch.cat(
             [
-                self.closing_pass_key_proj(ctx.active_player).unsqueeze(1),
-                self.closing_company_proj(ctx.company_tokens),
+                ctx.active_player[:, None, :].expand(
+                    -1, ctx.company_tokens.shape[1], -1,
+                ),
+                ctx.company_tokens,
             ],
-            dim=1,
+            dim=-1,
         )
-        return self._query_key_logits(
-            ctx.active_player,
-            self.closing_query_proj,
-            keys,
-        )
+        company_logits = self.closing_company_head(company_inputs).squeeze(-1)
+        return torch.cat([pass_logit, company_logits], dim=-1)
 
     def _ipo_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build IPO logits: pass plus one actor-conditioned corp logit each."""
-        keys = torch.cat(
+        """Pass on the active company, or select one corporation to float it."""
+        par = ctx.tokens[:, self._par_idx]
+        pass_logit = self.ipo_pass_head(torch.cat(
+            [ctx.active_player, ctx.active_company, par], dim=-1,
+        ))
+        num_corps = ctx.corp_tokens.shape[1]
+        corp_inputs = torch.cat(
             [
-                self.ipo_pass_key_proj(ctx.active_player).unsqueeze(1),
-                self.ipo_corp_proj(ctx.corp_tokens),
+                ctx.active_player[:, None, :].expand(-1, num_corps, -1),
+                ctx.active_company[:, None, :].expand(-1, num_corps, -1),
+                ctx.corp_tokens,
+                par[:, None, :].expand(-1, num_corps, -1),
             ],
-            dim=1,
-        )
-        query_input = torch.cat(
-            [ctx.active_player, ctx.active_company, ctx.tokens[:, self._par_idx]],
             dim=-1,
         )
-        return self._query_key_logits(query_input, self.ipo_query_proj, keys)
+        corp_logits = self.ipo_corp_head(corp_inputs).squeeze(-1)
+        return torch.cat([pass_logit, corp_logits], dim=-1)
+
+    def _bid_price_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Per offset: [bid price, cash left if won], both in /price-divisor units.
+
+        Select and subtract in fp32 even under autocast, before matching the
+        trunk dtype. Player cash arrives in /CASH_DIVISOR units; company face
+        value arrives in /COMPANY_PRICE_DIVISOR units. Negative balances are
+        retained for unaffordable candidates, whose logits are legally masked.
+        """
+        company_rows = x[:, self._company_slice].float()
+        face_offset = _TOKEN_FEATURE_START + _COMPANY_FACE_VALUE_FEATURE_OFFSET
+        face_value = (
+            company_rows[:, :, self._is_selected_offset]
+            * company_rows[:, :, face_offset]
+        ).sum(dim=1, keepdim=True)
+        player_rows = x[:, self._player_slice].float()
+        cash = (
+            player_rows[:, :, self._is_selected_offset]
+            * player_rows[:, :, _PLAYER_CASH_OFFSET]
+        ).sum(dim=1, keepdim=True)
+        cash = cash * (float(PY_CASH_DIVISOR) / float(PY_COMPANY_PRICE_DIVISOR))
+        prices = face_value.unsqueeze(-1) + self._bid_offset_dollar_norm.float()
+        remaining_cash = cash.unsqueeze(-1) - prices
+        return torch.cat([prices, remaining_cash], dim=-1)
 
     def _bid_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build the Bid block: leave-auction pass plus 15 bid offsets.
-
-        Slot identity is ``price_slot_proj(fourier([normalized_offset,
-        face_value_norm + offset / COMPANY_PRICE_DIVISOR]))``. The second
-        scalar is the candidate bid for slot k expressed in the same /80 units
-        as the company's normalized face_value. Auction context comes from the
-        post-trunk auction token in the query.
-        """
-        batch_size = ctx.tokens.shape[0]
-        bid_offsets = self._match_dtype_device(
-            self._bid_offset_features,
-            ctx.tokens,
-        ).expand(batch_size, int(AUCTION_CAP), 1)
-
-        raw_company_features = self._match_dtype_device(
-            ctx.raw_tokens[
-                :,
-                self._company_slice,
-                self._token_feature_start:int(TokenWidth.TW_COMPANY),
-            ],
-            ctx.tokens,
-        )
-        active_company_selector = self._match_dtype_device(
-            ctx.raw_tokens[
-                :,
-                self._company_slice,
-                self._is_selected_offset,
-            ],
-            ctx.tokens,
-        )
-        active_company_raw = torch.bmm(
-            active_company_selector.unsqueeze(1),
-            raw_company_features,
-        ).squeeze(1)
-        face_value_norm = active_company_raw[
-            :,
-            _COMPANY_FACE_VALUE_FEATURE_OFFSET:_COMPANY_FACE_VALUE_FEATURE_OFFSET + 1,
-        ]
-        candidate_bid_norm = (
-            face_value_norm.unsqueeze(1).expand_as(bid_offsets)
-            + self._match_dtype_device(self._bid_offset_dollar_norm, ctx.tokens)
-            .expand_as(bid_offsets)
-        )
-        bid_keys = self.price_slot_proj(
-            self._slot_fourier_features(
-                torch.cat([bid_offsets, candidate_bid_norm], dim=-1)
-            )
-        )
-        keys = torch.cat(
+        """Jointly score leave-auction then bids face_value + offsets 0..14."""
+        price_features = self._match_dtype_device(
+            self._bid_price_features(ctx.raw_tokens), ctx.tokens,
+        ).flatten(1)
+        return self.bid_head(torch.cat(
             [
-                self.bid_pass_key_proj(ctx.active_player).unsqueeze(1),
-                bid_keys,
+                ctx.active_player, ctx.active_company,
+                ctx.tokens[:, self._auction_idx], price_features,
             ],
-            dim=1,
-        )
-        query_input = torch.cat(
-            [ctx.active_player, ctx.tokens[:, self._auction_idx], ctx.active_company],
+            dim=-1,
+        ))
+
+    def _dividend_outcome_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Per amount: amount, total payout, cash left, actor/others/bank, move.
+
+        Monetary features use /CASH_DIVISOR. Share counts are decoded from
+        /SHARE_DIVISOR before multiplication; arithmetic stays fp32 under
+        autocast. Cash left is after payment, before any bankruptcy resolution.
+        The final feature preserves the extractor's /IMPACT_DIVISOR nominal
+        move: occupied spaces and market endpoints are NOT resolved (NOTES.md).
+        """
+        corp_rows = x[:, self._corp_slice].float()
+        selected_corp = corp_rows[:, :, self._is_selected_offset]
+        issued = (selected_corp * corp_rows[:, :, _CORP_ISSUED_OFFSET]).sum(1, keepdim=True)
+        issued = issued * float(PY_SHARE_DIVISOR)
+        bank = (selected_corp * corp_rows[:, :, _CORP_BANK_SHARES_OFFSET]).sum(1, keepdim=True)
+        bank = bank * float(PY_SHARE_DIVISOR)
+        cash = (selected_corp * corp_rows[:, :, _CORP_CASH_OFFSET]).sum(1, keepdim=True)
+
+        player_rows = x[:, self._player_slice].float()
+        shares = player_rows[
+            :, :, _PLAYER_SHARES_START:_PLAYER_SHARES_START + corp_rows.shape[1],
+        ]
+        holdings = (shares * selected_corp[:, None, :]).sum(-1) * float(PY_SHARE_DIVISOR)
+        holdings = holdings * player_rows[:, :, 0]  # Exclude padded player rows.
+        actor = (holdings * player_rows[:, :, self._is_selected_offset]).sum(1, keepdim=True)
+        others = holdings.sum(1, keepdim=True) - actor
+
+        amounts = self._dividend_amounts.float().unsqueeze(0).expand(x.shape[0], -1)
+        total = amounts * issued
+        impacts = x[
+            :, self._dividend_idx, _TOKEN_FEATURE_START:int(TokenWidth.TW_DIVIDEND),
+        ].float()
+        return torch.stack(
+            [amounts, total, cash - total, amounts * actor, amounts * others,
+             amounts * bank, impacts],
             dim=-1,
         )
-        return self._query_key_logits(query_input, self.bid_query_proj, keys)
 
     def _dividend_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build dividend amount logits from active-player/corp query and keys.
-
-        Slot identity comes from ``price_slot_proj`` evaluated on Fourier
-        features of ``[normalized_amount, normalized_amount]``. Dividend
-        context comes from the active player and post-trunk dividend token in
-        the query.
-        """
-        batch_size = ctx.tokens.shape[0]
-        amount_keys = self.price_slot_proj(
-            self._slot_fourier_features(
-                self._match_dtype_device(self._dividend_amount_features, ctx.tokens)
-                .squeeze(0)
-            )
-        ).unsqueeze(0).expand(batch_size, -1, -1)
-        query_input = torch.cat(
-            [ctx.active_player, ctx.active_corp, ctx.tokens[:, self._dividend_idx]],
+        """Jointly score dividend amounts 0..25 in action-id order."""
+        outcomes = self._match_dtype_device(
+            self._dividend_outcome_features(ctx.raw_tokens), ctx.tokens,
+        ).flatten(1)
+        return self.dividend_head(torch.cat(
+            [ctx.active_player, ctx.active_corp,
+             ctx.tokens[:, self._dividend_idx], outcomes],
             dim=-1,
-        )
-        return self._query_key_logits(
-            query_input,
-            self.dividend_query_proj,
-            amount_keys,
-        )
+        ))
 
     def _issue_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build ISSUE logits: pass/no-issue plus issue one share."""
@@ -1318,100 +1296,94 @@ class RSSTransformerNet(nn.Module):
         )
         return self._query_key_logits(query_input, self.acq_offer_query_proj, keys)
 
-    def _par_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build par-price logits from active-player query and par-price keys.
+    def _par_outcome_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Per price: price, payment, cash left, corp cash, issued shares.
 
-        Slot identity is a Fourier projection of static
-        ``[normalized_index, normalized_par_price]`` features broadcast across
-        the batch. Per-price context comes from the post-trunk PAR token in
-        the query.
+        Monetary features use /CASH_DIVISOR; issued shares retain the engine's
+        /FLOAT_SHARES_MAX normalization. Use the engine's preview directly,
+        including its zero entries for tier-ineligible prices. The legal mask
+        handles tier, market availability, and affordability. Subtraction stays
+        in fp32 under autocast, as in the BID feature path.
         """
-        batch_size = ctx.tokens.shape[0]
-        par_keys = self.price_slot_proj(
-            self._slot_fourier_features(
-                self._match_dtype_device(self._par_price_features, ctx.tokens)
-            )
-        ).unsqueeze(0).expand(batch_size, -1, -1)
-        query_input = torch.cat(
-            [
-                ctx.active_player,
-                ctx.active_corp,
-                ctx.active_company,
-                ctx.tokens[:, self._par_idx],
-            ],
+        num_prices = self._par_prices.shape[0]
+        preview = x[
+            :, self._par_idx, _TOKEN_FEATURE_START:int(TokenWidth.TW_PAR),
+        ].float().reshape(x.shape[0], num_prices, 3)
+        player_rows = x[:, self._player_slice].float()
+        cash = (
+            player_rows[:, :, self._is_selected_offset]
+            * player_rows[:, :, _PLAYER_CASH_OFFSET]
+        ).sum(dim=1, keepdim=True)
+        prices = self._par_prices.float().unsqueeze(0).expand(x.shape[0], -1)
+        return torch.stack(
+            [prices, preview[:, :, 0], cash - preview[:, :, 0],
+             preview[:, :, 1], preview[:, :, 2]],
             dim=-1,
         )
-        return self._query_key_logits(
-            query_input,
-            self.par_query_proj,
-            par_keys,
-        )
+
+    def _par_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Jointly score all par prices in engine table order, with no pass."""
+        outcomes = self._match_dtype_device(
+            self._par_outcome_features(ctx.raw_tokens), ctx.tokens,
+        ).flatten(1)
+        return self.par_head(torch.cat(
+            [ctx.active_player, ctx.active_corp, ctx.active_company,
+             ctx.tokens[:, self._par_idx], outcomes],
+            dim=-1,
+        ))
+
+    def _acq_price_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Per offset: price, buyer cash, seller balance, all /CASH_DIVISOR.
+
+        Only non-FI companies reach this phase. Compute in fp32, translating
+        company low price from /COMPANY_PRICE_DIVISOR before subtraction.
+        Negative cash remains visible for unaffordable, legally masked slots.
+        A corporation seller's balance includes existing acquisition proceeds
+        plus this sale; proceeds are locked until the acquisition phase ends.
+        Ownership tails select the seller directly, including non-actor players.
+        """
+        company_rows = x[:, self._company_slice].float()
+        low_offset = _TOKEN_FEATURE_START + _COMPANY_LOW_PRICE_FEATURE_OFFSET
+        low = (
+            company_rows[:, :, self._is_selected_offset] * company_rows[:, :, low_offset]
+        ).sum(1, keepdim=True)
+        low = low * (float(PY_COMPANY_PRICE_DIVISOR) / float(PY_CASH_DIVISOR))
+        corp_rows = x[:, self._corp_slice].float()
+        cash = (
+            corp_rows[:, :, self._is_selected_offset] * corp_rows[:, :, _CORP_CASH_OFFSET]
+        ).sum(1, keepdim=True)
+        selected_company = company_rows[:, :, self._is_selected_offset].unsqueeze(-1)
+        owner_corp_start = self._company_rel_tail_start
+        owner_player_start = owner_corp_start + corp_rows.shape[1]
+        seller_corps = (
+            selected_company * company_rows[:, :, owner_corp_start:owner_player_start]
+        ).sum(1)
+        player_rows = x[:, self._player_slice].float()
+        seller_players = (
+            selected_company * company_rows[
+                :, :, owner_player_start:owner_player_start + player_rows.shape[1],
+            ]
+        ).sum(1)
+        seller_balance = (
+            seller_corps * (corp_rows[:, :, _CORP_CASH_OFFSET]
+                            + corp_rows[:, :, _CORP_ACQ_PROCEEDS_OFFSET])
+        ).sum(1, keepdim=True)
+        seller_balance = seller_balance + (
+            seller_players * player_rows[:, :, _PLAYER_CASH_OFFSET]
+        ).sum(1, keepdim=True)
+        prices = low + self._acq_price_offsets.float().unsqueeze(0)
+        return torch.stack([prices, cash - prices, seller_balance + prices], dim=-1)
 
     def _acq_price_logits(self, ctx: _PolicyContext) -> torch.Tensor:
-        """Build ACQ_SELECT_PRICE logits from active-player/corp query and keys.
-
-        Slot identity is ``price_slot_proj(fourier([slot_position_norm,
-        candidate_price_norm]))``, where ``slot_position_norm = offset / (K-1)``
-        is the 0-indexed slot index in [0, 1] (matching BID/PAR/DIVIDENDS) and
-        ``candidate_price_norm = (low_price + offset) / COMPANY_PRICE_DIVISOR``.
-        Acquisition-price context comes from the active player and post-trunk
-        ACQ price token in the query.
-        """
-        batch_size = ctx.tokens.shape[0]
-        num_offsets = int(self._acq_price_offset_features.shape[1])
-        offset_features = self._match_dtype_device(
-            self._acq_price_offset_features,
-            ctx.tokens,
-        ).expand(batch_size, num_offsets, -1)
-        slot_position_norm = offset_features[:, :, 0:1]
-        offset_price_delta = offset_features[:, :, 1:2]
-
-        raw_company_features = self._match_dtype_device(
-            ctx.raw_tokens[
-                :,
-                self._company_slice,
-                self._token_feature_start:int(TokenWidth.TW_COMPANY),
-            ],
-            ctx.tokens,
-        )
-        active_company_selector = self._match_dtype_device(
-            ctx.raw_tokens[
-                :,
-                self._company_slice,
-                self._is_selected_offset,
-            ],
-            ctx.tokens,
-        )
-        active_company_raw = torch.bmm(
-            active_company_selector.unsqueeze(1),
-            raw_company_features,
-        ).squeeze(1)
-        low_price = active_company_raw[
-            :,
-            _COMPANY_LOW_PRICE_FEATURE_OFFSET:_COMPANY_LOW_PRICE_FEATURE_OFFSET + 1,
-        ]
-        candidate_price = (
-            low_price.unsqueeze(1).expand_as(slot_position_norm) + offset_price_delta
-        )
-        acq_price_keys = self.price_slot_proj(
-            self._slot_fourier_features(
-                torch.cat([slot_position_norm, candidate_price], dim=-1)
-            )
-        )
-        query_input = torch.cat(
-            [
-                ctx.active_player,
-                ctx.active_corp,
-                ctx.tokens[:, self._acq_price_info_idx],
-                ctx.active_company,
-            ],
+        """Jointly score offsets 0..50; no pass or special FI price slot."""
+        outcomes = self._match_dtype_device(
+            self._acq_price_features(ctx.raw_tokens), ctx.tokens,
+        ).flatten(1)
+        return self.acq_price_head(torch.cat(
+            [ctx.active_player, ctx.active_corp, ctx.active_company,
+             ctx.tokens[:, self._acq_price_info_idx], outcomes],
             dim=-1,
-        )
-        return self._query_key_logits(
-            query_input,
-            self.acq_price_query_proj,
-            acq_price_keys,
-        )
+        ))
 
     # ------------------------------------------------------------------
     # Unified policy: every readout runs once on the full batch
@@ -1728,7 +1700,6 @@ if __name__ == "__main__":
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     corp_id_params = model.corp_id_embed.weight.numel()
-    price_slot_params = sum(p.numel() for p in model.price_slot_proj.parameters())
     type_params = model.type_embeds.weight.numel()
     phase_mod_params = 0
     for block in model.blocks:
@@ -1744,20 +1715,17 @@ if __name__ == "__main__":
         model.invest_auction_head,
         model.invest_trade_head,
         model.invest_pass_head,
-        model.closing_query_proj, model.closing_pass_key_proj,
-        model.closing_company_proj,
-        model.acq_select_company_query_proj, model.acq_select_company_company_proj,
-        model.acq_select_corp_query_proj, model.acq_select_corp_pass_key_proj,
-        model.acq_select_corp_corp_proj,
-        model.ipo_query_proj, model.ipo_pass_key_proj, model.ipo_corp_proj,
-        model.bid_query_proj, model.bid_pass_key_proj,
-        model.dividend_query_proj,
+        model.closing_company_head, model.closing_pass_head,
+        model.acq_company_head, model.acq_corp_head, model.acq_pass_head,
+        model.ipo_corp_head, model.ipo_pass_head,
+        model.bid_head,
+        model.dividend_head,
         model.issue_query_proj, model.issue_pass_key_proj,
         model.issue_share_key_proj,
         model.acq_offer_query_proj, model.acq_offer_pass_key_proj,
         model.acq_offer_accept_key_proj,
-        model.acq_price_query_proj,
-        model.par_query_proj,
+        model.acq_price_head,
+        model.par_head,
     ]
     policy_params = sum(sum(p.numel() for p in m.parameters()) for m in policy_modules)
     value_params = sum(p.numel() for p in model.value_head.parameters())
@@ -1766,7 +1734,6 @@ if __name__ == "__main__":
     for name, count in [
         ("Input projections", proj_params),
         ("Corp ID embeds", corp_id_params),
-        ("Price slot proj", price_slot_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
         ("Phase mod embeds", phase_mod_params),

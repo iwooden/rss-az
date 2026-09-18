@@ -104,7 +104,7 @@ class TrainingConfig:
     num_heads: int = 4
     num_layers: int = 15
     ff_mult: float = 3.0
-    # Fourier features used by price-like policy slots.
+    # V2 price-slot Fourier features; filtered out of the v3 model config.
     price_slot_fourier_bands: int = 4
 
     # --- Self-Play ---
