@@ -38,7 +38,8 @@ def _new_state() -> GameState:
     return state
 
 
-def test_session_replays_18xx_bid_as_invest_and_bid_steps(monkeypatch):
+@pytest.mark.parametrize("v3_behavior", [False, True])
+def test_session_replays_18xx_bid_as_invest_and_bid_steps(monkeypatch, v3_behavior):
     players = [
         {"id": 4, "name": "rss-az-3"},
         {"id": 3, "name": "rss-az-2"},
@@ -67,11 +68,12 @@ def test_session_replays_18xx_bid_as_invest_and_bid_steps(monkeypatch):
         }],
     }
 
-    session = GameSession(3)
+    session = GameSession(3, v3_behavior=v3_behavior)
     monkeypatch.setattr(session, "_run_extractor", lambda data: initial)
 
     state = session.sync(game_data)
 
+    assert state.v3_behavior is v3_behavior
     assert TURN.get_phase(state) == int(GamePhases.PHASE_BID)
     assert TURN.get_active_player(state) == 1
     assert session.player_index_for_user_id(players[1]["id"]) == 1

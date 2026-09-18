@@ -121,9 +121,11 @@ class GameSession:
     deck metadata and refresh committed actions to handle undo/redo.
     """
 
-    def __init__(self, num_players: int = 3, max_players: int | None = None):
+    def __init__(self, num_players: int = 3, max_players: int | None = None,
+                 *, v3_behavior: bool = False):
         self.num_players = num_players
         self.max_players = max_players or num_players
+        self.v3_behavior = v3_behavior
         self.layout = ActionLayout(num_players)
         self.state: GameState | None = None
         self.game_id: str | None = None
@@ -157,6 +159,7 @@ class GameSession:
             pause_before_acq_transition=True,
             pause_before_closing_transition=True,
         )
+        state.v3_behavior = self.v3_behavior
         self.state = state
 
         # Process actions — use Ruby extractor to resolve undo/redo.

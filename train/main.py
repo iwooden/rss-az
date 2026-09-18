@@ -85,6 +85,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-players", type=int,
                         help="Number of players (default: 3)")
     parser.add_argument(
+        "--v3-behavior", action=argparse.BooleanOptionalAction, default=None,
+        help="Enable v3 engine behavior (independent of model input layout)",
+    )
+    parser.add_argument(
         "--min-players",
         type=int,
         help="Minimum player count for mixed player-count training",
@@ -269,7 +273,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
-    "num_players", "min_players", "max_players",
+    "num_players", "min_players", "max_players", "v3_behavior",
     "eval_dtype", "model_type", "model_path", "phase_conditioning",
     "d_model", "d_proj", "num_heads", "num_layers", "ff_mult",
     "price_slot_fourier_bands",

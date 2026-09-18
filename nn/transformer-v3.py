@@ -12,7 +12,7 @@ player-only pass MLPs with the same hidden-layer design. BID jointly scores
 leaving and all bid levels from player/company/auction embeddings and raw
 per-price bid and remaining-cash features. IPO uses corporation and pass MLPs;
 PAR scores all prices jointly with the engine's raw capitalization previews.
-DIVIDENDS jointly scores all amounts with payout, cash, and nominal-move features.
+DIVIDENDS jointly scores all amounts with payout, cash, actual movement, price, and net-worth features.
 Acquisition uses corporation/company candidate MLPs and a joint price MLP.
 ISSUE jointly scores pass/issue from player/corporation/issue embeddings.
 ACQ_OFFER jointly scores reject/accept from player/corporation/company/offer embeddings.
@@ -55,8 +55,9 @@ from core.data import (
     PY_CASH_DIVISOR,
     PY_COMPANY_PRICE_DIVISOR,
     PY_SHARE_DIVISOR,
+    PY_SHARE_PRICE_DIVISOR,
 )
-from core.token_data import TokenWidth, get_num_tokens, get_token_dim, get_token_widths
+from core.token_data_v3 import TokenDataSize, TokenWidth, get_num_tokens, get_token_widths
 from nn.policy_layout import (
     NUM_PHASES,
     PHASE_OFFSETS,
@@ -115,12 +116,13 @@ _CORP_REL_TAIL_START = 57
 # keep OFF_SHARES (8 slots) in projected token features and drop only the
 # owned-company relation tail.
 _PLAYER_REL_TAIL_START = 26
-# Raw player-token offsets; match core.token_data::_fill_player_token.
+# Raw player-token offsets; match core.token_data_v3::_fill_player_token.
 _PLAYER_SHARES_START = 15
 _PLAYER_CASH_OFFSET = 8
-# Raw corporation-token offsets; match core.token_data::_fill_corp_token.
+# Raw corporation-token offsets; match core.token_data_v3::_fill_corp_token.
 _CORP_ISSUED_OFFSET = 6
 _CORP_BANK_SHARES_OFFSET = 7
+_CORP_SHARE_PRICE_OFFSET = 35
 _CORP_CASH_OFFSET = 37
 _CORP_ACQ_PROCEEDS_OFFSET = 38
 
@@ -178,10 +180,10 @@ class TransformerConfig:
     ff_mult: float = 3.0  # FFN inner dimension is rounded up to a multiple of 64.
 
     # Raw feature width per token (zero-padded to same size across types).
-    # Sourced from core.token_data so the model and the Cython extractor
+    # Sourced from core.token_data_v3 so the model and the Cython extractor
     # can't drift out of sync.
     layout_version: int = field(default=INPUT_LAYOUT_VERSION, init=False)
-    token_dim: int = get_token_dim(INPUT_LAYOUT_VERSION)
+    token_dim: int = int(TokenDataSize.TOKEN_DIM)
 
     _num_tokens: int = field(init=False, repr=False)
 
@@ -204,7 +206,7 @@ class TransformerConfig:
 
 def _validate_layout(num_players: int) -> None:
     """Assert the hardcoded token indices in ``RSSTransformerNet.__init__``
-    line up with ``core.token_data.get_token_widths`` for the given player
+    line up with ``core.token_data_v3.get_token_widths`` for the given player
     count.
 
     The two layouts are sources of truth for the same buffer: the Cython
@@ -225,12 +227,12 @@ def _validate_layout(num_players: int) -> None:
         + [int(TokenWidth.TW_PAR)]
         + [int(TokenWidth.TW_ACQ_OFFER)]
         + [int(TokenWidth.TW_ACQ_PRICE)]
-        + [int(TokenWidth.TW_CORP_V3)] * 8
+        + [int(TokenWidth.TW_CORP)] * 8
         + [int(TokenWidth.TW_PLAYER)] * num_players
     )
-    actual = get_token_widths(num_players, layout_version=INPUT_LAYOUT_VERSION).tolist()
+    actual = get_token_widths(num_players).tolist()
     assert actual == expected, (
-        f"token layout drift between nn/transformer-v3.py and core/token_data.pyx "
+        f"token layout drift between nn/transformer-v3.py and core/token_data_v3.pyx "
         f"for {num_players}p: actual widths {actual} vs expected {expected}"
     )
 
@@ -348,7 +350,7 @@ class RSSTransformerNet(nn.Module):
         num_fixed_tokens = self._num_tokens - np_
 
         # --- Token index bookkeeping ---
-        # Buffer layout (matches core/token_data.pyx::_fill_buffer):
+        # Buffer layout (matches core/token_data_v3.pyx::_fill_buffer):
         #   info: market_info (slot prices + per-space availability),
         #     companies×36 (is_selected + static data + CoO-adjusted income +
         #     at_*/owner_* groups), FI, global_info (decision phase + CoO +
@@ -602,7 +604,7 @@ class RSSTransformerNet(nn.Module):
 
         # --- DIVIDENDS: zero payout is a candidate, not a separate pass ---
         self.dividend_head = nn.Sequential(
-            nn.Linear(3 * d + 7 * num_dividends, d),
+            nn.Linear(3 * d + 9 * num_dividends, d),
             nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d, num_dividends),
         )
@@ -1139,13 +1141,14 @@ class RSSTransformerNet(nn.Module):
         ))
 
     def _dividend_outcome_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Per amount: amount, total payout, cash left, actor/others/bank, move.
+        """Per amount: amount, payout, cash left, actor/others/bank, move, price, worth.
 
         Monetary features use /CASH_DIVISOR. Share counts are decoded from
         /SHARE_DIVISOR before multiplication; arithmetic stays fp32 under
         autocast. Cash left is after payment, before any bankruptcy resolution.
-        The final feature preserves the extractor's /IMPACT_DIVISOR nominal
-        move: occupied spaces and market endpoints are NOT resolved (NOTES.md).
+        Movement and new dollar prices come from the engine's resolved
+        destinations. Net-worth impact includes payout and repricing all
+        shares held by the actor, including complete loss on bankruptcy.
         """
         corp_rows = x[:, self._corp_slice].float()
         selected_corp = corp_rows[:, :, self._is_selected_offset]
@@ -1166,12 +1169,17 @@ class RSSTransformerNet(nn.Module):
 
         amounts = self._dividend_amounts.float().unsqueeze(0).expand(x.shape[0], -1)
         total = amounts * issued
-        impacts = x[
+        previews = x[
             :, self._dividend_idx, _TOKEN_FEATURE_START:int(TokenWidth.TW_DIVIDEND),
         ].float()
+        impacts, prices = previews.chunk(2, dim=-1)
+        old_price = (
+            selected_corp * corp_rows[:, :, _CORP_SHARE_PRICE_OFFSET]
+        ).sum(1, keepdim=True) * (float(PY_SHARE_PRICE_DIVISOR) / float(PY_CASH_DIVISOR))
+        net_worth = actor * (amounts + prices - old_price)
         return torch.stack(
             [amounts, total, cash - total, amounts * actor, amounts * others,
-             amounts * bank, impacts],
+             amounts * bank, impacts, prices, net_worth],
             dim=-1,
         )
 

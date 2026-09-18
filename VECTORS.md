@@ -76,10 +76,13 @@ Stride: **30**. Player `i` lives at `players_offset + i * 30`. Field offsets via
 
 All per-player tracking lives inside one player block, so a single pointer hop reaches everything for player `i`. Presidency is tracked per-corp via `CORP_FIELDS.president_id` (see [Corp block](#corp-block)), not in the player block. Round-trip counts are derived on demand from `min(share_buys, share_sells)` per corp — no dedicated slot. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.
 
-Buy/sell counters persist through every phase of the turn and clear at the
-IPO-to-INVEST transition that starts the next turn, not on auction returns
-to INVEST. Input layout selection belongs to the model/evaluator; both v2
-and v3 read this same raw state layout (see [Model Input Layouts](README.md#model-input-layouts)).
+With the runtime `GameState.v3_behavior` flag enabled, buy/sell counters persist
+through the turn and clear at the IPO-to-INVEST transition, not on auction
+returns to INVEST. With the flag disabled (default), they clear on INVEST exit.
+The flag lives outside the raw array, alongside the other engine options;
+the game configuration must accompany raw states reconstructed for execution.
+Input layout selection belongs to the model/evaluator; both models read this
+same raw state layout (see [Model Input Layouts](README.md#model-input-layouts)).
 
 ---
 

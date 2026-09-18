@@ -1,14 +1,19 @@
 # Transformer V3 Token Data Spec
 
 This document specifies layout 3, consumed by `nn/transformer-v3.py`.
-`core/token_data.pyx:get_token_data(...)` and `get_token_data_batch(...)`
-fill this layout when called with `layout_version=3`. Use
-`get_token_dim(3)` and `get_token_widths(max_players, layout_version=3)`
-for its padded width and per-token widths.
+Its extractor and constants live in `core/token_data_v3.pyx/.pxd`.
+The shared `core/token_data.pyx` API dispatches to it with `layout_version=3`.
+Shared callers use `get_token_dim(3)` and
+`get_token_widths(max_players, layout_version=3)`. The model imports its
+constants directly from `core.token_data_v3`.
+
+Use `v3_behavior=True` on GameState (or `"v3_behavior": true` in training config)
+to retain trade history through later phases. Layout selection alone does not
+enable that engine mode; the extractor reads the counters present in the state.
 
 ## Token Order
 
-Matches `core/token_data.pyx::_fill_buffer`:
+Matches `core/token_data_v3.pyx::_fill_buffer`:
 
 1. Informational/entity prefix:
    `market_info`, `companies` (x36), `FI`, `global_info`
@@ -46,8 +51,8 @@ player rows and remain all-zero.
 The model consumes exactly these engine-side rows; it does not append
 synthetic model-side tokens after projection.
 
-Each token row is zero-padded to 98 features (`TOKEN_DIM_V3`), the width of
-the Corp token. Per-type widths live in `TokenWidth`:
+Each token row is zero-padded to 98 features (`TokenDataSize.TOKEN_DIM`), the
+width of the Corp token. Per-type widths live in `core.token_data_v3.TokenWidth`:
 
 - `TW_MARKET_INFO = 55`
 - `TW_COMPANY = 28`
@@ -55,12 +60,12 @@ the Corp token. Per-type widths live in `TokenWidth`:
 - `TW_GLOBAL_INFO = 24`
 - `TW_INVEST = 2`
 - `TW_AUCTION = 4`
-- `TW_DIVIDEND = 27`
+- `TW_DIVIDEND = 53`
 - `TW_ISSUE = 2`
 - `TW_PAR = 43`
 - `TW_ACQ_OFFER = 4`
 - `TW_ACQ_PRICE = 4`
-- `TW_CORP_V3 = 98`
+- `TW_CORP = 98`
 - `TW_PLAYER = 62`
 
 **Relational summary scalars.** Corp, player, and FI tokens carry a small
@@ -188,18 +193,40 @@ Buy/sell INVEST impacts are encoded on Corp tokens.
 
 `auction_high_bidder` and `auction_starter` are encoded on Player tokens.
 
-### Dividend Token (27)
+### Dividend Token (53)
 
 - `attn_mask`
-- Dividend impacts (26 slots for amounts 0..25), normalized by
-  `IMPACT_DIVISOR`
+- Actual projected market-index movements (26 slots for amounts 0..25),
+  normalized by `IMPACT_DIVISOR`. Each is resolved destination minus current
+  index, using the same destination calculation as dividend execution.
+  Occupied destinations are skipped in the movement direction; index 0 means
+  bankruptcy and the last index is the shared $75 endpoint. Zero movement
+  retains the current space. Actual movement can exceed two indices.
+- Projected new share prices in dollars (26 slots for amounts 0..25), normalized
+  by `CASH_DIVISOR`. Bankruptcy gives $0; the shared upper endpoint gives $75.
+
+The v3 dividend MLP receives nine numerical features per amount: dividend per
+share, total payout, corporation cash after payment, cash received by the actor,
+other players and bank, actual index movement, projected dollar share price,
+and the actor's immediate net-worth impact. The latter is
+`cash_received + shares_owned * (new_share_price - old_share_price)`.
+All monetary head features use `CASH_DIVISOR`; movement uses `IMPACT_DIVISOR`.
+The current Corp share-price feature is converted from `SHARE_PRICE_DIVISOR`
+before computing net-worth impact. Corporation cash left is measured before
+any bankruptcy cleanup. Previews exist even for illegal amounts; legality
+masking excludes them from action selection.
+
+Previews use current occupancy, without forecasting later corporation actions.
+The padded row width remains 98.
 
 `dividend_remaining` is encoded on Corp tokens.
 
 ### Issue Token (2)
 
 - `attn_mask`
-- Issue impact for the active corp, normalized by `IMPACT_DIVISOR`
+- Actual issue movement for the active corp, normalized by `IMPACT_DIVISOR`.
+  It uses the next available lower space, including bankruptcy; Stock Masters
+  has zero movement.
 
 `issue_remaining` is encoded on Corp tokens.
 
@@ -244,7 +271,9 @@ Corp identity is inferred from row order.
 - Bank shares, normalized by `SHARE_DIVISOR`
 - Share price index one-hot (27 slots)
 - Share price, normalized by `SHARE_PRICE_DIVISOR`
-- Pending price move, normalized by `IMPACT_DIVISOR`
+- Actual projected no-dividend market-index movement, normalized by
+  `IMPACT_DIVISOR`. Resolved against current occupancy each extraction;
+  the engine's internal cached nominal star-based move remains in [-2, +2].
 - Cash, normalized by `CASH_DIVISOR`
 - Acquisition proceeds, normalized by `CASH_DIVISOR`
 - Income, normalized by `ENTITY_INCOME_DIVISOR`
@@ -264,6 +293,9 @@ Corp identity is inferred from row order.
   delta, normalized by `IMPACT_DIVISOR`.
 - Sell impact. During `PHASE_INVEST`, active corp's sell-one-share market
   index delta, normalized by `IMPACT_DIVISOR`.
+
+Buy/sell impacts use the next available space in the corresponding direction,
+including occupied-space skips, bankruptcy, and the shared $75 endpoint.
 
 Relational summary (active corps only — inactive corps leave these zero,
 matching the rest of the active-gated fields):

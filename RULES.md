@@ -645,6 +645,10 @@ The Cython self-play engine intentionally applies the following constraints to r
 - During INVEST, buy/sell legality is constrained per player+corporation by round-trip count:
   `roundtrips = min(share_buys, share_sells)`, and actions are blocked once roundtrips reach 2.
 - Rationale: prevents pathological buy/sell oscillation loops observed in training (models repeatedly cycling trades while bleeding cash due to price movement timing), improving convergence and throughput quality.
+- Engine history timing is selected by `GameState.v3_behavior`: legacy mode
+  clears trade counters on INVEST exit; v3 retains them through later phases
+  and clears them when the next turn begins. Returning from BID does not clear
+  them. This changes available model history, not the within-INVEST trade cap.
 
 ---
 

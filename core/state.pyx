@@ -734,7 +734,7 @@ cdef class GameState:
     def __cinit__(self, int num_players, bint _alloc=True,
                   bint acq_same_president=True,
                   bint allow_positive_income_closing=False,
-                  int max_players=0):
+                  int max_players=0, bint v3_behavior=False):
         cdef int storage_players = _validate_storage_players(
             num_players, max_players,
         )
@@ -743,6 +743,7 @@ cdef class GameState:
         self.step_mode = False
         self.acq_same_president = acq_same_president
         self.allow_positive_income_closing = allow_positive_income_closing
+        self.v3_behavior = v3_behavior
 
         if not _alloc:
             # Caller will set _array and _data (used by from_buffer). The
@@ -753,13 +754,15 @@ cdef class GameState:
         _reset_storage(self, num_players, storage_players)
 
     @staticmethod
-    def from_array(array, int num_players, int max_players=0):
+    def from_array(array, int num_players, int max_players=0, bint v3_behavior=False):
         """Reconstruct GameState from raw numpy array.
 
         Args:
             array: numpy int16 array (will be copied)
             num_players: actual number of players
             max_players: storage capacity. Defaults to exact-size storage.
+            v3_behavior: engine mode from the game/config; runtime flags are
+                not stored in the raw array.
 
         Returns:
             New GameState with copied array data
@@ -778,12 +781,12 @@ cdef class GameState:
         ]
         assert canonical_num_players == num_players, \
             f"array canonical num_players {canonical_num_players} != claimed {num_players}"
-        state = GameState(num_players, max_players=storage_players)
+        state = GameState(num_players, max_players=storage_players, v3_behavior=v3_behavior)
         np.copyto(state._array, arr)
         return state
 
     @staticmethod
-    def from_buffer(buffer, int num_players, int max_players=0):
+    def from_buffer(buffer, int num_players, int max_players=0, bint v3_behavior=False):
         """Wrap an existing numpy array as backing store (zero-copy).
 
         The GameState will read/write directly into the provided buffer.
@@ -800,12 +803,15 @@ cdef class GameState:
             buffer: numpy int16 array of correct size (not copied)
             num_players: actual number of players
             max_players: storage capacity. Defaults to exact-size storage.
+            v3_behavior: engine mode from the game/config; runtime flags are
+                not stored in the raw array.
 
         Returns:
             GameState backed by the provided buffer
         """
         cdef int storage_players = _validate_storage_players(num_players, max_players)
-        state = GameState(num_players, _alloc=False, max_players=storage_players)
+        state = GameState(num_players, _alloc=False, max_players=storage_players,
+                          v3_behavior=v3_behavior)
         _bind_buffer(state, buffer, num_players, storage_players)
         return state
 
@@ -818,6 +824,7 @@ cdef class GameState:
         than the current one — caller passes `num_players` explicitly so
         the size validation matches the new buffer. ``max_players`` defaults
         to the exact-size layout; pass it when rebinding padded state rows.
+        Engine behavior flags, including v3_behavior, stay on this wrapper.
         """
         _bind_buffer(self, buffer, num_players, max_players)
 

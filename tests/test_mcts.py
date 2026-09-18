@@ -66,6 +66,33 @@ from train.config import MCTSConfig
 NUM_PLAYERS = 3
 
 
+def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator, monkeypatch):
+    import mcts.search as search
+    from types import SimpleNamespace
+
+    seen = []
+    expected_mode = False
+
+    def apply_action(state, action, **kwargs):
+        seen.append(state.v3_behavior)
+        assert state.v3_behavior is expected_mode
+        return DRIVER.apply_action(state, action, **kwargs)
+
+    monkeypatch.setattr(search, "DRIVER", SimpleNamespace(apply_action=apply_action))
+    pool = StatePool(100, get_layout(3).total_size)
+    config = MCTSConfig(num_simulations=8, search_batch_size=1, dirichlet_epsilon=0)
+    for expected_mode in (True, False):
+        state = GameState(3, v3_behavior=expected_mode)
+        state.initialize_game(3, seed=42)
+        root = run_search(state, evaluator, config, state_pool=pool)
+        action = next(a for a, child in root.children.items() if not child.is_terminal)
+        reused = prepare_reuse_root(root, action, pool)
+        assert reused is not None
+        seen.clear()
+        run_search(None, evaluator, config, state_pool=pool, reuse_root=reused)
+        assert seen and all(mode is expected_mode for mode in seen)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

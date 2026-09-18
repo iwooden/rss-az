@@ -1,14 +1,19 @@
 # Transformer V2 Token Data Spec
 
 This document specifies layout 2, consumed by `nn/transformer-v2.py`.
-`core/token_data.pyx:get_token_data(...)` and `get_token_data_batch(...)`
-fill this layout when called with `layout_version=2` (the default). Use
-`get_token_dim(2)` and `get_token_widths(max_players, layout_version=2)`
-for its padded width and per-token widths.
+Its extractor and constants live in `core/token_data_v2.pyx/.pxd`, restored
+from `v2-final` (`1d1e943410f7`). The shared `core/token_data.pyx` API dispatches
+to it with `layout_version=2` (the default). Shared callers use
+`get_token_dim(2)` and `get_token_widths(max_players, layout_version=2)`.
+The model imports its constants directly from `core.token_data_v2`.
+
+The extractor reads raw trade counters. With `GameState.v3_behavior=False`
+(the default), the engine clears them on INVEST exit, preserving the original
+v2 behavior. Selecting an input layout does not change engine behavior.
 
 ## Token Order
 
-Matches `core/token_data.pyx::_fill_buffer`:
+Matches `core/token_data_v2.pyx::_fill_buffer`:
 
 1. Informational/entity prefix:
    `market_info`, `companies` (x36), `FI`, `global_info`
@@ -193,6 +198,9 @@ Buy/sell INVEST impacts are encoded on Corp tokens.
 - Dividend impacts (26 slots for amounts 0..25), normalized by
   `IMPACT_DIVISOR`
 
+Impacts are nominal star-based movements in [-2, +2]. They do not account for
+occupied spaces or clamp to market endpoints; this preserves v2's trained inputs.
+
 `dividend_remaining` is encoded on Corp tokens.
 
 ### Issue Token (2)
@@ -243,7 +251,8 @@ Corp identity is inferred from row order.
 - Bank shares, normalized by `SHARE_DIVISOR`
 - Share price index one-hot (27 slots)
 - Share price, normalized by `SHARE_PRICE_DIVISOR`
-- Pending price move, normalized by `IMPACT_DIVISOR`
+- Nominal no-dividend price movement in [-2, +2], normalized by
+  `IMPACT_DIVISOR` (before occupied-space skips or endpoint clamping)
 - Cash, normalized by `CASH_DIVISOR`
 - Acquisition proceeds, normalized by `CASH_DIVISOR`
 - Income, normalized by `ENTITY_INCOME_DIVISOR`
@@ -301,9 +310,9 @@ is stable.
 - `auction_high_bidder`. During `PHASE_BID`, 1 on the high bidder; all zero
   on the opening bid before a bid has been placed.
 - `auction_starter`. During `PHASE_BID`, 1 on the auction starter.
-- Round-trip activity flag (raw slot 14). During INVEST/BID, 1 if any
-  corporation has this player's buys >= 2 OR sells >= 2; zero in all other
-  phases. This is a coarse activity flag, not the legality check: the
+- Round-trip activity flag (raw slot 14). 1 if any corporation has this player's
+  buys >= 2 OR sells >= 2. Legacy engine behavior clears the counters on INVEST
+  exit, making this zero in later phases. This is a coarse activity flag, not the legality check: the
   engine blocks further trades only when both counts reach 2.
 - Owned shares (8 slots), normalized by `SHARE_DIVISOR`. Per-corp share
   counts are scalar quantities, not just relation presence, so they stay

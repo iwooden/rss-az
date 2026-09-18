@@ -834,6 +834,7 @@ def _auto_advanced_validation_state(
         max_players=max_players,
     )
     validation_state.acq_same_president = state.acq_same_president
+    validation_state.v3_behavior = state.v3_behavior
     validation_state.allow_positive_income_closing = (
         state.allow_positive_income_closing
     )
@@ -1468,6 +1469,7 @@ def _clone_live_state(state, num_players: int, max_players: int):
         max_players=max_players,
     )
     clone.step_mode = state.step_mode
+    clone.v3_behavior = state.v3_behavior
     clone.acq_same_president = state.acq_same_president
     clone.allow_positive_income_closing = state.allow_positive_income_closing
     return clone
@@ -2179,7 +2181,8 @@ class _SearchEngine:
         num_players = len(game_data.get("players", []))
         session = self._sessions.get(gid)
         if session is None or session.num_players != num_players:
-            session = GameSession(num_players, max_players=self.max_players)
+            session = GameSession(num_players, max_players=self.max_players,
+                                  v3_behavior=self.config.v3_behavior)
             self._sessions[gid] = session
         return session
 

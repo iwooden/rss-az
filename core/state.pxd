@@ -193,6 +193,8 @@ cdef class GameState:
     cdef public bint step_mode
     cdef public bint acq_same_president
     cdef public bint allow_positive_income_closing
+    # General engine behavior switch, independent of NN input layout.
+    cdef public bint v3_behavior
 
     # Game initialization (note: __cinit__ takes acq_same_president=True)
     cpdef void initialize_game(self, int num_players, int seed=*, int max_players=*)

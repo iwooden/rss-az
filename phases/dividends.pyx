@@ -17,6 +17,7 @@ remain on entity handles.
 
 from core.state cimport GameState
 from core.data cimport GameConstants, GamePhases
+from entities.market cimport market_resolve_price_move
 from core.actions cimport ActionInfo, ACTION_DIVIDEND
 from entities.corp cimport (
     corp_is_active,
@@ -87,32 +88,6 @@ cdef void _pay_dividends(GameState state, int corp_id, int amount_per_share) noe
     )
 
 
-cdef int _find_target_index(GameState state, int current_index, int move) noexcept:
-    """Compute target market index after price movement with slide logic.
-
-    Slides through occupied spaces in the direction of movement. Returns 0
-    for bankruptcy (slide to or past index 0). Index 26 ($75) is always
-    available (shared slot).
-    """
-    cdef int target = current_index + move
-    if target <= 0:
-        return 0
-    if target >= 26:
-        return 26
-    # Slide through occupied spaces in the direction of movement.
-    if move > 0:
-        while not market_module.MARKET.is_space_available(state, target):
-            target += 1
-            if target >= 26:
-                return 26
-    else:
-        while not market_module.MARKET.is_space_available(state, target):
-            target -= 1
-            if target <= 0:
-                return 0
-    return target
-
-
 cdef void _adjust_share_price(GameState state, int corp_id) noexcept:
     """Adjust corp's market position based on pending price move.
 
@@ -126,17 +101,17 @@ cdef void _adjust_share_price(GameState state, int corp_id) noexcept:
     if move == 0:
         return
 
-    target_index = _find_target_index(state, current_index, move)
+    target_index = market_resolve_price_move(state, current_index, move)
 
     if target_index == 0:
         corp_module.CORPS[corp_id].go_bankrupt(state)
         return
 
     # Free old space (index 26 is always-available shared slot).
-    if current_index < 26:
+    if current_index < <int>GameConstants.NUM_MARKET_SPACES - 1:
         market_module.MARKET.set_space_available(state, current_index, True)
     # Claim new space.
-    if target_index < 26:
+    if target_index < <int>GameConstants.NUM_MARKET_SPACES - 1:
         market_module.MARKET.set_space_available(state, target_index, False)
 
     corp_module.CORPS[corp_id].set_price_index(state, target_index)

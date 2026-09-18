@@ -82,14 +82,17 @@ cpdef int calculate_price_move(int owned_stars, int required_stars) noexcept nog
 # These encode the formulas that used to live inline in
 # ``core/token_data.pyx`` and ``phases/ipo.pyx``. They are the single
 # source of truth — the extractor cimports them for its dividend / par
-# tokens, ``_refresh_corp_cache`` calls the amount=0 dividend path to
-# populate the cached ``pending_price_move`` slot, and ``phases/ipo.pyx``
-# calls ``_simulate_float`` to derive its market/cash arithmetic.
+# tokens, while ``_refresh_corp_cache`` caches only the nominal move.
+# ``phases/ipo.pyx`` calls ``_simulate_float`` to derive its market/cash arithmetic.
 
-# Predicted market-index delta for ``corp_id`` paying
-# ``amount_per_share`` in dividends this round. Amount 0 gives the
-# plain "no dividend" pending price move.
+# Historical nominal star-based movement in [-2, +2], used by v2 and the
+# corporation cache. Amount 0 gives the nominal no-dividend move.
 cdef int _simulate_dividend_price_move(
+    GameState state, int corp_id, int amount_per_share,
+) noexcept nogil
+
+# Actual market-index delta, resolving occupancy and endpoints, used by v3.
+cdef int _simulate_dividend_resolved_price_move(
     GameState state, int corp_id, int amount_per_share,
 ) noexcept nogil
 

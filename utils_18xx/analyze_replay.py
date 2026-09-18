@@ -125,8 +125,10 @@ class ReplayAnalyzerSession(GameSession):
         *,
         num_players: int,
         max_players: int,
+        v3_behavior: bool = False,
     ) -> None:
-        super().__init__(num_players=num_players, max_players=max_players)
+        super().__init__(num_players=num_players, max_players=max_players,
+                         v3_behavior=v3_behavior)
         self.evaluator = evaluator
         self.decisions: list[DecisionEval] = []
         self.replay_notes: list[str] = []
@@ -156,6 +158,7 @@ class ReplayAnalyzerSession(GameSession):
             max_players=self.max_players,
             cost_level=initial_record.get("cost_level"),
         )
+        state.v3_behavior = self.v3_behavior
         self.state = state
 
         raw_actions = game_data.get("actions", [])
@@ -1608,6 +1611,7 @@ def analyze_replay(
         evaluator,
         num_players=num_players,
         max_players=config.effective_max_players,
+        v3_behavior=config.v3_behavior,
     )
     summary = session.sync_with_analysis(game_data)
     if output_format == "markdown":

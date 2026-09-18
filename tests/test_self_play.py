@@ -68,7 +68,8 @@ def _assert_dense_policy_invariants(record) -> None:
         )
 
 
-def test_play_game_full_3p_game_produces_valid_record(evaluator):
+@pytest.mark.parametrize("v3_behavior", [False, True])
+def test_play_game_full_3p_game_produces_valid_record(evaluator, v3_behavior, monkeypatch):
     """A full 3p self-play game completes and emits well-formed examples.
 
     play_game's loop only exits on STATUS_GAME_OVER (or raises), so
@@ -76,11 +77,22 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator):
     unified-slot invariants (policy sum, legal-slot coverage, value
     range) are checked per-move across the whole game.
     """
-    config = TrainingConfig(num_players=NUM_PLAYERS, num_simulations=64)
+    config = TrainingConfig(num_players=NUM_PLAYERS, num_simulations=64,
+                            v3_behavior=v3_behavior)
+    evaluate = evaluator.evaluate
+    seen = []
+
+    def checked_evaluate(state):
+        assert state.v3_behavior is v3_behavior
+        seen.append(state.v3_behavior)
+        return evaluate(state)
+
+    monkeypatch.setattr(evaluator, "evaluate", checked_evaluate)
     rng = np.random.default_rng(0)
 
     record = play_game(evaluator, config, game_seed=0, rng=rng)
 
+    assert seen
     assert record.total_moves > 0
     assert record.num_examples == record.total_moves
     assert len(record.net_worths) == NUM_PLAYERS

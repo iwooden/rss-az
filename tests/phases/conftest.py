@@ -588,12 +588,12 @@ def assert_invariants(state, msg=""):
 #     [46, 54)                   : Corp tokens       (8)
 #     [54, 54 + num_players)     : Player tokens
 #
-# The feature-offset layouts below mirror core/token_data.pyx — treat that
+# The feature-offset layouts below mirror core/token_data_v2.pyx — treat that
 # file as the source of truth if these ever drift. Per-position widths are
 # additionally cross-checked via get_token_widths() to catch layout drift.
 
 
-# Feature offsets within each token type (must match core/token_data.pyx).
+# Feature offsets within each token type (must match core/token_data_v2.pyx).
 # Active-entity selection is now carried as an ``IS_SELECTED`` flag on the
 # player / corp / company token for the currently-selected entity; the
 # standalone active-entity one-hot tokens have been removed.
@@ -677,7 +677,7 @@ _COMPANY_OFF = {
 # core/data.pxd's PRICE_RANGE_DIVISOR (max possible offset value, CDG: 50).
 # Not exposed as PY_* because it is only used here.
 PY_PRICE_RANGE_DIVISOR = 50.0
-# Mirrors the relational-summary divisors in core/token_data.pyx. Same
+# Mirrors the relational-summary divisors in core/token_data_v2.pyx. Same
 # rationale as PY_PRICE_RANGE_DIVISOR — test-local, no need to expose
 # from the Cython side.
 PY_OWNED_COMPANIES_DIVISOR = 10.0
@@ -877,7 +877,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
                           shares, T_SCALE, f"{pm}: shares[{c}]")
             total_shares += shares
 
-            if phase in (int(GamePhases.PHASE_INVEST), int(GamePhases.PHASE_BID)) and (buys >= 2 or sells >= 2):
+            if buys >= 2 or sells >= 2:
                 any_roundtrip = True
 
             if (

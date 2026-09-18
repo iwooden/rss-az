@@ -183,12 +183,13 @@ def _load_18xx_continuation_state(
     game_data: dict,
     *,
     max_players: int,
+    v3_behavior: bool = False,
 ) -> GameState:
     """Replay an 18xx game export and return a model-ready current state."""
     from utils_18xx.game_session import GameSession, format_state_mismatches
 
     num_players = len(game_data["players"])
-    session = GameSession(num_players, max_players=max_players)
+    session = GameSession(num_players, max_players=max_players, v3_behavior=v3_behavior)
     state = session.sync(game_data)
     mismatches = session.validate_against_18xx(
         game_data,
@@ -592,9 +593,10 @@ def analyze_game(
         state = _load_18xx_continuation_state(
             game_data_18xx,
             max_players=max_players,
+            v3_behavior=config.v3_behavior,
         )
     else:
-        state = GameState(num_players, max_players=max_players)
+        state = GameState(num_players, max_players=max_players, v3_behavior=config.v3_behavior)
         state.initialize_game(num_players, seed=seed, max_players=max_players)
         if seed_18xx is not None:
             setup_18xx = _apply_18xx_seed_setup(state, seed_18xx, num_players)

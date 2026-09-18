@@ -11,6 +11,7 @@ import torch
 from core.data import GamePhases
 from core.driver import DRIVER
 from core.state import GameState, get_layout
+from core import token_data_v2, token_data_v3
 from core.token_data import TokenWidth, get_num_tokens, get_token_data, get_token_data_batch, get_token_dim
 from entities.player import PLAYERS
 from entities.turn import TURN
@@ -37,7 +38,7 @@ def _config(version, **kwargs):
 
 
 def _state(n=3):
-    state = GameState(n, max_players=5)
+    state = GameState(n, max_players=5, v3_behavior=True)
     state.initialize_game(n, seed=42, max_players=5)
     _make_trade_state(state)
     # Different player/corp histories, including unclipped counts and a
@@ -79,16 +80,19 @@ def test_history_is_actor_relative_but_player_flags_are_canonical(n):
     TURN.set_active_corp(state, 0)
     np.testing.assert_array_equal(_tokens(state, 3)[:, 54:57], other[:, 54:57])
     np.testing.assert_array_equal(_tokens(state, 3)[54:, 14], v3[54:, 14])
-    assert not _tokens(state, 2)[54:, 14].any()
+    # Extractors read raw counters; the engine mode controls when they reset.
+    np.testing.assert_array_equal(_tokens(state, 2)[54:57, 14], [1, 0, 0])
 
 
-def test_v2_layout_retains_old_flag_and_all_other_features():
+def test_layouts_share_unchanged_features_but_own_their_history_and_movements():
     state = _state()
     v2, v3 = _tokens(state, 2), _tokens(state, 3)
     # A single round trip sets only the v3 flag. V2 still uses >=2 OR >=2.
     np.testing.assert_array_equal(v2[54:57, 14], [1, 0, 0])
     np.testing.assert_array_equal(v2[:46], v3[:46, :95])
-    np.testing.assert_array_equal(v2[46:54, :54], v3[46:54, :54])
+    # Pending movement at slot 36 is nominal in v2 and market-resolved in v3.
+    np.testing.assert_array_equal(v2[46:54, :36], v3[46:54, :36])
+    np.testing.assert_array_equal(v2[46:54, 37:54], v3[46:54, 37:54])
     np.testing.assert_array_equal(v2[46:54, 54:], v3[46:54, 57:])
     np.testing.assert_array_equal(v2[54:, :14], v3[54:, :14])
     np.testing.assert_array_equal(v2[54:, 15:], v3[54:, 15:95])
@@ -104,6 +108,20 @@ def test_mixed_batch_reconstruction_matches_individual_extraction(version):
         np.testing.assert_array_equal(batch[i], _tokens(state, version))
         clone = GameState.from_array(arrays[i], 3 + i, max_players=5)
         np.testing.assert_array_equal(_tokens(clone, version), batch[i])
+
+    # The dispatcher and model-specific entry points must agree for both
+    # supported batch call shapes, including mixed actual player counts.
+    extractor = token_data_v2 if version == 2 else token_data_v3
+    direct = np.empty_like(batch)
+    extractor.get_token_data_batch(arrays, direct, max_players=5)
+    np.testing.assert_array_equal(direct, batch)
+    extractor.get_token_data_batch(arrays, 5, direct)
+    np.testing.assert_array_equal(direct, batch)
+    get_token_data_batch(arrays, 5, direct, layout_version=version)
+    np.testing.assert_array_equal(direct, batch)
+    for i, state in enumerate(states):
+        extractor.get_token_data(state, direct[i], max_players=5)
+    np.testing.assert_array_equal(direct, batch)
 
 
 def test_history_survives_auction_return_and_resets_at_next_turn():

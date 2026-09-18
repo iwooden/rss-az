@@ -86,6 +86,8 @@ class TrainingConfig:
     num_players: int = 3
     min_players: int = 0
     max_players: int = 0
+    # General engine behavior mode; independent of model/input layout.
+    v3_behavior: bool = False
 
     # --- Inference ---
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
@@ -257,6 +259,8 @@ class TrainingConfig:
         self.action_dim = int(MAX_ACTION_SIZE)
 
         self.model_type = normalize_model_type(self.model_type).value
+        if not isinstance(self.v3_behavior, bool):
+            raise ValueError(f"v3_behavior must be bool, got {self.v3_behavior!r}")
         if self.model_path is not None:
             if not isinstance(self.model_path, str):
                 raise ValueError(

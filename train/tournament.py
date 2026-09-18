@@ -77,9 +77,10 @@ def _play_game(
     game_seed: int,
     rng: np.random.Generator,
     state_pool: StatePool,
+    v3_behavior: bool = False,
 ) -> list[int]:
     """Play one tournament game. Returns net worths per seat."""
-    state = GameState(num_players, max_players=max_players)
+    state = GameState(num_players, max_players=max_players, v3_behavior=v3_behavior)
     state.initialize_game(num_players, seed=game_seed, max_players=max_players)
 
     while TURN.get_phase(state) != GamePhases.PHASE_GAME_OVER:
@@ -272,8 +273,11 @@ def run_tournament(
     min_games_per_pair: int,
     base_seed: int,
     terminal_rank_weight: float,
+    v3_behavior: bool | None = None,
 ) -> tuple[list[GameResult], float]:
     """Run the full tournament. Returns (results, elapsed_seconds)."""
+    if v3_behavior is None:
+        v3_behavior = entries[0].config.v3_behavior
     input_specs = [get_model_input_spec(e.config) for e in entries]
     evaluators = [
         NNEvaluator(
@@ -314,6 +318,7 @@ def run_tournament(
             net_worths = _play_game(
                 evaluators, seat_to_model, num_players, max_players,
                 mcts_config, int(game_seed), rng, state_pool,
+                v3_behavior=v3_behavior,
             )
             ranks = _rank_players(net_worths)
             dt = time.perf_counter() - t_game
@@ -390,6 +395,10 @@ def main() -> None:
         help="Comma-separated list of checkpoint file paths",
     )
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument(
+        "--v3-behavior", action=argparse.BooleanOptionalAction, default=None,
+        help="Engine behavior for every seat (default: first checkpoint's config)",
+    )
     parser.add_argument("--seed", type=int, default=42,
                         help="Base random seed (default: 42)")
     parser.add_argument("--simulations", type=int, default=800,
@@ -502,6 +511,7 @@ def main() -> None:
     results, elapsed = run_tournament(
         entries, device, tournament_num_players, tournament_max_players, mcts_config,
         args.games_per_pair, args.seed, terminal_blend,
+        v3_behavior=args.v3_behavior,
     )
 
     # Build report

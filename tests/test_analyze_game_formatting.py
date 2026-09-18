@@ -368,8 +368,9 @@ def test_load_18xx_continuation_state_restores_model_rules(monkeypatch) -> None:
     seen: dict[str, Any] = {}
 
     class FakeSession:
-        def __init__(self, num_players, max_players=None):
-            seen["init"] = (num_players, max_players)
+        def __init__(self, num_players, max_players=None, *, v3_behavior=False):
+            seen["init"] = (num_players, max_players, v3_behavior)
+            state.v3_behavior = v3_behavior
 
         def sync(self, game_data):
             seen["sync"] = game_data
@@ -392,10 +393,12 @@ def test_load_18xx_continuation_state_restores_model_rules(monkeypatch) -> None:
     loaded = analyze_game_module._load_18xx_continuation_state(
         game_data,
         max_players=5,
+        v3_behavior=True,
     )
 
     assert loaded is state
-    assert seen["init"] == (3, 5)
+    assert loaded.v3_behavior is True
+    assert seen["init"] == (3, 5, True)
     assert seen["sync"] is game_data
     assert seen["validate"][0] is game_data
     assert loaded.acq_same_president is True
@@ -422,9 +425,10 @@ def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
     TURN.set_phase(start_state, int(GamePhases.PHASE_GAME_OVER))
     seen: dict[str, Any] = {}
 
-    def fake_load_state(game_data, *, max_players):
+    def fake_load_state(game_data, *, max_players, v3_behavior):
         seen["game_data"] = game_data
         seen["max_players"] = max_players
+        seen["v3_behavior"] = v3_behavior
         return start_state
 
     monkeypatch.setattr(
@@ -432,7 +436,7 @@ def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
         "_load_18xx_continuation_state",
         fake_load_state,
     )
-    config = TrainingConfig(num_players=3)
+    config = TrainingConfig(num_players=3, v3_behavior=True)
     model = create_model(config).to(torch.device("cpu"))
     model.eval()
 
@@ -448,6 +452,7 @@ def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
 
     assert seen["game_data"]["id"] == 24680
     assert seen["max_players"] == 3
+    assert seen["v3_behavior"] is True
     assert rendered.startswith(
         "# Self-Play Analysis: 18xx game=24680 continuation, 1 simulations/move"
     )

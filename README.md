@@ -61,10 +61,31 @@ to select the layout. Query `get_token_dim(layout_version)` and
 model and extraction calls without a version remain v2 for checkpoint
 compatibility; v2 is retained as the evaluation baseline for v3.
 
+`core/token_data.pyx/.pxd` is a thin dispatcher. Each model owns its extractor
+and constants in `core/token_data_v2.pyx/.pxd` or `core/token_data_v3.pyx/.pxd`;
+feature changes belong in that version's files. V2 was restored from `v2-final`
+and retains nominal dividend/pending movement; v3 uses resolved market movement.
+
 `GameState` flags control engine behavior independently of model inputs. Both
 models read the same raw state, currently use the same token order and relation
 planes, and play under the same chosen rules. Input layout selection does not
 change the engine's two-round-trip INVEST cap.
+
+Set `"v3_behavior": true` in the training config (or `--v3-behavior`) to enable
+v3 engine behavior; the default is `false` for legacy behavior. This is a
+general engine switch, independent of `model_path`. Its first distinction is
+trade-history lifetime: legacy clears counters when INVEST ends, while v3
+retains them through the rest of the turn and clears them on entry to the next
+turn's INVEST. Returning from BID to the same INVEST does not clear counters.
+Use `--no-v3-behavior` to select legacy behavior explicitly.
+
+The setting is checkpointed with the config and applied by self-play, analysis,
+and live replay. Tournaments use one mode for all seats, defaulting to the first
+checkpoint's setting, with the same CLI override. On `GameState`, it is a runtime
+flag alongside the other engine options, outside the raw int16 array; callers
+reconstructing a game for execution supply `v3_behavior` to `from_array` or
+`from_buffer`. Rebinding retains the wrapper's mode, and MCTS keeps it across
+subtree reuse.
 
 Replay stores raw counters, so newly generated replay can supply either layout.
 Older replay rows saved after INVEST already lost that turn's trade counters;

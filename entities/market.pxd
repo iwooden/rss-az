@@ -22,6 +22,7 @@ cdef void copy_market_availability(GameState state, int16_t* out_flags) noexcept
 # ``Market`` delegate to these so there is a single source of truth.
 cdef int market_find_next_higher_space(GameState state, int current_index) noexcept nogil
 cdef int market_find_next_lower_space(GameState state, int current_index) noexcept nogil
+cdef int market_resolve_price_move(GameState state, int current_index, int move) noexcept nogil
 
 
 cdef class Market:

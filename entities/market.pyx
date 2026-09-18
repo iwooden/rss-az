@@ -62,6 +62,25 @@ cdef int market_find_next_lower_space(GameState state, int current_index) noexce
     return 0
 
 
+cdef int market_resolve_price_move(GameState state, int current_index, int move) noexcept nogil:
+    """Resolve a nominal move, skipping occupied destinations and clamping ends.
+
+    Zero movement retains the current (occupied) space. Both endpoints are
+    shared: index 0 means bankruptcy and the last index means $75.
+    """
+    cdef int target = current_index + move
+    cdef int maximum = <int>GameConstants.NUM_MARKET_SPACES - 1
+    if move == 0:
+        return current_index
+    if target <= 0:
+        return 0
+    if target >= maximum:
+        return maximum
+    if move > 0:
+        return market_find_next_higher_space(state, target - 1)
+    return market_find_next_lower_space(state, target + 1)
+
+
 cdef class Market:
     """
     Entity handle for accessing market state.

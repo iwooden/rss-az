@@ -37,7 +37,7 @@ from core.data import (
     DecisionPhase,
     PY_COMPANY_PRICE_DIVISOR,
 )
-from core.token_data import TokenDataSize, TokenWidth, get_num_tokens, get_token_widths
+from core.token_data_v2 import TokenDataSize, TokenWidth, get_num_tokens, get_token_widths
 from nn.policy_layout import (
     NUM_PHASES,
     PHASE_OFFSETS,
@@ -160,7 +160,7 @@ class TransformerConfig:
     price_slot_fourier_bands: int = 4
 
     # Raw feature width per token (zero-padded to same size across types).
-    # Sourced from core.token_data so the model and the Cython extractor
+    # Sourced from core.token_data_v2 so the model and the Cython extractor
     # can't drift out of sync.
     layout_version: int = field(default=INPUT_LAYOUT_VERSION, init=False)
     token_dim: int = int(TokenDataSize.TOKEN_DIM)
@@ -194,7 +194,7 @@ class TransformerConfig:
 
 def _validate_layout(num_players: int) -> None:
     """Assert the hardcoded token indices in ``RSSTransformerNet.__init__``
-    line up with ``core.token_data.get_token_widths`` for the given player
+    line up with ``core.token_data_v2.get_token_widths`` for the given player
     count.
 
     The two layouts are sources of truth for the same buffer: the Cython
@@ -220,7 +220,7 @@ def _validate_layout(num_players: int) -> None:
     )
     actual = get_token_widths(num_players).tolist()
     assert actual == expected, (
-        f"token layout drift between nn/transformer-v2.py and core/token_data.pyx "
+        f"token layout drift between nn/transformer-v2.py and core/token_data_v2.pyx "
         f"for {num_players}p: actual widths {actual} vs expected {expected}"
     )
 
@@ -379,7 +379,7 @@ class RSSTransformerNet(nn.Module):
         num_fixed_tokens = self._num_tokens - np_
 
         # --- Token index bookkeeping ---
-        # Buffer layout (matches core/token_data.pyx::_fill_buffer):
+        # Buffer layout (matches core/token_data_v2.pyx::_fill_buffer):
         #   info: market_info (slot prices + per-space availability),
         #     companies×36 (is_selected + static data + CoO-adjusted income +
         #     at_*/owner_* groups), FI, global_info (decision phase + CoO +

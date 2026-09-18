@@ -1,81 +1,20 @@
-"""
-Declaration file for token data extraction.
+"""Shared extraction API; each version owns its feature constants and kernels.
 
-``get_token_data`` is the sole engine→NN interface: it fills a
-(num_tokens, TOKEN_DIM) float32 buffer with normalized per-token
-features from a compact GameState. Feature layout per token type is
-documented in ``token-data.md`` and matches the order expected by
-``nn/transformer-v2.py``.
+See token_data_v2.pxd and token_data_v3.pxd for model-specific declarations.
+The default layout is v2. Both layouts currently share token row order.
 """
 
 from core.state cimport GameState
 
-
-# Padded widths per input layout. Unqualified constants retain v2 meanings.
-# Call get_token_dim(layout_version) at model/evaluator boundaries.
-cpdef enum TokenDataSize:
-    TOKEN_DIM = 95
-    TOKEN_DIM_V3 = 98
-
-
-# Non-padded feature width per token type (single source of truth for the
-# per-type projection input sizes on the model side; each token in the
-# (num_tokens, TOKEN_DIM) buffer uses only the first ``TW_*`` slots of its
-# row, with the rest zero-padded up to TOKEN_DIM). The corresponding
-# ``_fill_*_token`` helper in ``token_data.pyx`` writes exactly
-# ``TW_*`` slots — keep these in sync with the OFF_* layout constants
-# inside those helpers. Used by ``get_token_widths`` to build the
-# per-position widths array that matches ``_fill_buffer``'s layout.
-cpdef enum TokenWidth:
-    TW_MARKET_INFO           = 55
-    TW_COMPANY               = 28
-    TW_FI                    = 40
-    TW_GLOBAL_INFO           = 24
-    TW_INVEST                = 2
-    TW_AUCTION               = 4
-    TW_DIVIDEND              = 27
-    TW_ISSUE                 = 2
-    TW_PAR                   = 43
-    TW_ACQ_OFFER             = 4
-    TW_ACQ_PRICE             = 4
-    TW_CORP                  = 95
-    TW_CORP_V3               = 98
-    TW_PLAYER                = 62
-
-
-# Number of tokens for a given player-token capacity (max_players + 54 fixed
-# tokens).
 cpdef int get_num_tokens(int max_players) noexcept nogil
-
-
-# Padded width and per-position feature widths for the selected layout.
-# layout_version defaults to 2 in all extraction APIs for v2 compatibility.
-# Returns a ``(max_players + 54,)`` uint8 numpy array; each entry is the
-# width of the corresponding buffer row (<= get_token_dim(version)). The model can use
-# this to slice ``buffer[i, :widths[i]]`` into the per-type projection.
 cpdef int get_token_dim(int layout_version=*) except -1
 cpdef object get_token_widths(int max_players, int layout_version=*)
 
-
-# Fill a (num_tokens, get_token_dim(layout_version)) float32 memoryview.
-# The buffer is zeroed by the function; phase-specific tokens remain zero
-# when the current engine phase does not match. Requires a C-contiguous
-# float32 memoryview sized for at least (max_players + 54, TOKEN_DIM) when
-# max_players is provided. max_players=0 uses the state's actual player count.
 cpdef void get_token_data(
     GameState state, float[:, ::1] buffer, int max_players=*, int layout_version=*,
 )
 
-
-# Batched variant: fill ``buffer[i]`` from ``state_arrays[i]`` for i in [0, n).
-# Reuses one scratch GameState across all rows via rebind, so the outer
-# function call amortizes per-state Python dispatch + GameState construction
-# over a single entry. Cache refresh + ``_fill_buffer`` run together in one
-# nogil block per row via ``refresh_player_cache_if_dirty``; only ``rebind``
-# itself stays GIL-held (Python-level validation + ``_array`` attr write).
-# Preferred Python call shape is ``(state_arrays, buffer, max_players=0)``.
-# The legacy ``(state_arrays, num_players, buffer)`` shape remains accepted.
-# Requires a C-contiguous (n, max_players + 54, TOKEN_DIM) float32 buffer.
+# Supports both (state_arrays, buffer) and (state_arrays, num_players, buffer).
 cpdef void get_token_data_batch(
     list state_arrays, object arg2, object arg3=*, int max_players=*, int layout_version=*,
 )

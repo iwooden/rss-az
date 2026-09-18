@@ -52,6 +52,7 @@ from entities.player cimport (
     invalidate_all_player_caches,
 )
 from entities.turn cimport TurnState
+from entities.market cimport market_resolve_price_move
 
 # Late imports to avoid circular dependencies (resolved at runtime)
 from entities import turn as turn_module
@@ -209,7 +210,7 @@ cdef inline int _required_stars(int price_index, int issued_shares) noexcept nog
 cdef int _simulate_dividend_price_move(
     GameState state, int corp_id, int amount_per_share,
 ) noexcept nogil:
-    """Predicted market-index delta for ``corp_id`` paying ``amount_per_share``.
+    """Nominal star-based move for ``corp_id`` paying ``amount_per_share``.
 
     The dividend amount reduces corp cash, which reduces cash_stars
     (``floor(cash/10)``), which shifts total_stars relative to required
@@ -228,6 +229,15 @@ cdef int _simulate_dividend_price_move(
     cdef int total_stars = company_stars + cash_stars + si_bonus
     cdef int required = _required_stars(price_idx, issued)
     return calculate_price_move(total_stars, required)
+
+
+cdef int _simulate_dividend_resolved_price_move(
+    GameState state, int corp_id, int amount_per_share,
+) noexcept nogil:
+    """Actual projected index delta against current market occupancy."""
+    cdef int current = corp_price_index(state, corp_id)
+    cdef int move = _simulate_dividend_price_move(state, corp_id, amount_per_share)
+    return market_resolve_price_move(state, current, move) - current
 
 
 cdef (int, int, int, int, int) _simulate_float(
@@ -371,7 +381,7 @@ cdef void _refresh_corp_cache(GameState state, int corp_id) noexcept nogil:
     state._data[_corp_slot(corp_id, CORP_FIELDS.ability_income)] = <int16_t>ability
     _clear_cache_dirty(state, corp_id)
 
-    # Cached pending-price-move = amount=0 dividend simulation.
+    # Cache only the nominal move: market occupancy can change independently.
     pending = _simulate_dividend_price_move(state, corp_id, 0)
     state._data[_corp_slot(corp_id, CORP_FIELDS.pending_price_move)] = <int16_t>pending
 
@@ -639,18 +649,18 @@ cdef class Corporation:
         return corp_company_stars(state, self.corp_id)
 
     cpdef int get_pending_price_move(self, GameState state):
-        """Return derived pending price-movement scalar.
+        """Return cached nominal no-dividend move in [-2, +2].
 
-        Equivalent to ``simulate_dividend_price_move(state, 0)`` but
-        reads the cached slot populated by ``_refresh_corp_cache``.
+        Equivalent to ``simulate_dividend_price_move(state, 0)``; actual
+        destination resolution is separate from this cached star-based move.
         """
         return corp_pending_price_move(state, self.corp_id)
 
     cpdef int simulate_dividend_price_move(self, GameState state, int amount_per_share):
-        """Predicted market-index delta if this corp paid ``amount_per_share``.
+        """Nominal star-based move if this corp paid ``amount_per_share``.
 
-        Does NOT mutate state. Used by the dividend-token extractor to
-        preview the price move for each possible dividend amount.
+        Preserves the v2 preview contract: [-2, +2], before occupied-space
+        skips or endpoint clamping. Does not mutate state.
         """
         assert corp_is_active(state, self.corp_id), \
             f"simulate_dividend_price_move on inactive corp {self.corp_id}"

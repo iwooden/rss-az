@@ -3,6 +3,8 @@
 Covers: PASS, AUCTION (start), BUY_SHARE, SELL_SHARE actions, round-trip
 limits, legal-action enumeration, price movement, and phase transitions.
 """
+import pytest
+
 from core.driver import STATUS_GAME_OVER_PY as STATUS_GAME_OVER
 from core.actions import (
     ACTION_PASS_PY as ACTION_PASS,
@@ -91,8 +93,10 @@ class TestPassAction:
         assert TURN.get_turn_number(game_state) == 2
         assert TURN.get_consecutive_passes(game_state) == 0
 
-    def test_trade_history_persists_until_next_invest(self, game_state):
-        """Counters survive later phases and clear only on the new turn."""
+    @pytest.mark.parametrize("v3_behavior", [False, True])
+    def test_trade_history_reset_timing(self, game_state, v3_behavior):
+        """Legacy clears on INVEST exit; v3 preserves history until next turn."""
+        game_state.v3_behavior = v3_behavior
         _make_trade_state(game_state, corp_id=0, player_id=0)
         num_players = TURN.get_num_players(game_state)
 
@@ -105,11 +109,11 @@ class TestPassAction:
             apply_and_verify(game_state, pass_id)
 
         assert TURN.get_turn_number(game_state) == 1
-        assert PLAYERS[0].get_share_buys(game_state, 0) == 1
+        assert PLAYERS[0].get_share_buys(game_state, 0) == int(v3_behavior)
         for _ in range(100):
             if TURN.get_turn_number(game_state) == 2:
                 break
-            assert PLAYERS[0].get_share_buys(game_state, 0) == 1
+            assert PLAYERS[0].get_share_buys(game_state, 0) == int(v3_behavior)
             apply_and_verify(game_state, get_legal_actions(game_state)[0][0])
         assert TURN.get_turn_number(game_state) == 2
         assert TURN.get_phase(game_state) == int(GamePhases.PHASE_INVEST)

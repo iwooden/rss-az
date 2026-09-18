@@ -7,6 +7,22 @@ from train.logging import _format_player_range
 from train.main import _apply_overrides, _build_parser
 
 
+def test_v3_behavior_is_explicit_validated_and_serialized():
+    assert TrainingConfig().v3_behavior is False
+    # Model selection does not silently change engine behavior.
+    assert TrainingConfig(model_path="nn/transformer-v3.py").v3_behavior is False
+    config = TrainingConfig.from_json('{"v3_behavior": true}')
+    assert config.v3_behavior is True
+    assert TrainingConfig.from_json(config.to_json()).v3_behavior is True
+    for invalid in (1, "true", None):
+        with pytest.raises(ValueError, match="v3_behavior must be bool"):
+            TrainingConfig(v3_behavior=invalid)
+    for option, expected in (("--v3-behavior", True), ("--no-v3-behavior", False)):
+        args = _build_parser().parse_args([option])
+        _apply_overrides(config, args)
+        assert config.v3_behavior is expected
+
+
 def test_legacy_num_players_config_validates_with_effective_single_range() -> None:
     config = TrainingConfig.from_json('{"num_players": 3}')
 

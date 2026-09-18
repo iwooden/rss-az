@@ -45,12 +45,12 @@ from core.data import (
 )
 from core.state import GameState
 from core.token_data import (
-    PY_TRADE_COUNT_DIVISOR,
     get_num_tokens,
     get_token_data,
     get_token_dim,
     get_token_widths,
 )
+from core.token_data_v3 import PY_TRADE_COUNT_DIVISOR
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.deck import DECK
@@ -70,7 +70,7 @@ CARDS_REMAINING_DIVISOR = float(NUM_COMPANIES)
 CONSECUTIVE_PASSES_DIVISOR = 5.0
 AUCTION_OFFSET_DIVISOR = 15.0
 ACQ_OFFSET_DIVISOR = 51.0
-# Mirrors the relational-summary divisors in core/token_data.pyx.
+# Mirrors the relational-summary divisors in core/token_data_v2.pyx and core/token_data_v3.pyx.
 OWNED_COMPANIES_DIVISOR = 10.0
 TOTAL_SHARES_DIVISOR    = 20.0
 PRESIDENCIES_DIVISOR    = 8.0
@@ -173,7 +173,8 @@ def _token_field_labels(token_label: str, layout_version: int = 2) -> list[str]:
     if token_label == "auction":
         return ["attn_mask", "min_bid_index", "min_bid_value", "is_first_bid"]
     if token_label == "dividend":
-        return ["attn_mask"] + _field_names("dividend_impact", 26)
+        return (["attn_mask"] + _field_names("dividend_impact", 26)
+                + (_field_names("dividend_share_price", 26) if layout_version == 3 else []))
     if token_label == "issue":
         return ["attn_mask", "issue_impact"]
     if token_label == "par":
@@ -299,7 +300,8 @@ def _denormalize_token_values(token_label: str, row: np.ndarray, layout_version:
             + _round_values(row[3:4])
         )
     if token_label == "dividend":
-        return _round_values(row[:1]) + _round_values(row[1:27], PY_IMPACT_DIVISOR)
+        return (_round_values(row[:1]) + _round_values(row[1:27], PY_IMPACT_DIVISOR)
+                + (_round_values(row[27:53], PY_CASH_DIVISOR) if layout_version == 3 else []))
     if token_label == "issue":
         return _round_values(row[:1]) + _round_values(row[1:2], PY_IMPACT_DIVISOR)
     if token_label == "par":
@@ -409,7 +411,8 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
             f"min_bid={values[2]} first_bid={values[3]}"
         )
     if token_label == "dividend":
-        return f"attn={values[0]} impacts={_nonzero_map(values[1:27])}"
+        prices = f" share_prices={_nonzero_map(values[27:53])}" if len(values) > 27 else ""
+        return f"attn={values[0]} impacts={_nonzero_map(values[1:27])}{prices}"
     if token_label == "issue":
         return f"attn={values[0]} impact={values[1]}"
     if token_label == "par":

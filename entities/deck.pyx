@@ -498,6 +498,7 @@ cdef class Deck:
         )
 
         det_state.step_mode = state.step_mode
+        det_state.v3_behavior = state.v3_behavior
         det_state.acq_same_president = state.acq_same_president
         det_state.allow_positive_income_closing = (
             state.allow_positive_income_closing
