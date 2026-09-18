@@ -46,6 +46,10 @@ from nn.policy_layout import (
     build_action_lut,
 )
 
+# Frozen checkpoint contract. New transport relations must not expand v2's
+# parameters or change its predictions when used as the trained baseline.
+_NUM_V2_ATTENTION_RELATIONS = 10
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -641,7 +645,7 @@ class RSSTransformerNet(nn.Module):
         self.relation_bias_mult = nn.Parameter(torch.zeros(
             cfg.num_layers,
             cfg.num_heads,
-            NUM_ATTENTION_RELATIONS,
+            _NUM_V2_ATTENTION_RELATIONS,
         ))
         self.final_norm = nn.RMSNorm(d)
 
@@ -801,15 +805,16 @@ class RSSTransformerNet(nn.Module):
     ) -> torch.Tensor:
         """Combine relation planes into an SDPA additive bias for one layer.
 
-        ``relation_flags`` is ``(B, R, N, N)``. The learned multipliers for
-        layer ``layer_idx`` are ``(H, R)``, producing ``(B, H, N, N)`` so the
-        result lines up with SDPA attention weights.
+        Only the original ten binary relations participate. Additional planes
+        in the shared transport are ignored, preserving v2 checkpoint behavior.
         """
         relation_mult = self._match_dtype_device(
             self.relation_bias_mult[layer_idx],
             ref,
         )
-        return torch.einsum("brij,hr->bhij", relation_flags, relation_mult)
+        return torch.einsum(
+            "brij,hr->bhij", relation_flags[:, :_NUM_V2_ATTENTION_RELATIONS], relation_mult,
+        )
 
     def _prepare_sparse_relation_context(
         self,
@@ -824,7 +829,10 @@ class RSSTransformerNet(nn.Module):
         relation_ids = coords[..., 0]
         query_tokens = coords[..., 1]
         key_tokens = coords[..., 2]
-        valid_edges = relation_coords.any(dim=-1).to(dtype=torch.bool)
+        valid_edges = (relation_coords[..., 3] > 0) & (relation_ids < _NUM_V2_ATTENTION_RELATIONS)
+        # Ignored records still occupy fixed IPC slots. Use a safe gather index
+        # and mask their contribution, with no data-dependent shape changes.
+        relation_ids = relation_ids.masked_fill(~valid_edges, 0)
 
         batch_offsets = (
             torch.arange(batch_size, device=relation_coords.device, dtype=torch.long)
@@ -854,7 +862,7 @@ class RSSTransformerNet(nn.Module):
         layer_idx: int,
         ref: torch.Tensor,
     ) -> torch.Tensor:
-        """Build SDPA relation bias from sparse relation triplets.
+        """Build SDPA relation bias from sparse relation records.
 
         The result is still dense ``(B, H, N, N)`` because SDPA consumes a dense
         additive attention mask, but the expensive relation-type dimension is
@@ -873,8 +881,7 @@ class RSSTransformerNet(nn.Module):
             relation_mult.transpose(0, 1),
         ).transpose(1, 2)
         edge_values = edge_values.masked_fill(
-            ~relation_ctx.valid_edges[:, None, :],
-            0.0,
+            ~relation_ctx.valid_edges[:, None, :], 0.0,
         )
 
         bias = ref.new_zeros(batch_size, num_heads, num_tokens, num_tokens)
@@ -1456,8 +1463,10 @@ class RSSTransformerNet(nn.Module):
                 or sparse eval-server coordinates ``(batch,
                 MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH)``
                 uint8. Dense rows are attention queries and columns are
-                attention keys; sparse rows are ``(relation_id, query, key)``
-                triplets padded with ``(0, 0, 0)``.
+                attention keys; sparse rows are ``(relation_id, query, key, value)``
+                records padded with ``(0, 0, 0, 0)``. Only the original ten
+                binary relations affect v2. Extra share-count relations are
+                ignored. Dense inputs may also contain only the original ten.
 
         Returns:
             policy_logits: ``(batch, UNIFIED_LOGIT_DIM)`` fp32 logits with
@@ -1506,12 +1515,15 @@ class RSSTransformerNet(nn.Module):
             MAX_ATTENTION_RELATION_EDGES,
             ATTENTION_RELATION_COORD_WIDTH,
         )
-        if tuple(relations.shape) == expected_dense_rel_shape:
+        legacy_dense_rel_shape = (
+            x.shape[0], _NUM_V2_ATTENTION_RELATIONS, self._num_tokens, self._num_tokens,
+        )
+        if tuple(relations.shape) in (expected_dense_rel_shape, legacy_dense_rel_shape):
             if relations.dtype not in (torch.bool, torch.uint8):
                 raise AssertionError(
                     f"dense relation planes must be bool or uint8; got {relations.dtype}"
                 )
-            relation_flags = relations.to(dtype=tokens.dtype)
+            relation_flags = relations[:, :_NUM_V2_ATTENTION_RELATIONS].to(dtype=tokens.dtype)
         elif tuple(relations.shape) == expected_sparse_rel_shape:
             if relations.dtype != torch.uint8:
                 raise AssertionError(
@@ -1520,7 +1532,7 @@ class RSSTransformerNet(nn.Module):
             sparse_relation_ctx = self._prepare_sparse_relation_context(relations)
         else:
             raise AssertionError(
-                f"relations shape must be {expected_dense_rel_shape} for dense "
+                f"relations shape must be {expected_dense_rel_shape} or {legacy_dense_rel_shape} for dense "
                 f"planes or {expected_sparse_rel_shape} for sparse coordinates; "
                 f"got {tuple(relations.shape)}"
             )

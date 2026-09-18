@@ -5,9 +5,16 @@
 - This branch develops and trains a successor to `nn/transformer-v2.py`.
   A v2 checkpoint performed well against top-level human players over summer
   2026; use it as the baseline for incorporating lessons from those games.
-- Backward compatibility is not a requirement here: old model APIs,
-  checkpoints, and configs may break. Update active consumers together when
-  contracts change.
+- **V2 behavior is locked.** Existing `nn/transformer-v2.py` checkpoints must
+  continue to load and produce the same policy and value outputs for the same
+  game states. Preserve this baseline when changing shared token extraction,
+  relations, IPC, or model loading; new v3 features must not affect v2 outputs.
+  Verify output parity against the pre-change v2 with identical checkpoint
+  weights when touching these paths; successful checkpoint loading alone is
+  insufficient.
+- Outside the locked v2 baseline, backward compatibility is not a requirement:
+  old model APIs, checkpoints, and configs may break. Update active consumers
+  together when contracts change.
 - Current engine support is 2-6 players; model/search/training support is 3-5,
   including mixed-player transformer training.
 

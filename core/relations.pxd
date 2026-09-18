@@ -5,7 +5,8 @@ Dense relation buffers are ``(num_relations, num_tokens, num_tokens)`` uint8,
 where ``num_tokens`` is the requested player-token capacity plus the fixed
 54-token prefix. Rows are query tokens and columns are key/value tokens,
 matching PyTorch SDPA's additive attention-bias layout. Sparse coordinate
-buffers carry ``(relation_id, query_token, key_token)`` uint8 triplets.
+buffers carry ``(relation_id, query_token, key_token, value)`` uint8 records.
+Binary planes contain 0/1; the two share-count planes contain raw counts.
 """
 
 from core.state cimport GameState
@@ -22,12 +23,16 @@ cpdef enum AttentionRelationIndex:
     REL_CORP_HAS_PLAYER_SHAREHOLDER = 7
     REL_PLAYER_PRESIDENT_OF_CORP = 8
     REL_CORP_PRESIDENT_PLAYER = 9
-    REL_NUM_ATTENTION_RELATIONS = 10
+    REL_PLAYER_CORP_SHARE_COUNT = 10
+    REL_CORP_PLAYER_SHARE_COUNT = 11
+    REL_NUM_ATTENTION_RELATIONS = 12
 
 
 cpdef enum AttentionRelationCoordSize:
+    # At most 2*36 company ownership + 4*(8*5) shareholding/count +
+    # 2*8 presidency records = 248, rounded up for fixed-size IPC buffers.
     MAX_ATTENTION_RELATION_EDGES = 256
-    ATTENTION_RELATION_COORD_WIDTH = 3
+    ATTENTION_RELATION_COORD_WIDTH = 4
 
 
 cpdef int get_num_attention_relations() noexcept nogil

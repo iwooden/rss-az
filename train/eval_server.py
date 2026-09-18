@@ -13,8 +13,8 @@ Communication uses shared memory (torch tensors with share_memory_()):
       states      : float16 (W, B, num_tokens, token_dim)
       legal_mask  : uint8   (W, B, UNIFIED_LOGIT_DIM)  — 1=legal slot
       relation_coords
-                 : uint8   (W, B, MAX_ATTENTION_RELATION_EDGES, 3)
-                    — sparse (relation_id, query_token, key_token) triplets.
+                 : uint8   (W, B, MAX_ATTENTION_RELATION_EDGES, 4)
+                    — sparse (relation_id, query_token, key_token, value) records.
                     The model builds per-layer attention bias directly from
                     these sparse coordinates.
 
@@ -219,8 +219,8 @@ def _materialize_relation_coords_(
 ) -> None:
     """Materialize sparse relation coordinates into dense relation planes.
 
-    ``relation_coords`` is uint8 ``(B, max_edges, 3)`` where each row is
-    ``(relation_id, query_token, key_token)``. Padded rows are ``(0, 0, 0)``;
+    ``relation_coords`` is uint8 ``(B, max_edges, 4)`` where each row is
+    ``(relation_id, query_token, key_token, value)``. Padding is all-zero;
     after filling all coordinates, the per-batch sentinel slot is cleared so
     padding cannot introduce a real edge.
     """
@@ -241,7 +241,9 @@ def _materialize_relation_coords_(
     idx.add_(tmp)
     idx.add_(batch_offsets[:actual_n])
 
-    dense_rel_flat.index_fill_(0, flat_idx_flat[:idx.numel()], 1)
+    dense_rel_flat.scatter_(
+        0, flat_idx_flat[:idx.numel()], coords[..., 3].reshape(-1),
+    )
     dense_rel_flat.index_fill_(0, sentinel_flat[:actual_n], 0)
 
 
@@ -258,8 +260,8 @@ class SharedEvalBuffers:
         states      (W, B, num_tokens, token_dim)       float16
         legal_mask  (W, B, UNIFIED_LOGIT_DIM)           uint8 (1=legal slot)
         relation_coords
-                    (W, B, MAX_ATTENTION_RELATION_EDGES, 3)
-                    uint8 sparse relation triplets
+                    (W, B, MAX_ATTENTION_RELATION_EDGES, 4)
+                    uint8 sparse relation records with raw values
 
     Outputs (server → worker):
         priors  (W, B, UNIFIED_LOGIT_DIM)  float32  (softmaxed over legal slots)

@@ -43,6 +43,7 @@ import torch.nn.functional as F
 
 from core.attention_relations import (
     ATTENTION_RELATION_COORD_WIDTH,
+    ATTENTION_RELATION_SCALES,
     MAX_ATTENTION_RELATION_EDGES,
     NUM_ATTENTION_RELATIONS,
 )
@@ -321,16 +322,18 @@ class _SparseRelationContext:
     key_tokens: torch.Tensor
     flat_indices: torch.Tensor
     valid_edges: torch.Tensor
+    edge_weights: torch.Tensor
 
 
 class RelationInputMixing(nn.Module):
     """One simultaneous round of directed messages before the transformer.
 
-    A shared nonlinear map encodes sources; each relation sums its neighbors,
+    A shared nonlinear map encodes sources; each relation weights/sums its neighbors,
     divides by sqrt(neighbor count), and applies its own bias-free projection
     and independent signed gain. Empty neighborhoods contribute exactly zero.
     Source RMSNorm controls feature scale without erasing aggregate magnitude.
-    Sparse inputs aggregate directly, without materializing relation planes.
+    Dense/sparse weights are already normalized. Sparse inputs aggregate
+    directly, without materializing relation planes.
     """
 
     def __init__(self, d_model: int) -> None:
@@ -355,7 +358,7 @@ class RelationInputMixing(nn.Module):
         relation_flags: torch.Tensor | None,
         sparse_ctx: _SparseRelationContext | None,
     ) -> torch.Tensor:
-        sources = self.source_mlp(self.source_norm(tokens))
+        sources: torch.Tensor = self.source_mlp(self.source_norm(tokens))
         gains = self.relation_gains.to(dtype=sources.dtype)
         messages = torch.zeros_like(tokens)
 
@@ -365,6 +368,9 @@ class RelationInputMixing(nn.Module):
             edge_sources = sources.gather(
                 1, sparse_ctx.key_tokens.unsqueeze(-1).expand(-1, -1, sources.shape[-1]),
             )
+            edge_sources = edge_sources * sparse_ctx.edge_weights.unsqueeze(-1).to(
+                dtype=sources.dtype,
+            )
             edge_visible = sparse_ctx.valid_edges & visible.gather(1, sparse_ctx.key_tokens)
 
         for relation_id, proj in enumerate(self.relation_projs):
@@ -372,7 +378,9 @@ class RelationInputMixing(nn.Module):
                 adjacency = relation_flags[:, relation_id].to(dtype=sources.dtype)
                 adjacency = adjacency * visible[:, None, :].to(dtype=sources.dtype)
                 aggregate = torch.bmm(adjacency, sources)
-                count = adjacency.sum(-1, keepdim=True, dtype=torch.float32)
+                # Count neighbors, not their weights: doubling share quantities
+                # must double this contribution at a fixed neighborhood size.
+                count = (adjacency > 0).sum(-1, keepdim=True, dtype=torch.float32)
             else:
                 assert sparse_ctx is not None and edge_sources is not None
                 assert edge_visible is not None
@@ -405,6 +413,7 @@ class RSSTransformerNet(nn.Module):
     # returns ``Tensor | Module | None`` per pytorch's stubs, which breaks
     # ``type_embeds(self._type_ids)`` lookups.
     _type_ids: torch.Tensor
+    _relation_scales: torch.Tensor
     _corp_ids: torch.Tensor
     _bid_offset_dollar_norm: torch.Tensor
     _dividend_amounts: torch.Tensor
@@ -622,6 +631,9 @@ class RSSTransformerNet(nn.Module):
             )
             for _ in range(cfg.num_layers)
         ])
+        self.register_buffer(
+            "_relation_scales", torch.tensor(ATTENTION_RELATION_SCALES), persistent=False,
+        )
         self.relation_bias_mult = nn.Parameter(torch.zeros(
             cfg.num_layers,
             cfg.num_heads,
@@ -795,6 +807,15 @@ class RSSTransformerNet(nn.Module):
         """
         return (x[:, :, 0] > 0.5)[:, None, None, :]
 
+    def _normalize_dense_relations(
+        self, relations: torch.Tensor, ref: torch.Tensor,
+    ) -> torch.Tensor:
+        """Normalize raw uint8 values once for all attention layers/input messages."""
+        # Match sparse normalization: round the product, not the reciprocal,
+        # when entering bf16/fp16 (notably, 5 * bf16(1/7) != bf16(5/7)).
+        weights = relations.to(dtype=self._relation_scales.dtype) * self._relation_scales.view(1, -1, 1, 1)
+        return weights.to(dtype=ref.dtype)
+
     def _relation_attention_bias(
         self,
         relation_flags: torch.Tensor,
@@ -803,8 +824,9 @@ class RSSTransformerNet(nn.Module):
     ) -> torch.Tensor:
         """Combine relation planes into an SDPA additive bias for one layer.
 
-        ``relation_flags`` is ``(B, R, N, N)``. The learned multipliers for
-        layer ``layer_idx`` are ``(H, R)``, producing ``(B, H, N, N)`` so the
+        ``relation_flags`` contains normalized ``(B, R, N, N)`` weights. The
+        learned multipliers for layer ``layer_idx`` are ``(H, R)``, producing
+        ``(B, H, N, N)`` so the
         result lines up with SDPA attention weights.
         """
         relation_mult = self._match_dtype_device(
@@ -826,7 +848,11 @@ class RSSTransformerNet(nn.Module):
         relation_ids = coords[..., 0]
         query_tokens = coords[..., 1]
         key_tokens = coords[..., 2]
-        valid_edges = relation_coords.any(dim=-1).to(dtype=torch.bool)
+        valid_edges = relation_coords[..., 3] > 0
+        edge_weights = (
+            relation_coords[..., 3].to(dtype=self._relation_scales.dtype)
+            * self._relation_scales[relation_ids]
+        )
 
         batch_offsets = (
             torch.arange(batch_size, device=relation_coords.device, dtype=torch.long)
@@ -850,6 +876,7 @@ class RSSTransformerNet(nn.Module):
             key_tokens=key_tokens,
             flat_indices=flat_indices,
             valid_edges=valid_edges,
+            edge_weights=edge_weights,
         )
 
     def _sparse_relation_attention_bias(
@@ -858,7 +885,7 @@ class RSSTransformerNet(nn.Module):
         layer_idx: int,
         ref: torch.Tensor,
     ) -> torch.Tensor:
-        """Build SDPA relation bias from sparse relation triplets.
+        """Build SDPA relation bias from sparse relation records.
 
         The result is still dense ``(B, H, N, N)`` because SDPA consumes a dense
         additive attention mask, but the expensive relation-type dimension is
@@ -876,9 +903,8 @@ class RSSTransformerNet(nn.Module):
             relation_ctx.relation_ids,
             relation_mult.transpose(0, 1),
         ).transpose(1, 2)
-        edge_values = edge_values.masked_fill(
-            ~relation_ctx.valid_edges[:, None, :],
-            0.0,
+        edge_values = edge_values * relation_ctx.edge_weights[:, None, :].to(
+            dtype=edge_values.dtype,
         )
 
         bias = ref.new_zeros(batch_size, num_heads, num_tokens, num_tokens)
@@ -1461,12 +1487,13 @@ class RSSTransformerNet(nn.Module):
                 if such a row is consumed by softmax downstream it becomes a
                 near-uniform distribution over the unified slots.
             relations: Either dense ``(batch, NUM_ATTENTION_RELATIONS,
-                num_tokens, num_tokens)`` uint8/bool directed relation planes
+                num_tokens, num_tokens)`` uint8 directed relation planes
                 or sparse eval-server coordinates ``(batch,
                 MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH)``
                 uint8. Dense rows are attention queries and columns are
-                attention keys; sparse rows are ``(relation_id, query, key)``
-                triplets padded with ``(0, 0, 0)``.
+                attention keys; sparse rows are ``(relation_id, query, key, value)``
+                records padded with ``(0, 0, 0, 0)``. Binary values are 0/1;
+                share counts are raw integers, normalized in the model by 7.
 
         Returns:
             policy_logits: ``(batch, UNIFIED_LOGIT_DIM)`` fp32 logits with
@@ -1516,11 +1543,11 @@ class RSSTransformerNet(nn.Module):
             ATTENTION_RELATION_COORD_WIDTH,
         )
         if tuple(relations.shape) == expected_dense_rel_shape:
-            if relations.dtype not in (torch.bool, torch.uint8):
+            if relations.dtype != torch.uint8:
                 raise AssertionError(
-                    f"dense relation planes must be bool or uint8; got {relations.dtype}"
+                    f"dense relation planes must be uint8; got {relations.dtype}"
                 )
-            relation_flags = relations.to(dtype=tokens.dtype)
+            relation_flags = self._normalize_dense_relations(relations, tokens)
         elif tuple(relations.shape) == expected_sparse_rel_shape:
             if relations.dtype != torch.uint8:
                 raise AssertionError(

@@ -5,10 +5,12 @@ import pytest
 
 from core.attention_relations import (
     ATTENTION_RELATION_COORD_WIDTH,
+    ATTENTION_RELATION_SCALES,
     MAX_ATTENTION_RELATION_EDGES,
     NUM_ATTENTION_RELATIONS,
     AttentionRelation,
 )
+from core.data import PY_SHARE_DIVISOR
 from core.relations import (
     get_num_attention_relations,
     get_relation_coord_data,
@@ -17,12 +19,13 @@ from core.relations import (
     get_relation_data_batch,
 )
 from core.state import GameState, get_layout
-from core.token_data import get_num_tokens
+from core.token_data import get_num_tokens, get_token_dim
 from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 from entities.deck import DECK
 from entities.player import PLAYERS
 from nn.policy_layout import UNIFIED_LOGIT_DIM
+from nn.model_contract import ModelInputSpec
 from train.eval_server import RemoteEvaluator, SharedEvalBuffers
 from train.replay_buffer import ReplayBuffer
 
@@ -42,10 +45,10 @@ def _materialize_relation_coords_np(
         (NUM_ATTENTION_RELATIONS, num_tokens, num_tokens),
         dtype=np.uint8,
     )
-    for relation_id, query_tok, key_tok in coords:
-        if relation_id == 0 and query_tok == 0 and key_tok == 0:
+    for relation_id, query_tok, key_tok, value in coords:
+        if value == 0:
             continue
-        dense[int(relation_id), int(query_tok), int(key_tok)] = 1
+        dense[int(relation_id), int(query_tok), int(key_tok)] = value
     return dense
 
 
@@ -110,6 +113,116 @@ def _state_with_fi_company(company_id: int) -> GameState:
 
 def test_relation_count_matches_cython_source() -> None:
     assert NUM_ATTENTION_RELATIONS == get_num_attention_relations()
+
+
+def test_share_normalization_matches_engine_maximum():
+    assert PY_SHARE_DIVISOR == max(corp.get_total_shares() for corp in CORPS) == 7
+    for relation in AttentionRelation:
+        expected = 1 / PY_SHARE_DIVISOR if relation in (
+            AttentionRelation.PLAYER_CORP_SHARE_COUNT,
+            AttentionRelation.CORP_PLAYER_SHARE_COUNT,
+        ) else 1
+        assert ATTENTION_RELATION_SCALES[relation] == expected
+
+
+def _state_with_share_quantity(num_players, shares):
+    state = GameState(num_players, max_players=5)
+    state.initialize_game(num_players, seed=321, max_players=5)
+    DECK.set_company_location(state, 0, int(CompanyLocation.LOC_PLAYER), 0)
+    CORPS[0].float_corp(state, player_id=0, company_id=0, market_index=10)
+    PLAYERS[0].set_shares(state, 0, 0)
+    CORPS[0].set_unissued_shares(state, 0)
+    CORPS[0].set_issued_shares(state, 7)
+    CORPS[0].set_bank_shares(state, 7)
+    PLAYERS[num_players - 1].set_shares(state, 0, shares)
+    return state
+
+
+@pytest.mark.parametrize("num_players", [3, 4, 5])
+@pytest.mark.parametrize("shares", [0, 1, 4, 7])
+def test_raw_share_quantities_survive_dense_and_sparse_extraction(num_players, shares):
+    state = _state_with_share_quantity(num_players, shares)
+    n = get_num_tokens(5)
+    dense = np.full((NUM_ATTENTION_RELATIONS, n, n), 99, dtype=np.uint8)
+    coords = np.full((MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH), 99, dtype=np.uint8)
+    get_relation_data(state, dense, max_players=5)
+    count = get_relation_coord_data(state, coords, max_players=5)
+    player, corp = PLAYER_TOKEN_START + num_players - 1, CORP_TOKEN_START
+    assert dense[AttentionRelation.PLAYER_CORP_SHARE_COUNT, player, corp] == shares
+    assert dense[AttentionRelation.CORP_PLAYER_SHARE_COUNT, corp, player] == shares
+    assert dense[AttentionRelation.PLAYER_OWNS_CORP_SHARES, player, corp] == bool(shares)
+    assert dense[AttentionRelation.CORP_HAS_PLAYER_SHAREHOLDER, corp, player] == bool(shares)
+    assert not dense[:, PLAYER_TOKEN_START + num_players:].any()
+    assert not dense[:, :, PLAYER_TOKEN_START + num_players:].any()
+    assert count == np.count_nonzero(dense)
+    assert not coords[count:].any()
+    np.testing.assert_array_equal(dense, _materialize_relation_coords_np(coords, num_tokens=n))
+
+    # Reusing worker buffers after selling out must clear both quantities and presence.
+    PLAYERS[num_players - 1].set_shares(state, 0, 0)
+    get_relation_data(state, dense, max_players=5)
+    get_relation_coord_data(state, coords, max_players=5)
+    assert not dense[AttentionRelation.PLAYER_CORP_SHARE_COUNT].any()
+    assert not dense[AttentionRelation.CORP_PLAYER_SHARE_COUNT].any()
+    np.testing.assert_array_equal(dense, _materialize_relation_coords_np(coords, num_tokens=n))
+
+
+def test_share_counts_round_trip_through_worker_ipc_and_replay(monkeypatch):
+    states = [_state_with_share_quantity(n, shares) for n, shares in ((3, 4), (5, 7))]
+    spec = ModelInputSpec(
+        model_type="transformer", num_players=5, value_dim=5,
+        policy_dim=int(UNIFIED_LOGIT_DIM), num_tokens=get_num_tokens(5),
+        token_dim=get_token_dim(3), layout_version=3,
+    )
+    shared = SharedEvalBuffers(num_workers=2, batch_size=1, num_players=5, input_spec=spec)
+    shared.init_bitmap([(0, 1), (1, 1)])
+    mask = np.zeros((2, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8)
+    mask[:, 0] = 1
+    # Each MCTS worker serves one player count; the server combines workers.
+    for worker, state in enumerate(states):
+        evaluator = RemoteEvaluator(5, shared, worker_idx=worker)
+        monkeypatch.setattr(evaluator, "_request_eval", lambda n: None)
+        evaluator.evaluate_leaves([state._array], mask[worker:worker + 1])
+    wire = np.stack([shared.get_input_relation_coords_np(worker)[0] for worker in range(2)])
+    replay = ReplayBuffer(capacity=2, state_size_int16=get_layout(5).total_size,
+                          num_players=5, min_players=3, max_players=5)
+    replay.add_stacked(
+        states=np.stack([s._array for s in states]), phase_ids=np.zeros(2, dtype=np.int8),
+        legal_masks=mask, policy_targets=mask.astype(np.float32),
+        value_targets=np.zeros((2, 5), dtype=np.float32),
+        player_counts=np.array([3, 5], dtype=np.uint8),
+    )
+    batch = replay.sample(2, np.random.default_rng(0))
+    for row, n in enumerate(batch["player_counts"].tolist()):
+        wire_row = 0 if n == 3 else 1
+        materialized = _materialize_relation_coords_np(wire[wire_row], num_tokens=get_num_tokens(5))
+        assert materialized[AttentionRelation.PLAYER_CORP_SHARE_COUNT,
+                            PLAYER_TOKEN_START + n - 1, CORP_TOKEN_START] == (4 if n == 3 else 7)
+        np.testing.assert_array_equal(batch["relations"][row].numpy(), materialized)
+
+
+def test_sparse_capacity_covers_full_portfolios_and_shareholders():
+    state = GameState(5)
+    state.initialize_game(5, seed=456)
+    for corp_id, corp in enumerate(CORPS):
+        DECK.set_company_location(state, corp_id, int(CompanyLocation.LOC_PLAYER), 0)
+        corp.float_corp(state, player_id=0, company_id=corp_id, market_index=corp_id + 5)
+        total = corp.get_total_shares()
+        corp.set_bank_shares(state, total - PLAYERS[0].get_shares(state, corp_id))
+        corp.set_issued_shares(state, total)
+        corp.set_unissued_shares(state, 0)
+        for player_id in range(min(5, total)):
+            PLAYERS[player_id].set_shares(state, corp_id, 1)
+    for company_id in range(8, 36):
+        DECK.set_company_location(state, company_id, int(CompanyLocation.LOC_CORP), company_id % 8)
+    coords = np.zeros((MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH), dtype=np.uint8)
+    n = get_num_tokens(5)
+    dense = np.zeros((NUM_ATTENTION_RELATIONS, n, n), dtype=np.uint8)
+    count = get_relation_coord_data(state, coords)
+    get_relation_data(state, dense)
+    assert count == 2 * 36 + 4 * 38 + 2 * 8 == 240
+    assert count <= MAX_ATTENTION_RELATION_EDGES
+    np.testing.assert_array_equal(dense, _materialize_relation_coords_np(coords, num_tokens=n))
 
 
 def test_get_relation_data_marks_corp_company_ownership_directions() -> None:
@@ -339,7 +452,7 @@ def test_get_relation_coord_data_matches_dense_relation_planes() -> None:
     count = get_relation_coord_data(state, coords)
     materialized = _materialize_relation_coords_np(coords, num_tokens=num_tokens)
 
-    assert count == int(dense.sum())
+    assert count == np.count_nonzero(dense)
     np.testing.assert_array_equal(materialized, dense)
     assert int(coords[count:].sum()) == 0
 
@@ -438,10 +551,10 @@ def test_get_relation_coord_data_with_max_players_omits_padded_player_tokens() -
         num_tokens=get_num_tokens(max_players),
     )
 
-    assert count == int(dense.sum())
+    assert count == np.count_nonzero(dense)
     assert count > 0
     assert int(coords[count:].sum()) == 0
-    assert np.all(coords[:count, 1:] < PLAYER_TOKEN_START + num_players)
+    assert np.all(coords[:count, 1:3] < PLAYER_TOKEN_START + num_players)
     np.testing.assert_array_equal(materialized, dense)
 
 

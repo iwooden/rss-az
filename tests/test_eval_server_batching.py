@@ -260,10 +260,11 @@ def test_shared_eval_buffers_allocates_uint8_relation_coords() -> None:
         ATTENTION_RELATION_COORD_WIDTH,
     )
 
-    worker_coords[0, 2] = (2, 5, 7)
+    worker_coords[0, 2] = (2, 5, 7, 1)
     assert int(shared_bufs._relation_coords[1, 0, 2, 0].item()) == 2
     assert int(shared_bufs._relation_coords[1, 0, 2, 1].item()) == 5
     assert int(shared_bufs._relation_coords[1, 0, 2, 2].item()) == 7
+    assert int(shared_bufs._relation_coords[1, 0, 2, 3].item()) == 1
 
 
 def test_materialize_relation_coords_fills_dense_planes_and_clears_padding() -> None:
@@ -271,10 +272,11 @@ def test_materialize_relation_coords_fills_dense_planes_and_clears_padding() -> 
     num_relations = NUM_ATTENTION_RELATIONS
     num_tokens = 57
     max_edges = 4
-    coords = torch.zeros(batch_size, max_edges, 3, dtype=torch.uint8)
-    coords[0, 0] = torch.tensor([2, 5, 7], dtype=torch.uint8)
-    coords[0, 1] = torch.tensor([0, 0, 0], dtype=torch.uint8)
-    coords[1, 0] = torch.tensor([3, 6, 8], dtype=torch.uint8)
+    coords = torch.zeros(batch_size, max_edges, ATTENTION_RELATION_COORD_WIDTH, dtype=torch.uint8)
+    quantity_relation = int(AttentionRelation.PLAYER_CORP_SHARE_COUNT)
+    coords[0, 0] = torch.tensor([2, 5, 7, 1], dtype=torch.uint8)
+    coords[0, 1] = torch.tensor([0, 0, 0, 0], dtype=torch.uint8)
+    coords[1, 0] = torch.tensor([quantity_relation, 54, 46, 7], dtype=torch.uint8)
     dense = torch.full(
         (batch_size, num_relations, num_tokens, num_tokens),
         9,
@@ -302,8 +304,8 @@ def test_materialize_relation_coords_fills_dense_planes_and_clears_padding() -> 
     )
 
     assert int(dense[0, 2, 5, 7].item()) == 1
-    assert int(dense[1, 3, 6, 8].item()) == 1
+    assert int(dense[1, quantity_relation, 54, 46].item()) == 7
     assert int(dense[0, 0, 0, 0].item()) == 0
     assert int(dense[1, 0, 0, 0].item()) == 0
     assert int(dense[2].sum().item()) == 0
-    assert int(dense.sum().item()) == 2
+    assert int(dense.sum().item()) == 8

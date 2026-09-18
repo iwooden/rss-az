@@ -77,6 +77,15 @@ aggregate view of the data the multihots encode.
 
 ## Attention Mask Slot
 
+Attention relations are extracted separately by `core/relations.pyx`.
+The shared v2/v3 contract has ten binary planes plus bidirectional raw
+player/corporation share-count planes, all uint8. Sparse IPC records contain
+`(relation_id, query_token, key_token, value)`; zero values mark padding.
+V3 normalizes share-count values by `PY_SHARE_DIVISOR` (7). V2 ignores these
+new planes/records and retains its original ten-relation checkpoint shape;
+it also accepts legacy dense ten-plane uint8/bool inputs.
+See `token-data-v3.md` for the weighted relation and input-mixing details.
+
 Every token type starts with:
 
 - `attn_mask` at slot 0 (scalar, 0/1)

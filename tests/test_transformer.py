@@ -148,13 +148,14 @@ def test_forward_rejects_wrong_token_dim(model: RSSTransformerNet, valid_inputs:
 def test_forward_accepts_relation_planes(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
     x, legal_mask = valid_inputs
     uint8_relations = _zero_relations(model, x.shape[0])
-    bool_relations = _zero_relations(model, x.shape[0], dtype=torch.bool)
-
     logits_with_uint8, values_with_uint8 = model(x, legal_mask, uint8_relations)
-    logits_with_bool, values_with_bool = model(x, legal_mask, bool_relations)
+    assert torch.isfinite(logits_with_uint8).all()
+    assert torch.isfinite(values_with_uint8).all()
 
-    assert torch.allclose(logits_with_uint8, logits_with_bool)
-    assert torch.allclose(values_with_uint8, values_with_bool)
+    # V2 consumes only the original binary relations, so bool remains valid.
+    logits_with_bool, values_with_bool = model(x, legal_mask, uint8_relations.bool())
+    torch.testing.assert_close(logits_with_uint8, logits_with_bool)
+    torch.testing.assert_close(values_with_uint8, values_with_bool)
 
 
 def test_forward_requires_relation_planes(model: RSSTransformerNet, valid_inputs: tuple[torch.Tensor, torch.Tensor]) -> None:
@@ -194,9 +195,85 @@ def test_relation_bias_multiplier_shape_and_zero_init() -> None:
     assert tuple(model.relation_bias_mult.shape) == (
         model.cfg.num_layers,
         model.cfg.num_heads,
-        NUM_ATTENTION_RELATIONS,
+        10,  # Frozen v2 checkpoint shape, independent of the transport schema.
     )
     assert torch.count_nonzero(model.relation_bias_mult).item() == 0
+
+
+def test_v2_ignores_quantity_relations_and_loads_ten_relation_weights() -> None:
+    torch.manual_seed(123)
+    cfg = TransformerConfig(num_players=3, d_model=32, num_heads=4, num_layers=1)
+    model = RSSTransformerNet(cfg).eval()
+    checkpoint_state = model.state_dict()
+    # Pin the old checkpoint shape independently of the current transport size.
+    checkpoint_state["relation_bias_mult"] = torch.randn(cfg.num_layers, cfg.num_heads, 10)
+    model.load_state_dict(checkpoint_state, strict=True)
+    x = torch.randn(2, cfg.num_tokens, cfg.token_dim)
+    x[:, :, 0] = 1
+    legal = torch.ones(2, U_DIM, dtype=torch.bool)
+    dense = _zero_relations(model, 2)
+    coords = _zero_relation_coords(2)
+    binary_edges = [
+        (AttentionRelation.CORP_OWNS_COMPANY, 46, 1),
+        (AttentionRelation.PLAYER_OWNS_CORP_SHARES, 54, 46),
+        (AttentionRelation.PLAYER_PRESIDENT_OF_CORP, 54, 46),
+    ]
+    for edge, (r, query, key) in enumerate(binary_edges):
+        dense[:, r, query, key] = 1
+        coords[:, edge] = torch.tensor([r, query, key, 1], dtype=torch.uint8)
+    with torch.inference_mode():
+        baseline = model(x, legal, dense[:, :10])
+        legacy_bool = model(x, legal, dense[:, :10].bool())
+        no_relations = model(x, legal, torch.zeros_like(dense))
+        assert not torch.equal(baseline[1], no_relations[1])
+        for actual, expected in zip(legacy_bool, baseline):
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        for shares in (1, 4, 7):
+            # Even arbitrary connectivity in the new planes must be irrelevant.
+            dense[:, 10:] = torch.randint(0, shares + 1, dense[:, 10:].shape, dtype=torch.uint8)
+            coords[:, 3] = torch.tensor(
+                [AttentionRelation.PLAYER_CORP_SHARE_COUNT, 54, 46, shares], dtype=torch.uint8,
+            )
+            coords[:, 4] = torch.tensor(
+                [AttentionRelation.CORP_PLAYER_SHARE_COUNT, 46, 54, shares], dtype=torch.uint8,
+            )
+            for relations in (dense, coords):
+                for actual, expected in zip(model(x, legal, relations), baseline):
+                    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_v2_compiled_cuda_ignores_sparse_quantity_records() -> None:
+    torch.manual_seed(123)
+    cfg = TransformerConfig(num_players=3, d_model=32, num_heads=4, num_layers=1)
+    model = RSSTransformerNet(cfg).cuda().eval()
+    with torch.no_grad():
+        model.relation_bias_mult.normal_()
+    # Real token magnitudes/selectors avoid amplifying bf16 rounding through
+    # v2's price Fourier features with arbitrary synthetic monetary inputs.
+    raw = np.empty((2, cfg.num_tokens, cfg.token_dim), dtype=np.float32)
+    for row in range(2):
+        state = GameState(3)
+        state.initialize_game(3, seed=row)
+        get_token_data(state, raw[row])
+    x = torch.from_numpy(raw).cuda()
+    legal = torch.ones(2, U_DIM, dtype=torch.bool, device="cuda")
+    coords = _zero_relation_coords(2, device=torch.device("cuda"))
+    coords[:, 0] = torch.tensor([AttentionRelation.PLAYER_OWNS_CORP_SHARES, 54, 46, 1],
+                                dtype=torch.uint8, device="cuda")
+    with_counts = coords.clone()
+    with_counts[:, 1] = torch.tensor([AttentionRelation.PLAYER_CORP_SHARE_COUNT, 54, 46, 7],
+                                     dtype=torch.uint8, device="cuda")
+    with_counts[:, 2] = torch.tensor([AttentionRelation.CORP_PLAYER_SHARE_COUNT, 46, 54, 7],
+                                     dtype=torch.uint8, device="cuda")
+    compiled = torch.compile(model, fullgraph=True)
+    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+        expected = model(x, legal, coords)
+        baseline = compiled(x, legal, coords)
+        actual = compiled(x, legal, with_counts)
+    for result, reference, eager in zip(actual, baseline, expected):
+        torch.testing.assert_close(result, reference, rtol=0, atol=0)
+        torch.testing.assert_close(result, eager, rtol=0.03, atol=3e-3)
 
 
 def test_relation_attention_bias_combines_planes_per_layer_and_head() -> None:
@@ -263,9 +340,9 @@ def test_sparse_relation_attention_bias_matches_dense_planes_with_duplicates() -
     relation_flags[0, relation_b, 2, 3] = 1.0
     relation_flags[0, relation_a, 4, 5] = 1.0
     relation_coords = _zero_relation_coords(1)
-    relation_coords[0, 0] = torch.tensor([relation_a, 2, 3], dtype=torch.uint8)
-    relation_coords[0, 1] = torch.tensor([relation_b, 2, 3], dtype=torch.uint8)
-    relation_coords[0, 2] = torch.tensor([relation_a, 4, 5], dtype=torch.uint8)
+    relation_coords[0, 0] = torch.tensor([relation_a, 2, 3, 1], dtype=torch.uint8)
+    relation_coords[0, 1] = torch.tensor([relation_b, 2, 3, 1], dtype=torch.uint8)
+    relation_coords[0, 2] = torch.tensor([relation_a, 4, 5, 1], dtype=torch.uint8)
     ref = torch.empty(1, cfg.num_tokens, cfg.d_model)
 
     with torch.no_grad():
@@ -294,8 +371,8 @@ def test_forward_accepts_sparse_relation_coords(
     dense_relations[0, relation_id, 2, 3] = 1
     dense_relations[1, relation_id, 4, 5] = 1
     sparse_relations = _zero_relation_coords(x.shape[0])
-    sparse_relations[0, 0] = torch.tensor([relation_id, 2, 3], dtype=torch.uint8)
-    sparse_relations[1, 0] = torch.tensor([relation_id, 4, 5], dtype=torch.uint8)
+    sparse_relations[0, 0] = torch.tensor([relation_id, 2, 3, 1], dtype=torch.uint8)
+    sparse_relations[1, 0] = torch.tensor([relation_id, 4, 5, 1], dtype=torch.uint8)
 
     with torch.no_grad():
         model.relation_bias_mult.zero_()

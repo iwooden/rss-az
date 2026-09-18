@@ -54,7 +54,7 @@ synthetic model-side tokens after projection.
 After type-specific projection and identity/type embeddings, v3 applies one
 simultaneous round of directed relation messages before the transformer trunk.
 A shared RMSNorm and two-layer GELU MLP transform each source token. For each
-of the ten existing relations, each recipient sums its visible neighbors,
+of the twelve relations, each recipient takes a weighted sum of visible neighbors,
 divides by the square root of their count (clamped to at least one), and
 applies a separate bias-free linear projection. Independent learned signed
 gains, initialized to 0.1, scale these relation contributions before adding
@@ -65,12 +65,31 @@ hidden/padded tokens neither send nor receive messages. There is no post-sum
 normalization, so neighborhood magnitude remains available. Square-root
 scaling moderates growth but does not make correlated neighbors scale-invariant.
 
-This stage uses the same binary relations as attention, including additive
-shareholding and presidency edges. It accepts both dense planes and sparse
-coordinates, aggregating sparse messages directly. Existing per-layer/head
-attention biases remain independent of the input-mixing gains. Input layout,
-IPC, and policy/value outputs are unchanged; model checkpoints now include
-the additional input-mixing parameters.
+This stage uses the same relations as attention: ten binary ownership,
+shareholding, and presidency planes, plus two raw share-count planes
+(`PLAYER_CORP_SHARE_COUNT` and `CORP_PLAYER_SHARE_COUNT`). Cython workers
+extract the count for the actual player/corporation pair in both directions.
+Dense planes contain uint8 0/1 flags or 0..7 counts. Models normalize only
+the count planes by `PY_SHARE_DIVISOR` (7), once per forward, for use in
+attention biases and input mixing. Presence, quantity, and presidency have
+independent learned coefficients/projections. Neighborhood normalization
+counts nonzero neighbors, not total share weight: doubling all quantities
+at fixed connectivity doubles the quantity relation's message contribution.
+The player-token share vector remains available for projections and policy
+head calculations.
+
+Sparse IPC uses uint8 `(relation_id, query_token, key_token, value)` records,
+with all-zero padding. Binary records have value 1; quantity records contain
+the raw share count. The 256-record capacity covers the conservative bound
+of 248 edges: 72 company-ownership, 160 shareholding/count, and 16 presidency
+edges. This is 1,024 bytes per state instead of 768 for the previous triplets.
+The eval model consumes sparse records directly; it does not build a full
+`(B, R, N, N)` tensor. Dense replay extraction uses the same Cython semantics.
+Both v2 and v3 accept this shared transport. V2 ignores the new count planes
+and sparse records, retains its original ten-relation parameter shape, and
+loads existing v2 checkpoints without conversion. V3 uses all twelve
+relations; v3 checkpoints from before this addition need updating/retraining.
+Token layout and policy/value output shapes are unchanged.
 
 Each token row is zero-padded to 98 features (`TokenDataSize.TOKEN_DIM`), the
 width of the Corp token. Per-type widths live in `core.token_data_v3.TokenWidth`:

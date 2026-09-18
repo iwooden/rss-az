@@ -5,12 +5,12 @@ Attention-relation extraction: compact GameState -> directed relation planes.
 uint8 buffer, where ``num_tokens`` is ``max_players + 54`` when padded
 extraction is requested. Each plane is directed: row ``i`` is the query token
 being updated, column ``j`` is the key/value token it may attend to. A 1 marks
-that the relation is present for that ordered token pair.
+that a binary relation is present; share-count planes hold the raw quantity.
 
 ``get_relation_coord_data`` emits the same information as sparse
-``(relation_id, query_token, key_token)`` uint8 triplets for the eval-server
-IPC path. The model still consumes dense relation planes; the eval server
-materializes the dense tensor on-device before the forward pass.
+``(relation_id, query_token, key_token, value)`` uint8 records for eval-server
+IPC. Models consume these sparse records directly without materializing the
+full relation-plane tensor. Quantities are normalized only in the model.
 
 The token indices mirror ``core.token_data`` / ``nn/transformer-v2.py``:
 companies live at rows [1, 37), corps at rows [46, 54), players after the
@@ -37,6 +37,8 @@ from core.relations cimport (
     REL_PLAYER_OWNS_COMPANY,
     REL_PLAYER_OWNS_CORP_SHARES,
     REL_PLAYER_PRESIDENT_OF_CORP,
+    REL_PLAYER_CORP_SHARE_COUNT,
+    REL_CORP_PLAYER_SHARE_COUNT,
 )
 from entities.company cimport company_owned_by_fi, company_owned_by_player
 from entities.corp cimport (
@@ -221,9 +223,9 @@ cpdef int get_relation_coord_data(
 
     ``coords`` must be C-contiguous with exact shape
     ``(MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH)``.
-    Each populated row is ``(relation_id, query_token, key_token)``. The
+    Each populated row is ``(relation_id, query_token, key_token, value)``. The
     function zeroes the full buffer before writing current-state coordinates,
-    leaving unused rows as the sentinel ``(0, 0, 0)``.
+    leaving unused rows as the sentinel ``(0, 0, 0, 0)``.
 
     Returns the number of real coordinates written.
     """
@@ -400,6 +402,7 @@ cdef void _fill_relations(
     cdef int player_id
     cdef int player_tok
     cdef int president_id
+    cdef int shares
 
     memset(
         &buffer[0, 0, 0],
@@ -446,9 +449,12 @@ cdef void _fill_relations(
         corp_tok = TOKEN_CORP_START + corp_id
         for player_id in range(num_players):
             player_tok = TOKEN_PLAYER_START + player_id
-            if _player_shares(state, player_id, corp_id) > 0:
+            shares = _player_shares(state, player_id, corp_id)
+            if shares > 0:
                 buffer[<int>REL_PLAYER_OWNS_CORP_SHARES, player_tok, corp_tok] = 1
                 buffer[<int>REL_CORP_HAS_PLAYER_SHAREHOLDER, corp_tok, player_tok] = 1
+                buffer[<int>REL_PLAYER_CORP_SHARE_COUNT, player_tok, corp_tok] = <unsigned char>shares
+                buffer[<int>REL_CORP_PLAYER_SHARE_COUNT, corp_tok, player_tok] = <unsigned char>shares
 
         if not corp_is_in_receivership(state, corp_id):
             president_id = corp_president_id(state, corp_id)
@@ -470,6 +476,7 @@ cdef int _fill_relation_coords(
     cdef int player_id
     cdef int player_tok
     cdef int president_id
+    cdef int shares
     cdef int count = 0
 
     memset(
@@ -548,7 +555,8 @@ cdef int _fill_relation_coords(
         corp_tok = TOKEN_CORP_START + corp_id
         for player_id in range(num_players):
             player_tok = TOKEN_PLAYER_START + player_id
-            if _player_shares(state, player_id, corp_id) > 0:
+            shares = _player_shares(state, player_id, corp_id)
+            if shares > 0:
                 count = _append_relation_coord(
                     coords,
                     count,
@@ -562,6 +570,14 @@ cdef int _fill_relation_coords(
                     <int>REL_CORP_HAS_PLAYER_SHAREHOLDER,
                     corp_tok,
                     player_tok,
+                )
+                count = _append_relation_coord(
+                    coords, count, <int>REL_PLAYER_CORP_SHARE_COUNT,
+                    player_tok, corp_tok, shares,
+                )
+                count = _append_relation_coord(
+                    coords, count, <int>REL_CORP_PLAYER_SHARE_COUNT,
+                    corp_tok, player_tok, shares,
                 )
 
         if not corp_is_in_receivership(state, corp_id):
@@ -592,11 +608,13 @@ cdef inline int _append_relation_coord(
     int relation_id,
     int query_tok,
     int key_tok,
+    int value=1,
 ) noexcept nogil:
     if count < <int>MAX_ATTENTION_RELATION_EDGES:
         coords[count, 0] = <unsigned char>relation_id
         coords[count, 1] = <unsigned char>query_tok
         coords[count, 2] = <unsigned char>key_tok
+        coords[count, 3] = <unsigned char>value
     return count + 1
 
 

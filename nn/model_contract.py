@@ -31,7 +31,8 @@ class ModelInputSpec:
     value_dim: int
     num_tokens: int
     token_dim: int
-    # Versions 2 and 3 share relation planes and token order.
+    # Versions 2 and 3 share token order and relation transport. V2 consumes
+    # only the original ten binary planes; v3 also uses the share-count planes.
     layout_version: int = 2
 
 
