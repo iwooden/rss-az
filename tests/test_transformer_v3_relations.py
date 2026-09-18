@@ -61,6 +61,28 @@ def _inputs(model, device="cpu"):
     return tokens, visible, dense, coords
 
 
+def test_company_identity_distinguishes_equal_stats_and_preserves_feature_inputs(model):
+    x = torch.zeros(2, model.cfg.num_tokens, model.cfg.token_dim)
+    baseline = model._project_tokens(x)
+    companies = baseline[0, model._company_slice]
+    assert torch.unique(companies, dim=0).shape[0] == len(COMPANIES)
+
+    company_id = COMPANY_NAME_TO_ID["KME"]
+    token_id = model._company_slice.start + company_id
+    with torch.no_grad():
+        model.company_id_embed.weight[company_id] += 0.1
+    changed = model._project_tokens(x)
+    unaffected = torch.arange(model.cfg.num_tokens) != token_id
+    torch.testing.assert_close(changed[:, unaffected], baseline[:, unaffected], rtol=0, atol=0)
+    assert (changed[:, token_id] - baseline[:, token_id]).abs().sum() > 0
+
+    # Identity supplements the stats: changing face value still changes the token.
+    x[:, token_id, 3] = 1
+    different_stats = model._project_tokens(x)
+    assert (different_stats[:, token_id] - changed[:, token_id]).abs().sum() > 0
+    torch.testing.assert_close(different_stats[:, unaffected], changed[:, unaffected], rtol=0, atol=0)
+
+
 def test_zero_edges_are_identity_and_unrelated_tokens_are_unchanged(model):
     tokens, visible, dense, coords = _inputs(model)
     dense = model._normalize_dense_relations(dense, tokens)
@@ -169,7 +191,7 @@ def test_forward_backward_and_sparse_parity(model, device):
     torch.testing.assert_close(logits, sparse_logits, rtol=rtol, atol=atol)
     torch.testing.assert_close(values, sparse_values, rtol=rtol, atol=atol)
     loss.backward()
-    for parameter in model.relation_input_mixing.parameters():
+    for parameter in [model.company_id_embed.weight, *model.relation_input_mixing.parameters()]:
         assert parameter.grad is not None
         assert torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0
 

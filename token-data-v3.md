@@ -173,6 +173,15 @@ reserved for `attn_mask`.
 
 Company identity is inferred from row order.
 
+V3 adds a learned identity embedding for each of the 36 companies to its
+projected features, alongside the shared company-type embedding, before
+relation mixing. This retains the economic stats while allowing independent
+company-specific representations. Initialization matches corp identity
+embeddings (truncated normal, standard deviation 0.02); the existing embedding
+optimizer rules apply (AdamW without weight decay, including when the trunk
+uses Muon). IDs are model-side nonpersistent buffers, with no extra token or
+IPC fields. This adds `36 * d_model` parameters and a new v3 checkpoint weight.
+
 - `attn_mask`
 - `is_selected`. 1 iff this is the current `active_company`.
 - Low price, normalized by `COMPANY_PRICE_DIVISOR`

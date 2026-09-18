@@ -443,6 +443,7 @@ class RSSTransformerNet(nn.Module):
     _static_company_relations: torch.Tensor
     _static_attention_relations: torch.Tensor
     _corp_ids: torch.Tensor
+    _company_ids: torch.Tensor
     _bid_offset_dollar_norm: torch.Tensor
     _dividend_amounts: torch.Tensor
     _par_prices: torch.Tensor
@@ -511,7 +512,7 @@ class RSSTransformerNet(nn.Module):
         # data into Linear layers. Entity relation/reference tails are also
         # skipped here; those relations now enter the trunk as Graphormer-style
         # attention bias planes. Learned additive state is limited to type
-        # embeddings and corp row-order identity embeddings.
+        # embeddings and company/corp row-order identity embeddings.
         # The engine-side buffer is rectangular at ``TOKEN_DIM`` so
         # ``get_token_data`` can fill it with a single nogil memcpy pattern,
         # but each projection still sizes itself to that token type's meaningful
@@ -576,8 +577,8 @@ class RSSTransformerNet(nn.Module):
             int(TokenWidth.TW_ACQ_PRICE) - self._token_feature_start,
             d,
         )
-        # Corp tokens keep a learned row-order identity embedding. Other entity
-        # identity and relation fields are consumed as ordinary projected input.
+        # Fixed company/corp row order supplies identity without extra input data.
+        self.company_id_embed = nn.Embedding(num_companies, d)
         self.corp_id_embed = nn.Embedding(num_corps, d)
         # Per-type additive embedding for every token. Added
         # post-projection in ``_project_tokens`` so the trunk still sees a
@@ -611,6 +612,9 @@ class RSSTransformerNet(nn.Module):
 
         self.register_buffer(
             "_corp_ids", torch.arange(num_corps, dtype=torch.long), persistent=False,
+        )
+        self.register_buffer(
+            "_company_ids", torch.arange(num_companies, dtype=torch.long), persistent=False,
         )
         # Per-slot dollar offset in /COMPANY_PRICE_DIVISOR units; added to the
         # active company's normalized face_value at runtime to form the actual
@@ -786,14 +790,16 @@ class RSSTransformerNet(nn.Module):
         return tensor.to(device=ref.device, dtype=ref.dtype)
 
     def _project_company_tokens(self, x: torch.Tensor) -> torch.Tensor:
-        """Project company tokens from their raw feature fields."""
-        return self.company_proj(
+        """Project company stats, adding learned row-order company identity."""
+        company_tokens = self.company_proj(
             x[
                 :,
                 self._company_slice,
                 self._token_feature_start:self._company_rel_tail_start,
             ]
         )
+        company_ids = self._match_dtype_device(self.company_id_embed(self._company_ids), company_tokens)
+        return company_tokens + company_ids
 
     def _project_corp_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project corp tokens, adding learned row-order corp identity."""
@@ -1717,6 +1723,7 @@ class RSSTransformerNet(nn.Module):
             elif isinstance(module, nn.RMSNorm):
                 nn.init.ones_(module.weight)
 
+        nn.init.trunc_normal_(self.company_id_embed.weight, std=0.02)
         nn.init.trunc_normal_(self.corp_id_embed.weight, std=0.02)
         # Per-type additive embeddings: same small-random init.
         nn.init.trunc_normal_(self.type_embeds.weight, std=0.02)
@@ -1756,6 +1763,7 @@ if __name__ == "__main__":
     ]
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     corp_id_params = model.corp_id_embed.weight.numel()
+    company_id_params = model.company_id_embed.weight.numel()
     type_params = model.type_embeds.weight.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
@@ -1781,6 +1789,7 @@ if __name__ == "__main__":
     print("Parameter breakdown:")
     for name, count in [
         ("Input projections", proj_params),
+        ("Company ID embeds", company_id_params),
         ("Corp ID embeds", corp_id_params),
         ("Type embeds", type_params),
         ("Relation input mixing", count_parameters(model.relation_input_mixing)),
