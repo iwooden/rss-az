@@ -55,10 +55,12 @@ from core.data import (
     DecisionPhase,
     PY_CASH_DIVISOR,
     PY_COMPANY_PRICE_DIVISOR,
+    PY_COMPANY_SYNERGY_DIVISOR,
     PY_SHARE_DIVISOR,
     PY_SHARE_PRICE_DIVISOR,
 )
 from core.token_data_v3 import TokenDataSize, TokenWidth, get_num_tokens, get_token_widths
+from entities.company import COMPANIES
 from nn.policy_layout import (
     NUM_PHASES,
     PHASE_OFFSETS,
@@ -74,6 +76,12 @@ from nn.policy_layout import (
 # Decision phases / action sizes all live in ``core.data`` and are imported
 # above. This module is strictly a consumer; editing policy readout widths or
 # adding token types happens over there.
+
+# Worker/replay relations keep their existing contract. Static relations are
+# built from engine data at model construction and never cross IPC.
+_COMPANY_SYNERGY_RELATION = NUM_ATTENTION_RELATIONS
+_COMPANY_SYNERGY_STRENGTH_RELATION = _COMPANY_SYNERGY_RELATION + 1
+_NUM_MODEL_RELATIONS = _COMPANY_SYNERGY_STRENGTH_RELATION + 1
 
 # Input-buffer token-type taxonomy. Index order must stay stable — the static
 # ``_type_ids`` buffer built in ``RSSTransformerNet.__init__`` indexes into
@@ -333,7 +341,8 @@ class RelationInputMixing(nn.Module):
     and independent signed gain. Empty neighborhoods contribute exactly zero.
     Source RMSNorm controls feature scale without erasing aggregate magnitude.
     Dense/sparse weights are already normalized. Sparse inputs aggregate
-    directly, without materializing relation planes.
+    directly, without materializing relation planes. Static company relations
+    use the same source map, restricted to the company-token block.
     """
 
     def __init__(self, d_model: int) -> None:
@@ -346,10 +355,10 @@ class RelationInputMixing(nn.Module):
         )
         self.relation_projs = nn.ModuleList([
             nn.Linear(d_model, d_model, bias=False)
-            for _ in range(NUM_ATTENTION_RELATIONS)
+            for _ in range(_NUM_MODEL_RELATIONS)
         ])
         # Nonzero gains let the message weights learn on the first step.
-        self.relation_gains = nn.Parameter(torch.full((NUM_ATTENTION_RELATIONS,), 0.1))
+        self.relation_gains = nn.Parameter(torch.full((_NUM_MODEL_RELATIONS,), 0.1))
 
     def forward(
         self,
@@ -357,6 +366,8 @@ class RelationInputMixing(nn.Module):
         visible: torch.Tensor,
         relation_flags: torch.Tensor | None,
         sparse_ctx: _SparseRelationContext | None,
+        static_relations: torch.Tensor | None = None,
+        company_slice: slice | None = None,
     ) -> torch.Tensor:
         sources: torch.Tensor = self.source_mlp(self.source_norm(tokens))
         gains = self.relation_gains.to(dtype=sources.dtype)
@@ -374,6 +385,21 @@ class RelationInputMixing(nn.Module):
             edge_visible = sparse_ctx.valid_edges & visible.gather(1, sparse_ctx.key_tokens)
 
         for relation_id, proj in enumerate(self.relation_projs):
+            if relation_id >= NUM_ATTENTION_RELATIONS:
+                if static_relations is None:
+                    continue
+                assert company_slice is not None
+                # Only companies participate. Use a compact, shared 36x36
+                # matrix instead of expanding the sparse per-state edge list.
+                adjacency = static_relations[relation_id - NUM_ATTENTION_RELATIONS].to(
+                    dtype=sources.dtype,
+                )[None] * visible[:, None, company_slice].to(dtype=sources.dtype)
+                aggregate = torch.bmm(adjacency, sources[:, company_slice])
+                count = (adjacency > 0).sum(-1, keepdim=True, dtype=torch.float32)
+                scale = count.clamp_min(1).rsqrt().to(dtype=aggregate.dtype)
+                contribution = gains[relation_id] * proj(aggregate * scale)
+                messages[:, company_slice] = messages[:, company_slice] + contribution
+                continue
             if relation_flags is not None:
                 adjacency = relation_flags[:, relation_id].to(dtype=sources.dtype)
                 adjacency = adjacency * visible[:, None, :].to(dtype=sources.dtype)
@@ -414,6 +440,8 @@ class RSSTransformerNet(nn.Module):
     # ``type_embeds(self._type_ids)`` lookups.
     _type_ids: torch.Tensor
     _relation_scales: torch.Tensor
+    _static_company_relations: torch.Tensor
+    _static_attention_relations: torch.Tensor
     _corp_ids: torch.Tensor
     _bid_offset_dollar_norm: torch.Tensor
     _dividend_amounts: torch.Tensor
@@ -621,6 +649,21 @@ class RSSTransformerNet(nn.Module):
 
         # Explicit relation messages enrich projected tokens before attention.
         self.relation_input_mixing = RelationInputMixing(d)
+        # The engine stores each synergy pair once for income accounting.
+        # Attention/messages need both directions, independent of current owner.
+        directed_synergies = torch.tensor([
+            [company.get_synergy_with(other) for other in range(num_companies)]
+            for company in COMPANIES
+        ])
+        synergy_bonus = torch.maximum(directed_synergies, directed_synergies.T).float()
+        static_company = torch.stack([
+            (synergy_bonus > 0).float(),
+            synergy_bonus / float(PY_COMPANY_SYNERGY_DIVISOR),
+        ])
+        self.register_buffer("_static_company_relations", static_company, persistent=False)
+        static_attention = torch.zeros(static_company.shape[0], self._num_tokens, self._num_tokens)
+        static_attention[:, self._company_slice, self._company_slice] = static_company
+        self.register_buffer("_static_attention_relations", static_attention, persistent=False)
 
         # --- Transformer trunk ---
         self.blocks = nn.ModuleList([
@@ -637,7 +680,7 @@ class RSSTransformerNet(nn.Module):
         self.relation_bias_mult = nn.Parameter(torch.zeros(
             cfg.num_layers,
             cfg.num_heads,
-            NUM_ATTENTION_RELATIONS,
+            _NUM_MODEL_RELATIONS,
         ))
         self.final_norm = nn.RMSNorm(d)
 
@@ -833,7 +876,18 @@ class RSSTransformerNet(nn.Module):
             self.relation_bias_mult[layer_idx],
             ref,
         )
-        return torch.einsum("brij,hr->bhij", relation_flags, relation_mult)
+        dynamic_bias = torch.einsum(
+            "brij,hr->bhij", relation_flags, relation_mult[:, :NUM_ATTENTION_RELATIONS],
+        )
+        return dynamic_bias + self._static_relation_attention_bias(layer_idx, ref)
+
+    def _static_relation_attention_bias(self, layer_idx: int, ref: torch.Tensor) -> torch.Tensor:
+        """Static company relations broadcast over the batch, with no IPC data."""
+        return torch.einsum(
+            "rij,hr->hij",
+            self._match_dtype_device(self._static_attention_relations, ref),
+            self._match_dtype_device(self.relation_bias_mult[layer_idx, :, NUM_ATTENTION_RELATIONS:], ref),
+        )
 
     def _prepare_sparse_relation_context(
         self,
@@ -913,7 +967,7 @@ class RSSTransformerNet(nn.Module):
             relation_ctx.flat_indices.reshape(-1),
             edge_values.reshape(-1),
         )
-        return bias
+        return bias + self._static_relation_attention_bias(layer_idx, ref)
 
     def _validate_policy_layout(self) -> None:
         """Validate policy readout widths against the shared action-size table.
@@ -1563,6 +1617,7 @@ class RSSTransformerNet(nn.Module):
         attn_mask = self._attention_mask(x)
         tokens = self.relation_input_mixing(
             tokens, attn_mask[:, 0, 0, :], relation_flags, sparse_relation_ctx,
+            self._static_company_relations, self._company_slice,
         )
 
         for layer_idx, block in enumerate(self.blocks):

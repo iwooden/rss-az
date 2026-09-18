@@ -54,7 +54,7 @@ synthetic model-side tokens after projection.
 After type-specific projection and identity/type embeddings, v3 applies one
 simultaneous round of directed relation messages before the transformer trunk.
 A shared RMSNorm and two-layer GELU MLP transform each source token. For each
-of the twelve relations, each recipient takes a weighted sum of visible neighbors,
+of the fourteen relations, each recipient takes a weighted sum of visible neighbors,
 divides by the square root of their count (clamped to at least one), and
 applies a separate bias-free linear projection. Independent learned signed
 gains, initialized to 0.1, scale these relation contributions before adding
@@ -78,6 +78,25 @@ at fixed connectivity doubles the quantity relation's message contribution.
 The player-token share vector remains available for projections and policy
 head calculations.
 
+The thirteenth and fourteenth relations are static company-to-company
+**synergy presence** and **synergy strength**.
+V3 reads the engine's synergy table through `Company.get_synergy_with` once
+at model construction and symmetrizes it: either engine direction establishes
+both attention/message directions. Presence entries are binary; strength
+entries contain the bonus divided by `PY_COMPANY_SYNERGY_DIVISOR` (16).
+Both are independent of current ownership and describe potential synergy, not realized
+corporation income. There are no self-edges or edges to non-company tokens.
+The engine's one-direction table remains unchanged for income accounting.
+
+Each synergy relation has its own learned per-layer/per-head attention coefficient, input
+projection, and signed mixing gain, with the same initialization and decay
+rules as other relations. Static matrices are nonpersistent device buffers
+rebuilt from engine data on load. Input mixing uses compact 36x36 company
+matrices and counts only visible neighbors, regardless of bonus weight.
+Attention broadcasts a static bias
+over the batch and retains the normal hidden-key mask. No synergy data is
+added to worker extraction, replay planes, or IPC records.
+
 Sparse IPC uses uint8 `(relation_id, query_token, key_token, value)` records,
 with all-zero padding. Binary records have value 1; quantity records contain
 the raw share count. The 256-record capacity covers the conservative bound
@@ -87,8 +106,9 @@ The eval model consumes sparse records directly; it does not build a full
 `(B, R, N, N)` tensor. Dense replay extraction uses the same Cython semantics.
 Both v2 and v3 accept this shared transport. V2 ignores the new count planes
 and sparse records, retains its original ten-relation parameter shape, and
-loads existing v2 checkpoints without conversion. V3 uses all twelve
-relations; v3 checkpoints from before this addition need updating/retraining.
+loads existing v2 checkpoints without conversion. V3 uses all twelve transported
+relations plus the two static synergy relations; v3 checkpoints from before these
+additions need updating/retraining.
 Token layout and policy/value output shapes are unchanged.
 
 Each token row is zero-padded to 98 features (`TokenDataSize.TOKEN_DIM`), the

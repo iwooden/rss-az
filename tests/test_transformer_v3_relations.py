@@ -9,6 +9,8 @@ from core.attention_relations import (
     NUM_ATTENTION_RELATIONS,
     AttentionRelation,
 )
+from core.data import COMPANY_NAME_TO_ID
+from entities.company import COMPANIES
 from nn import _load_model_module
 from nn.policy_layout import UNIFIED_LOGIT_DIM
 
@@ -27,6 +29,7 @@ def _inputs(model, device="cpu"):
     tokens = torch.randn(2, n, model.cfg.d_model, device=device)
     visible = torch.ones(2, n, dtype=torch.bool, device=device)
     visible[0, -2:] = False  # Mixed 3p/5p batch.
+    visible[0, model._company_slice.stop - 1] = False  # Hidden company in the deck.
     dense = torch.zeros(2, NUM_ATTENTION_RELATIONS, n, n, dtype=torch.uint8, device=device)
     coords = torch.zeros(
         2, MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH,
@@ -135,9 +138,10 @@ def test_dense_sparse_messages_and_parameter_gradients_match(model):
     mixing = model.relation_input_mixing
     params = [tokens, *mixing.parameters()]
     target = torch.randn_like(tokens)
-    dense_out = mixing(tokens, visible, model._normalize_dense_relations(dense, tokens), None)
+    static_args = (model._static_company_relations, model._company_slice)
+    dense_out = mixing(tokens, visible, model._normalize_dense_relations(dense, tokens), None, *static_args)
     dense_grads = torch.autograd.grad((dense_out * target).sum(), params)
-    sparse_out = mixing(tokens, visible, None, model._prepare_sparse_relation_context(coords))
+    sparse_out = mixing(tokens, visible, None, model._prepare_sparse_relation_context(coords), *static_args)
     sparse_grads = torch.autograd.grad((sparse_out * target).sum(), params)
     torch.testing.assert_close(dense_out, sparse_out)
     for dense_grad, sparse_grad in zip(dense_grads, sparse_grads):
@@ -289,4 +293,161 @@ def test_dense_sparse_normalization_rounds_all_share_counts_identically(dtype):
     torch.testing.assert_close(
         normalized[:, r, query, key:key + 7], context.edge_weights[:, :7].to(dtype),
         rtol=0, atol=0,
+    )
+
+
+def test_static_synergies_match_engine_pairs_without_changing_engine_table(model):
+    directed = torch.tensor([
+        [company.get_synergy_with(other) for other in range(len(COMPANIES))]
+        for company in COMPANIES
+    ])
+    assert not torch.equal(directed, directed.T)
+    assert not ((directed > 0) & (directed.T > 0)).any()
+    expected = ((directed > 0) | (directed.T > 0)).float()
+    actual = model._static_company_relations[0]
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual, actual.T, rtol=0, atol=0)
+    assert not actual.diagonal().any()
+    for first, second in (("KME", "BME"), ("CDG", "MAD")):
+        assert actual[COMPANY_NAME_TO_ID[first], COMPANY_NAME_TO_ID[second]] == 1
+    assert actual[COMPANY_NAME_TO_ID["BME"], COMPANY_NAME_TO_ID["MAD"]] == 0
+    full = model._static_attention_relations[0]
+    torch.testing.assert_close(full[model._company_slice, model._company_slice], actual)
+    assert full.sum() == actual.sum()  # No edges to non-company tokens.
+    strength = model._static_company_relations[1]
+    torch.testing.assert_close(strength, (directed + directed.T).float() / 16, rtol=0, atol=0)
+    torch.testing.assert_close(strength, strength.T, rtol=0, atol=0)
+    assert strength[COMPANY_NAME_TO_ID["KME"], COMPANY_NAME_TO_ID["BME"]] == 1 / 16
+    assert strength[COMPANY_NAME_TO_ID["CDG"], COMPANY_NAME_TO_ID["MAD"]] == 1
+    full_strength = model._static_attention_relations[1]
+    torch.testing.assert_close(full_strength[model._company_slice, model._company_slice], strength)
+    assert full_strength.sum() == strength.sum()
+    assert not any(name.startswith("_static_") for name in model.state_dict())
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_static_synergy_bias_is_symmetric_and_independent_per_head(model, sparse):
+    tokens, _, dense, coords = _inputs(model)
+    coefficients = torch.tensor([[2., -1.], [-3., 4.], [0., 2.], [0.5, 0.]])
+    with torch.no_grad():
+        model.relation_bias_mult.zero_()
+        model.relation_bias_mult[0, :, NUM_ATTENTION_RELATIONS:] = coefficients
+    if sparse:
+        bias = model._sparse_relation_attention_bias(
+            model._prepare_sparse_relation_context(coords * 0), 0, tokens,
+        )
+    else:
+        bias = model._relation_attention_bias(
+            model._normalize_dense_relations(dense * 0, tokens), 0, tokens,
+        )
+    presence, strength = model._static_attention_relations
+    expected = (
+        coefficients[None, :, 0, None, None] * presence
+        + coefficients[None, :, 1, None, None] * strength
+    )
+    torch.testing.assert_close(bias, expected.expand_as(bias), rtol=0, atol=0)
+    torch.testing.assert_close(bias, bias.transpose(-1, -2), rtol=0, atol=0)
+    bias.sum().backward()
+    grad = model.relation_bias_mult.grad
+    assert grad is not None
+    assert torch.all(grad[0, :, NUM_ATTENTION_RELATIONS:] > 0)
+    assert not grad[0, :, :NUM_ATTENTION_RELATIONS].any()
+
+
+def test_static_synergy_attention_cannot_read_hidden_company(model):
+    tokens, visible, dense, _ = _inputs(model)
+    hidden = model._company_slice.start + COMPANY_NAME_TO_ID["KME"]
+    visible[:, hidden] = False
+    with torch.no_grad():
+        model.relation_bias_mult[:, :, NUM_ATTENTION_RELATIONS:] = 3
+    bias = model._relation_attention_bias(model._normalize_dense_relations(dense * 0, tokens), 0, tokens)
+    block = model.blocks[0]
+    expected = block(tokens, visible[:, None, None, :], bias)
+    changed = tokens.clone()
+    changed[:, hidden] = torch.randn_like(changed[:, hidden]) * 100
+    actual = block(changed, visible[:, None, None, :], bias)
+    torch.testing.assert_close(actual[visible], expected[visible], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+@pytest.mark.parametrize("static_relation", [0, 1])
+def test_static_synergy_messages_respect_visibility_degree_and_gain(model, sparse, static_relation):
+    tokens, visible, dense, coords = _inputs(model)
+    dense.zero_()
+    coords.zero_()
+    visible.zero_()
+    receiver, source, second_source = [
+        model._company_slice.start + COMPANY_NAME_TO_ID[name]
+        for name in ("KME", "BME", "MHE")
+    ]
+    visible[:, [receiver, source]] = True
+    tokens[:, receiver] = 0
+    tokens[:, second_source] = tokens[:, source]
+    flags = None if sparse else model._normalize_dense_relations(dense, tokens)
+    ctx = model._prepare_sparse_relation_context(coords) if sparse else None
+    mixing = model.relation_input_mixing
+    relation_id = NUM_ATTENTION_RELATIONS + static_relation
+    with torch.no_grad():
+        mixing.relation_gains[NUM_ATTENTION_RELATIONS:] = 0
+        mixing.relation_gains[relation_id] = 0.1
+
+    def mix(inputs):
+        return mixing(inputs, visible, flags, ctx, model._static_company_relations, model._company_slice)
+
+    actual = mix(tokens)
+    one = actual[:, receiver].clone()
+    assert one.abs().sum() > 0
+    reverse_tokens = tokens.clone()
+    reverse_tokens[:, receiver] = torch.randn_like(tokens[:, receiver])
+    assert (mix(reverse_tokens)[:, source] - tokens[:, source]).abs().sum() > 0
+    torch.testing.assert_close(actual[~visible], tokens[~visible], rtol=0, atol=0)
+    changed = tokens.clone()
+    changed[~visible] = torch.randn_like(changed[~visible]) * 100
+    torch.testing.assert_close(mix(changed)[visible], actual[visible], rtol=0, atol=0)
+
+    visible[:, second_source] = True
+    two = mix(tokens)[:, receiver]
+    torch.testing.assert_close(two, one * (2 ** 0.5))
+    with torch.no_grad():
+        mixing.relation_gains[relation_id] *= -2
+    torch.testing.assert_close(mix(tokens)[:, receiver], two * -2)
+    with torch.no_grad():
+        mixing.relation_gains[relation_id] = 0
+    torch.testing.assert_close(mix(tokens), tokens, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_synergy_strength_scales_messages_by_bonus_without_weighted_degree(model, sparse):
+    tokens, visible, dense, coords = _inputs(model)
+    receiver, large_source, small_source = [
+        model._company_slice.start + COMPANY_NAME_TO_ID[name]
+        for name in ("CDG", "MAD", "E")  # Bonuses 16 and 8.
+    ]
+    tokens[:, receiver] = 0
+    tokens[:, small_source] = tokens[:, large_source]
+    mixing = model.relation_input_mixing
+    presence_id, strength_id = NUM_ATTENTION_RELATIONS, NUM_ATTENTION_RELATIONS + 1
+    # Equal projections isolate the two relations' different edge weights.
+    with torch.no_grad():
+        mixing.relation_projs[strength_id].weight.copy_(mixing.relation_projs[presence_id].weight)
+    flags = None if sparse else model._normalize_dense_relations(dense * 0, tokens)
+    ctx = model._prepare_sparse_relation_context(coords * 0) if sparse else None
+
+    def message(relation_id, neighbors):
+        visible.zero_()
+        visible[:, [receiver, *neighbors]] = True
+        with torch.no_grad():
+            mixing.relation_gains[NUM_ATTENTION_RELATIONS:] = 0
+            mixing.relation_gains[relation_id] = 0.1
+        return mixing(
+            tokens, visible, flags, ctx, model._static_company_relations, model._company_slice,
+        )[:, receiver]
+
+    presence = message(presence_id, [large_source])
+    assert presence.abs().sum() > 0
+    torch.testing.assert_close(message(presence_id, [small_source]), presence)
+    torch.testing.assert_close(message(strength_id, [large_source]), presence)
+    torch.testing.assert_close(message(strength_id, [small_source]), presence / 2)
+    torch.testing.assert_close(
+        message(strength_id, [large_source, small_source]), presence * (1.5 / (2 ** 0.5)),
     )
