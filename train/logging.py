@@ -414,7 +414,7 @@ class TrainingLogger:
             f"heads={config.num_heads}, layers={config.num_layers}, d_ff={d_ff}",
         )
         table.add_row(
-            "Phase conditioning",
+            "Phase conditioning (v2 only)",
             "adaLN enabled" if config.phase_conditioning else "disabled",
         )
         table.add_row(

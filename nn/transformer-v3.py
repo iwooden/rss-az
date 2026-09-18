@@ -14,7 +14,8 @@ per-price bid and remaining-cash features. IPO uses corporation and pass MLPs;
 PAR scores all prices jointly with the engine's raw capitalization previews.
 DIVIDENDS jointly scores all amounts with payout, cash, and nominal-move features.
 Acquisition uses corporation/company candidate MLPs and a joint price MLP.
-Only ISSUE and ACQ_OFFER retain query/key scoring.
+ISSUE jointly scores pass/issue from player/corporation/issue embeddings.
+ACQ_OFFER jointly scores reject/accept from player/corporation/company/offer embeddings.
 
 V3 adds actor-relative INVEST trade history to corp tokens and persistent
 per-player round-trip flags. Layout 3 is selected by this model's contract;
@@ -23,7 +24,7 @@ the game state and attention relation planes are shared with v2.
 Key differences from the MLP model (nn/template.py):
   - Input: (batch, num_tokens, token_dim) token features, not flat state vector
   - No state rotation: active player marked with is_active flag
-  - Actor-conditioned policy: MLP readouts and remaining query/key heads
+  - Actor-conditioned policy: phase-specific MLP readouts
   - ACQ factored into three single-entity sub-phases (corp/company/price)
   - Unified policy output: every readout writes into a static
     (B, UNIFIED_LOGIT_DIM) tensor, with illegal slots masked by caller input
@@ -97,8 +98,6 @@ INPUT_LAYOUT_VERSION = 3
 _GELU_APPROX = "tanh"
 _TOKEN_FEATURE_START = 1
 _IS_SELECTED_OFFSET = 1
-_GLOBAL_PHASE_OFFSET = 1
-_GLOBAL_PHASE_STOP = _GLOBAL_PHASE_OFFSET + NUM_PHASES
 # Offsets inside a company feature slice after the attention-mask slot is dropped.
 _COMPANY_LOW_PRICE_FEATURE_OFFSET = 1
 _COMPANY_FACE_VALUE_FEATURE_OFFSET = 2
@@ -174,11 +173,9 @@ class TransformerConfig:
     # max_players; each state still encodes its actual player count.
     num_players: int = 3  # 3-5 supported
     d_model: int = 256
-    d_proj: int = 64
     num_heads: int = 4
     num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension is rounded up to a multiple of 64.
-    phase_conditioning: bool = False
 
     # Raw feature width per token (zero-padded to same size across types).
     # Sourced from core.token_data so the model and the Cython extractor
@@ -191,15 +188,11 @@ class TransformerConfig:
     def __post_init__(self) -> None:
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
         assert self.d_model > 0, f"d_model must be positive, got {self.d_model}"
-        assert self.d_proj > 0, f"d_proj must be positive, got {self.d_proj}"
         assert self.num_heads > 0, f"num_heads must be positive, got {self.num_heads}"
         assert self.num_layers > 0, f"num_layers must be positive, got {self.num_layers}"
         assert self.ff_mult > 0, f"ff_mult must be positive, got {self.ff_mult}"
         assert self.d_model % self.num_heads == 0, (
             f"d_model {self.d_model} must be divisible by num_heads {self.num_heads}"
-        )
-        assert isinstance(self.phase_conditioning, bool), (
-            f"phase_conditioning must be bool, got {self.phase_conditioning!r}"
         )
         object.__setattr__(self, "_num_tokens", int(get_num_tokens(self.num_players)))
 
@@ -262,14 +255,11 @@ class TransformerBlock(nn.Module):
         d_model: int,
         num_heads: int,
         d_ff: int,
-        *,
-        phase_conditioning: bool = False,
     ) -> None:
         super().__init__()
         assert d_model % num_heads == 0, (
             f"d_model {d_model} must be divisible by num_heads {num_heads}"
         )
-        self.phase_conditioning = phase_conditioning
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.attn_norm = nn.RMSNorm(d_model)
@@ -282,44 +272,15 @@ class TransformerBlock(nn.Module):
         self.ffn_gate = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_up = nn.Linear(d_model, d_ff, bias=False)
         self.ffn_down = nn.Linear(d_ff, d_model, bias=False)
-        # Direct per-phase adaptive RMSNorm + residual-gate parameters.
-        # Zero-initialized in RSSTransformerNet._init_weights, so enabling
-        # conditioning starts each block as an identity transform.
-        self.phase_mod: nn.Embedding | None = (
-            nn.Embedding(NUM_PHASES, 6 * d_model)
-            if phase_conditioning
-            else None
-        )
 
     def forward(
         self,
         x: torch.Tensor,
         attn_mask: torch.Tensor,
         relation_bias: torch.Tensor,
-        phase_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         h = self.attn_norm(x)
         B, N, D = h.shape
-        phase_mod = self.phase_mod
-        attn_resid_gate: torch.Tensor | None = None
-        ffn_scale: torch.Tensor | None = None
-        ffn_shift: torch.Tensor | None = None
-        ffn_resid_gate: torch.Tensor | None = None
-        if phase_mod is not None:
-            if phase_ids is None:
-                raise AssertionError(
-                    "phase_ids are required when phase_conditioning is enabled"
-                )
-            mod = phase_mod(phase_ids).to(device=h.device, dtype=h.dtype)
-            (
-                attn_scale,
-                attn_shift,
-                attn_resid_gate,
-                ffn_scale,
-                ffn_shift,
-                ffn_resid_gate,
-            ) = mod.chunk(6, dim=-1)
-            h = h * (1.0 + attn_scale[:, None, :]) + attn_shift[:, None, :]
         qkv = self.qkv_proj(h).reshape(B, N, 3, self.num_heads, self.head_dim)
         # (3, B, heads, N, head_dim) so unbind(0) yields three
         # (B, heads, N, head_dim) tensors. The contiguous call gives Inductor's
@@ -334,16 +295,9 @@ class TransformerBlock(nn.Module):
         # (B, heads, N, head_dim) -> (B, N, D)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, D)
         h = self.out_proj(attn_out)
-        if attn_resid_gate is not None:
-            x = x + attn_resid_gate[:, None, :] * h
-        else:
-            x = x + h
+        x = x + h
         h = self.ffn_norm(x)
-        if ffn_scale is not None and ffn_shift is not None:
-            h = h * (1.0 + ffn_scale[:, None, :]) + ffn_shift[:, None, :]
         h = self.ffn_down(F.silu(self.ffn_gate(h)) * self.ffn_up(h))
-        if ffn_resid_gate is not None:
-            return x + ffn_resid_gate[:, None, :] * h
         return x + h
 
 
@@ -459,11 +413,6 @@ class RSSTransformerNet(nn.Module):
         self._fi_rel_tail_start = _FI_REL_TAIL_START
         self._corp_rel_tail_start = _CORP_REL_TAIL_START
         self._player_rel_tail_start = _PLAYER_REL_TAIL_START
-        self._global_info_feature_start = (
-            _GLOBAL_PHASE_STOP
-            if cfg.phase_conditioning
-            else self._token_feature_start
-        )
         self.player_proj = nn.Linear(
             self._player_rel_tail_start - self._token_feature_start,
             d,
@@ -485,7 +434,7 @@ class RSSTransformerNet(nn.Module):
             d,
         )
         self.global_info_proj = nn.Linear(
-            int(TokenWidth.TW_GLOBAL_INFO) - self._global_info_feature_start,
+            int(TokenWidth.TW_GLOBAL_INFO) - self._token_feature_start,
             d,
         )
         self.invest_proj = nn.Linear(
@@ -593,7 +542,6 @@ class RSSTransformerNet(nn.Module):
                 d,
                 cfg.num_heads,
                 _ffn_hidden_dim(cfg),
-                phase_conditioning=cfg.phase_conditioning,
             )
             for _ in range(cfg.num_layers)
         ])
@@ -605,8 +553,8 @@ class RSSTransformerNet(nn.Module):
         self.final_norm = nn.RMSNorm(d)
 
         # --- INVEST candidate MLP readouts ---
-        # Hidden width follows the trunk; d_proj is only used by query/key
-        # readouts. All three scorers participate in the same policy softmax.
+        # Hidden width follows the trunk. All three scorers participate in
+        # the same policy softmax.
         self.invest_auction_head = nn.Sequential(
             nn.Linear(3 * d, d), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d, 1),
@@ -678,14 +626,17 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(d, num_acq_prices),
         )
 
-        # --- Query/key readouts for the remaining binary decisions ---
-        dp = cfg.d_proj
-        self.issue_query_proj = nn.Linear(3 * d, dp, bias=False)
-        self.issue_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.issue_share_key_proj = nn.Linear(d, dp, bias=False)
-        self.acq_offer_query_proj = nn.Linear(4 * d, dp, bias=False)
-        self.acq_offer_pass_key_proj = nn.Linear(d, dp, bias=False)
-        self.acq_offer_accept_key_proj = nn.Linear(d, dp, bias=False)
+        # --- ISSUE: jointly score pass and issuing one share ---
+        self.issue_head = nn.Sequential(
+            nn.Linear(3 * d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 2),
+        )
+
+        # --- ACQ_OFFER: jointly score rejecting and accepting the offer ---
+        self.acq_offer_head = nn.Sequential(
+            nn.Linear(4 * d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 2),
+        )
 
         # --- Value head (applied per player token) ---
         self.value_head = nn.Sequential(
@@ -735,18 +686,12 @@ class RSSTransformerNet(nn.Module):
         )
 
     def _project_global_info_token(self, x: torch.Tensor) -> torch.Tensor:
-        """Project global info.
-
-        When direct phase conditioning is enabled, the decision-phase one-hot
-        feeds the per-block modulation path and is omitted here. When it is
-        disabled, keep the one-hot in the global token so phase remains visible
-        to the trunk.
-        """
+        """Project global info, including the decision-phase one-hot."""
         return self.global_info_proj(
             x[
                 :,
                 self._global_info_idx,
-                self._global_info_feature_start:int(TokenWidth.TW_GLOBAL_INFO),
+                self._token_feature_start:int(TokenWidth.TW_GLOBAL_INFO),
             ]
         )
 
@@ -772,15 +717,6 @@ class RSSTransformerNet(nn.Module):
         value slots in mixed-count training.
         """
         return (x[:, :, 0] > 0.5)[:, None, None, :]
-
-    def _phase_ids(self, x: torch.Tensor) -> torch.Tensor:
-        """Return active decision-phase ids from the GlobalInfo one-hot."""
-        phase_onehot = x[
-            :,
-            self._global_info_idx,
-            _GLOBAL_PHASE_OFFSET:_GLOBAL_PHASE_STOP,
-        ]
-        return phase_onehot.argmax(dim=-1)
 
     def _relation_attention_bias(
         self,
@@ -927,7 +863,7 @@ class RSSTransformerNet(nn.Module):
         )
         if _phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER) != 2:
             raise AssertionError(
-                "ACQ_OFFER policy readout has two projected keys; "
+                "ACQ_OFFER policy readout has two output logits; "
                 f"PHASE_ACTION_SIZES reports {_phase_action_size(DecisionPhase.DPHASE_ACQ_OFFER)}"
             )
         block_widths[int(DecisionPhase.DPHASE_ACQ_OFFER)] = 2
@@ -940,7 +876,7 @@ class RSSTransformerNet(nn.Module):
         )
         if _phase_action_size(DecisionPhase.DPHASE_ISSUE) != 2:
             raise AssertionError(
-                "ISSUE policy readout has two projected keys; "
+                "ISSUE policy readout has two output logits; "
                 f"PHASE_ACTION_SIZES reports {_phase_action_size(DecisionPhase.DPHASE_ISSUE)}"
             )
         block_widths[int(DecisionPhase.DPHASE_ISSUE)] = 2
@@ -1052,17 +988,6 @@ class RSSTransformerNet(nn.Module):
             active_corp=self._active_token(x, self._corp_slice, corp_tokens),
             active_company=self._active_token(x, self._company_slice, company_tokens),
         )
-
-    def _query_key_logits(
-        self,
-        query_input: torch.Tensor,
-        query_proj: nn.Linear,
-        keys: torch.Tensor,
-    ) -> torch.Tensor:
-        """Project one query per row and score it against candidate keys."""
-        query = query_proj(query_input)
-        logits = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)
-        return logits / math.sqrt(self.cfg.d_proj)
 
     def _actor_corp_shares(self, ctx: _PolicyContext) -> torch.Tensor:
         """Current actor's per-corp holdings, retaining /SHARE_DIVISOR units."""
@@ -1263,38 +1188,22 @@ class RSSTransformerNet(nn.Module):
 
     def _issue_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build ISSUE logits: pass/no-issue plus issue one share."""
-        keys = torch.stack(
-            [
-                self.issue_pass_key_proj(ctx.active_corp),
-                self.issue_share_key_proj(ctx.active_corp),
-            ],
-            dim=1,
-        )
-        query_input = torch.cat(
+        return self.issue_head(torch.cat(
             [ctx.active_player, ctx.active_corp, ctx.tokens[:, self._issue_idx]],
             dim=-1,
-        )
-        return self._query_key_logits(query_input, self.issue_query_proj, keys)
+        ))
 
     def _acq_offer_logits(self, ctx: _PolicyContext) -> torch.Tensor:
         """Build ACQ_OFFER logits: pass/reject plus accept offer."""
-        keys = torch.stack(
-            [
-                self.acq_offer_pass_key_proj(ctx.active_company),
-                self.acq_offer_accept_key_proj(ctx.active_company),
-            ],
-            dim=1,
-        )
-        query_input = torch.cat(
+        return self.acq_offer_head(torch.cat(
             [
                 ctx.active_player,
                 ctx.active_corp,
-                ctx.tokens[:, self._acq_offer_idx],
                 ctx.active_company,
+                ctx.tokens[:, self._acq_offer_idx],
             ],
             dim=-1,
-        )
-        return self._query_key_logits(query_input, self.acq_offer_query_proj, keys)
+        ))
 
     def _par_outcome_features(self, x: torch.Tensor) -> torch.Tensor:
         """Per price: price, payment, cash left, corp cash, issued shares.
@@ -1540,7 +1449,6 @@ class RSSTransformerNet(nn.Module):
                 f"got {tuple(relations.shape)}"
             )
         attn_mask = self._attention_mask(x)
-        phase_ids = self._phase_ids(x) if self.cfg.phase_conditioning else None
 
         for layer_idx, block in enumerate(self.blocks):
             if relation_flags is not None:
@@ -1556,7 +1464,7 @@ class RSSTransformerNet(nn.Module):
                     layer_idx,
                     tokens,
                 )
-            tokens = block(tokens, attn_mask, relation_bias, phase_ids)
+            tokens = block(tokens, attn_mask, relation_bias)
         tokens = self.final_norm(tokens)
 
         # Cast to fp32 before the sentinel: under autocast ``unified`` is in
@@ -1620,27 +1528,12 @@ class RSSTransformerNet(nn.Module):
             stats.append(action_sum / action_count)
         return torch.stack(stats)
 
-    def phase_mod_diagnostics(self) -> dict[str, float]:
-        """Per-layer phase_mod magnitude + phase-distinguishing component."""
-        if not self.cfg.phase_conditioning:
-            return {}
-        scalars: dict[str, float] = {}
-        for layer_idx, block in enumerate(self.blocks):
-            assert isinstance(block, TransformerBlock)
-            assert block.phase_mod is not None
-            weight = block.phase_mod.weight.detach()
-            scalars[f"phase_mod/abs_mean/layer_{layer_idx}"] = weight.abs().mean().item()
-            scalars[f"phase_mod/phase_var/layer_{layer_idx}"] = (
-                weight.var(dim=0, unbiased=False).mean().item()
-            )
-        return scalars
-
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
 
     def _init_weights(self) -> None:
-        """GPT/LLaMA-style trunc-normal init, zero-init phase gates for identity start.
+        """GPT/LLaMA-style trunc-normal initialization.
 
         kaiming_uniform_(nonlinearity="relu") is wrong for most Linears here
         (SDPA has no ReLU, SwiGLU/GELU heads aren't ReLU, value head feeds
@@ -1661,13 +1554,6 @@ class RSSTransformerNet(nn.Module):
         # positive or negative head/layer-specific biases from zero.
         nn.init.zeros_(self.relation_bias_mult)
 
-        # Zero-init phase modulation so each conditioned block starts as
-        # identity while branch projections keep normal init and feed gradients.
-        for block in self.blocks:
-            assert isinstance(block, TransformerBlock)
-            if block.phase_mod is not None:
-                nn.init.zeros_(block.phase_mod.weight)
-
 
 # ---------------------------------------------------------------------------
 # Smoke test
@@ -1683,9 +1569,8 @@ if __name__ == "__main__":
     total = count_parameters(model)
 
     print(f"Transformer model: {cfg.num_players}p")
-    print(f"  d_model={cfg.d_model}, d_proj={cfg.d_proj}, heads={cfg.num_heads}, "
+    print(f"  d_model={cfg.d_model}, heads={cfg.num_heads}, "
           f"layers={cfg.num_layers}, d_ff={_ffn_hidden_dim(cfg)}")
-    print(f"  phase_conditioning={cfg.phase_conditioning}")
     print(f"  tokens={cfg.num_tokens}, token_dim={cfg.token_dim}")
     print(f"  Trainable parameters: {total:,}")
     print()
@@ -1701,15 +1586,9 @@ if __name__ == "__main__":
     proj_params = sum(sum(p.numel() for p in m.parameters()) for m in proj_modules)
     corp_id_params = model.corp_id_embed.weight.numel()
     type_params = model.type_embeds.weight.numel()
-    phase_mod_params = 0
-    for block in model.blocks:
-        assert isinstance(block, TransformerBlock)
-        if block.phase_mod is not None:
-            phase_mod_params += block.phase_mod.weight.numel()
     trunk_params = (
         sum(p.numel() for p in model.blocks.parameters())
         + sum(p.numel() for p in model.final_norm.parameters())
-        - phase_mod_params
     )
     policy_modules: list[nn.Module] = [
         model.invest_auction_head,
@@ -1720,10 +1599,8 @@ if __name__ == "__main__":
         model.ipo_corp_head, model.ipo_pass_head,
         model.bid_head,
         model.dividend_head,
-        model.issue_query_proj, model.issue_pass_key_proj,
-        model.issue_share_key_proj,
-        model.acq_offer_query_proj, model.acq_offer_pass_key_proj,
-        model.acq_offer_accept_key_proj,
+        model.issue_head,
+        model.acq_offer_head,
         model.acq_price_head,
         model.par_head,
     ]
@@ -1736,7 +1613,6 @@ if __name__ == "__main__":
         ("Corp ID embeds", corp_id_params),
         ("Type embeds", type_params),
         ("Transformer trunk", trunk_params),
-        ("Phase mod embeds", phase_mod_params),
         ("Policy heads", policy_params),
         ("Value head", value_params),
     ]:

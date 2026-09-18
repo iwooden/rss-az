@@ -11,7 +11,7 @@ import torch
 from core.data import GamePhases
 from core.driver import DRIVER
 from core.state import GameState, get_layout
-from core.token_data import get_num_tokens, get_token_data, get_token_data_batch, get_token_dim
+from core.token_data import TokenWidth, get_num_tokens, get_token_data, get_token_data_batch, get_token_dim
 from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
@@ -144,9 +144,19 @@ def test_history_survives_auction_return_and_resets_at_next_turn():
 
 
 @pytest.mark.parametrize("version", [2, 3])
-def test_checkpoint_evaluator_and_trainer_use_model_layout(version, tmp_path):
-    config = _config(version, num_players=0, min_players=3, max_players=5)
+@pytest.mark.parametrize("phase_conditioning", [False, True])
+def test_checkpoint_evaluator_and_trainer_use_model_layout(version, phase_conditioning, tmp_path):
+    config = _config(
+        version, num_players=0, min_players=3, max_players=5,
+        phase_conditioning=phase_conditioning,
+    )
     model = create_model(config)
+    if version == 3:
+        # Shared v2 settings must not revive removed v3 modulation or omit
+        # the phase one-hot from the ordinary global-token projection.
+        assert not hasattr(getattr(model, "cfg"), "phase_conditioning")
+        assert not hasattr(model, "phase_mod_diagnostics")
+        assert getattr(model, "global_info_proj").in_features == int(TokenWidth.TW_GLOBAL_INFO) - 1
     spec = get_model_input_spec(config)
     assert spec.layout_version == version
     assert getattr(model, "cfg").layout_version == version

@@ -25,7 +25,7 @@ from tests.phases.helpers.ownership import give_company_to_corp, give_company_to
 def test_acquisition_price_features_match_buyer_and_seller_balances(num_players, seller_kind):
     module = _load_model_module("nn/transformer-v3.py")
     model = module.RSSTransformerNet(module.TransformerConfig(
-        num_players=5, d_model=32, d_proj=8, num_heads=4, num_layers=1,
+        num_players=5, d_model=32, num_heads=4, num_layers=1,
     )).eval()
     state = GameState(num_players, max_players=5)
     state.initialize_game(num_players, seed=42, max_players=5)

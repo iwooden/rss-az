@@ -252,13 +252,13 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="phase_conditioning",
         action="store_true",
         default=None,
-        help="Enable per-block adaLN phase conditioning",
+        help="Enable per-block adaLN phase conditioning (v2 only)",
     )
     phase_group.add_argument(
         "--no-phase-conditioning",
         dest="phase_conditioning",
         action="store_false",
-        help="Disable per-block adaLN phase conditioning",
+        help="Disable per-block adaLN phase conditioning (v2 only)",
     )
     parser.add_argument(
         "--price-slot-fourier-bands",
@@ -1478,10 +1478,13 @@ def main() -> None:
             epoch_duration = time.perf_counter() - epoch_start
             logger.log_scalars(epoch_num, {"epoch/duration_secs": epoch_duration})
             base_model = getattr(model, "_orig_mod", model)
-            diagnostic = getattr(base_model, "phase_mod_diagnostics")
-            diagnostics = diagnostic()
-            if diagnostics:
-                logger.log_scalars(epoch_num, diagnostics)
+            diagnostic = getattr(base_model, "phase_mod_diagnostics", None)
+            if callable(diagnostic):
+                diagnostics = diagnostic()
+                if not isinstance(diagnostics, dict):
+                    raise TypeError("phase_mod_diagnostics must return a dict")
+                if diagnostics:
+                    logger.log_scalars(epoch_num, diagnostics)
             logger.log_epoch_summary(
                 epoch=epoch_num,
                 num_epochs=config.num_epochs,

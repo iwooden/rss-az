@@ -17,7 +17,7 @@ def model():
     torch.manual_seed(42)
     module = _load_model_module("nn/transformer-v3.py")
     return module.RSSTransformerNet(module.TransformerConfig(
-        num_players=5, d_model=32, d_proj=8, num_heads=4, num_layers=1,
+        num_players=5, d_model=32, num_heads=4, num_layers=1,
     ))
 
 
@@ -110,9 +110,9 @@ def test_closing_candidate_permutation_and_pass_independence(model):
 @pytest.mark.parametrize("phase", [
     DecisionPhase.DPHASE_INVEST, DecisionPhase.DPHASE_CLOSING, DecisionPhase.DPHASE_BID,
     DecisionPhase.DPHASE_IPO, DecisionPhase.DPHASE_PAR,
-    DecisionPhase.DPHASE_DIVIDENDS,
+    DecisionPhase.DPHASE_DIVIDENDS, DecisionPhase.DPHASE_ISSUE,
     DecisionPhase.DPHASE_ACQ_SELECT_CORP, DecisionPhase.DPHASE_ACQ_SELECT_COMPANY,
-    DecisionPhase.DPHASE_ACQ_SELECT_PRICE,
+    DecisionPhase.DPHASE_ACQ_SELECT_PRICE, DecisionPhase.DPHASE_ACQ_OFFER,
 ])
 def test_joint_policy_loss_reaches_all_scorers_and_trunk(model, phase, device):
     if device == "cuda" and not torch.cuda.is_available():
@@ -126,7 +126,13 @@ def test_joint_policy_loss_reaches_all_scorers_and_trunk(model, phase, device):
     mask[:, slots] = True
     # Verify masking still excludes individual phase actions as well as
     # every other phase. Keep all action classes represented in the loss.
-    mask[:, slots[2]] = False
+    if len(slots) > 2:
+        mask[:, slots[2]] = False
+    if phase == int(DecisionPhase.DPHASE_ISSUE):
+        x[:, model._issue_idx, 0] = 1
+        x[:, model._issue_idx, 1] = -0.5
+    if phase == int(DecisionPhase.DPHASE_ACQ_OFFER):
+        x[:, model._acq_offer_idx, :4] = torch.tensor([1.0, 0.2, 0.5, 0.0], device=device)
     relations = torch.zeros(
         2, NUM_ATTENTION_RELATIONS, model.cfg.num_tokens, model.cfg.num_tokens,
         dtype=torch.uint8, device=device,
@@ -149,16 +155,51 @@ def test_joint_policy_loss_reaches_all_scorers_and_trunk(model, phase, device):
         int(DecisionPhase.DPHASE_DIVIDENDS): [
             model.dividend_head, model.dividend_proj, model.corp_proj,
         ],
+        int(DecisionPhase.DPHASE_ISSUE): [model.issue_head, model.issue_proj, model.corp_proj],
         int(DecisionPhase.DPHASE_ACQ_SELECT_CORP): [model.acq_corp_head, model.acq_pass_head],
         int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY): [model.acq_company_head, model.corp_proj],
         int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE): [
             model.acq_price_head, model.acq_price_proj, model.corp_proj,
+        ],
+        int(DecisionPhase.DPHASE_ACQ_OFFER): [
+            model.acq_offer_head, model.acq_offer_proj, model.corp_proj,
         ],
     }[phase]
     for module in phase_modules + [model.player_proj, model.company_proj, model.blocks]:
         grads = [p.grad for p in module.parameters()]
         assert all(g is not None and torch.isfinite(g).all() for g in grads)
         assert sum(g.abs().sum().item() for g in grads if g is not None) > 0
+
+
+@pytest.mark.parametrize("num_players", [3, 4, 5])
+@pytest.mark.parametrize("phase,head_name,token_name", [
+    (DecisionPhase.DPHASE_ISSUE, "issue_head", "_issue_idx"),
+    (DecisionPhase.DPHASE_ACQ_OFFER, "acq_offer_head", "_acq_offer_idx"),
+])
+def test_binary_pass_action_order_and_mask(model, num_players, phase, head_name, token_name):
+    x, _ = _inputs(model, num_players)
+    token_idx = getattr(model, token_name)
+    head = getattr(model, head_name)
+    x[:, token_idx, 0] = 1
+    x[:, token_idx, 1] = 0.5
+    phase = int(phase)
+    slots = torch.as_tensor(build_action_lut()[phase, :2]).long()
+    mask = torch.zeros(2, UNIFIED_LOGIT_DIM, dtype=torch.bool)
+    mask[:, slots] = True
+    mask[1, slots[1]] = False
+    relations = torch.zeros(
+        2, NUM_ATTENTION_RELATIONS, model.cfg.num_tokens, model.cfg.num_tokens,
+        dtype=torch.uint8,
+    )
+    with torch.no_grad():
+        head[-1].weight.zero_()
+        head[-1].bias.copy_(torch.tensor([-1.0, 2.0]))
+        logits, _ = model(x, mask, relations)
+    torch.testing.assert_close(logits[0, slots], torch.tensor([-1.0, 2.0]))
+    assert torch.all(logits[~mask] == -1e9)
+    probs = logits.softmax(-1)
+    torch.testing.assert_close(probs[0, slots], torch.tensor([-1.0, 2.0]).softmax(0))
+    assert probs[1, slots[0]] == 1
 
 
 def test_ipo_candidate_sharing_and_company_conditioned_pass(model):

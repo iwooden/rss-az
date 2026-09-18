@@ -95,11 +95,12 @@ class TrainingConfig:
     # Optional Python module/file path that provides the implementation for
     # ``model_type``. For example: "nn/transformer-v2.py".
     model_path: str | None = None
-    # Per-block adaLN-Zero conditioning on the active decision phase.
+    # V2 per-block adaLN-Zero conditioning; filtered out of the v3 model config.
     phase_conditioning: bool = False
     # Transformer model hyperparameters. These are checkpointed so runs can
     # reload multiple model sizes from the same implementation module.
     d_model: int = 256
+    # V2 policy projection width; filtered out of the v3 model config.
     d_proj: int = 64
     num_heads: int = 4
     num_layers: int = 15

@@ -21,7 +21,7 @@ from tests.phases.test_ipo import _enter_ipo
 def _model():
     module = _load_model_module("nn/transformer-v3.py")
     return module.RSSTransformerNet(module.TransformerConfig(
-        num_players=5, d_model=32, d_proj=8, num_heads=4, num_layers=1,
+        num_players=5, d_model=32, num_heads=4, num_layers=1,
     )).eval()
 
 
