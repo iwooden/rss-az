@@ -774,10 +774,10 @@ class RSSTransformerNet(nn.Module):
             nn.Linear(d, 2),
         )
 
-        # --- Value head (applied per player token) ---
+        # --- Value head: policy-MLP hidden width, applied per player token ---
         self.value_head = nn.Sequential(
-            nn.Linear(d, d // 2), nn.GELU(approximate=_GELU_APPROX),
-            nn.Linear(d // 2, 1),
+            nn.Linear(d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(d, 1),
             nn.Tanh(),
         )
 
