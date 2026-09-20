@@ -1576,6 +1576,12 @@ class RSSTransformerNet(nn.Module):
                 f"complement, not logical NOT); got {legal_mask.dtype}"
             )
         expected_mask_shape = (x.shape[0], UNIFIED_LOGIT_DIM)
+        if torch.compiler.is_compiling():
+            # Eval marks each input batch dimension independently with
+            # mark_unbacked. Establish their equality before Python shape
+            # comparisons; otherwise Dynamo cannot decide u0 == u1.
+            torch._check(legal_mask.shape[0] == x.shape[0])
+            torch._check(relations.shape[0] == x.shape[0])
         if tuple(legal_mask.shape) != expected_mask_shape:
             raise AssertionError(
                 f"legal_mask shape must be {expected_mask_shape}; got {tuple(legal_mask.shape)}"
