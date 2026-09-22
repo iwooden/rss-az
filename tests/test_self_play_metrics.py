@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from rich.console import Console
 from rich.text import Text
 
 from train.logging import TrainingLogger
+from train.self_play import AcquisitionStats
 from train.main import (
     _SelfPlayMetricAccumulator,
     _build_epoch_self_play_scalars,
@@ -31,6 +34,7 @@ def _fake_record(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         num_players=num_players,
+        acquisition=AcquisitionStats(),
         num_examples=examples,
         total_moves=moves,
         duration_secs=duration,
@@ -70,6 +74,52 @@ def test_self_play_metric_accumulator_handles_missing_player_count() -> None:
     assert by_count[5]["games"] == 1.0
     assert by_count[5]["total_net_worth"] == 1150.0
     assert len(aggregate["rank_net_worths"]) == 5
+
+
+def test_acquisition_metrics_count_actual_responses_and_aggregate_by_phase():
+    from core.driver import DRIVER
+    from tests.phases.test_acq_rejections import negotiation_state, TARGET
+
+    # Legacy replay can exceed the cap; record only its first crossing per phase.
+    state = negotiation_state(v3=False)
+    stats = AcquisitionStats()
+    for response in (0, 0, 0, 1):
+        for action in (1, TARGET, 1, response):
+            stats.observe(state, action)
+            DRIVER.apply_action(state, action)
+    assert (stats.phases, stats.decisions, stats.offers, stats.rejections, stats.cap_hits) == (1, 16, 4, 3, 1)
+
+    first = _fake_record(3, [100, 200, 300])
+    first.acquisition = stats
+    second = _fake_record(5, [100, 200, 300, 400, 500])
+    second.acquisition = AcquisitionStats(phases=3, decisions=8, offers=1, rejections=0)
+    metrics = _SelfPlayMetricAccumulator()
+    metrics.add_record(first)
+    metrics.add_record(second)
+    scalars = _build_epoch_self_play_scalars(metrics)
+    assert scalars["self_play_aggregate/acq_decisions_per_phase"] == 6
+    assert scalars["self_play_aggregate/acq_offer_acceptance_rate"] == pytest.approx(2 / 5)
+    assert scalars["self_play_aggregate/acq_cap_hits_per_phase"] == 0.25
+    assert scalars["self_play_3p/acq_offer_acceptance_rate"] == 0.25
+    assert scalars["self_play_5p/acq_offer_acceptance_rate"] == 1
+
+
+def test_acquisition_metrics_ignore_fi_negotiation_and_other_phases():
+    from core.data import GamePhases
+    from entities.turn import TURN
+    from tests.phases.test_acq_rejections import negotiation_state, TARGET
+    from tests.phases.helpers.ownership import give_company_to_fi
+
+    state = negotiation_state()
+    give_company_to_fi(state, TARGET)
+    TURN.enter_acq_offer(state, 0, TARGET, 26, 1, 2)
+    stats = AcquisitionStats()
+    stats.observe(state, 0)
+    assert stats.phases == 1 and stats.decisions == 1
+    assert stats.offers == stats.rejections == stats.cap_hits == 0
+    TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
+    stats.observe(state, 0)
+    assert stats.decisions == 1
 
 
 def test_self_play_tensorboard_scalar_prefixes_for_mixed_counts() -> None:

@@ -124,7 +124,7 @@ _CORP_REL_TAIL_START = 57
 # Player share amounts are scalar quantities, not just relation presence:
 # keep OFF_SHARES (8 slots) in projected token features and drop only the
 # owned-company relation tail.
-_PLAYER_REL_TAIL_START = 26
+_PLAYER_REL_TAIL_START = 27
 # Raw player-token offsets; match core.token_data_v3::_fill_player_token.
 _PLAYER_SHARES_START = 15
 _PLAYER_CASH_OFFSET = 8

@@ -52,7 +52,7 @@ from core.data cimport (
 PlayerFields = namedtuple('PlayerFields', [
     'cash', 'net_worth', 'liquidity', 'turn_order',
     'owned_shares', 'income',
-    'share_buys', 'share_sells', 'has_passed',
+    'share_buys', 'share_sells', 'has_passed', 'acq_rejections',
 ])
 
 CorpFields = namedtuple('CorpFields', [
@@ -279,6 +279,8 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil:
     offset += GameConstants.NUM_CORPS
     p.has_passed = offset
     offset += 1
+    p.acq_rejections = offset
+    offset += 1
 
     p.size = offset
     return p
@@ -480,6 +482,7 @@ def get_player_fields():
         share_buys=PLAYER_FIELDS.share_buys,
         share_sells=PLAYER_FIELDS.share_sells,
         has_passed=PLAYER_FIELDS.has_passed,
+        acq_rejections=PLAYER_FIELDS.acq_rejections,
     )
 
 

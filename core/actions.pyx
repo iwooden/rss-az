@@ -90,6 +90,7 @@ from entities.corp cimport (
     corp_is_in_receivership,
     corp_president_id,
 )
+from entities.player cimport player_acq_rejections
 from phases.closing cimport _corp_closable_by_player
 
 cnp.import_array()
@@ -620,6 +621,10 @@ cdef inline bint _acq_pair_has_legal_price(
             return False
         if same_pres and corp_president_id(state, owner_id) != player_id:
             return False
+        if (state.v3_behavior
+                and corp_president_id(state, owner_id) != player_id
+                and player_acq_rejections(state, player_id) >= <int>GameConstants.ACQ_REJECTION_CAP):
+            return False
         if count_corp_companies(state, owner_id, True) <= 1:
             return False
         low_price = COMPANY_LOW_PRICE[company_id]
@@ -631,6 +636,9 @@ cdef inline bint _acq_pair_has_legal_price(
     elif loc == <int>LOC_PLAYER:
         owner_id = company_owner_id(state, company_id)
         if same_pres and owner_id != player_id:
+            return False
+        if (state.v3_behavior and owner_id != player_id
+                and player_acq_rejections(state, player_id) >= <int>GameConstants.ACQ_REJECTION_CAP):
             return False
         low_price = COMPANY_LOW_PRICE[company_id]
         high_price = COMPANY_HIGH_PRICE[company_id]

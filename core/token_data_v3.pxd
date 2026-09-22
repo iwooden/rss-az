@@ -40,7 +40,7 @@ cpdef enum TokenWidth:
     TW_ACQ_OFFER             = 4
     TW_ACQ_PRICE             = 4
     TW_CORP                  = 98
-    TW_PLAYER                = 62
+    TW_PLAYER                = 63
 
 
 # Number of tokens for a given player-token capacity (max_players + 54 fixed

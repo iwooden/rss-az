@@ -635,7 +635,9 @@ The Cython self-play engine intentionally applies the following constraints to r
 - `acq_same_president=True` (default) restricts acquisitions to companies controlled by the buying corporation's president. Setting it to `False` permits cross-player offers, with the seller accepting or rejecting in `ACQ_OFFER`.
 - Acquisition decisions proceed through corporation, company, and price selection. FI purchases use their fixed price and the separate intervention mechanism.
 - With `v3_behavior=True`, a player's next offer for a company must strictly exceed their highest rejected price for that company in this acquisition phase, including offers through other corporations they control. Companies and corporations with no remaining legal price/target are excluded from selection.
+- V3 also allows at most two rejected cross-president offers per proposing player per acquisition phase (`GameConstants.ACQ_REJECTION_CAP`). After the second rejection, that player can still acquire from themselves, corporations they preside over, and FI, but cannot make further cross-president offers. Accepted offers do not consume the allowance.
 - Rejections are recorded in every engine mode and cleared only at acquisition phase exit. FI intervention declines do not count. With `v3_behavior=False`, lower or equal repeat offers remain legal for historical replay.
+- The per-player rejection count is also tracked in all modes and reset at acquisition phase exit; legacy replay can exceed the cap.
 - The increasing-price rule guarantees finite negotiation but deliberately prevents retrying an equal/lower price after circumstances change. Accepted companies cannot be traded again this phase under the normal vertical-company rule.
 
 ### 2) Closing Offer Scope Constraint

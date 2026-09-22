@@ -27,6 +27,7 @@ from core.actions import (
     decode_action_py,
 )
 from core.data import (
+    GameConstants,
     ALL_PAR_PRICES,
     COMPANY_NAMES,
     CORP_NAMES,
@@ -236,6 +237,7 @@ def _token_field_labels(token_label: str, layout_version: int = 2) -> list[str]:
                "any_round_trip" if layout_version == 3 else "round_trips"]
             + _field_names("owned_share", NUM_CORPS)
             + ["num_owned_companies", "num_presidencies", "total_owned_shares"]
+            + (["acq_rejections"] if layout_version == 3 else [])
             + _field_names("owned_company", NUM_COMPANIES)
         )
     raise ValueError(f"unknown token label: {token_label}")
@@ -358,7 +360,9 @@ def _denormalize_token_values(token_label: str, row: np.ndarray, layout_version:
             + _round_values(row[23:24], OWNED_COMPANIES_DIVISOR)
             + _round_values(row[24:25], PRESIDENCIES_DIVISOR)
             + _round_values(row[25:26], TOTAL_SHARES_DIVISOR)
-            + _round_values(row[26:62])
+            + (_round_values(row[26:27], int(GameConstants.ACQ_REJECTION_CAP))
+               + _round_values(row[27:63]) if layout_version == 3
+               else _round_values(row[26:62]))
         )
     raise ValueError(f"unknown token label: {token_label}")
 
@@ -450,6 +454,8 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
             f"president={_one_hot_index(values[54:59])} companies={_nonzero_indices(values[59:95])} "
         )
     if token_label.startswith("player["):
+        company_start = 27 if len(values) == 63 else 26
+        history = f"acq_rejections={values[26]} " if company_start == 27 else ""
         return (
             f"attn={values[0]} selected={values[1]} order={_one_hot_index(values[2:7])} "
             f"passed={values[7]} cash={values[8]} net_worth={values[9]} "
@@ -457,7 +463,7 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
             f"auc_starter={values[13]} round_trip={values[14]} "
             f"shares={_nonzero_map(values[15:23])} "
             f"num_companies={values[23]} num_pres={values[24]} total_shares={values[25]} "
-            f"companies={_nonzero_indices(values[26:62])}"
+            f"{history}companies={_nonzero_indices(values[company_start:company_start + 36])}"
         )
     return str(values)
 

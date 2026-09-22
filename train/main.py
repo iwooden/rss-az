@@ -42,6 +42,7 @@ from train.replay_buffer import ReplayBuffer
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from train.self_play import (
+    AcquisitionStats,
     build_epoch_player_count_schedule,
     play_game,
     self_play_worker,
@@ -385,6 +386,7 @@ class _SelfPlayMetricBucket:
         self.avg_active_corp_price = 0.0
         self.corps_in_receivership = 0.0
         self.games_with_max_price_corp = 0
+        self.acquisition = AcquisitionStats()
 
         self.rank_counts: list[int] = []
         self.rank_net_worths: list[float] = []
@@ -418,6 +420,7 @@ class _SelfPlayMetricBucket:
         self.examples += int(record.num_examples)
         self.moves += int(record.total_moves)
         self.duration += float(record.duration_secs)
+        self.acquisition.add(record.acquisition)
         self.target_entropy += float(record.policy_target_entropy_mean)
         self.target_top1 += float(record.policy_target_top1_fraction)
         self.sample_entropy += float(record.sample_policy_entropy_mean)
@@ -461,6 +464,7 @@ class _SelfPlayMetricBucket:
         if games == 0:
             return {
                 "games": 0.0,
+                "acquisition": self.acquisition.scalars(),
                 "examples": 0.0,
                 "avg_moves": 0.0,
                 "avg_duration": 0.0,
@@ -495,6 +499,7 @@ class _SelfPlayMetricBucket:
 
         return {
             "games": float(games),
+            "acquisition": self.acquisition.scalars(),
             "examples": float(self.examples),
             "avg_moves": self.moves / games,
             "avg_duration": self.duration / games,
@@ -598,6 +603,7 @@ def _build_self_play_scalars(
     }
 
     rank_net_worths = list(stats.get("rank_net_worths", []))
+    scalars.update({f"{prefix}/{name}": value for name, value in stats.get("acquisition", {}).items()})
     rank_mins = list(stats.get("rank_net_worths_min", []))
     rank_maxs = list(stats.get("rank_net_worths_max", []))
     avg_shares = list(stats.get("avg_shares_per_player", []))

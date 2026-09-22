@@ -11,7 +11,7 @@ with any GameState at any player count.
 
 Layout summary (per-player block, all raw int16):
   cash, net_worth, liquidity, turn_order (single int), owned_shares (8),
-  income, share_buys (8), share_sells (8), has_passed (1).
+  income, share_buys (8), share_sells (8), has_passed (1), acq_rejections (1).
 Presidency is tracked by the corp entity.
 
 Company ownership lives in the companies section, but player code reads
@@ -68,6 +68,12 @@ cdef TurnState _TURN():
     if _TURN_CACHED is None:
         _TURN_CACHED = <TurnState>turn_module.TURN
     return _TURN_CACHED
+
+
+cdef int player_acq_rejections(GameState state, int player_id) noexcept nogil:
+    return <int>state._data[
+        LAYOUT.players_offset + player_id * PLAYER_FIELDS.size + PLAYER_FIELDS.acq_rejections
+    ]
 
 
 # =============================================================================
@@ -489,6 +495,22 @@ cdef class Player:
         Stored as a per-player int16 flag in the player block.
         """
         return state._data[self._slot(PLAYER_FIELDS.has_passed)] == 1
+
+    cpdef int get_acq_rejections(self, GameState state):
+        assert 0 <= self.player_id < _TURN()._get_num_players(state)
+        return player_acq_rejections(state, self.player_id)
+
+    cpdef void increment_acq_rejections(self, GameState state):
+        assert 0 <= self.player_id < _TURN()._get_num_players(state)
+        cdef int slot = self._slot(PLAYER_FIELDS.acq_rejections)
+        # Historical replay is uncapped; saturate at int16's limit, not the
+        # gameplay cap, so an extremely long replay cannot wrap the counter.
+        if state._data[slot] < 32767:
+            state._data[slot] += 1
+
+    cpdef void clear_acq_rejections(self, GameState state):
+        assert 0 <= self.player_id < _TURN()._get_num_players(state)
+        state._data[self._slot(PLAYER_FIELDS.acq_rejections)] = 0
 
     cpdef void set_has_passed(self, GameState state, bint passed):
         """Mark whether this player has passed in the current phase."""

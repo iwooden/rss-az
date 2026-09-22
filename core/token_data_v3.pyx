@@ -43,13 +43,13 @@ V3 per-token feature layouts (max width 98, pinned by the Corp token):
   attention biases; the summary scalars stay in the projection so the
   trunk has a direct aggregate view (count, totals) of the same data.
 
-  Player (62):  attn_mask (1) + is_selected (1) + turn_order onehot (5) +
+  Player (63):  attn_mask (1) + is_selected (1) + turn_order onehot (5) +
                 has_passed (1) +
                 cash (1) + net_worth (1) + liquidity (1) + income (1) +
                 auction_high_bidder (1) + auction_starter (1) +
                 any_round_trip (1) + owned_shares (8) +
                 relational summary: num_owned_companies (1) +
-                num_presidencies (1) + total_owned_shares (1) +
+                num_presidencies (1) + total_owned_shares (1) + acq_rejections (1) +
                 relational tail: owned_companies (36)
   Corp   (98):  attn_mask (1) + is_selected (1) + active (1) +
                 in_receivership (1) +
@@ -573,8 +573,9 @@ cdef void _fill_player_token(
     cdef int OFF_NUM_COMPANIES     = 23
     cdef int OFF_NUM_PRESIDENCIES  = 24
     cdef int OFF_TOTAL_SHARES      = 25
+    cdef int OFF_ACQ_REJECTIONS    = 26
     # --- relational tail ---
-    cdef int OFF_COMPANIES         = 26   # 36 slots
+    cdef int OFF_COMPANIES         = 27   # 36 slots
 
     cdef int player_base = LAYOUT.players_offset + player_id * PLAYER_FIELDS.size
     cdef int turn_order = <int>state._data[player_base + PLAYER_FIELDS.turn_order]
@@ -602,6 +603,10 @@ cdef void _fill_player_token(
 
     # Has passed
     buffer[tok, OFF_HAS_PASSED] = 1.0 if has_passed else 0.0
+    buffer[tok, OFF_ACQ_REJECTIONS] = (
+        <float>state._data[player_base + PLAYER_FIELDS.acq_rejections]
+        / <float>GameConstants.ACQ_REJECTION_CAP
+    )
 
     # Financials
     buffer[tok, OFF_CASH] = <float>cash / CASH_DIVISOR

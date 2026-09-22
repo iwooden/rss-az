@@ -28,6 +28,7 @@ from core.state cimport GameState
 
 cdef void invalidate_player_cache(GameState state, int player_id) noexcept nogil
 cdef void invalidate_all_player_caches(GameState state) noexcept nogil
+cdef int player_acq_rejections(GameState state, int player_id) noexcept nogil
 
 # Module-level nogil cache refresh — bypasses the Python ``PLAYERS[i]``
 # attribute lookup so callers in nogil blocks (notably ``core/token_data``)
@@ -89,6 +90,11 @@ cdef class Player:
     cpdef void increment_share_sells(self, GameState state, int corp_id)
     cpdef int get_roundtrips(self, GameState state, int corp_id)
     cpdef void clear_roundtrip_tracking(self, GameState state)
+
+    # Acquisition negotiation history, independent of engine behavior mode.
+    cpdef int get_acq_rejections(self, GameState state)
+    cpdef void increment_acq_rejections(self, GameState state)
+    cpdef void clear_acq_rejections(self, GameState state)
 
     # Income
     cpdef int get_income(self, GameState state)

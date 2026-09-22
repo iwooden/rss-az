@@ -463,7 +463,10 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
 
 cdef void _transition_to_closing(GameState state) noexcept:
     """Exit SELECT_CORP: merge zones, clear context, hand off to CLOSING."""
+    cdef int player_id
     _merge_acquisition_zones(state)
     clear_acquisition_rejections(state)
+    for player_id in range(turn_module.TURN.get_num_players(state)):
+        player_module.PLAYERS[player_id].clear_acq_rejections(state)
     _clear_acquisition_context(state)
     setup_closing_phase(state)

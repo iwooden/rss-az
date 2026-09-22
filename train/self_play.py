@@ -15,7 +15,7 @@ from __future__ import annotations
 import queue
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 import numpy as np
@@ -36,7 +36,7 @@ from core.actions import (
     enumerate_legal_actions_py,
     get_decision_phase_py,
 )
-from core.data import ALL_PAR_PRICES, CorpIndices, GameConstants, MAX_ACTION_SIZE
+from core.data import ALL_PAR_PRICES, CorpIndices, GameConstants, GamePhases, MAX_ACTION_SIZE
 from core.driver import DRIVER, STATUS_GAME_OVER_PY
 from core.state import GameState, get_layout
 from entities.company import (
@@ -186,6 +186,58 @@ class StrategyTrace:
 
 
 @dataclass
+class AcquisitionStats:
+    """Real self-play decisions only; search simulations and FI offers are excluded
+    from negotiation counts. Phases count turns with an acquisition decision.
+    """
+
+    phases: int = 0
+    decisions: int = 0
+    offers: int = 0
+    rejections: int = 0
+    cap_hits: int = 0
+    _last_turn: int = -1
+
+    def observe(self, state: GameState, action_id: int) -> None:
+        phase = TURN.get_phase(state)
+        if phase not in (
+            GamePhases.PHASE_ACQ_SELECT_CORP, GamePhases.PHASE_ACQ_SELECT_COMPANY,
+            GamePhases.PHASE_ACQ_SELECT_PRICE, GamePhases.PHASE_ACQ_OFFER,
+        ):
+            return
+        self.decisions += 1
+        turn = TURN.get_turn_number(state)
+        if turn != self._last_turn:
+            self.phases += 1
+            self._last_turn = turn
+        if phase != GamePhases.PHASE_ACQ_OFFER:
+            return
+        if COMPANIES[TURN.get_active_company(state)].get_location(state) == CompanyLocation.LOC_FI:
+            return
+        self.offers += 1
+        if action_id == 0:  # ACQ_OFFER pass/reject; accept is 1.
+            self.rejections += 1
+            proposer = CORPS[TURN.get_active_corp(state)].get_president_id(state)
+            if PLAYERS[proposer].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP) - 1:
+                self.cap_hits += 1
+
+    def add(self, other: AcquisitionStats) -> None:
+        self.phases += other.phases
+        self.decisions += other.decisions
+        self.offers += other.offers
+        self.rejections += other.rejections
+        self.cap_hits += other.cap_hits
+
+    def scalars(self) -> dict[str, float]:
+        return {
+            "acq_decisions_per_phase": self.decisions / max(self.phases, 1),
+            "acq_offers_per_phase": self.offers / max(self.phases, 1),
+            "acq_offer_acceptance_rate": (self.offers - self.rejections) / max(self.offers, 1),
+            "acq_cap_hits_per_phase": self.cap_hits / max(self.phases, 1),
+        }
+
+
+@dataclass
 class GameRecord:
     """Results from a single self-play game.
 
@@ -227,6 +279,7 @@ class GameRecord:
     rng_seed: int = -1
     final_state: np.ndarray | None = None
     strategy_trace: StrategyTrace | None = None
+    acquisition: AcquisitionStats = field(default_factory=AcquisitionStats)
 
 
 def _compute_linear_temperature(
@@ -932,6 +985,7 @@ def play_game(
     sample_entropy_sum = 0.0
     sample_top1_sum = 0.0
     move_count = 0
+    acquisition = AcquisitionStats()
     reuse_root: Any = None
 
     # Scratch buffer for enumerating legal actions at each decision point.
@@ -1033,6 +1087,7 @@ def play_game(
         # Sample and apply action.
         chosen_idx = int(rng.choice(n_legal, p=sample_probs))
         action_idx = int(legal_actions[chosen_idx])
+        acquisition.observe(state, action_idx)
         if trace_builder is not None:
             selected_slot = int(action_lut_np[phase_id, action_idx])
             action_info = decode_action_py(phase_id, action_idx)
@@ -1176,6 +1231,7 @@ def play_game(
         num_players=num_players,
         num_examples=n_examples,
         total_moves=move_count,
+        acquisition=acquisition,
         net_worths=net_worths,
         shares_per_player=shares_per_player,
         companies_per_player=companies_per_player,

@@ -53,6 +53,8 @@ def _state(n=3):
     PLAYERS[2].increment_share_sells(state, 3)
     for player, price in enumerate((13, 17, 19)):
         COMPANIES[14].record_rejected_offer(state, player, price)
+        for _ in range(player):
+            PLAYERS[player].increment_acq_rejections(state)
     return state
 
 
@@ -77,6 +79,7 @@ def test_history_is_actor_relative_but_player_flags_are_canonical(n):
     np.testing.assert_array_equal(other[47, 54:57], [0.25, 0, 0])
     np.testing.assert_array_equal(other[48, 54:57], [0, 0.25, 0])
     np.testing.assert_array_equal(other[54:, 14], v3[54:, 14])
+    np.testing.assert_array_equal(other[54:, 26], v3[54:, 26])
 
     # History survives non-INVEST observations, including inactive corps.
     TURN.set_phase(state, int(GamePhases.PHASE_ISSUE_SHARES))
@@ -102,13 +105,16 @@ def test_layouts_share_unchanged_features_but_own_their_history_and_movements():
     np.testing.assert_array_equal(v2[46:54, 37:54], v3[46:54, 37:54])
     np.testing.assert_array_equal(v2[46:54, 54:], v3[46:54, 57:])
     np.testing.assert_array_equal(v2[54:, :14], v3[54:, :14])
-    np.testing.assert_array_equal(v2[54:, 15:], v3[54:, 15:95])
+    np.testing.assert_array_equal(v2[54:, 15:26], v3[54:, 15:26])
+    np.testing.assert_array_equal(v2[54:, 26:62], v3[54:, 27:63])
+    np.testing.assert_array_equal(v3[54:57, 26], [0, 0.5, 1])
 
 
 def test_v2_observations_ignore_acquisition_rejection_history():
     state = _state()
     before = _tokens(state, 2)
     for player in range(3):
+        PLAYERS[player].increment_acq_rejections(state)
         for company in COMPANIES:
             company.record_rejected_offer(state, player, company.get_high_price())
     np.testing.assert_array_equal(_tokens(state, 2), before)
@@ -248,6 +254,7 @@ def test_v3_token_diagnostics_label_and_denormalize_history():
     dump = format_token_dump(state, layout_version=3)
     assert "actor_buys=5 actor_sells=1 actor_round_trip=1" in dump
     assert "actor_max_rejected_price=13" in dump
+    assert "acq_rejections=2" in dump
     accumulator = TokenNormalizationAccumulator(3, layout_version=3)
     accumulator.add_state(state)
     assert list(accumulator._iter_field_stats())
@@ -309,3 +316,8 @@ def test_v3_cuda_forward_backward():
     assert grad is not None
     assert torch.isfinite(grad).all()
     assert grad[:, 53:56].abs().sum() > 0
+    player_proj = getattr(model, "player_proj")
+    assert isinstance(player_proj, torch.nn.Linear)
+    player_grad = player_proj.weight.grad
+    assert player_grad is not None and torch.isfinite(player_grad).all()
+    assert player_grad[:, 25].abs().sum() > 0  # raw player slot 26, acq_rejections

@@ -36,6 +36,7 @@ from phases.util.acq_common cimport (
 from entities import turn as turn_module
 from entities import corp as corp_module
 from entities import company as company_module
+from entities import player as player_module
 
 
 # =============================================================================
@@ -120,6 +121,7 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
             company_module.COMPANIES[company_id].record_rejected_offer(
                 state, corp_president_id(state, active_corp), price,
             )
+            player_module.PLAYERS[corp_president_id(state, active_corp)].increment_acq_rejections(state)
             _return_to_acquisition(state)
 
 

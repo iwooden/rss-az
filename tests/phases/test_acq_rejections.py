@@ -8,6 +8,7 @@ from core.driver import DRIVER
 from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
+from entities.player import PLAYERS
 from entities.turn import TURN
 from phases.acq_select_corp import setup_acquisition_phase_py
 from tests.phases.conftest import float_corp_for_test, get_legal_actions
@@ -60,6 +61,8 @@ def test_rejections_track_buyer_share_across_corps_and_gate_only_v3(n, v3, selle
     price = company.get_low_price() + 1
     assert company.get_max_rejected_price(state, n - 1) == price
     assert company.get_max_rejected_price(state, 0) == 0
+    assert PLAYERS[n - 1].get_acq_rejections(state) == 1
+    assert PLAYERS[0].get_acq_rejections(state) == 0
     assert TURN.get_active_player(state) == n - 1
 
     for clone in (
@@ -67,6 +70,7 @@ def test_rejections_track_buyer_share_across_corps_and_gate_only_v3(n, v3, selle
         GameState.from_buffer(state._array.copy(), n),
     ):
         assert company.get_max_rejected_price(clone, n - 1) == price
+        assert PLAYERS[n - 1].get_acq_rejections(clone) == 1
     select_target(state, corp=1)
     assert [aid for aid, _ in get_legal_actions(state)] == ([2, 3] if v3 else [0, 1, 2, 3])
     if not v3:
@@ -74,6 +78,7 @@ def test_rejections_track_buyer_share_across_corps_and_gate_only_v3(n, v3, selle
         DRIVER.apply_action(state, 0)
         DRIVER.apply_action(state, 0)
         assert company.get_max_rejected_price(state, n - 1) == price
+        assert PLAYERS[n - 1].get_acq_rejections(state) == 2
 
 
 @pytest.mark.parametrize("at_card_max", [False, True])
@@ -101,6 +106,7 @@ def test_exhausted_prices_remove_targets_and_corps_then_cleanup_resets_history(a
     assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
     assert all(c.get_max_rejected_price(state, p) == 0
                for c in COMPANIES for p in range(3))
+    assert all(p.get_acq_rejections(state) == 0 for p in PLAYERS[:3])
     setup_acquisition_phase_py(state)
     select_target(state)
     assert get_legal_actions(state)[0][0] == 0
@@ -113,6 +119,7 @@ def test_accepted_offer_does_not_record_rejection_and_company_cannot_be_resold()
     DRIVER.apply_action(state, 1)
     company = COMPANIES[TARGET]
     assert company.get_max_rejected_price(state, 2) == 0
+    assert PLAYERS[2].get_acq_rejections(state) == 0
     assert company.get_location(state) == int(CompanyLocation.LOC_CORP_ACQ)
     DRIVER.apply_action(state, 2)  # Other corp can buy an older company, but not this one.
     assert TARGET not in [aid for aid, _ in get_legal_actions(state)]
@@ -124,11 +131,16 @@ def test_fi_preemption_decline_does_not_record_negotiation_rejection():
     for corp in (0, 2):
         CORPS[corp].set_cash(state, 200)
     give_company_to_fi(state, TARGET)
+    for _ in range(int(GameConstants.ACQ_REJECTION_CAP)):
+        PLAYERS[0].increment_acq_rejections(state)
+        PLAYERS[2].increment_acq_rejections(state)
     DRIVER.apply_action(state, 1)
     DRIVER.apply_action(state, TARGET)
     assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
     assert TURN.get_active_player(state) == 0
     DRIVER.apply_action(state, 0)
+    assert PLAYERS[0].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP)
+    assert PLAYERS[2].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP)
     assert all(c.get_max_rejected_price(state, p) == 0
                for c in COMPANIES for p in range(3))
 
@@ -136,8 +148,56 @@ def test_fi_preemption_decline_does_not_record_negotiation_rejection():
 def test_new_game_has_zero_history_for_all_six_players():
     state = GameState(int(GameConstants.MAX_PLAYERS))
     for p in range(int(GameConstants.MAX_PLAYERS)):
+        assert PLAYERS[p].get_acq_rejections(state) == 0
+        PLAYERS[p].increment_acq_rejections(state)
         assert COMPANIES[TARGET].get_max_rejected_price(state, p) == 0
         COMPANIES[TARGET].record_rejected_offer(state, p, p + 1)
     state.initialize_game(6, seed=42)
     assert all(COMPANIES[TARGET].get_max_rejected_price(state, p) == 0 for p in range(6))
     assert state._array.dtype == np.int16
+    assert all(PLAYERS[p].get_acq_rejections(state) == 0 for p in range(6))
+
+
+@pytest.mark.parametrize("n", [3, 6])
+@pytest.mark.parametrize("v3", [False, True])
+@pytest.mark.parametrize("seller_kind", ["player", "corp"])
+def test_two_rejections_close_cross_player_negotiation_only_in_v3(n, v3, seller_kind):
+    state = negotiation_state(n, v3, seller_kind)
+    for corp, price_offset in ((0, 1), (1, 2)):
+        select_target(state, corp)
+        DRIVER.apply_action(state, price_offset)
+        DRIVER.apply_action(state, 0)
+    assert PLAYERS[n - 1].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP)
+    if v3:
+        assert [aid for aid, _ in get_legal_actions(state)] == [0]
+        # Even a different company is blocked. A different player can still offer.
+        give_company_to_player(state, 15, 0)
+        assert [aid for aid, _ in get_legal_actions(state)] == [0]
+        float_corp_for_test(state, corp_id=3, company_id=3, player_id=1, par_index=16)
+        CORPS[3].set_cash(state, 200)
+        TURN.set_active_player(state, 1)
+        select_target(state, corp=3)
+        assert get_legal_actions(state)[0][0] == 0
+    else:
+        select_target(state)
+        DRIVER.apply_action(state, 0)
+        DRIVER.apply_action(state, 0)
+        assert PLAYERS[n - 1].get_acq_rejections(state) == 3
+
+
+def test_cap_preserves_same_president_player_and_corp_purchases():
+    state = negotiation_state()
+    for corp, price_offset in ((0, 1), (1, 2)):
+        select_target(state, corp)
+        DRIVER.apply_action(state, price_offset)
+        DRIVER.apply_action(state, 0)
+    give_company_to_player(state, 3, 2)
+    give_company_to_corp(state, 4, 1)
+    DRIVER.apply_action(state, 1)
+    targets = [aid for aid, _ in get_legal_actions(state)]
+    assert TARGET not in targets
+    assert 3 in targets and 4 in targets
+    DRIVER.apply_action(state, 3)
+    DRIVER.apply_action(state, 0)
+    assert COMPANIES[3].get_location(state) == int(CompanyLocation.LOC_CORP_ACQ)
+    assert PLAYERS[2].get_acq_rejections(state) == 2

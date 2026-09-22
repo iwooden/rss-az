@@ -126,7 +126,7 @@ width of the Corp token. Per-type widths live in `core.token_data_v3.TokenWidth`
 - `TW_ACQ_OFFER = 4`
 - `TW_ACQ_PRICE = 4`
 - `TW_CORP = 98`
-- `TW_PLAYER = 62`
+- `TW_PLAYER = 63`
 
 **Relational summary scalars.** Corp, player, and FI tokens carry a small
 group of aggregate scalars (owned-company counts, presidency count, total
@@ -406,7 +406,7 @@ Relational tail:
 - President ID (slots 57..61). All zero if inactive / receivership.
 - Owned companies (slots 62..97). Includes companies in the acquisition pile.
 
-## Player Tokens (62, xM, M in {3, 4, 5})
+## Player Tokens (63, xM, M in {3, 4, 5})
 
 Player identity is inferred from row order.
 
@@ -447,6 +447,17 @@ Relational summary:
   the hard cap).
 - `total_owned_shares`. Sum of the 8-slot owned-shares vector,
   normalized by `TOTAL_SHARES_DIVISOR` (20.0, soft empirical cap).
+
+Acquisition history:
+
+- `acq_rejections` (raw slot 26). Number of this player's cross-president
+  offers rejected during this acquisition phase, divided by
+  `GameConstants.ACQ_REJECTION_CAP` (2). All actual player tokens expose
+  their own count, independent of the active player. Zero means the full
+  allowance remains; 1 means exhausted under v3 behavior. Legacy replay
+  counts may exceed the cap and are not clipped in token extraction.
+  Reset at acquisition phase exit. This field remains in the player
+  projection; the ownership tail begins at slot 27.
 
 Relational tail:
 

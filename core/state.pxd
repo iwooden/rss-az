@@ -92,6 +92,7 @@ cdef struct PlayerFieldOffsets:
     int share_buys               # 8 per-corp buy counts (this turn)
     int share_sells              # 8 per-corp sell counts (this turn)
     int has_passed               # 1 flag (has this player passed in the current phase)
+    int acq_rejections           # Rejected cross-president offers made this ACQ phase
     # Total size of one player's data block
     int size
 

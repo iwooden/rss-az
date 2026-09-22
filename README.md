@@ -85,7 +85,20 @@ each new offer must exceed that player's highest rejected price for the company
 in the current acquisition phase. History is tracked in all modes, but legacy
 mode permits repeated or lower offers for 18xx.games replay. V3 company tokens
 include the active player's rejection threshold, including when that player is
-responding to someone else's offer. V2 inputs remain unchanged.
+responding to someone else's offer. V3 also limits each player to two rejected
+cross-president offers per acquisition phase. Their own companies and FI remain
+available after the cap, and FI intervention declines do not count. V3 player
+tokens expose each player's rejection count divided by two. Both histories
+reset at acquisition phase exit; legacy replay remains uncapped. V2 inputs
+remain unchanged.
+
+Self-play TensorBoard groups (`self_play_aggregate` and each player-count group)
+report `acq_decisions_per_phase`, `acq_offers_per_phase`,
+`acq_offer_acceptance_rate`, and `acq_cap_hits_per_phase`. These count actual
+played decisions, not search simulations. A phase is counted when self-play
+makes an acquisition decision; fully automated phases are excluded. Offer
+statistics exclude FI interventions. Cap hits count players reaching their
+second rejection once per phase, including in uncapped legacy mode.
 
 The setting is checkpointed with the config and applied by self-play, analysis,
 and live replay. Tournaments use one mode for all seats, defaulting to the first
