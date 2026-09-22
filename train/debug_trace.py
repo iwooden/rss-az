@@ -151,6 +151,7 @@ def _token_field_labels(token_label: str, layout_version: int = 2) -> list[str]:
             + ["adj_income"]
             + ["at_removed", "at_auction", "at_revealed", "at_corp_acq"]
             + ["acq_select_synergy_delta"]
+            + (["actor_max_rejected_price"] if layout_version == 3 else [])
             + _field_names("owner_corp", NUM_CORPS)
             + _field_names("owner_player", NUM_PLAYER_SLOTS)
             + ["owner_fi"]
@@ -271,7 +272,9 @@ def _denormalize_token_values(token_label: str, row: np.ndarray, layout_version:
             + _round_values(row[8:9], PY_COMPANY_INCOME_DIVISOR)
             + _round_values(row[9:13])
             + _round_values(row[13:14], PY_ENTITY_INCOME_DIVISOR)
-            + _round_values(row[14:28])
+            + (_round_values(row[14:15], PY_COMPANY_PRICE_DIVISOR)
+               + _round_values(row[15:29]) if layout_version == 3
+               else _round_values(row[14:28]))
         )
     if token_label == "fi":
         return (
@@ -377,15 +380,17 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
     if token_label == "market_info":
         return f"attn={values[0]} prices={values[1:28]} open={_nonzero_indices(values[28:55])}"
     if token_label.startswith("company["):
-        owner_corp = _one_hot_index(values[14:22])
-        owner_player = _one_hot_index(values[22:27])
+        owner_start = 15 if len(values) == 29 else 14
+        history = f"actor_max_rejected_price={values[14]} " if owner_start == 15 else ""
+        owner_corp = _one_hot_index(values[owner_start:owner_start + 8])
+        owner_player = _one_hot_index(values[owner_start + 8:owner_start + 13])
         return (
             f"attn={values[0]} low={values[2]} face={values[3]} "
             f"high={values[4]} range={values[5]} base_inc={values[6]} "
             f"stars={values[7]} adj_inc={values[8]} selected={values[1]} "
             f"at=[rem={values[9]},auc={values[10]},rev={values[11]},corp_acq={values[12]}] "
-            f"acq_synergy={values[13]} owner_corp={owner_corp} "
-            f"owner_player={owner_player} owner_fi={values[27]}"
+            f"acq_synergy={values[13]} {history}owner_corp={owner_corp} "
+            f"owner_player={owner_player} owner_fi={values[owner_start + 13]}"
         )
     if token_label == "fi":
         return (

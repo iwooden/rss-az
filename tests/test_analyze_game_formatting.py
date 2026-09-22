@@ -359,7 +359,8 @@ def test_analyze_game_18xx_seed_logs_applied_initial_setup(monkeypatch) -> None:
     assert "remaining deck: 2" in rendered
 
 
-def test_load_18xx_continuation_state_restores_model_rules(monkeypatch) -> None:
+@pytest.mark.parametrize("acq_same_president", [False, True])
+def test_load_18xx_continuation_state_restores_model_rules(monkeypatch, acq_same_president) -> None:
     import utils_18xx.game_session as game_session_module
 
     state = GameState(3, acq_same_president=False)
@@ -394,6 +395,7 @@ def test_load_18xx_continuation_state_restores_model_rules(monkeypatch) -> None:
         game_data,
         max_players=5,
         v3_behavior=True,
+        acq_same_president=acq_same_president,
     )
 
     assert loaded is state
@@ -401,7 +403,7 @@ def test_load_18xx_continuation_state_restores_model_rules(monkeypatch) -> None:
     assert seen["init"] == (3, 5, True)
     assert seen["sync"] is game_data
     assert seen["validate"][0] is game_data
-    assert loaded.acq_same_president is True
+    assert loaded.acq_same_president is acq_same_president
     assert loaded.allow_positive_income_closing is False
 
 
@@ -425,10 +427,11 @@ def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
     TURN.set_phase(start_state, int(GamePhases.PHASE_GAME_OVER))
     seen: dict[str, Any] = {}
 
-    def fake_load_state(game_data, *, max_players, v3_behavior):
+    def fake_load_state(game_data, *, max_players, v3_behavior, acq_same_president):
         seen["game_data"] = game_data
         seen["max_players"] = max_players
         seen["v3_behavior"] = v3_behavior
+        seen["acq_same_president"] = acq_same_president
         return start_state
 
     monkeypatch.setattr(
@@ -436,7 +439,7 @@ def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
         "_load_18xx_continuation_state",
         fake_load_state,
     )
-    config = TrainingConfig(num_players=3, v3_behavior=True)
+    config = TrainingConfig(num_players=3, v3_behavior=True, acq_same_president=False)
     model = create_model(config).to(torch.device("cpu"))
     model.eval()
 
@@ -453,6 +456,7 @@ def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
     assert seen["game_data"]["id"] == 24680
     assert seen["max_players"] == 3
     assert seen["v3_behavior"] is True
+    assert seen["acq_same_president"] is False
     assert rendered.startswith(
         "# Self-Play Analysis: 18xx game=24680 continuation, 1 simulations/move"
     )

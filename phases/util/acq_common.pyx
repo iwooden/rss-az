@@ -26,6 +26,7 @@ from entities.company cimport (
     LOC_CORP_ACQ,
     company_location,
     company_owner_id,
+    clear_acquisition_rejections,
 )
 from entities.corp cimport (
     corp_is_active,
@@ -463,5 +464,6 @@ cdef void _merge_acquisition_zones(GameState state) noexcept:
 cdef void _transition_to_closing(GameState state) noexcept:
     """Exit SELECT_CORP: merge zones, clear context, hand off to CLOSING."""
     _merge_acquisition_zones(state)
+    clear_acquisition_rejections(state)
     _clear_acquisition_context(state)
     setup_closing_phase(state)

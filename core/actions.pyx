@@ -77,6 +77,7 @@ from entities.company cimport (
     company_adjusted_income,
     company_location,
     company_owner_id,
+    company_max_rejected_price,
     company_owned_by_player,
 )
 from entities.corp cimport (
@@ -564,6 +565,21 @@ cdef int _enumerate_bid(
     return count
 
 
+cdef inline int _acq_min_price_offset(
+    GameState state, int company_id, int player_id,
+) noexcept nogil:
+    """Keep price action IDs absolute; only raise the legal lower bound."""
+    cdef int minimum = 0
+    if state.v3_behavior:
+        minimum = (
+            company_max_rejected_price(state, company_id, player_id)
+            - COMPANY_LOW_PRICE[company_id] + 1
+        )
+        if minimum < 0:
+            minimum = 0
+    return minimum
+
+
 cdef inline bint _acq_pair_has_legal_price(
     GameState state, int corp_id, int company_id,
     int player_id, int cash, bint same_pres,
@@ -579,9 +595,9 @@ cdef inline bint _acq_pair_has_legal_price(
       - LOC_CORP:   target isn't self-owned, seller isn't in receivership,
                     seller retains >= 2 companies after sale, and under
                     same-president gating the active player presides the
-                    seller. Affordability: ``cash >= low_price``.
+                    seller. Affordability includes the v3 rejection floor.
       - LOC_PLAYER: under same-president gating the seller is the active
-                    player. Affordability: ``cash >= low_price``.
+                    player. Affordability includes the v3 rejection floor.
 
     All other locations (LOC_CORP_ACQ, LOC_DECK, LOC_AUCTION) are unreachable
     as acquisition targets.
@@ -611,7 +627,7 @@ cdef inline bint _acq_pair_has_legal_price(
         max_offset = high_price - low_price
         if cash - low_price < max_offset:
             max_offset = cash - low_price
-        return max_offset >= 0
+        return max_offset >= _acq_min_price_offset(state, company_id, player_id)
     elif loc == <int>LOC_PLAYER:
         owner_id = company_owner_id(state, company_id)
         if same_pres and owner_id != player_id:
@@ -621,7 +637,7 @@ cdef inline bint _acq_pair_has_legal_price(
         max_offset = high_price - low_price
         if cash - low_price < max_offset:
             max_offset = cash - low_price
-        return max_offset >= 0
+        return max_offset >= _acq_min_price_offset(state, company_id, player_id)
     return False
 
 
@@ -734,7 +750,8 @@ cdef int _enumerate_acq_select_price(
     """Emit every legal DPHASE_ACQ_SELECT_PRICE action in deterministic order.
 
     Ordering:
-      ``ids 0..max_offset`` where
+      ``ids min_offset..max_offset`` where v3's minimum exceeds the actor's
+      highest rejected price (zero minimum offset in legacy mode), and
       ``max_offset = min(high - low, cash - low, 50)``.
 
     Trusts SELECT_COMPANY's filter: by the time we're here, the
@@ -762,12 +779,14 @@ cdef int _enumerate_acq_select_price(
     cdef int high_price = COMPANY_HIGH_PRICE[company_id]
     cdef int max_offset = high_price - low_price
     cdef int price_offset
+    cdef int player_id = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
+    cdef int min_offset = _acq_min_price_offset(state, company_id, player_id)
 
     if cash - low_price < max_offset:
         max_offset = cash - low_price
     if max_offset > 50:
         max_offset = 50
-    for price_offset in range(max_offset + 1):
+    for price_offset in range(min_offset, max_offset + 1):
         _require_action_capacity(count, b"ACQ_SELECT_PRICE")
         ids[count] = <uint16_t>encode_acq_select_price(price_offset)
         count += 1

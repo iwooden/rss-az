@@ -115,7 +115,7 @@ Each token row is zero-padded to 98 features (`TokenDataSize.TOKEN_DIM`), the
 width of the Corp token. Per-type widths live in `core.token_data_v3.TokenWidth`:
 
 - `TW_MARKET_INFO = 55`
-- `TW_COMPANY = 28`
+- `TW_COMPANY = 29`
 - `TW_FI = 40`
 - `TW_GLOBAL_INFO = 24`
 - `TW_INVEST = 2`
@@ -169,7 +169,7 @@ reserved for `attn_mask`.
 - Availability (27 slots). 1 if the corresponding market space is available,
   0 otherwise.
 
-### Company Tokens (28, x36)
+### Company Tokens (29, x36)
 
 Company identity is inferred from row order.
 
@@ -201,6 +201,13 @@ IPC fields. This adds `36 * d_model` parameters and a new v3 checkpoint weight.
   synergy income the active corp would gain by acquiring this company,
   normalized by `ENTITY_INCOME_DIVISOR`. Zero outside the phase and zero for
   companies already in the active corp's owned/acquisition portfolio.
+- `actor_max_rejected_price` (slot 14). Highest rejected acquisition offer
+  made by the active player for this company during this acquisition phase,
+  normalized by `COMPANY_PRICE_DIVISOR` (80). Zero means no rejection.
+  In `ACQ_OFFER`, the active player is the responder, so this reports their
+  own previous buying attempts, not the proposer's. Read regardless of
+  `v3_behavior`; history clears at acquisition phase exit. The company
+  projection includes this scalar; the ownership tail now begins at slot 15.
 
 Relational tail:
 

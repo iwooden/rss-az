@@ -101,6 +101,7 @@ cdef struct CompanyOffsets:
     int incomes                  # 36 adjusted income slots (raw int16)
     int locations                # 36 CompanyLocation enum values
     int owner_ids                # 36 owner IDs (player_id / corp_id / -1)
+    int max_rejected_prices      # NUM_COMPANIES * MAX_PLAYERS, player-major
     # Total size of the companies section (used by compute_layout to size it)
     int size
 

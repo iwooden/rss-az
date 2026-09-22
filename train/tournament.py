@@ -78,9 +78,11 @@ def _play_game(
     rng: np.random.Generator,
     state_pool: StatePool,
     v3_behavior: bool = False,
+    acq_same_president: bool = True,
 ) -> list[int]:
     """Play one tournament game. Returns net worths per seat."""
-    state = GameState(num_players, max_players=max_players, v3_behavior=v3_behavior)
+    state = GameState(num_players, max_players=max_players, v3_behavior=v3_behavior,
+                      acq_same_president=acq_same_president)
     state.initialize_game(num_players, seed=game_seed, max_players=max_players)
 
     while TURN.get_phase(state) != GamePhases.PHASE_GAME_OVER:
@@ -274,10 +276,13 @@ def run_tournament(
     base_seed: int,
     terminal_rank_weight: float,
     v3_behavior: bool | None = None,
+    acq_same_president: bool | None = None,
 ) -> tuple[list[GameResult], float]:
     """Run the full tournament. Returns (results, elapsed_seconds)."""
     if v3_behavior is None:
         v3_behavior = entries[0].config.v3_behavior
+    if acq_same_president is None:
+        acq_same_president = entries[0].config.acq_same_president
     input_specs = [get_model_input_spec(e.config) for e in entries]
     evaluators = [
         NNEvaluator(
@@ -319,6 +324,7 @@ def run_tournament(
                 evaluators, seat_to_model, num_players, max_players,
                 mcts_config, int(game_seed), rng, state_pool,
                 v3_behavior=v3_behavior,
+                acq_same_president=acq_same_president,
             )
             ranks = _rank_players(net_worths)
             dt = time.perf_counter() - t_game
@@ -398,6 +404,10 @@ def main() -> None:
     parser.add_argument(
         "--v3-behavior", action=argparse.BooleanOptionalAction, default=None,
         help="Engine behavior for every seat (default: first checkpoint's config)",
+    )
+    parser.add_argument(
+        "--acq-same-president", action=argparse.BooleanOptionalAction, default=None,
+        help="Acquisition scope for every seat (default: first checkpoint's config)",
     )
     parser.add_argument("--seed", type=int, default=42,
                         help="Base random seed (default: 42)")
@@ -512,6 +522,7 @@ def main() -> None:
         entries, device, tournament_num_players, tournament_max_players, mcts_config,
         args.games_per_pair, args.seed, terminal_blend,
         v3_behavior=args.v3_behavior,
+        acq_same_president=args.acq_same_president,
     )
 
     # Build report

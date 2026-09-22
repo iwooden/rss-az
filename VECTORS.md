@@ -14,13 +14,13 @@ The engine supports 2–6 players. Training/NN/MCTS targets **3–5p only**.
 
 | Players | total_size | player_stride | corp_stride | turn_size |
 |---------|-----------|---------------|-------------|-----------|
-| 2       | 439       | 30            | 17          | 69        |
-| 3       | 469       | 30            | 17          | 69        |
-| 4       | 499       | 30            | 17          | 69        |
-| 5       | 529       | 30            | 17          | 69        |
-| 6       | 559       | 30            | 17          | 69        |
+| 2       | 655       | 30            | 17          | 69        |
+| 3       | 685       | 30            | 17          | 69        |
+| 4       | 715       | 30            | 17          | 69        |
+| 5       | 745       | 30            | 17          | 69        |
+| 6       | 775       | 30            | 17          | 69        |
 
-`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 379 + 30 * num_players` — the constant 379 is the fixed prefix, and only the trailing players section grows.
+`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 595 + 30 * num_players` — the constant 595 is the fixed prefix, and only the trailing players section grows.
 
 Layout offsets are computed once at module load and exposed as Cython `cdef` structs at module scope on `core.state`:
 
@@ -28,7 +28,7 @@ Layout offsets are computed once at module load and exposed as Cython `cdef` str
 - `TURN_OFFSETS` (`cdef TurnStateOffsets`) — relative offsets within the (fixed-size) turn block, plus `size`.
 - `PLAYER_FIELDS` (`cdef PlayerFieldOffsets`) — relative offsets within a player block, plus `size`.
 - `CORP_FIELDS` (`cdef CorpFieldOffsets`) — relative offsets within a corp block, plus `size`.
-- `COMPANY_OFFSETS` (`cdef CompanyOffsets`) — relative offsets of the companies-section sub-arrays (`incomes`, `locations`, `owner_ids`), plus `size`.
+- `COMPANY_OFFSETS` (`cdef CompanyOffsets`) — relative offsets of the companies-section sub-arrays (`incomes`, `locations`, `owner_ids`, `max_rejected_prices`), plus `size`.
 - `DECK_OFFSETS` (`cdef DeckOffsets`) — relative offsets of the deck-section sub-arrays (`top`, `order`), plus `size`.
 - `FI_OFFSETS` (`cdef FIOffsets`) — relative offsets within the FI section (`cash`, `income`), plus `size`.
 
@@ -45,12 +45,12 @@ Cython code reads them directly via `from core.state cimport LAYOUT, TURN_OFFSET
 | Section | Start offset | Size | Description |
 |---------|-------------:|------|-------------|
 | FI        | 0   | 2   | Foreign investor cash, income |
-| Companies | 2   | 108 | Three parallel 36-slot sub-arrays: `incomes`, `locations`, `owner_ids` (see [Companies section](#companies-section)) |
-| Market    | 110 | 27  | Per-price availability flags |
-| Corps     | 137 | 136 | Per-corp blocks: `corp_stride (17) * 8` (see [Corp block](#corp-block)) |
-| Turn      | 273 | 69  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
-| Deck      | 342 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
-| Players   | 379 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
+| Companies | 2   | 324 | Three 36-slot arrays plus 6×36 rejection prices (see [Companies section](#companies-section)) |
+| Market    | 326 | 27  | Per-price availability flags |
+| Corps     | 353 | 136 | Per-corp blocks: `corp_stride (17) * 8` (see [Corp block](#corp-block)) |
+| Turn      | 489 | 69  | Turn-scoped state including game-wide metadata, active corp/company selectors, plus two internal cache-dirty masks (see [Turn block](#turn-block)) |
+| Deck      | 558 | 37  | `top` (1) + `order` (36) — see [Deck section](#deck-section) |
+| Players   | 595 | `player_stride * num_players` | Per-player blocks (see [Player block](#player-block)) |
 
 Every offset above is **constant across all player counts** — the players section lives at the end of the buffer for exactly this reason. The "Start offset" column is identical for every player count up to and including the players section start.
 
@@ -101,13 +101,20 @@ FI ownership of companies is tracked via `companies.locations` (`LOC_FI`), not v
 
 ## Companies section
 
-Block size: **108**. Sub-offsets via `core.state.get_company_fields()` (`CompanyFields` namedtuple) for Python, or `from core.state cimport COMPANY_OFFSETS` for Cython. Each sub-array is indexed by `company_id` (0-35) regardless of current location.
+Block size: **324**. Sub-offsets via `core.state.get_company_fields()` (`CompanyFields` namedtuple) for Python, or `from core.state cimport COMPANY_OFFSETS` for Cython. The first three sub-arrays are indexed by `company_id` (0-35) regardless of current location.
 
 | Relative offset | Sub-array       | Size | Description |
 |----------------|-----------------|------|-------------|
 | 0  | `incomes`    | 36 | Per-company adjusted income (`base_income − coo_cost(coo_level)`). Recomputed when the CoO level changes. |
 | 36 | `locations`  | 36 | `CompanyLocation` enum — see [Company tracking](#company-tracking). |
 | 72 | `owner_ids`  | 36 | Owner ID per company (`player_id`, `corp_id`, or `-1`). Seeded to `-1` in `__cinit__`. |
+| 108 | `max_rejected_prices` | 216 | Highest rejected acquisition price by proposing player; indexed by `player_id * NUM_COMPANIES + company_id`. Six player rows, independent of actual player count. |
+
+Rejection prices start at zero, increase on negotiated-offer rejection in every
+engine mode, and clear at acquisition phase exit. FI intervention declines do
+not update them. Only `v3_behavior=True` restricts subsequent offers to strictly
+higher prices. Entity access uses `Company.get_max_rejected_price` and
+`Company.record_rejected_offer`; the raw values remain integers.
 
 `locations` + `owner_ids` are the single source of truth for "who owns what". There is no per-player or per-corp `owned_companies` bitmap — entity handles scan these arrays directly.
 
@@ -422,12 +429,12 @@ from entities.player import PLAYERS
 # State buffer
 state = GameState(num_players=3)
 state.initialize_game(3, seed=42)
-print(f"buffer length = {len(state._array)}")  # 469 for 3p
+print(f"buffer length = {len(state._array)}")  # 685 for 3p
 
 # Layout introspection
 layout = get_layout(3)            # LayoutInfo namedtuple
-print(layout.players_offset)      # 379 (constant across player counts)
-print(layout.total_size)          # 469
+print(layout.players_offset)      # 595 (constant across player counts)
+print(layout.total_size)          # 685
 
 pf = get_player_fields()          # PlayerFields namedtuple
 print(pf.cash, pf.has_passed)     # 0 29

@@ -79,13 +79,23 @@ retains them through the rest of the turn and clears them on entry to the next
 turn's INVEST. Returning from BID to the same INVEST does not clear counters.
 Use `--no-v3-behavior` to select legacy behavior explicitly.
 
+To train cross-player acquisition offers, also set `"acq_same_president": false`
+or pass `--no-acq-same-president`. The default remains `true`. With v3 behavior,
+each new offer must exceed that player's highest rejected price for the company
+in the current acquisition phase. History is tracked in all modes, but legacy
+mode permits repeated or lower offers for 18xx.games replay. V3 company tokens
+include the active player's rejection threshold, including when that player is
+responding to someone else's offer. V2 inputs remain unchanged.
+
 The setting is checkpointed with the config and applied by self-play, analysis,
 and live replay. Tournaments use one mode for all seats, defaulting to the first
 checkpoint's setting, with the same CLI override. On `GameState`, it is a runtime
 flag alongside the other engine options, outside the raw int16 array; callers
 reconstructing a game for execution supply `v3_behavior` to `from_array` or
 `from_buffer`. Rebinding retains the wrapper's mode, and MCTS keeps it across
-subtree reuse.
+subtree reuse, including the `acq_same_president` scope flag. Tournament
+acquisition scope defaults to the first checkpoint's config and accepts
+`--[no-]acq-same-president` as an override.
 
 Replay stores raw counters, so newly generated replay can supply either layout.
 Older replay rows saved after INVEST already lost that turn's trade counters;

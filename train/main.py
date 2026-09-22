@@ -89,6 +89,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Enable v3 engine behavior (independent of model input layout)",
     )
     parser.add_argument(
+        "--acq-same-president", action=argparse.BooleanOptionalAction, default=None,
+        help="Restrict acquisition to companies controlled by the buyer's president",
+    )
+    parser.add_argument(
         "--min-players",
         type=int,
         help="Minimum player count for mixed player-count training",
@@ -273,7 +277,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _CLI_FIELDS = (
-    "num_players", "min_players", "max_players", "v3_behavior",
+    "num_players", "min_players", "max_players", "v3_behavior", "acq_same_president",
     "eval_dtype", "model_type", "model_path", "phase_conditioning",
     "d_model", "d_proj", "num_heads", "num_layers", "ff_mult",
     "price_slot_fourier_bands",

@@ -14,6 +14,7 @@ from core.state import GameState, get_layout
 from core import token_data_v2, token_data_v3
 from core.token_data import TokenWidth, get_num_tokens, get_token_data, get_token_data_batch, get_token_dim
 from entities.player import PLAYERS
+from entities.company import COMPANIES
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator
 from nn import create_model, get_model_input_spec
@@ -50,6 +51,8 @@ def _state(n=3):
     PLAYERS[1].increment_share_sells(state, 2)
     PLAYERS[2].increment_share_buys(state, 3)
     PLAYERS[2].increment_share_sells(state, 3)
+    for player, price in enumerate((13, 17, 19)):
+        COMPANIES[14].record_rejected_offer(state, player, price)
     return state
 
 
@@ -89,13 +92,26 @@ def test_layouts_share_unchanged_features_but_own_their_history_and_movements():
     v2, v3 = _tokens(state, 2), _tokens(state, 3)
     # A single round trip sets only the v3 flag. V2 still uses >=2 OR >=2.
     np.testing.assert_array_equal(v2[54:57, 14], [1, 0, 0])
-    np.testing.assert_array_equal(v2[:46], v3[:46, :95])
+    np.testing.assert_array_equal(v2[0], v3[0, :95])
+    np.testing.assert_array_equal(v2[1:37, :14], v3[1:37, :14])
+    np.testing.assert_array_equal(v2[1:37, 14:28], v3[1:37, 15:29])
+    assert v3[15, 14] == np.float32(13 / 80)
+    np.testing.assert_array_equal(v2[37:46], v3[37:46, :95])
     # Pending movement at slot 36 is nominal in v2 and market-resolved in v3.
     np.testing.assert_array_equal(v2[46:54, :36], v3[46:54, :36])
     np.testing.assert_array_equal(v2[46:54, 37:54], v3[46:54, 37:54])
     np.testing.assert_array_equal(v2[46:54, 54:], v3[46:54, 57:])
     np.testing.assert_array_equal(v2[54:, :14], v3[54:, :14])
     np.testing.assert_array_equal(v2[54:, 15:], v3[54:, 15:95])
+
+
+def test_v2_observations_ignore_acquisition_rejection_history():
+    state = _state()
+    before = _tokens(state, 2)
+    for player in range(3):
+        for company in COMPANIES:
+            company.record_rejected_offer(state, player, company.get_high_price())
+    np.testing.assert_array_equal(_tokens(state, 2), before)
 
 
 @pytest.mark.parametrize("version", [2, 3])
@@ -231,6 +247,7 @@ def test_v3_token_diagnostics_label_and_denormalize_history():
     state = _state()
     dump = format_token_dump(state, layout_version=3)
     assert "actor_buys=5 actor_sells=1 actor_round_trip=1" in dump
+    assert "actor_max_rejected_price=13" in dump
     accumulator = TokenNormalizationAccumulator(3, layout_version=3)
     accumulator.add_state(state)
     assert list(accumulator._iter_field_stats())

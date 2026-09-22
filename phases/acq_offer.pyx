@@ -35,6 +35,7 @@ from phases.util.acq_common cimport (
 
 from entities import turn as turn_module
 from entities import corp as corp_module
+from entities import company as company_module
 
 
 # =============================================================================
@@ -116,6 +117,9 @@ cdef void apply_acq_offer_action(GameState state, ActionInfo* info) noexcept:
                 _return_to_acquisition(state)
         else:
             # Cross-president: owner declined, cancel acquisition
+            company_module.COMPANIES[company_id].record_rejected_offer(
+                state, corp_president_id(state, active_corp), price,
+            )
             _return_to_acquisition(state)
 
 

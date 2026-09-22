@@ -23,6 +23,19 @@ def test_v3_behavior_is_explicit_validated_and_serialized():
         assert config.v3_behavior is expected
 
 
+def test_cross_player_acquisition_config_and_cli_round_trip():
+    assert TrainingConfig().acq_same_president is True
+    config = TrainingConfig.from_json('{"v3_behavior": true, "acq_same_president": false}')
+    assert TrainingConfig.from_json(config.to_json()).acq_same_president is False
+    for invalid in (1, "false", None):
+        with pytest.raises(ValueError, match="acq_same_president must be bool"):
+            TrainingConfig(acq_same_president=invalid)
+    for option, expected in (("--acq-same-president", True), ("--no-acq-same-president", False)):
+        args = _build_parser().parse_args([option])
+        _apply_overrides(config, args)
+        assert config.acq_same_president is expected
+
+
 def test_legacy_num_players_config_validates_with_effective_single_range() -> None:
     config = TrainingConfig.from_json('{"num_players": 3}')
 

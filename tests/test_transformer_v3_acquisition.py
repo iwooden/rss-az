@@ -21,6 +21,36 @@ from tests.phases.helpers.ownership import give_company_to_corp, give_company_to
 
 
 @pytest.mark.parametrize("num_players", [3, 4, 5])
+def test_rejection_observation_follows_deciding_player_including_offer(num_players):
+    from tests.phases.test_acq_rejections import negotiation_state, select_target, TARGET
+    from core.token_data import get_num_tokens, get_token_dim
+    state = negotiation_state(num_players)
+    # The eventual seller's own past buying attempt is deliberately different.
+    COMPANIES[TARGET].record_rejected_offer(state, 0, 17)
+    COMPANIES[TARGET].record_rejected_offer(state, num_players - 1, 12)
+    # Test observations independently of the v3 legal floor.
+    state.v3_behavior = False
+    raw = np.empty((get_num_tokens(5), get_token_dim(3)), np.float32)
+    select_target(state)
+    get_token_data(state, raw, max_players=5, layout_version=3)
+    assert raw[TARGET + 1, 14] == np.float32(12 / 80)
+    DRIVER.apply_action(state, 1)
+    assert TURN.get_active_player(state) == 0
+    get_token_data(state, raw, max_players=5, layout_version=3)
+    assert raw[TARGET + 1, 14] == np.float32(17 / 80)
+
+    # The scalar reaches the company projection; ownership remains in the tail.
+    module = _load_model_module("nn/transformer-v3.py")
+    model = module.RSSTransformerNet(module.TransformerConfig(
+        num_players=5, d_model=32, num_heads=4, num_layers=1,
+    )).eval()
+    x = torch.from_numpy(raw[None]).requires_grad_()
+    model._project_company_tokens(x).square().sum().backward()
+    assert x.grad is not None and x.grad[0, TARGET + 1, 14].abs() > 0
+    assert model.company_proj.in_features == 14
+
+
+@pytest.mark.parametrize("num_players", [3, 4, 5])
 @pytest.mark.parametrize("seller_kind", ["player", "corp", "foreign_player"])
 def test_acquisition_price_features_match_buyer_and_seller_balances(num_players, seller_kind):
     module = _load_model_module("nn/transformer-v3.py")

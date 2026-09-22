@@ -184,6 +184,7 @@ def _load_18xx_continuation_state(
     *,
     max_players: int,
     v3_behavior: bool = False,
+    acq_same_president: bool = True,
 ) -> GameState:
     """Replay an 18xx game export and return a model-ready current state."""
     from utils_18xx.game_session import GameSession, format_state_mismatches
@@ -205,7 +206,8 @@ def _load_18xx_continuation_state(
     # Historical replay accepts compatibility behavior that the trained
     # model does not use. Restore the normal model-side rules for the newly
     # generated continuation.
-    state.acq_same_president = True
+    state.v3_behavior = v3_behavior
+    state.acq_same_president = acq_same_president
     state.allow_positive_income_closing = False
     return state
 
@@ -594,9 +596,11 @@ def analyze_game(
             game_data_18xx,
             max_players=max_players,
             v3_behavior=config.v3_behavior,
+            acq_same_president=config.acq_same_president,
         )
     else:
-        state = GameState(num_players, max_players=max_players, v3_behavior=config.v3_behavior)
+        state = GameState(num_players, max_players=max_players, v3_behavior=config.v3_behavior,
+                          acq_same_president=config.acq_same_president)
         state.initialize_game(num_players, seed=seed, max_players=max_players)
         if seed_18xx is not None:
             setup_18xx = _apply_18xx_seed_setup(state, seed_18xx, num_players)

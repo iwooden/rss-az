@@ -68,10 +68,10 @@ V3 per-token feature layouts (max width 98, pinned by the Corp token):
                 ``active`` slot still means "corp is floated / operational"
                 (matches ``corp_is_active``); the decision-flow selector is
                 the ``is_selected`` flag.
-  Company (28): attn_mask (1) + is_selected (1) + static data [low/face/high/
+  Company (29): attn_mask (1) + is_selected (1) + static data [low/face/high/
                 low_high_diff/base_income/stars] (6) + adjusted_income (1)
                 + at_removed/at_auction/at_revealed/at_corp_acq (4) +
-                acq_select_synergy_delta (1) +
+                acq_select_synergy_delta (1) + actor_max_rejected_price (1) +
                 relational tail: owner_corp onehot (8) + owner_player onehot
                 (5, padded for num_players < 5) + owner_fi (1).
                 The three ownership groups are mutually exclusive:
@@ -185,6 +185,7 @@ from entities.company cimport (
     LOC_CORP_ACQ, LOC_REMOVED, LOC_EXCLUDED,
     company_location,
     company_owner_id,
+    company_max_rejected_price,
     company_adjusted_income,
 )
 from entities.market cimport (
@@ -874,12 +875,20 @@ cdef void _fill_company_token(
     cdef int OFF_AT_REVEALED    = 11
     cdef int OFF_AT_CORP_ACQ    = 12
     cdef int OFF_ACQ_SYNERGY    = 13
-    cdef int OFF_OWNER_CORP     = 14   # 8 slots
-    cdef int OFF_OWNER_PLAYER   = 22   # 5 slots (padded for num_players < 5)
-    cdef int OFF_OWNER_FI       = 27
+    cdef int OFF_MAX_REJECTED   = 14
+    cdef int OFF_OWNER_CORP     = 15   # 8 slots
+    cdef int OFF_OWNER_PLAYER   = 23   # 5 slots (padded for num_players < 5)
+    cdef int OFF_OWNER_FI       = 28
 
     cdef int loc = company_location(state, company_id)
+    cdef int active_player = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
     buffer[tok, OFF_ATTN_MASK] = 1.0
+    # Always the decision maker, including the seller responding in ACQ_OFFER.
+    if 0 <= active_player < num_players:
+        buffer[tok, OFF_MAX_REJECTED] = (
+            <float>company_max_rejected_price(state, company_id, active_player)
+            / COMPANY_PRICE_DIVISOR
+        )
 
     # Static data
     buffer[tok, OFF_LOW_PRICE] = <float>COMPANY_LOW_PRICE[company_id] / COMPANY_PRICE_DIVISOR

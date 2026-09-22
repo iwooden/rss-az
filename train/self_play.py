@@ -894,7 +894,8 @@ def play_game(
 
     num_players = _resolve_game_num_players(config, num_players)
     max_players = config.effective_max_players
-    state = GameState(num_players, max_players=max_players, v3_behavior=config.v3_behavior)
+    state = GameState(num_players, max_players=max_players, v3_behavior=config.v3_behavior,
+                      acq_same_president=config.acq_same_president)
     state.initialize_game(num_players, seed=game_seed, max_players=max_players)
 
     total_int16_size = get_layout(max_players).total_size

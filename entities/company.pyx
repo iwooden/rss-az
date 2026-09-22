@@ -28,6 +28,7 @@ cache and no initialize() step. The handle's only state is its
 """
 
 from libc.stdint cimport int16_t
+from libc.string cimport memset
 from core.state cimport GameState, LAYOUT, COMPANY_OFFSETS
 from entities.turn cimport TurnState
 from entities.corp cimport invalidate_corp_cache, corp_is_active
@@ -112,6 +113,20 @@ cdef int company_location(GameState state, int company_id) noexcept nogil:
 
 cdef int company_owner_id(GameState state, int company_id) noexcept nogil:
     return _owner_at(state, company_id)
+
+
+cdef int company_max_rejected_price(GameState state, int company_id, int player_id) noexcept nogil:
+    return <int>state._data[
+        LAYOUT.companies_offset + COMPANY_OFFSETS.max_rejected_prices
+        + player_id * <int>GameConstants.NUM_COMPANIES + company_id
+    ]
+
+
+cdef void clear_acquisition_rejections(GameState state) noexcept nogil:
+    memset(
+        state._data + LAYOUT.companies_offset + COMPANY_OFFSETS.max_rejected_prices,
+        0, sizeof(int16_t) * <int>GameConstants.NUM_COMPANIES * <int>GameConstants.MAX_PLAYERS,
+    )
 
 
 cdef bint company_is_in_deck(GameState state, int company_id) noexcept nogil:
@@ -262,6 +277,21 @@ cdef class Company:
 
     cpdef bint is_in_deck(self, GameState state):
         return company_is_in_deck(state, self.company_id)
+
+    cpdef int get_max_rejected_price(self, GameState state, int player_id):
+        assert 0 <= player_id < _TURN()._get_num_players(state)
+        return company_max_rejected_price(state, self.company_id, player_id)
+
+    cpdef void record_rejected_offer(self, GameState state, int player_id, int price):
+        """Remember the maximum, even when replay permits lower repeat offers."""
+        assert 0 <= player_id < _TURN()._get_num_players(state)
+        assert 0 < price <= 32767
+        cdef int offset = (
+            LAYOUT.companies_offset + COMPANY_OFFSETS.max_rejected_prices
+            + player_id * <int>GameConstants.NUM_COMPANIES + self.company_id
+        )
+        if price > state._data[offset]:
+            state._data[offset] = <int16_t>price
 
     cpdef bint is_excluded(self, GameState state):
         """True if this company was filtered out at deck setup for the player count."""

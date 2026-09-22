@@ -3,7 +3,8 @@ Company entity declarations.
 
 Each company exists in exactly one location at any time. The Company handle
 is a thin stateless wrapper around three parallel 36-slot sub-arrays in the
-compact GameState (adjusted incomes + locations + owner ids), all packed
+compact GameState (adjusted incomes + locations + owner ids), plus six
+player rows of maximum rejected acquisition prices, all packed
 into the companies section. All offsets are computed inline from the
 module-level ``LAYOUT`` and ``COMPANY_OFFSETS`` constants on ``core.state``
 — there is no per-instance offset cache and no initialize() step. The
@@ -51,6 +52,8 @@ cdef bint company_owned_by_corp(GameState state, int company_id, int corp_id) no
 cdef bint company_in_corp_acquisition(GameState state, int company_id, int corp_id) noexcept nogil
 cdef int company_location(GameState state, int company_id) noexcept nogil
 cdef int company_owner_id(GameState state, int company_id) noexcept nogil
+cdef int company_max_rejected_price(GameState state, int company_id, int player_id) noexcept nogil
+cdef void clear_acquisition_rejections(GameState state) noexcept nogil
 cdef bint company_is_in_deck(GameState state, int company_id) noexcept nogil
 cdef bint company_is_excluded(GameState state, int company_id) noexcept nogil
 cdef bint company_is_for_auction(GameState state, int company_id) noexcept nogil
@@ -87,6 +90,8 @@ cdef class Company:
     # Location queries
     cpdef int get_location(self, GameState state)
     cpdef int get_owner_id(self, GameState state)
+    cpdef int get_max_rejected_price(self, GameState state, int player_id)
+    cpdef void record_rejected_offer(self, GameState state, int player_id, int price)
     cpdef bint is_in_deck(self, GameState state)
     cpdef bint is_excluded(self, GameState state)
     cpdef bint is_for_auction(self, GameState state)

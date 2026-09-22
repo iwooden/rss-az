@@ -113,6 +113,21 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator, v3_behavior, mo
     assert (vt <= 1.0 + 1e-6).all(), f"max value_target={vt.max()}"
 
 
+def test_v3_cross_player_self_play_completes_with_valid_training_examples():
+    torch.manual_seed(17)
+    config = TrainingConfig(
+        num_players=3, model_path="nn/transformer-v3.py",
+        d_model=32, d_proj=8, num_heads=4, num_layers=1,
+        num_simulations=4, v3_behavior=True, acq_same_president=False,
+    )
+    model = create_model(config).eval()
+    evaluator = NNEvaluator(model, torch.device("cpu"), 3)
+    record = play_game(evaluator, config, game_seed=42, rng=np.random.default_rng(17))
+    assert record.total_moves > 0
+    assert record.num_examples == record.total_moves
+    _assert_dense_policy_invariants(record)
+
+
 def test_play_game_strategy_trace_captures_root_outputs(evaluator):
     config = TrainingConfig(
         num_players=NUM_PLAYERS,

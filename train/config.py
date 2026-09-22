@@ -88,6 +88,7 @@ class TrainingConfig:
     max_players: int = 0
     # General engine behavior mode; independent of model/input layout.
     v3_behavior: bool = False
+    acq_same_president: bool = True
 
     # --- Inference ---
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
@@ -261,6 +262,8 @@ class TrainingConfig:
         self.model_type = normalize_model_type(self.model_type).value
         if not isinstance(self.v3_behavior, bool):
             raise ValueError(f"v3_behavior must be bool, got {self.v3_behavior!r}")
+        if not isinstance(self.acq_same_president, bool):
+            raise ValueError(f"acq_same_president must be bool, got {self.acq_same_president!r}")
         if self.model_path is not None:
             if not isinstance(self.model_path, str):
                 raise ValueError(

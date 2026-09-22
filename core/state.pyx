@@ -12,7 +12,7 @@ The turn block starts with the active player, active corp/company
 selectors, and the canonical game metadata (`num_players`, `phase`,
 `coo_level`, `turn_number`). The companies section
 holds three parallel 36-slot sub-arrays (adjusted incomes, location
-enums, owner ids) reachable via `LAYOUT.companies_offset +
+enums, owner ids) and a six-player acquisition-rejection matrix, reachable via `LAYOUT.companies_offset +
 COMPANY_OFFSETS.<field>`. The deck section holds the top-of-deck index
 and the 36-slot order array reachable via `LAYOUT.deck_offset +
 DECK_OFFSETS.<field>`. `StateLayout` only describes section offsets,
@@ -65,7 +65,7 @@ CorpFields = namedtuple('CorpFields', [
 ])
 
 CompanyFields = namedtuple('CompanyFields', [
-    'incomes', 'locations', 'owner_ids',
+    'incomes', 'locations', 'owner_ids', 'max_rejected_prices',
 ])
 
 DeckFields = namedtuple('DeckFields', [
@@ -142,7 +142,7 @@ cdef StateLayout compute_layout() noexcept nogil:
     layout.fi_offset = offset
     offset += fi_offsets.size
 
-    # --- Companies (adjusted incomes + locations + owner_ids) ---
+    # --- Companies (incomes, locations, owners, acquisition rejections) ---
     layout.companies_offset = offset
     offset += company_offsets.size
 
@@ -293,8 +293,9 @@ cdef CompanyOffsets compute_company_offsets() noexcept nogil:
 
     The section is laid out as three parallel 36-slot sub-arrays:
     adjusted incomes, location enums, and owner IDs (player_id /
-    corp_id / -1). Keeping them contiguous lets ``StateLayout`` describe
-    a single ``companies_offset`` instead of three independent slots.
+    corp_id / -1), followed by MAX_PLAYERS parallel 36-slot arrays of
+    maximum rejected acquisition prices. Keeping them contiguous lets
+    ``StateLayout`` describe a single ``companies_offset``.
     The final ``c.size`` field is the total length of the companies
     block and is used by compute_layout to size the section.
     """
@@ -307,6 +308,8 @@ cdef CompanyOffsets compute_company_offsets() noexcept nogil:
     offset += GameConstants.NUM_COMPANIES
     c.owner_ids = offset
     offset += GameConstants.NUM_COMPANIES
+    c.max_rejected_prices = offset
+    offset += GameConstants.NUM_COMPANIES * GameConstants.MAX_PLAYERS
 
     c.size = offset
     return c
@@ -518,6 +521,7 @@ def get_company_fields():
         incomes=COMPANY_OFFSETS.incomes,
         locations=COMPANY_OFFSETS.locations,
         owner_ids=COMPANY_OFFSETS.owner_ids,
+        max_rejected_prices=COMPANY_OFFSETS.max_rejected_prices,
     )
 
 

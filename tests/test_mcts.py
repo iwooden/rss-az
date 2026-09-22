@@ -76,13 +76,14 @@ def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator, 
     def apply_action(state, action, **kwargs):
         seen.append(state.v3_behavior)
         assert state.v3_behavior is expected_mode
+        assert state.acq_same_president is (not expected_mode)
         return DRIVER.apply_action(state, action, **kwargs)
 
     monkeypatch.setattr(search, "DRIVER", SimpleNamespace(apply_action=apply_action))
     pool = StatePool(100, get_layout(3).total_size)
     config = MCTSConfig(num_simulations=8, search_batch_size=1, dirichlet_epsilon=0)
     for expected_mode in (True, False):
-        state = GameState(3, v3_behavior=expected_mode)
+        state = GameState(3, v3_behavior=expected_mode, acq_same_president=not expected_mode)
         state.initialize_game(3, seed=42)
         root = run_search(state, evaluator, config, state_pool=pool)
         action = next(a for a, child in root.children.items() if not child.is_terminal)
