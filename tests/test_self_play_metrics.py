@@ -39,6 +39,7 @@ def _fake_record(
         total_moves=moves,
         duration_secs=duration,
         net_worths=net_worths,
+        invest_roundtrip_cap_hits=[0] * num_players,
         shares_per_player=[player + 1 for player in range(num_players)],
         companies_per_player=[player + 2 for player in range(num_players)],
         pres_share_values=[float((player + 1) * 10) for player in range(num_players)],
@@ -74,6 +75,28 @@ def test_self_play_metric_accumulator_handles_missing_player_count() -> None:
     assert by_count[5]["games"] == 1.0
     assert by_count[5]["total_net_worth"] == 1150.0
     assert len(aggregate["rank_net_worths"]) == 5
+
+
+def test_invest_cap_hits_average_games_by_count_and_finishing_rank() -> None:
+    metrics = _SelfPlayMetricAccumulator()
+    assert metrics.aggregate_snapshot()["invest_roundtrip_cap_hits_per_game"] == 0
+    assert not _build_epoch_self_play_scalars(metrics)
+    for n, worths, hits in (
+        (3, [100, 300, 200], [1, 2, 0]),
+        (3, [100, 300, 200], [0, 0, 0]),
+        (4, [100, 200, 300, 400], [1, 2, 0, 5]),
+        (5, [100, 200, 300, 400, 500], [1, 2, 3, 4, 5]),
+    ):
+        record = _fake_record(n, worths)
+        record.invest_roundtrip_cap_hits = hits
+        metrics.add_record(record)
+    scalars = _build_epoch_self_play_scalars(metrics)
+    for group, expected in (("aggregate", 6.5), ("3p", 1.5), ("4p", 8), ("5p", 15)):
+        assert scalars[f"self_play_{group}/invest_roundtrip_cap_hits_per_game"] == expected
+    assert scalars["self_play_aggregate/invest_roundtrip_cap_hits_1st"] == 3
+    assert scalars["self_play_aggregate/invest_roundtrip_cap_hits_5th"] == 1
+    assert scalars["self_play_3p/invest_roundtrip_cap_hits_1st"] == 1
+    assert "self_play_3p/invest_roundtrip_cap_hits_4th" not in scalars
 
 
 def test_acquisition_metrics_count_actual_responses_and_aggregate_by_phase():

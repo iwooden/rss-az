@@ -13,6 +13,8 @@ from core.actions import (
     ACTION_SELL_SHARE_PY as ACTION_SELL_SHARE,
 )
 from core.data import GamePhases, GameConstants
+from core.driver import DRIVER
+from core.state import GameState
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
@@ -487,6 +489,75 @@ class TestSellShare:
 
 class TestRoundTripLimits:
     """Test the per-corp round-trip constraint (max 2 per INVEST phase)."""
+
+    @pytest.mark.parametrize("v3_behavior", [False, True])
+    @pytest.mark.parametrize("trades", [
+        (ACTION_BUY_SHARE, ACTION_SELL_SHARE) * 2,
+        (ACTION_SELL_SHARE, ACTION_BUY_SHARE) * 2,
+        (ACTION_BUY_SHARE,) * 2 + (ACTION_SELL_SHARE,) * 2,
+        (ACTION_SELL_SHARE,) * 2 + (ACTION_BUY_SHARE,) * 2,
+    ])
+    def test_cap_hits_follow_executed_trades_and_survive_next_turn(
+        self, game_state, v3_behavior, trades,
+    ):
+        game_state.v3_behavior = v3_behavior
+        _make_trade_state(game_state)
+        player = PLAYERS[0]
+        player.set_cash(game_state, 100)
+        assert player.get_invest_roundtrip_cap_hits(game_state) == 0
+        for index, action_type in enumerate(trades):
+            TURN.set_active_player(game_state, 0)
+            action = find_legal_action(game_state, action_type=action_type, corp_id=0)
+            apply_and_verify(game_state, action)
+            assert player.get_invest_roundtrip_cap_hits(game_state) == (index == 3)
+        assert all(PLAYERS[p].get_invest_roundtrip_cap_hits(game_state) == 0
+                   for p in range(1, TURN.get_num_players(game_state)))
+        TURN.set_active_player(game_state, 0)
+        assert not any(info.corp_id == 0 and info.action_type in trades
+                       for _, info in get_legal_actions(game_state))
+
+        # Step through actual phase transitions to the next INVEST phase.
+        game_state.step_mode = True
+        turn = TURN.get_turn_number(game_state)
+        for _ in range(200):
+            if TURN.get_turn_number(game_state) != turn:
+                break
+            if DRIVER.is_non_player_phase(game_state):
+                DRIVER.advance_phase(game_state)
+            else:
+                DRIVER.apply_action(game_state, get_legal_actions(game_state)[0][0])
+            assert player.get_invest_roundtrip_cap_hits(game_state) == 1
+        assert TURN.get_turn_number(game_state) == turn + 1
+        assert player.get_roundtrips(game_state, 0) == 0
+        for _ in range(int(GameConstants.INVEST_ROUNDTRIP_CAP)):
+            player.increment_share_buys(game_state, 0)
+            player.increment_share_sells(game_state, 0)
+        assert player.get_invest_roundtrip_cap_hits(game_state) == 2
+
+    def test_cap_hits_are_per_player_sum_corps_and_copy_with_state(self, game_state):
+        player = PLAYERS[0]
+        # One-sided trades and trades split across corps do not hit a cap.
+        for _ in range(4):
+            player.increment_share_buys(game_state, 0)
+            player.increment_share_sells(game_state, 1)
+        assert player.get_invest_roundtrip_cap_hits(game_state) == 0
+        for _ in range(4):
+            player.increment_share_sells(game_state, 0)
+            player.increment_share_buys(game_state, 1)
+        assert player.get_invest_roundtrip_cap_hits(game_state) == 2
+        assert PLAYERS[1].get_invest_roundtrip_cap_hits(game_state) == 0
+
+        n = TURN.get_num_players(game_state)
+        copied = GameState.from_array(game_state._array, n)
+        assert player.get_invest_roundtrip_cap_hits(copied) == 2
+        player.clear_roundtrip_tracking(copied)
+        for _ in range(2):
+            player.increment_share_buys(copied, 0)
+            player.increment_share_sells(copied, 0)
+        assert player.get_invest_roundtrip_cap_hits(copied) == 3
+        assert player.get_invest_roundtrip_cap_hits(game_state) == 2
+        copied.initialize_game(n, seed=0)
+        assert player.get_invest_roundtrip_cap_hits(copied) == 0
 
     def test_blocked_after_two_roundtrips(self, game_state):
         """Both buy and sell are blocked after 2 complete round-trips."""

@@ -381,6 +381,7 @@ class _SelfPlayMetricBucket:
         self.sample_entropy = 0.0
         self.sample_top1 = 0.0
         self.total_net_worth = 0.0
+        self.invest_roundtrip_cap_hits = 0
         self.total_shares = 0.0
         self.total_companies = 0.0
         self.avg_active_corp_price = 0.0
@@ -390,6 +391,7 @@ class _SelfPlayMetricBucket:
 
         self.rank_counts: list[int] = []
         self.rank_net_worths: list[float] = []
+        self.rank_invest_roundtrip_cap_hits: list[float] = []
         self.rank_net_worth_mins: list[float] = []
         self.rank_net_worth_maxs: list[float] = []
         self.rank_shares: list[float] = []
@@ -403,6 +405,7 @@ class _SelfPlayMetricBucket:
         while len(self.rank_counts) < num_ranks:
             self.rank_counts.append(0)
             self.rank_net_worths.append(0.0)
+            self.rank_invest_roundtrip_cap_hits.append(0.0)
             self.rank_net_worth_mins.append(float("inf"))
             self.rank_net_worth_maxs.append(float("-inf"))
             self.rank_shares.append(0.0)
@@ -426,6 +429,7 @@ class _SelfPlayMetricBucket:
         self.sample_entropy += float(record.sample_policy_entropy_mean)
         self.sample_top1 += float(record.sample_top1_action_fraction)
         self.total_net_worth += float(sum(record.net_worths[:num_players]))
+        self.invest_roundtrip_cap_hits += sum(record.invest_roundtrip_cap_hits[:num_players])
         self.total_shares += float(sum(record.shares_per_player[:num_players]))
         self.total_companies += float(sum(record.companies_per_player[:num_players]))
         self.avg_active_corp_price += float(record.avg_active_corp_price)
@@ -442,6 +446,7 @@ class _SelfPlayMetricBucket:
             net_worth = float(record.net_worths[player_id])
             self.rank_counts[rank] += 1
             self.rank_net_worths[rank] += net_worth
+            self.rank_invest_roundtrip_cap_hits[rank] += record.invest_roundtrip_cap_hits[player_id]
             self.rank_net_worth_mins[rank] = min(
                 self.rank_net_worth_mins[rank], net_worth,
             )
@@ -478,6 +483,8 @@ class _SelfPlayMetricBucket:
                 "sample_policy_entropy": 0.0,
                 "sample_top1_frac": 0.0,
                 "total_net_worth": 0.0,
+                "invest_roundtrip_cap_hits_per_game": 0.0,
+                "rank_invest_roundtrip_cap_hits": [],
                 "avg_shares_per_player": [],
                 "avg_companies_per_player": [],
                 "avg_pres_share_values": [],
@@ -523,6 +530,8 @@ class _SelfPlayMetricBucket:
             "sample_policy_entropy": self.sample_entropy / games,
             "sample_top1_frac": self.sample_top1 / games,
             "total_net_worth": self.total_net_worth / games,
+            "invest_roundtrip_cap_hits_per_game": self.invest_roundtrip_cap_hits / games,
+            "rank_invest_roundtrip_cap_hits": rank_avg(self.rank_invest_roundtrip_cap_hits),
             "avg_shares_per_player": rank_avg(self.rank_shares),
             "avg_companies_per_player": rank_avg(self.rank_companies),
             "avg_pres_share_values": rank_avg(self.rank_pres_share_values),
@@ -589,6 +598,9 @@ def _build_self_play_scalars(
             stats.get("sample_top1_frac", 0.0),
         ),
         f"{prefix}/total_net_worth": float(stats.get("total_net_worth", 0.0)),
+        f"{prefix}/invest_roundtrip_cap_hits_per_game": float(
+            stats.get("invest_roundtrip_cap_hits_per_game", 0.0),
+        ),
         f"{prefix}/total_shares": float(stats.get("total_shares", 0.0)),
         f"{prefix}/total_companies": float(stats.get("total_companies", 0.0)),
         f"{prefix}/avg_active_corp_price": float(
@@ -603,6 +615,8 @@ def _build_self_play_scalars(
     }
 
     rank_net_worths = list(stats.get("rank_net_worths", []))
+    for rank, hits in enumerate(stats.get("rank_invest_roundtrip_cap_hits", [])):
+        scalars[f"{prefix}/invest_roundtrip_cap_hits_{_RANK_LABELS[rank]}"] = float(hits)
     scalars.update({f"{prefix}/{name}": value for name, value in stats.get("acquisition", {}).items()})
     rank_mins = list(stats.get("rank_net_worths_min", []))
     rank_maxs = list(stats.get("rank_net_worths_max", []))

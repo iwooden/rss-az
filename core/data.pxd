@@ -28,6 +28,7 @@ cpdef enum GameConstants:
     NUM_PAR_PRICES = 14
     AUCTION_CAP = 15          # price-offset slots per company in INVEST auction (0..14)
     ACQ_REJECTION_CAP = 2     # per proposing player, per acquisition phase (v3 only)
+    INVEST_ROUNDTRIP_CAP = 2  # per player and corporation, per INVEST phase
     MAX_DIVIDEND = 26
     MAX_SHARE_PRICE = 75
     COO_LEVEL_END_CARD_FLIPPED = 7

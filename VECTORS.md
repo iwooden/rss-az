@@ -14,13 +14,13 @@ The engine supports 2–6 players. Training/NN/MCTS targets **3–5p only**.
 
 | Players | total_size | player_stride | corp_stride | turn_size |
 |---------|-----------|---------------|-------------|-----------|
-| 2       | 657       | 31            | 17          | 69        |
-| 3       | 688       | 31            | 17          | 69        |
-| 4       | 719       | 31            | 17          | 69        |
-| 5       | 750       | 31            | 17          | 69        |
-| 6       | 781       | 31            | 17          | 69        |
+| 2       | 659       | 32            | 17          | 69        |
+| 3       | 691       | 32            | 17          | 69        |
+| 4       | 723       | 32            | 17          | 69        |
+| 5       | 755       | 32            | 17          | 69        |
+| 6       | 787       | 32            | 17          | 69        |
 
-`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 595 + 31 * num_players` — the constant 595 is the fixed prefix, and only the trailing players section grows.
+`player_stride`, `corp_stride`, and `turn_size` are all fixed across player counts. The players section is the **only** part of the buffer whose size depends on `num_players`, so `total_size = 595 + 32 * num_players` — the constant 595 is the fixed prefix, and only the trailing players section grows.
 
 Layout offsets are computed once at module load and exposed as Cython `cdef` structs at module scope on `core.state`:
 
@@ -60,7 +60,7 @@ Section start offsets are exposed via `LayoutInfo` as `fi_offset`, `companies_of
 
 ## Player block
 
-Stride: **31**. Player `i` lives at `players_offset + i * 31`. Field offsets via `core.state.get_player_fields()` (`PlayerFields` namedtuple) for Python, or `from core.state cimport PLAYER_FIELDS` for Cython.
+Stride: **32**. Player `i` lives at `players_offset + i * 32`. Field offsets via `core.state.get_player_fields()` (`PlayerFields` namedtuple) for Python, or `from core.state cimport PLAYER_FIELDS` for Cython.
 
 | Relative offset | Field | Size | Notes |
 |----------------|-------|------|-------|
@@ -74,8 +74,9 @@ Stride: **31**. Player `i` lives at `players_offset + i * 31`. Field offsets via
 | 21 | share_sells     | 8 | Per-corp sell counts (this turn) |
 | 29 | has_passed      | 1 | `1` once this player has passed in the current phase |
 | 30 | acq_rejections  | 1 | Rejected cross-president offers made by this player in the current acquisition phase. Always tracked; reset at phase exit. V3 blocks further cross-president offers at 2. |
+| 31 | invest_roundtrip_cap_hits | 1 | Lifetime INVEST cap crossings across all corporations and turns. Preserved when turn-local trade history resets; telemetry only. |
 
-All per-player tracking lives inside one player block, so a single pointer hop reaches everything for player `i`. Presidency is tracked per-corp via `CORP_FIELDS.president_id` (see [Corp block](#corp-block)), not in the player block. Round-trip counts are derived on demand from `min(share_buys, share_sells)` per corp — no dedicated slot. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.
+All per-player tracking lives inside one player block, so a single pointer hop reaches everything for player `i`. Presidency is tracked per-corp via `CORP_FIELDS.president_id` (see [Corp block](#corp-block)), not in the player block. Round-trip counts are derived on demand from `min(share_buys, share_sells)` per corp — no dedicated slot for the current-turn count. Lifetime cap hits have their own slot. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.
 
 With the runtime `GameState.v3_behavior` flag enabled, buy/sell counters persist
 through the turn and clear at the IPO-to-INVEST transition, not on auction

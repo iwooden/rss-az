@@ -19,6 +19,7 @@ import torch
 from core.driver import DRIVER
 from core.state import GameState, get_layout
 from entities.company import COMPANIES
+from entities.player import PLAYERS
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import RSSTransformerNet, TransformerConfig, create_model, get_model_input_spec
@@ -96,6 +97,16 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator, v3_behavior, mo
     assert record.total_moves > 0
     assert record.num_examples == record.total_moves
     assert len(record.net_worths) == NUM_PLAYERS
+    assert len(record.invest_roundtrip_cap_hits) == NUM_PLAYERS
+    assert all(hits >= 0 for hits in record.invest_roundtrip_cap_hits)
+    # Lifetime totals cannot drop below any saved position, including when
+    # MCTS explores cap-reaching branches that are not selected for play.
+    previous = [0] * NUM_PLAYERS
+    for array in record.states:
+        state = GameState.from_array(array, NUM_PLAYERS, v3_behavior=v3_behavior)
+        hits = [PLAYERS[p].get_invest_roundtrip_cap_hits(state) for p in range(NUM_PLAYERS)]
+        assert all(a <= b <= c for a, b, c in zip(previous, hits, record.invest_roundtrip_cap_hits))
+        previous = hits
     # Game-over invariant: player net worth is non-negative (RULES.md).
     assert all(nw >= 0 for nw in record.net_worths)
 

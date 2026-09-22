@@ -89,6 +89,7 @@ cdef class Player:
     cpdef int get_share_sells(self, GameState state, int corp_id)
     cpdef void increment_share_sells(self, GameState state, int corp_id)
     cpdef int get_roundtrips(self, GameState state, int corp_id)
+    cpdef int get_invest_roundtrip_cap_hits(self, GameState state)
     cpdef void clear_roundtrip_tracking(self, GameState state)
 
     # Acquisition negotiation history, independent of engine behavior mode.

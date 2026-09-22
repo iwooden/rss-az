@@ -11,7 +11,8 @@ with any GameState at any player count.
 
 Layout summary (per-player block, all raw int16):
   cash, net_worth, liquidity, turn_order (single int), owned_shares (8),
-  income, share_buys (8), share_sells (8), has_passed (1), acq_rejections (1).
+  income, share_buys (8), share_sells (8), has_passed (1), acq_rejections (1),
+  invest_roundtrip_cap_hits (1, cumulative across the game).
 Presidency is tracked by the corp entity.
 
 Company ownership lives in the companies section, but player code reads
@@ -429,6 +430,11 @@ cdef class Player:
     cpdef void increment_share_buys(self, GameState state, int corp_id):
         """Increment share buy count for this corp this turn."""
         cdef int slot = self._slot(PLAYER_FIELDS.share_buys) + corp_id
+        cdef int cap_slot = self._slot(PLAYER_FIELDS.invest_roundtrip_cap_hits)
+        # Count only the first crossing, whichever trade completes the pair.
+        if (state._data[slot] == <int>GameConstants.INVEST_ROUNDTRIP_CAP - 1
+                and self._get_share_sells(state, corp_id) >= <int>GameConstants.INVEST_ROUNDTRIP_CAP):
+            state._data[cap_slot] += 1
         state._data[slot] = <int16_t>(<int>state._data[slot] + 1)
 
     cpdef int get_share_sells(self, GameState state, int corp_id):
@@ -438,7 +444,15 @@ cdef class Player:
     cpdef void increment_share_sells(self, GameState state, int corp_id):
         """Increment share sell count for this corp this turn."""
         cdef int slot = self._slot(PLAYER_FIELDS.share_sells) + corp_id
+        cdef int cap_slot = self._slot(PLAYER_FIELDS.invest_roundtrip_cap_hits)
+        if (state._data[slot] == <int>GameConstants.INVEST_ROUNDTRIP_CAP - 1
+                and self._get_share_buys(state, corp_id) >= <int>GameConstants.INVEST_ROUNDTRIP_CAP):
+            state._data[cap_slot] += 1
         state._data[slot] = <int16_t>(<int>state._data[slot] + 1)
+
+    cpdef int get_invest_roundtrip_cap_hits(self, GameState state):
+        """Count of INVEST round-trip cap crossings across all corps and turns."""
+        return <int>state._data[self._slot(PLAYER_FIELDS.invest_roundtrip_cap_hits)]
 
     cpdef int get_roundtrips(self, GameState state, int corp_id):
         """
@@ -454,7 +468,7 @@ cdef class Player:
         return buys if buys < sells else sells
 
     cpdef void clear_roundtrip_tracking(self, GameState state):
-        """Clear buy/sell tracking for all corps."""
+        """Clear turn-local buy/sell tracking; preserve lifetime cap hits."""
         cdef int i
         cdef int buys_base = self._slot(PLAYER_FIELDS.share_buys)
         cdef int sells_base = self._slot(PLAYER_FIELDS.share_sells)

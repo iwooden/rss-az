@@ -455,7 +455,7 @@ cdef int _enumerate_invest(
         sells = <int>state._data[
             player_base + PLAYER_FIELDS.share_sells + corp_id
         ]
-        if min(buys, sells) >= 2:
+        if min(buys, sells) >= <int>GameConstants.INVEST_ROUNDTRIP_CAP:
             continue
 
         if not corp_is_active(state, corp_id):

@@ -653,6 +653,14 @@ The Cython self-play engine intentionally applies the following constraints to r
   clears trade counters on INVEST exit; v3 retains them through later phases
   and clears them when the next turn begins. Returning from BID does not clear
   them. This changes available model history, not the within-INVEST trade cap.
+- Each player also retains a lifetime `invest_roundtrip_cap_hits` counter:
+  one hit when a corporation reaches the cap in an INVEST phase (two paired
+  trades count as one cap hit). Clearing turn-local trade history preserves it.
+  TensorBoard reports the sum across players averaged per game as
+  `self_play_{aggregate,3p,4p,5p}/invest_roundtrip_cap_hits_per_game`, plus
+  per-finishing-rank averages as `invest_roundtrip_cap_hits_1st`, etc.
+  Aggregate averages weight each game equally. These counters are telemetry
+  only and are not model input features.
 
 ---
 

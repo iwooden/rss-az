@@ -257,6 +257,7 @@ class GameRecord:
     num_examples: int  # Number of training examples
     total_moves: int  # Decision points (MCTS searches)
     net_worths: list[int]  # Final net worth per player (canonical order)
+    invest_roundtrip_cap_hits: list[int]  # Lifetime cap crossings per player (canonical order)
     shares_per_player: list[int]  # Total shares held per player (canonical order)
     companies_per_player: list[int]  # Companies owned per player (canonical order)
     pres_share_values: list[float]  # Value of shares in corps where player is president
@@ -1233,6 +1234,9 @@ def play_game(
         total_moves=move_count,
         acquisition=acquisition,
         net_worths=net_worths,
+        invest_roundtrip_cap_hits=[
+            PLAYERS[i].get_invest_roundtrip_cap_hits(state) for i in range(num_players)
+        ],
         shares_per_player=shares_per_player,
         companies_per_player=companies_per_player,
         pres_share_values=pres_share_values,

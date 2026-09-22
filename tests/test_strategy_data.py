@@ -87,6 +87,7 @@ def _fake_record(game_id: int, num_examples: int = 2) -> GameRecord:
         num_examples=num_examples,
         total_moves=num_examples,
         net_worths=[10, 20, 30],
+        invest_roundtrip_cap_hits=[0, 0, 0],
         shares_per_player=[1, 2, 3],
         companies_per_player=[0, 1, 2],
         pres_share_values=[0.0, 0.0, 0.0],
