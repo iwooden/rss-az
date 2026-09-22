@@ -132,6 +132,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mcts-ramp-end-epoch", type=int,
                         help="Epoch where sim ramp ends")
     parser.add_argument("--search-batch-size", type=int)
+    parser.add_argument(
+        "--max-acq-price-actions",
+        type=int,
+        help="Cap ACQ_SELECT_PRICE to equal low/high price edges (0 disables)",
+    )
     nonfinite_group = parser.add_mutually_exclusive_group()
     nonfinite_group.add_argument(
         "--check-nonfinite-mcts",
@@ -284,6 +289,7 @@ _CLI_FIELDS = (
     "price_slot_fourier_bands",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
     "num_simulations", "search_batch_size", "check_nonfinite_mcts",
+    "max_acq_price_actions",
     "mcts_sims_start", "mcts_sims_end", "mcts_ramp_start_epoch", "mcts_ramp_end_epoch",
     "num_workers", "num_eval_servers", "eval_devices",
     "buffer_capacity",

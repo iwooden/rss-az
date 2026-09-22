@@ -38,6 +38,7 @@ from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.node import MCTSNode
 from mcts.search import (
     StatePool,
+    _filter_acq_price_root_priors,
     get_greedy_leaf_depth,
     get_greedy_leaf_value,
     prepare_reuse_root,
@@ -626,6 +627,7 @@ def analyze_game(
         num_players=num_players,
         search_batch_size=search_batch_size,
         check_nonfinite=mcts_config.check_nonfinite,
+        max_acq_price_actions=mcts_config.max_acq_price_actions,
     )
 
     layout = get_layout(max_players)
@@ -678,6 +680,8 @@ def analyze_game(
         )
         lines.append(f"# Search RNG seed: {seed}")
     lines.append(f"# Noise: {noise_desc} | Terminal blend: {terminal_rank_weight}")
+    if mcts_config.max_acq_price_actions > 0:
+        lines.append(f"# ACQ price action cap: {mcts_config.max_acq_price_actions}")
     if mcts_stats_only:
         lines.append(
             "# Columns: step turn player phase | legal visited top gap eff "
@@ -731,7 +735,11 @@ def analyze_game(
         values: np.ndarray | None = None
         action_ids_arr: np.ndarray | None = None
         if not mcts_stats_only:
-            priors, values, action_ids_arr, _, _ = evaluator.evaluate(state)
+            priors, values, action_ids_arr, n_legal, eval_phase_id = evaluator.evaluate(state)
+            priors, action_ids_arr, _ = _filter_acq_price_root_priors(
+                priors, action_ids_arr, n_legal, eval_phase_id,
+                mcts_config.max_acq_price_actions,
+            )
 
         # MCTS search (reuses subtree from previous move when available)
         search_stats = SearchStats()

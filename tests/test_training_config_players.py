@@ -48,6 +48,18 @@ def test_legacy_num_players_config_validates_with_effective_single_range() -> No
     assert list(config.iter_player_counts()) == [3]
 
 
+def test_acquisition_price_cap_config_and_cli_round_trip():
+    config = TrainingConfig.from_json('{"max_acq_price_actions": 8}')
+    assert TrainingConfig.from_json(config.to_json()).max_acq_price_actions == 8
+    assert config.to_mcts_config().max_acq_price_actions == 8
+    for invalid in (-2, 9, 52, True, 8.0, "8"):
+        with pytest.raises(ValueError, match="max_acq_price_actions"):
+            TrainingConfig(max_acq_price_actions=invalid)
+    args = _build_parser().parse_args(["--max-acq-price-actions", "0"])
+    _apply_overrides(config, args)
+    assert config.max_acq_price_actions == 0
+
+
 def test_mixed_player_config_validates_with_effective_range() -> None:
     config = TrainingConfig(num_players=0, min_players=3, max_players=5)
 

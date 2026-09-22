@@ -216,6 +216,7 @@ def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
         num_players=0,
         min_players=3,
         max_players=5,
+        max_acq_price_actions=8,
         num_simulations=1,
         search_batch_size=1,
         dirichlet_epsilon=0.0,
@@ -239,6 +240,7 @@ def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
 
     assert "# Self-Play Analysis" in rendered
     assert "# Checkpoint: checkpoints/example.pt" in rendered
+    assert "# ACQ price action cap: 8" in rendered
     assert "P2: net worth $" in rendered
     assert "P3: net worth $" not in rendered
     assert "A0GB Value:" in rendered

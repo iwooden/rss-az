@@ -66,6 +66,38 @@ from train.config import MCTSConfig
 NUM_PLAYERS = 3
 
 
+@pytest.mark.parametrize("price_cap", [0, 8])
+def test_search_acquisition_price_cap_at_root_and_leaves(evaluator, price_cap):
+    from tests.test_actions_width import _state_acq_select_price
+
+    state = _state_acq_select_price()
+    config = MCTSConfig(
+        num_simulations=16, search_batch_size=1,
+        dirichlet_epsilon=0, max_acq_price_actions=price_cap,
+    )
+    expected = np.array(
+        [0, 1, 2, 3, 47, 48, 49, 50] if price_cap else list(range(51)),
+    )
+    priors, _, _, _, _ = evaluator.evaluate(state)
+    root = run_search(state, evaluator, config)
+    np.testing.assert_array_equal(root.legal_actions, expected)
+    expected_priors = priors[expected] / priors[expected].sum() if price_cap else priors
+    np.testing.assert_array_equal(root.priors, expected_priors)
+
+    # Start one decision earlier to exercise batched leaf masking and reuse.
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_COMPANY))
+    pool = StatePool(100, get_layout(3).total_size)
+    root = run_search(state, evaluator, config, state_pool=pool)
+    price_child = root.children[35]
+    np.testing.assert_array_equal(price_child.legal_actions, expected)
+    reused = prepare_reuse_root(root, 35, pool)
+    DRIVER.apply_action(state, 35)
+    root = run_search(
+        state, evaluator, config, state_pool=pool, reuse_root=reused,
+    )
+    np.testing.assert_array_equal(root.legal_actions, expected)
+
+
 def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator, monkeypatch):
     import mcts.search as search
     from types import SimpleNamespace
@@ -222,6 +254,7 @@ class TestMCTSConfig:
         assert cfg.num_players == 3
         assert cfg.search_batch_size == 8
         assert cfg.check_nonfinite is True
+        assert cfg.max_acq_price_actions == 0
 
     def test_action_dim_is_max_action_size(self):
         """Post-refactor: dense pad width is player-count independent."""
@@ -243,6 +276,17 @@ class TestMCTSConfig:
     def test_validation_check_nonfinite(self):
         with pytest.raises(ValueError, match="check_nonfinite"):
             MCTSConfig(check_nonfinite="yes")  # type: ignore[arg-type]
+
+    def test_validation_max_acq_price_actions(self):
+        MCTSConfig(max_acq_price_actions=0)
+        MCTSConfig(max_acq_price_actions=10)
+
+        with pytest.raises(ValueError, match="max_acq_price_actions"):
+            MCTSConfig(max_acq_price_actions=-2)
+        with pytest.raises(ValueError, match="divisible by 2"):
+            MCTSConfig(max_acq_price_actions=9)
+        with pytest.raises(ValueError, match="ACTION_SIZE_ACQ_SELECT_PRICE"):
+            MCTSConfig(max_acq_price_actions=52)
 
     def test_validation_num_players(self):
         # NN/MCTS scope is 3-5 players only.

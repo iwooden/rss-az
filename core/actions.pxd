@@ -211,6 +211,12 @@ cdef int enumerate_legal_actions(
     uint16_t* action_ids,
 ) noexcept nogil
 
+cdef int enumerate_policy_actions(
+    GameState state,
+    uint16_t* action_ids,
+    int max_acq_price_actions,
+) noexcept nogil
+
 
 # =============================================================================
 # PYTHON-ACCESSIBLE WRAPPERS
@@ -220,3 +226,8 @@ cpdef int get_phase_action_size(int phase_id)
 cpdef object decode_action_py(int phase_id, int action_id)
 cpdef int encode_action_py(object info)
 cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids)
+cpdef int enumerate_policy_actions_py(
+    GameState state,
+    cnp.ndarray action_ids,
+    int max_acq_price_actions=*,
+)

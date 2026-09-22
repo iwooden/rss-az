@@ -17,13 +17,14 @@ import pytest
 import torch
 
 from core.driver import DRIVER
+from core.data import DecisionPhase
 from core.state import GameState, get_layout
 from entities.company import COMPANIES
 from entities.player import PLAYERS
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import RSSTransformerNet, TransformerConfig, create_model, get_model_input_spec
-from nn.policy_layout import UNIFIED_LOGIT_DIM
+from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import EpochConfig, TrainingConfig
 from train.self_play import (
     _compute_policy_target_temperature,
@@ -124,19 +125,33 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator, v3_behavior, mo
     assert (vt <= 1.0 + 1e-6).all(), f"max value_target={vt.max()}"
 
 
-def test_v3_cross_player_self_play_completes_with_valid_training_examples():
+@pytest.mark.parametrize("price_cap", [0, 8])
+def test_v3_cross_player_self_play_completes_with_valid_training_examples(price_cap):
     torch.manual_seed(17)
     config = TrainingConfig(
         num_players=3, model_path="nn/transformer-v3.py",
         d_model=32, d_proj=8, num_heads=4, num_layers=1,
         num_simulations=4, v3_behavior=True, acq_same_president=False,
+        max_acq_price_actions=price_cap,
     )
     model = create_model(config).eval()
     evaluator = NNEvaluator(model, torch.device("cpu"), 3)
-    record = play_game(evaluator, config, game_seed=42, rng=np.random.default_rng(17))
+    record = play_game(
+        evaluator, config, game_seed=42, rng=np.random.default_rng(17),
+        collect_strategy_trace=True,
+    )
     assert record.total_moves > 0
     assert record.num_examples == record.total_moves
     _assert_dense_policy_invariants(record)
+    trace = record.strategy_trace
+    assert trace is not None
+    assert not trace.nn_policy_pct[~record.legal_masks.astype(bool)].any()
+    np.testing.assert_allclose(trace.nn_policy_pct.sum(axis=1), 100.0, atol=1e-4)
+    if price_cap:
+        slots = build_action_lut()[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)].numpy()
+        slots = slots[slots >= 0]
+        price_counts = record.legal_masks[:, slots].sum(axis=1)
+        assert price_counts.max() == price_cap
 
 
 def test_play_game_strategy_trace_captures_root_outputs(evaluator):

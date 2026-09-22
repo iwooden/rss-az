@@ -33,7 +33,7 @@ from core.actions import (
     ACTION_RAISE_PY,
     ACTION_SELL_SHARE_PY,
     decode_action_py,
-    enumerate_legal_actions_py,
+    enumerate_policy_actions_py,
     get_decision_phase_py,
 )
 from core.data import ALL_PAR_PRICES, CorpIndices, GameConstants, GamePhases, MAX_ACTION_SIZE
@@ -49,6 +49,7 @@ from entities.turn import TURN
 from mcts.evaluator import compute_terminal_values
 from mcts.search import (
     StatePool,
+    _filter_acq_price_root_priors,
     get_greedy_leaf_depth,
     get_greedy_leaf_value,
     prepare_reuse_root,
@@ -1002,7 +1003,9 @@ def play_game(
 
     while True:
         phase_id = get_decision_phase_py(state)
-        n_legal = enumerate_legal_actions_py(state, legal_scratch)
+        n_legal = enumerate_policy_actions_py(
+            state, legal_scratch, config.max_acq_price_actions,
+        )
         legal_actions = legal_scratch[:n_legal].copy()
         slots = action_lut_np[phase_id, legal_actions]
 
@@ -1010,6 +1013,10 @@ def play_game(
         if trace_builder is not None:
             nn_priors, nn_values, nn_actions, nn_n_legal, nn_phase_id = (
                 evaluator.evaluate(state)
+            )
+            nn_priors, nn_actions, nn_n_legal = _filter_acq_price_root_priors(
+                nn_priors, nn_actions, nn_n_legal, nn_phase_id,
+                config.max_acq_price_actions,
             )
             if (
                 nn_phase_id != phase_id

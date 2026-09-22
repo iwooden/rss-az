@@ -639,6 +639,7 @@ The Cython self-play engine intentionally applies the following constraints to r
 - Rejections are recorded in every engine mode and cleared only at acquisition phase exit. FI intervention declines do not count. With `v3_behavior=False`, lower or equal repeat offers remain legal for historical replay.
 - The per-player rejection count is also tracked in all modes and reset at acquisition phase exit; legacy replay can exceed the cap.
 - The increasing-price rule guarantees finite negotiation but deliberately prevents retrying an equal/lower price after circumstances change. Accepted companies cannot be traded again this phase under the normal vertical-company rule.
+- Training/search can additionally restrict price choices with `max_acq_price_actions`: `0` keeps all legal prices; a positive even value keeps half from each end of the current legal range. Shorter ranges remain intact. The v3 training config uses `8` (lowest four and highest four). This policy restriction leaves engine legality and external replay unchanged.
 
 ### 2) Closing Offer Scope Constraint
 - Optional close offers are generated only for companies with **negative adjusted income**.

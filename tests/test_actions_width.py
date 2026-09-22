@@ -21,6 +21,7 @@ import pytest
 
 from core.actions import (
     enumerate_legal_actions_py,
+    enumerate_policy_actions_py,
     get_decision_phase_py,
 )
 from core.data import (
@@ -274,3 +275,54 @@ def test_enumerator_width_within_action_size(phase):
         f"Either the setup is too weak or ACTION_SIZE no longer matches the "
         f"encoder's maximum.\nLegal ids: {ids}"
     )
+
+
+def _policy_ids(state, max_acq_price_actions):
+    buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
+    count = enumerate_policy_actions_py(state, buf, max_acq_price_actions)
+    return [int(buf[i]) for i in range(count)]
+
+
+def test_policy_actions_default_preserves_acq_select_price_legality():
+    state = _state_acq_select_price()
+    phase_id, legal_ids = _enumerate(state)
+
+    assert phase_id == int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
+    assert _policy_ids(state, 0) == legal_ids
+
+
+def test_policy_actions_can_cap_acq_select_price_to_low_and_high_edges():
+    state = _state_acq_select_price()
+
+    assert _policy_ids(state, 8) == [0, 1, 2, 3, 47, 48, 49, 50]
+    # The policy cap must not change driver/replay legality.
+    assert _enumerate(state)[1] == list(range(51))
+
+
+@pytest.mark.parametrize("count", [1, 4, 7, 8])
+def test_policy_actions_leave_short_acq_price_ranges_unchanged(count):
+    state = _state_acq_select_price()
+    low = COMPANIES[35].get_low_price()
+    CORPS[7].set_cash(state, low + count - 1)
+
+    assert _policy_ids(state, 8) == list(range(count))
+
+
+@pytest.mark.parametrize("phase", list(PHASE_BUILDERS))
+def test_policy_actions_preserve_other_phases(phase):
+    state = PHASE_BUILDERS[phase]()
+    if phase != DecisionPhase.DPHASE_ACQ_SELECT_PRICE:
+        assert _policy_ids(state, 8) == _enumerate(state)[1]
+
+
+@pytest.mark.parametrize("last_offset", [9, 13, 40])
+def test_policy_price_edges_follow_v3_rejections_and_affordability(last_offset):
+    state = _state_acq_select_price()
+    state.v3_behavior = True
+    active = TURN.get_active_player(state)
+    low = COMPANIES[35].get_low_price()
+    COMPANIES[35].record_rejected_offer(state, active, low + 5)
+    CORPS[7].set_cash(state, low + last_offset)
+    legal = list(range(6, last_offset + 1))
+    expected = legal if len(legal) <= 8 else legal[:4] + legal[-4:]
+    assert _policy_ids(state, 8) == expected

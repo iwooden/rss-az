@@ -4,6 +4,7 @@
   "max_players": 5,
   "v3_behavior": true,
   "acq_same_president": false,
+  "max_acq_price_actions": 8,
   "model_type": "transformer",
   "model_path": "nn/transformer-v3.py",
   "games_per_epoch": 500,
