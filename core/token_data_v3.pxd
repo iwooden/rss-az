@@ -29,7 +29,7 @@ cpdef enum TokenDataSize:
 # per-position widths array that matches ``_fill_buffer``'s layout.
 cpdef enum TokenWidth:
     TW_MARKET_INFO           = 55
-    TW_COMPANY               = 29
+    TW_COMPANY               = 30
     TW_FI                    = 40
     TW_GLOBAL_INFO           = 24
     TW_INVEST                = 2

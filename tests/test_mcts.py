@@ -98,6 +98,34 @@ def test_search_acquisition_price_cap_at_root_and_leaves(evaluator, price_cap):
     np.testing.assert_array_equal(root.legal_actions, expected)
 
 
+@pytest.mark.parametrize("price_cap", [0, 8])
+@pytest.mark.parametrize("seller_kind", ["player", "corp"])
+def test_search_cross_president_price_is_forced(evaluator, price_cap, seller_kind):
+    from entities.company import COMPANIES
+    from tests.phases.test_acq_rejections import negotiation_state, select_target, TARGET
+
+    state = negotiation_state(seller_kind=seller_kind)
+    select_target(state)
+    config = MCTSConfig(
+        num_simulations=16, search_batch_size=1,
+        dirichlet_epsilon=0, max_acq_price_actions=price_cap,
+    )
+    root = run_search(state, evaluator, config)
+    np.testing.assert_array_equal(root.legal_actions, [3])
+    np.testing.assert_array_equal(root.priors, [1.0])
+
+    # Within search, selecting the company skips the forced price decision.
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_COMPANY))
+    pool = StatePool(100, get_layout(3).total_size)
+    root = run_search(state, evaluator, config, state_pool=pool)
+    offer_child = root.children[TARGET]
+    offer_state = GameState.from_array(pool.states[offer_child.state_idx], 3, v3_behavior=True)
+    assert TURN.get_phase(offer_state) == int(GamePhases.PHASE_ACQ_OFFER)
+    assert TURN.get_acq_offer_price(offer_state) == COMPANIES[TARGET].get_low_price() + 3
+    assert offer_child.active_player_id == 0
+    np.testing.assert_array_equal(offer_child.legal_actions, [0, 1])
+
+
 def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator, monkeypatch):
     import mcts.search as search
     from types import SimpleNamespace

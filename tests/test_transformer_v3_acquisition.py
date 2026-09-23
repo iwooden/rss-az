@@ -34,10 +34,12 @@ def test_rejection_observation_follows_deciding_player_including_offer(num_playe
     select_target(state)
     get_token_data(state, raw, max_players=5, layout_version=3)
     assert raw[TARGET + 1, 14] == np.float32(12 / 80)
+    assert raw[TARGET + 1, 15] == 0
     DRIVER.apply_action(state, 1)
     assert TURN.get_active_player(state) == 0
     get_token_data(state, raw, max_players=5, layout_version=3)
     assert raw[TARGET + 1, 14] == np.float32(17 / 80)
+    assert raw[TARGET + 1, 15] == 1
 
     # The scalar reaches the company projection; ownership remains in the tail.
     module = _load_model_module("nn/transformer-v3.py")
@@ -47,17 +49,19 @@ def test_rejection_observation_follows_deciding_player_including_offer(num_playe
     x = torch.from_numpy(raw[None]).requires_grad_()
     model._project_company_tokens(x).square().sum().backward()
     assert x.grad is not None and x.grad[0, TARGET + 1, 14].abs() > 0
-    assert model.company_proj.in_features == 14
+    assert x.grad[0, TARGET + 1, 15].abs() > 0
+    assert model.company_proj.in_features == 15
 
 
 @pytest.mark.parametrize("num_players", [3, 4, 5])
 @pytest.mark.parametrize("seller_kind", ["player", "corp", "foreign_player"])
-def test_acquisition_price_features_match_buyer_and_seller_balances(num_players, seller_kind):
+@pytest.mark.parametrize("v3_behavior", [False, True])
+def test_acquisition_price_features_match_buyer_and_seller_balances(num_players, seller_kind, v3_behavior):
     module = _load_model_module("nn/transformer-v3.py")
     model = module.RSSTransformerNet(module.TransformerConfig(
         num_players=5, d_model=32, num_heads=4, num_layers=1,
     )).eval()
-    state = GameState(num_players, max_players=5)
+    state = GameState(num_players, max_players=5, v3_behavior=v3_behavior)
     state.initialize_game(num_players, seed=42, max_players=5)
     state.step_mode = True
     state.acq_same_president = seller_kind != "foreign_player"
@@ -118,7 +122,9 @@ def test_acquisition_price_features_match_buyer_and_seller_balances(num_players,
     assert features[0, -1, 1] < 0
 
     for aid, info in get_legal_actions(state):
-        after = GameState.from_array(state._array.copy(), num_players, max_players=5)
+        after = GameState.from_array(
+            state._array.copy(), num_players, max_players=5, v3_behavior=v3_behavior,
+        )
         after.step_mode = True
         after.acq_same_president = state.acq_same_president
         DRIVER.apply_action(after, aid)
@@ -144,8 +150,11 @@ def test_acquisition_price_features_match_buyer_and_seller_balances(num_players,
         priors, values, ids, count, phase = evaluator.evaluate(state)
     finally:
         handle.remove()
-    np.testing.assert_array_equal(ids, np.arange(4))
-    assert count == 4 and phase == int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
-    np.testing.assert_allclose(priors, torch.softmax(torch.arange(4) / 10, 0).numpy(), atol=1e-7)
+    expected_ids = np.array([3]) if v3_behavior and seller_kind == "foreign_player" else np.arange(4)
+    np.testing.assert_array_equal(ids, expected_ids)
+    assert count == len(expected_ids) and phase == int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
+    np.testing.assert_allclose(
+        priors, torch.softmax(torch.from_numpy(expected_ids) / 10, 0).numpy(), atol=1e-7,
+    )
     torch.testing.assert_close(seen_price[0][:, 4 * model.cfg.d_model:], features.flatten(1))
     assert np.isfinite(values).all()

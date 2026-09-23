@@ -115,7 +115,7 @@ Each token row is zero-padded to 98 features (`TokenDataSize.TOKEN_DIM`), the
 width of the Corp token. Per-type widths live in `core.token_data_v3.TokenWidth`:
 
 - `TW_MARKET_INFO = 55`
-- `TW_COMPANY = 29`
+- `TW_COMPANY = 30`
 - `TW_FI = 40`
 - `TW_GLOBAL_INFO = 24`
 - `TW_INVEST = 2`
@@ -169,7 +169,7 @@ reserved for `attn_mask`.
 - Availability (27 slots). 1 if the corresponding market space is available,
   0 otherwise.
 
-### Company Tokens (29, x36)
+### Company Tokens (30, x36)
 
 Company identity is inferred from row order.
 
@@ -207,7 +207,17 @@ IPC fields. This adds `36 * d_model` parameters and a new v3 checkpoint weight.
   In `ACQ_OFFER`, the active player is the responder, so this reports their
   own previous buying attempts, not the proposer's. Read regardless of
   `v3_behavior`; history clears at acquisition phase exit. The company
-  projection includes this scalar; the ownership tail now begins at slot 15.
+  projection includes this scalar.
+- `actor_controls_company` (slot 15). Boolean scalar: 1 when the active
+  player owns the company directly, or presides over its owning corporation
+  (including companies in that corporation's acquisition pile). Populated in
+  every phase, regardless of `v3_behavior`. It follows the decision maker,
+  including the responding seller in `ACQ_OFFER`. Zero for other players'
+  companies, receivership corporations, FI, and unowned locations, or when
+  no player is active. This is an ownership flag, not a legality flag: FI
+  purchases also have zero here but use their separate fixed-price rules.
+  The company projection includes this scalar; the ownership tail begins
+  at slot 16.
 
 Relational tail:
 

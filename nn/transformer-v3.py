@@ -118,7 +118,7 @@ _COMPANY_ACQ_SYNERGY_OFFSET = 13  # Raw company-token slot.
 # Aggregate "relational summary" scalars (owned-company counts, presidency
 # count, total shares) sit immediately before each rel-tail start, so they
 # stay in the projection while the multihots they summarize are dropped.
-_COMPANY_REL_TAIL_START = 15
+_COMPANY_REL_TAIL_START = 16
 _FI_REL_TAIL_START = 4
 _CORP_REL_TAIL_START = 57
 # Player share amounts are scalar quantities, not just relation presence:

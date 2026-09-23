@@ -761,6 +761,7 @@ cdef int _enumerate_acq_select_price(
       ``ids min_offset..max_offset`` where v3's minimum exceeds the actor's
       highest rejected price (zero minimum offset in legacy mode), and
       ``max_offset = min(high - low, cash - low, 50)``.
+      V3 cross-president offers emit only ``max_offset``.
 
     Trusts SELECT_COMPANY's filter: by the time we're here, the
     (active_corp, active_company) pair has at least one legal price and
@@ -789,11 +790,18 @@ cdef int _enumerate_acq_select_price(
     cdef int price_offset
     cdef int player_id = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
     cdef int min_offset = _acq_min_price_offset(state, company_id, player_id)
+    cdef int seller_player
 
     if cash - low_price < max_offset:
         max_offset = cash - low_price
     if max_offset > 50:
         max_offset = 50
+    if state.v3_behavior:
+        seller_player = company_owner_id(state, company_id)
+        if company_location(state, company_id) == <int>LOC_CORP:
+            seller_player = corp_president_id(state, seller_player)
+        if seller_player != player_id and max_offset >= min_offset:
+            min_offset = max_offset
     for price_offset in range(min_offset, max_offset + 1):
         _require_action_capacity(count, b"ACQ_SELECT_PRICE")
         ids[count] = <uint16_t>encode_acq_select_price(price_offset)

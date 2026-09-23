@@ -3,8 +3,9 @@
 import numpy as np
 import pytest
 
-from core.data import GameConstants, GamePhases
-from core.driver import DRIVER
+from core.actions import enumerate_policy_actions_py
+from core.data import GameConstants, GamePhases, MAX_ACTION_SIZE
+from core.driver import DRIVER, STATUS_INVALID_PY
 from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
@@ -47,11 +48,64 @@ def select_target(state, corp=0):
     assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_PRICE)
 
 
+@pytest.mark.parametrize("v3", [False, True])
+@pytest.mark.parametrize("seller_kind", ["player", "corp"])
+@pytest.mark.parametrize("same_president", [False, True])
+@pytest.mark.parametrize("cash_limit", ["minimum", "middle", "maximum", "above_maximum"])
+def test_cross_president_prices_use_only_affordable_maximum(
+    v3, seller_kind, same_president, cash_limit,
+):
+    state = negotiation_state(v3=v3, seller_kind=seller_kind)
+    company = COMPANIES[TARGET]
+    low, high = company.get_low_price(), company.get_high_price()
+    cash = {"minimum": low, "middle": low + 3,
+            "maximum": high, "above_maximum": high + 20}[cash_limit]
+    CORPS[0].set_cash(state, cash)
+    # Locked acquisition proceeds are not available to fund an offer.
+    CORPS[0].set_acquisition_proceeds(state, 100)
+    if same_president:
+        if seller_kind == "corp":
+            give_company_to_corp(state, TARGET, 1)
+        else:
+            give_company_to_player(state, TARGET, 2)
+    select_target(state)
+    max_offset = min(cash, high) - low
+    restricted = v3 and not same_president
+    expected = [max_offset] if restricted else list(range(max_offset + 1))
+    assert [aid for aid, _ in get_legal_actions(state)] == expected
+    buf = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
+    for cap in (0, 8):
+        count = enumerate_policy_actions_py(state, buf, cap)
+        capped = expected if cap == 0 or len(expected) <= cap else expected[:4] + expected[-4:]
+        np.testing.assert_array_equal(buf[:count], capped)
+    if restricted and max_offset > 0:
+        before = state._array.copy()
+        assert DRIVER.apply_action(state, max_offset - 1) == STATUS_INVALID_PY
+        np.testing.assert_array_equal(state._array, before)
+    if restricted:
+        DRIVER.apply_action(state, max_offset)
+        assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
+        assert TURN.get_acq_offer_price(state) == min(cash, high)
+        assert TURN.get_active_player(state) == 0
+
+
+@pytest.mark.parametrize("seller_kind", ["player", "corp"])
+def test_cross_president_maximum_price_auto_chains_to_seller(seller_kind):
+    state = negotiation_state(seller_kind=seller_kind)
+    DRIVER.apply_action(state, 1)  # Select buyer while single-step mode is on.
+    state.step_mode = False
+    DRIVER.apply_action(state, TARGET)
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
+    assert TURN.get_active_player(state) == 0
+    assert TURN.get_acq_offer_price(state) == CORPS[0].get_cash(state)
+
+
 @pytest.mark.parametrize("n", [3, 6])
 @pytest.mark.parametrize("v3", [False, True])
 @pytest.mark.parametrize("seller_kind", ["player", "corp"])
 def test_rejections_track_buyer_share_across_corps_and_gate_only_v3(n, v3, seller_kind):
     state = negotiation_state(n, v3, seller_kind)
+    CORPS[0].set_cash(state, COMPANIES[TARGET].get_low_price() + 1)
     select_target(state)
     DRIVER.apply_action(state, 1)
     assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
@@ -72,7 +126,7 @@ def test_rejections_track_buyer_share_across_corps_and_gate_only_v3(n, v3, selle
         assert company.get_max_rejected_price(clone, n - 1) == price
         assert PLAYERS[n - 1].get_acq_rejections(clone) == 1
     select_target(state, corp=1)
-    assert [aid for aid, _ in get_legal_actions(state)] == ([2, 3] if v3 else [0, 1, 2, 3])
+    assert [aid for aid, _ in get_legal_actions(state)] == ([3] if v3 else [0, 1, 2, 3])
     if not v3:
         # A lower historical offer remains legal, and cannot lower the maximum.
         DRIVER.apply_action(state, 0)
@@ -109,13 +163,13 @@ def test_exhausted_prices_remove_targets_and_corps_then_cleanup_resets_history(a
     assert all(p.get_acq_rejections(state) == 0 for p in PLAYERS[:3])
     setup_acquisition_phase_py(state)
     select_target(state)
-    assert get_legal_actions(state)[0][0] == 0
+    assert [aid for aid, _ in get_legal_actions(state)] == [rejected_price - company.get_low_price()]
 
 
 def test_accepted_offer_does_not_record_rejection_and_company_cannot_be_resold():
     state = negotiation_state()
     select_target(state)
-    DRIVER.apply_action(state, 1)
+    DRIVER.apply_action(state, 3)
     DRIVER.apply_action(state, 1)
     company = COMPANIES[TARGET]
     assert company.get_max_rejected_price(state, 2) == 0
@@ -164,6 +218,7 @@ def test_new_game_has_zero_history_for_all_six_players():
 def test_two_rejections_close_cross_player_negotiation_only_in_v3(n, v3, seller_kind):
     state = negotiation_state(n, v3, seller_kind)
     for corp, price_offset in ((0, 1), (1, 2)):
+        CORPS[corp].set_cash(state, COMPANIES[TARGET].get_low_price() + price_offset)
         select_target(state, corp)
         DRIVER.apply_action(state, price_offset)
         DRIVER.apply_action(state, 0)
@@ -177,7 +232,9 @@ def test_two_rejections_close_cross_player_negotiation_only_in_v3(n, v3, seller_
         CORPS[3].set_cash(state, 200)
         TURN.set_active_player(state, 1)
         select_target(state, corp=3)
-        assert get_legal_actions(state)[0][0] == 0
+        assert [aid for aid, _ in get_legal_actions(state)] == [
+            COMPANIES[TARGET].get_high_price() - COMPANIES[TARGET].get_low_price(),
+        ]
     else:
         select_target(state)
         DRIVER.apply_action(state, 0)
@@ -188,6 +245,7 @@ def test_two_rejections_close_cross_player_negotiation_only_in_v3(n, v3, seller_
 def test_cap_preserves_same_president_player_and_corp_purchases():
     state = negotiation_state()
     for corp, price_offset in ((0, 1), (1, 2)):
+        CORPS[corp].set_cash(state, COMPANIES[TARGET].get_low_price() + price_offset)
         select_target(state, corp)
         DRIVER.apply_action(state, price_offset)
         DRIVER.apply_action(state, 0)

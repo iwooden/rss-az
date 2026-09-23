@@ -148,10 +148,14 @@ def test_v3_cross_player_self_play_completes_with_valid_training_examples(price_
     assert not trace.nn_policy_pct[~record.legal_masks.astype(bool)].any()
     np.testing.assert_allclose(trace.nn_policy_pct.sum(axis=1), 100.0, atol=1e-4)
     if price_cap:
-        slots = build_action_lut()[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)].numpy()
+        price_phase = int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
+        slots = build_action_lut()[price_phase].numpy()
         slots = slots[slots >= 0]
-        price_counts = record.legal_masks[:, slots].sum(axis=1)
-        assert price_counts.max() == price_cap
+        price_masks = record.legal_masks[record.phase_ids == price_phase]
+        price_counts = price_masks[:, slots].sum(axis=1)
+        # A game need not encounter a range wide enough to saturate the cap;
+        # cross-president price decisions now auto-chain directly to offers.
+        assert (price_counts <= price_cap).all()
 
 
 def test_play_game_strategy_trace_captures_root_outputs(evaluator):

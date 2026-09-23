@@ -97,7 +97,7 @@ def test_layouts_share_unchanged_features_but_own_their_history_and_movements():
     np.testing.assert_array_equal(v2[54:57, 14], [1, 0, 0])
     np.testing.assert_array_equal(v2[0], v3[0, :95])
     np.testing.assert_array_equal(v2[1:37, :14], v3[1:37, :14])
-    np.testing.assert_array_equal(v2[1:37, 14:28], v3[1:37, 15:29])
+    np.testing.assert_array_equal(v2[1:37, 14:28], v3[1:37, 16:30])
     assert v3[15, 14] == np.float32(13 / 80)
     np.testing.assert_array_equal(v2[37:46], v3[37:46, :95])
     # Pending movement at slot 36 is nominal in v2 and market-resolved in v3.
@@ -321,3 +321,6 @@ def test_v3_cuda_forward_backward():
     player_grad = player_proj.weight.grad
     assert player_grad is not None and torch.isfinite(player_grad).all()
     assert player_grad[:, 25].abs().sum() > 0  # raw player slot 26, acq_rejections
+    company_grad = getattr(model, "company_proj").weight.grad
+    assert company_grad is not None and torch.isfinite(company_grad).all()
+    assert company_grad[:, 14].abs().sum() > 0  # raw company slot 15, actor_controls_company
