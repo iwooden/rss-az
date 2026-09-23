@@ -11,7 +11,7 @@ normalized share count for that corporation. CLOSING uses player/company and
 player-only pass MLPs with the same hidden-layer design. BID jointly scores
 leaving and all bid levels from player/company/auction embeddings and raw
 per-price bid and remaining-cash features. IPO uses corporation and pass MLPs;
-PAR scores all prices jointly with the engine's raw capitalization previews.
+IPO and PAR also receive raw capitalization outcomes and market availability.
 DIVIDENDS jointly scores all amounts with payout, cash, actual movement, price, and net-worth features.
 Acquisition uses corporation/company candidate MLPs and a joint price MLP.
 ISSUE jointly scores pass/issue from player/corporation/issue embeddings.
@@ -638,6 +638,10 @@ class RSSTransformerNet(nn.Module):
         )
         # PAR prices share /CASH_DIVISOR units with the raw float previews.
         num_par_prices = _phase_action_size(DecisionPhase.DPHASE_PAR)
+        num_market_spaces = int(GameConstants.NUM_MARKET_SPACES)
+        self._market_availability_start = _TOKEN_FEATURE_START + num_market_spaces
+        self._market_availability_stop = self._market_availability_start + num_market_spaces
+        ipo_par_feature_dim = 5 * num_par_prices + num_market_spaces
         self.register_buffer(
             "_par_prices",
             torch.tensor(ALL_PAR_PRICES, dtype=torch.float32) / float(PY_CASH_DIVISOR),
@@ -723,15 +727,15 @@ class RSSTransformerNet(nn.Module):
 
         # --- IPO corporation selection and PAR price selection ---
         self.ipo_corp_head = nn.Sequential(
-            nn.Linear(4 * d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(4 * d + ipo_par_feature_dim, d), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d, 1),
         )
         self.ipo_pass_head = nn.Sequential(
-            nn.Linear(3 * d, d), nn.GELU(approximate=_GELU_APPROX),
+            nn.Linear(3 * d + ipo_par_feature_dim, d), nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d, 1),
         )
         self.par_head = nn.Sequential(
-            nn.Linear(4 * d + 5 * num_par_prices, d),
+            nn.Linear(4 * d + ipo_par_feature_dim, d),
             nn.GELU(approximate=_GELU_APPROX),
             nn.Linear(d, num_par_prices),
         )
@@ -1057,6 +1061,11 @@ class RSSTransformerNet(nn.Module):
                 f"3 fields * {num_par_prices} par prices"
             )
         block_widths[int(DecisionPhase.DPHASE_PAR)] = num_par_prices
+        if int(TokenWidth.TW_MARKET_INFO) != self._market_availability_stop:
+            raise AssertionError(
+                "MarketInfo token must contain its attention mask, market prices, "
+                "and one availability flag per market space"
+            )
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_COMPANY)] = num_companies
         block_widths[int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)] = (
             int(self._acq_price_offsets.shape[0])
@@ -1247,11 +1256,15 @@ class RSSTransformerNet(nn.Module):
         company_logits = self.closing_company_head(company_inputs).squeeze(-1)
         return torch.cat([pass_logit, company_logits], dim=-1)
 
-    def _ipo_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+    def _ipo_logits(
+        self, ctx: _PolicyContext, float_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Pass on the active company, or select one corporation to float it."""
+        if float_features is None:
+            float_features = self._ipo_par_features(ctx)
         par = ctx.tokens[:, self._par_idx]
         pass_logit = self.ipo_pass_head(torch.cat(
-            [ctx.active_player, ctx.active_company, par], dim=-1,
+            [ctx.active_player, ctx.active_company, par, float_features], dim=-1,
         ))
         num_corps = ctx.corp_tokens.shape[1]
         corp_inputs = torch.cat(
@@ -1260,6 +1273,7 @@ class RSSTransformerNet(nn.Module):
                 ctx.active_company[:, None, :].expand(-1, num_corps, -1),
                 ctx.corp_tokens,
                 par[:, None, :].expand(-1, num_corps, -1),
+                float_features[:, None, :].expand(-1, num_corps, -1),
             ],
             dim=-1,
         )
@@ -1401,14 +1415,35 @@ class RSSTransformerNet(nn.Module):
             dim=-1,
         )
 
-    def _par_logits(self, ctx: _PolicyContext) -> torch.Tensor:
+    def _market_availability_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Raw 0/1 availability for every market space, in market-price order."""
+        return x[
+            :, self._market_info_idx,
+            self._market_availability_start:self._market_availability_stop,
+        ]
+
+    def _ipo_par_features(self, ctx: _PolicyContext) -> torch.Tensor:
+        """Shared direct inputs: five outcomes per par price, then availability.
+
+        Availability describes all market spaces, not just eligible par prices.
+        Tier eligibility and affordability remain the legal mask's job; previews
+        keep their existing zero entries and negative remaining-cash values.
+        """
+        features = torch.cat([
+            self._par_outcome_features(ctx.raw_tokens).flatten(1),
+            self._market_availability_features(ctx.raw_tokens).float(),
+        ], dim=-1)
+        return self._match_dtype_device(features, ctx.tokens)
+
+    def _par_logits(
+        self, ctx: _PolicyContext, float_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Jointly score all par prices in engine table order, with no pass."""
-        outcomes = self._match_dtype_device(
-            self._par_outcome_features(ctx.raw_tokens), ctx.tokens,
-        ).flatten(1)
+        if float_features is None:
+            float_features = self._ipo_par_features(ctx)
         return self.par_head(torch.cat(
             [ctx.active_player, ctx.active_corp, ctx.active_company,
-             ctx.tokens[:, self._par_idx], outcomes],
+             ctx.tokens[:, self._par_idx], float_features],
             dim=-1,
         ))
 
@@ -1495,9 +1530,10 @@ class RSSTransformerNet(nn.Module):
         # ISSUE: pass + 1 issue.
         issue = self._issue_logits(ctx)                                          # (B, 2)
         # IPO: pass + 8 corps.
-        ipo = self._ipo_logits(ctx)                                              # (B, 9)
+        ipo_par_features = self._ipo_par_features(ctx)
+        ipo = self._ipo_logits(ctx, ipo_par_features)                             # (B, 9)
         # PAR: 14 par indices (no pass).
-        par_price = self._par_logits(ctx)                                        # (B, 14)
+        par_price = self._par_logits(ctx, ipo_par_features)                       # (B, 14)
         # ACQ_SELECT_COMPANY: 36 companies (no pass).
         acq_select_company = self._acq_select_company_logits(ctx)                # (B, 36)
         # ACQ_SELECT_PRICE: 51 price offsets (no pass).

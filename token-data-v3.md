@@ -169,6 +169,10 @@ reserved for `attn_mask`.
 - Availability (27 slots). 1 if the corresponding market space is available,
   0 otherwise.
 
+The IPO pass/corporation MLPs and PAR price MLP also receive these 27 availability
+flags directly, in market-price order, alongside their contextual embeddings.
+This includes non-par spaces, whose occupancy can affect subsequent market moves.
+
 ### Company Tokens (30, x36)
 
 Company identity is inferred from row order.
@@ -325,6 +329,24 @@ The padded row width remains 98.
 
 `ipo_remaining` is encoded on Corp tokens. It is written for inactive corps
 in both `PHASE_IPO` and `PHASE_PAR`.
+
+All three IPO/PAR MLPs additionally receive a shared raw-feature shortcut:
+14 tuples `(par_price, player_payment, remaining_player_cash,
+resulting_corp_cash, resulting_issued_shares)`, followed by all 27 market
+availability flags. The 70 outcome values use engine previews; monetary values
+use `CASH_DIVISOR`, issued shares retain `FLOAT_SHARES_MAX`, and availability is
+unscaled 0/1. Tier-ineligible preview tuples remain zero (the explicit price and
+computed remaining cash are still supplied); unavailable and unaffordable
+prices are handled by the legal mask. Negative remaining cash is preserved.
+
+The shared 97-value shortcut is computed once per forward pass and appended to
+the existing final transformer embeddings. At `d_model=256`, IPO pass is
+`865 -> 256 -> GELU -> 1`, IPO corporation selection is
+`1121 -> 256 -> GELU -> 1` (weights shared across candidates), and PAR is
+`1121 -> 256 -> GELU -> 14`. All heads still run for every batch row.
+This changes the three v3 first-layer weight shapes, so earlier v3 checkpoints
+require an explicit migration before loading. Token layout, model I/O and v2
+weights/behavior are unchanged.
 
 ### AcqOffer Token (4)
 

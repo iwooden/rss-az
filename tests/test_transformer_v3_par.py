@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from core.actions import ACTION_IPO_PY
-from core.data import ALL_PAR_PRICES, PY_CASH_DIVISOR, DecisionPhase
+from core.data import ALL_PAR_PRICES, PY_CASH_DIVISOR, DecisionPhase, GameConstants
 from core.driver import DRIVER
 from core.state import GameState
 from core.token_data import get_token_data
@@ -96,5 +96,88 @@ def test_par_evaluator_preserves_price_slots_and_all_legality_gates():
     assert count == 2 and phase == int(DecisionPhase.DPHASE_PAR)
     expected_priors = torch.softmax(torch.tensor(expected_ids) / 10, dim=0).numpy()
     np.testing.assert_allclose(priors, expected_priors, atol=1e-7, rtol=1e-5)
-    torch.testing.assert_close(seen[0][:, 4 * model.cfg.d_model:], features.flatten(1))
+    num_outcomes = features.shape[1] * features.shape[2]
+    torch.testing.assert_close(
+        seen[0][:, 4 * model.cfg.d_model:4 * model.cfg.d_model + num_outcomes],
+        features.flatten(1),
+    )
+    expected_availability = torch.tensor([
+        MARKET.is_space_available(state, i) for i in range(int(GameConstants.NUM_MARKET_SPACES))
+    ], dtype=torch.float32)
+    torch.testing.assert_close(seen[0][0, -len(expected_availability):], expected_availability)
     assert np.isfinite(values).all()
+
+
+@pytest.mark.parametrize("num_players", [3, 4, 5])
+def test_all_ipo_par_heads_receive_outcomes_and_full_market_availability(num_players):
+    model = _model()
+    state = _state(num_players, 14)
+    # Include a non-par market slot: the shortcut exposes more than PAR legality.
+    for price in (22, 41):
+        MARKET.set_space_available(state, MARKET.get_index_for_price(price), False)
+    raw = _tokens(model, state)
+    expected_market = torch.tensor([
+        MARKET.is_space_available(state, i)
+        for i in range(int(GameConstants.NUM_MARKET_SPACES))
+    ], dtype=torch.float32).unsqueeze(0)
+    expected = torch.cat([model._par_outcome_features(raw).flatten(1), expected_market], dim=1)
+    seen = {}
+    handles = []
+    for name in ("ipo_corp_head", "ipo_pass_head", "par_head"):
+        def capture(_module, args, name=name):
+            seen[name] = args[0].detach().clone()
+        handles.append(getattr(model, name).register_forward_pre_hook(capture))
+    try:
+        NNEvaluator(model, torch.device("cpu"), 5).evaluate(state)
+    finally:
+        for handle in handles:
+            handle.remove()
+    width = expected.shape[-1]
+    torch.testing.assert_close(seen["ipo_pass_head"][:, -width:], expected)
+    torch.testing.assert_close(seen["par_head"][:, -width:], expected)
+    torch.testing.assert_close(
+        seen["ipo_corp_head"][:, :, -width:],
+        expected[:, None, :].expand(-1, int(GameConstants.NUM_CORPS), -1),
+    )
+
+
+@pytest.mark.parametrize("feature", ["market", "cash"])
+def test_ipo_and_par_can_use_direct_features_with_frozen_transformer(feature):
+    model = _model()
+    state = _state(3, 14, cash=100)
+    before = _tokens(model, state)
+    if feature == "market":
+        market_idx = MARKET.get_index_for_price(41)  # Not one of the par prices.
+        MARKET.set_space_available(state, market_idx, False)
+        feature_idx = 5 * len(ALL_PAR_PRICES) + market_idx
+    else:
+        PLAYERS[2].set_cash(state, 120)
+        feature_idx = 5 * ALL_PAR_PRICES.index(20) + 2  # Player cash after floating.
+    after = _tokens(model, state)
+    embeddings = torch.zeros(1, model.cfg.num_tokens, model.cfg.d_model)
+    heads = [(model.ipo_pass_head, 3), (model.ipo_corp_head, 4), (model.par_head, 4)]
+    with torch.no_grad():
+        for head, num_tokens in heads:
+            for parameter in head.parameters():
+                parameter.zero_()
+            head[0].weight[0, num_tokens * model.cfg.d_model + feature_idx] = 1
+            head[-1].weight[0, 0] = 1
+        model.ipo_pass_head[-1].weight[0, 0] = 2
+        for raw in (before, after):
+            ctx = model._policy_context(embeddings, raw)
+            direct = model._ipo_par_features(ctx)
+            expected = torch.nn.functional.gelu(direct[:, feature_idx], approximate="tanh")
+            ipo = model._ipo_logits(ctx)
+            par = model._par_logits(ctx)
+            torch.testing.assert_close(ipo[:, 0], 2 * expected)
+            torch.testing.assert_close(ipo[:, 1:], expected[:, None].expand_as(ipo[:, 1:]))
+            torch.testing.assert_close(par[:, 0], expected)
+            assert torch.count_nonzero(par[:, 1:]) == 0
+        before_ctx = model._policy_context(embeddings, before)
+        after_ctx = model._policy_context(embeddings, after)
+        assert not torch.equal(
+            model._ipo_logits(before_ctx).softmax(-1), model._ipo_logits(after_ctx).softmax(-1),
+        )
+        assert not torch.equal(
+            model._par_logits(before_ctx).softmax(-1), model._par_logits(after_ctx).softmax(-1),
+        )
