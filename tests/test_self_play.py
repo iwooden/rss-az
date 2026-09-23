@@ -147,6 +147,15 @@ def test_v3_cross_player_self_play_completes_with_valid_training_examples(price_
     assert trace is not None
     assert not trace.nn_policy_pct[~record.legal_masks.astype(bool)].any()
     np.testing.assert_allclose(trace.nn_policy_pct.sum(axis=1), 100.0, atol=1e-4)
+    # Compare cheap root capture against independent pre-search NN trace evals.
+    # This exercises actual subtree reuse, root noise and acquisition masks.
+    choices = record.legal_masks.sum(axis=1) > 1
+    metrics = record.policy_metrics.scalars()
+    assert metrics["policy/all/decision_count"] == choices.sum()
+    assert metrics["policy/all/forced_count"] == (~choices).sum()
+    assert metrics["policy/all/prior_top1_mean"] == pytest.approx(
+        trace.nn_policy_pct[choices].max(axis=1).mean() / 100, abs=1e-6,
+    )
     if price_cap:
         price_phase = int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
         slots = build_action_lut()[price_phase].numpy()

@@ -38,6 +38,7 @@ from train.config import TrainingConfig
 from train.eval_server import EvaluationServer, SharedEvalBuffers
 from train.logging import TrainingLogger
 from train.profile_stats import EvalServerStats, GameProfileData, format_epoch_profile
+from train.policy_metrics import PolicyMetrics
 from train.replay_buffer import ReplayBuffer
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
@@ -47,7 +48,7 @@ from train.self_play import (
     play_game,
     self_play_worker,
 )
-from train.trainer import Trainer
+from train.trainer import Trainer, average_training_metrics
 
 
 def _parse_int_list(value: str) -> list[int]:
@@ -394,6 +395,7 @@ class _SelfPlayMetricBucket:
         self.corps_in_receivership = 0.0
         self.games_with_max_price_corp = 0
         self.acquisition = AcquisitionStats()
+        self.policy_metrics = PolicyMetrics()
 
         self.rank_counts: list[int] = []
         self.rank_net_worths: list[float] = []
@@ -430,6 +432,7 @@ class _SelfPlayMetricBucket:
         self.moves += int(record.total_moves)
         self.duration += float(record.duration_secs)
         self.acquisition.add(record.acquisition)
+        self.policy_metrics.add(record.policy_metrics)
         self.target_entropy += float(record.policy_target_entropy_mean)
         self.target_top1 += float(record.policy_target_top1_fraction)
         self.sample_entropy += float(record.sample_policy_entropy_mean)
@@ -512,6 +515,7 @@ class _SelfPlayMetricBucket:
 
         return {
             "games": float(games),
+            "policy_metrics": self.policy_metrics.scalars(),
             "acquisition": self.acquisition.scalars(),
             "examples": float(self.examples),
             "avg_moves": self.moves / games,
@@ -624,6 +628,7 @@ def _build_self_play_scalars(
     for rank, hits in enumerate(stats.get("rank_invest_roundtrip_cap_hits", [])):
         scalars[f"{prefix}/invest_roundtrip_cap_hits_{_RANK_LABELS[rank]}"] = float(hits)
     scalars.update({f"{prefix}/{name}": value for name, value in stats.get("acquisition", {}).items()})
+    scalars.update({f"{prefix}/{name}": value for name, value in stats.get("policy_metrics", {}).items()})
     rank_mins = list(stats.get("rank_net_worths_min", []))
     rank_maxs = list(stats.get("rank_net_worths_max", []))
     avg_shares = list(stats.get("avg_shares_per_player", []))
@@ -1333,9 +1338,7 @@ def main() -> None:
                             shutdown_losses[k].append(v)
                         logger.update_training(step + 1, losses, trainer.lr)
                     logger.end_training()
-                    avg_losses = {
-                        k: sum(v) / len(v) for k, v in shutdown_losses.items()
-                    }
+                    avg_losses = average_training_metrics(shutdown_losses)
                     did_train = True
 
                 # Save checkpoint
@@ -1456,7 +1459,7 @@ def main() -> None:
                     print("Syncing eval server weights...")
                     _sync_eval_servers(eval_servers, model)
 
-                avg_losses = {k: sum(v) / len(v) for k, v in epoch_losses.items()}
+                avg_losses = average_training_metrics(epoch_losses)
 
                 # Epoch-level Tensorboard
                 epoch_scalars = {
@@ -1478,8 +1481,12 @@ def main() -> None:
                         "value_loss_",
                         "pass_logit_abs_",
                         "action_logit_abs_",
+                        "policy_target_entropy_",
+                        "policy_kl_",
                     )):
                         epoch_scalars[f"epoch/{k}_avg"] = v
+                    elif k.startswith("policy_samples_"):
+                        epoch_scalars[f"epoch/{k}"] = v
                 logger.log_scalars(epoch_num, epoch_scalars)
             else:
                 avg_losses = {}

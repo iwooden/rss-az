@@ -349,6 +349,7 @@ def run_search(
     reuse_root: MCTSNode | None = None,
     profile: SearchStats | None = None,
     debug_context: str | None = None,
+    root_priors_out: list[np.ndarray] | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
@@ -390,6 +391,10 @@ def run_search(
             The state_pool must already be compacted for this subtree.
         debug_context: Optional caller-supplied context included in
             fail-fast non-finite diagnostics.
+        root_priors_out: Optional output list, replaced with one copy of the
+            root's unnoised, search-legal priors before adding root noise.
+            Reused children already carry NN priors, so no extra eval is needed.
+            Empty for terminal roots. Does not change search or RNG consumption.
 
     Returns:
         The root MCTSNode with search statistics populated.
@@ -397,6 +402,8 @@ def run_search(
     num_players = config.num_players
     batch_size = config.search_batch_size
     check_nonfinite = config.check_nonfinite
+    if root_priors_out is not None:
+        root_priors_out.clear()
 
     if reuse_root is not None:
         # Reuse requires the matching pool — a fresh pool would make the
@@ -552,6 +559,10 @@ def run_search(
         v3_behavior=state_pool._v3_behavior,
     )
     scratch_gs.acq_same_president = state_pool._acq_same_president
+
+    if root_priors_out is not None:
+        assert root.priors is not None
+        root_priors_out.append(root.priors.copy())
 
     # Add Dirichlet noise at root (fresh noise each search)
     if rng is None:

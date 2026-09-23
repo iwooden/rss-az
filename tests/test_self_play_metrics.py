@@ -11,6 +11,7 @@ from rich.text import Text
 
 from train.logging import TrainingLogger
 from train.self_play import AcquisitionStats
+from train.policy_metrics import PolicyMetrics
 from train.main import (
     _SelfPlayMetricAccumulator,
     _build_epoch_self_play_scalars,
@@ -35,6 +36,7 @@ def _fake_record(
     return SimpleNamespace(
         num_players=num_players,
         acquisition=AcquisitionStats(),
+        policy_metrics=PolicyMetrics(),
         num_examples=examples,
         total_moves=moves,
         duration_secs=duration,

@@ -27,6 +27,7 @@ from nn.policy_layout import (
     UNIFIED_LOGIT_DIM,
 )
 from train.config import TrainingConfig
+from train.policy_metrics import PHASE_NAMES
 from train.replay_buffer import ReplayBuffer
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
@@ -35,11 +36,29 @@ U_DIM = int(UNIFIED_LOGIT_DIM)
 # slots 0..8; DPHASE_ACQ_SELECT_COMPANY / DPHASE_ACQ_SELECT_PRICE are
 # appended at slots 9 and 10 after the ACQ split. ACQ_SELECT_CORP at slot 2
 # replaces the old joint ACQUISITION. ACQ_OFFER stays a first-class phase.
-_PHASE_NAMES = [
-    "invest", "bid", "acq_corp", "acq_offer",
-    "close", "div", "issue", "ipo", "par",
-    "acq_co", "acq_price",
-]
+_PHASE_NAMES = PHASE_NAMES
+
+
+def average_training_metrics(metrics: dict[str, list[float]]) -> dict[str, float]:
+    """Average steps, weighting phase policy diagnostics by sampled rows.
+
+    Empty phase buckets are absent from train_step, so the per-phase lists
+    and their sample-count lists align even when a phase is rare.
+    """
+    result = {key: sum(values) / len(values) for key, values in metrics.items()}
+    for phase in PHASE_NAMES:
+        count_key = f"policy_samples_{phase}"
+        if count_key not in metrics:
+            continue
+        counts = metrics[count_key]
+        total = sum(counts)
+        result[count_key] = total
+        for metric in ("policy_loss", "policy_target_entropy", "policy_kl"):
+            key = f"{metric}_{phase}"
+            result[key] = sum(
+                value * count for value, count in zip(metrics[key], counts, strict=True)
+            ) / total
+    return result
 
 
 class Trainer:
@@ -433,6 +452,13 @@ class Trainer:
         # Empty buckets divide 0 / 1 = 0 — same placeholder behavior the
         # old per-phase mean loop produced, and the host filter drops them.
         per_phase_means = per_phase_sums / per_phase_counts.clamp(min=1)
+        per_phase_entropy_sums = torch.zeros_like(per_phase_sums)
+        per_phase_entropy_sums.index_add_(
+            0, phase_ids, per_example_target_entropy.detach(),
+        )
+        per_phase_entropy_means = (
+            per_phase_entropy_sums / per_phase_counts.clamp(min=1)
+        )
 
         # Per-player-count policy/value losses. Policy buckets average rows;
         # value buckets average over real player slots, matching value_loss.
@@ -477,7 +503,7 @@ class Trainer:
         # host read is a single H←D sync instead of separate .item() calls.
         # Order: policy_loss, value_loss, total_loss, target_entropy,
         # policy_loss_residual, *per-phase, *pass-stats, *count policy,
-        # *count value.
+        # *count value, *per-phase target entropy.
         # ``pass_stats`` carries (pass_abs, action_abs) interleaved over the
         # phases in PHASES_WITH_PASS_SLOT — used to detect logit-scale drift
         # between the Linear(d, 1) pass heads and the q·k/√dp scored logits.
@@ -493,6 +519,7 @@ class Trainer:
             pass_stats,
             per_count_policy_means,
             per_count_value_means,
+            per_phase_entropy_means,
         ])
 
         if torch.isnan(total_loss):
@@ -535,6 +562,10 @@ class Trainer:
         for phase_idx, name in enumerate(_PHASE_NAMES):
             if phase_counts[phase_idx] > 0:
                 result[f"policy_loss_{name}"] = scalars[5 + phase_idx]
+                entropy = scalars[-NUM_PHASES + phase_idx]
+                result[f"policy_target_entropy_{name}"] = entropy
+                result[f"policy_kl_{name}"] = scalars[5 + phase_idx] - entropy
+                result[f"policy_samples_{name}"] = float(phase_counts[phase_idx])
 
         pass_stats_offset = 5 + NUM_PHASES
         for i, phase_idx in enumerate(PHASES_WITH_PASS_SLOT):

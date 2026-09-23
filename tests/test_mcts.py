@@ -79,10 +79,12 @@ def test_search_acquisition_price_cap_at_root_and_leaves(evaluator, price_cap):
         [0, 1, 2, 3, 47, 48, 49, 50] if price_cap else list(range(51)),
     )
     priors, _, _, _, _ = evaluator.evaluate(state)
-    root = run_search(state, evaluator, config)
+    captured = []
+    root = run_search(state, evaluator, config, root_priors_out=captured)
     np.testing.assert_array_equal(root.legal_actions, expected)
     expected_priors = priors[expected] / priors[expected].sum() if price_cap else priors
     np.testing.assert_array_equal(root.priors, expected_priors)
+    np.testing.assert_array_equal(captured[0], expected_priors)
 
     # Start one decision earlier to exercise batched leaf masking and reuse.
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_COMPANY))

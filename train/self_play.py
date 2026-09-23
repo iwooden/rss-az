@@ -60,6 +60,7 @@ from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import EpochConfig, TrainingConfig
 from train.eval_server import RemoteEvaluator
 from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
+from train.policy_metrics import PolicyMetrics
 
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
@@ -282,6 +283,7 @@ class GameRecord:
     final_state: np.ndarray | None = None
     strategy_trace: StrategyTrace | None = None
     acquisition: AcquisitionStats = field(default_factory=AcquisitionStats)
+    policy_metrics: PolicyMetrics = field(default_factory=PolicyMetrics)
 
 
 def _compute_linear_temperature(
@@ -988,6 +990,9 @@ def play_game(
     sample_top1_sum = 0.0
     move_count = 0
     acquisition = AcquisitionStats()
+    policy_metrics = PolicyMetrics()
+    root_priors: list[np.ndarray] = []
+    target_anneal_window = config.policy_target_temp_anneal_window(num_players)
     reuse_root: Any = None
 
     # Scratch buffer for enumerating legal actions at each decision point.
@@ -1039,6 +1044,7 @@ def play_game(
             state, evaluator, mcts_config, rng,
             state_pool=state_pool, reuse_root=reuse_root,
             profile=search_stats,
+            root_priors_out=root_priors,
         )
 
         # Sparse policy target: temperature-shaped visit-count proportions
@@ -1053,6 +1059,10 @@ def play_game(
         )
         policy_target_sparse = scale_visit_counts_by_temperature(
             counts, target_temperature,
+        )
+        policy_metrics.observe(
+            root_priors[0], counts, policy_target_sparse, phase_id,
+            move_count, target_anneal_window,
         )
 
         # A0GB value target — already canonical (no np.roll).
@@ -1240,6 +1250,7 @@ def play_game(
         num_examples=n_examples,
         total_moves=move_count,
         acquisition=acquisition,
+        policy_metrics=policy_metrics,
         net_worths=net_worths,
         invest_roundtrip_cap_hits=[
             PLAYERS[i].get_invest_roundtrip_cap_hits(state) for i in range(num_players)

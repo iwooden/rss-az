@@ -174,6 +174,10 @@ Watch training metrics:
 .venv/bin/tensorboard --logdir runs
 ```
 
+[Policy-learning diagnostics](train/POLICY_METRICS.md) describe the automatic
+unnoised-prior confidence, search-disagreement, and phase-specific policy-fit
+metrics, including their denominators and interpretation.
+
 Play and inspect one analysis game from the latest checkpoint:
 
 ```bash
