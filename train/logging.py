@@ -422,6 +422,10 @@ class TrainingLogger:
             "enabled" if config.relation_input_mixing else "disabled",
         )
         table.add_row(
+            "Zero-sum values (v3 only)",
+            "enabled" if config.zero_sum_values else "disabled",
+        )
+        table.add_row(
             "Price slot keys",
             f"Fourier bands={config.price_slot_fourier_bands}",
         )

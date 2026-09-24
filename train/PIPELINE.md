@@ -12,7 +12,8 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
   evaluators slice it to the actual count. PUCT reads
   `value_sums[a, active_player_id]` using canonical ids
   (`_select_child_impl`). Player tokens stay in canonical order, with no
-  negamax sign flip.
+  negamax sign flip. With v3 `zero_sum_values`, the value head subtracts the
+  mean over real players after tanh, so values sum to zero and may exceed ±1.
 - **A tree edge is one multi-choice decision.** `DRIVER.apply_action`
   (`_auto_chain`) runs automated phases and single-legal-action decisions.
   Consecutive nodes can have any active player.
@@ -130,6 +131,6 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 - **Model selection.** `model_path` selects the implementation (default
   `nn/transformer-v2.py`). Its `INPUT_LAYOUT_VERSION` sets token width for
   every consumer (`get_model_input_spec`). `phase_conditioning`, `d_proj`, and
-  `price_slot_fourier_bands` are v2-only, and `relation_input_mixing` is
-  v3-only. Engine flags `v3_behavior` and `acq_same_president` are independent
-  of the model (see `README.md`).
+  `price_slot_fourier_bands` are v2-only, and `relation_input_mixing` and
+  `zero_sum_values` are v3-only. Engine flags `v3_behavior` and
+  `acq_same_president` are independent of the model (see `README.md`).

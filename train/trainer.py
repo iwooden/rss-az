@@ -89,6 +89,13 @@ class Trainer:
         # Lazy pinned host + device scratch (see _ensure_scratch).
         self._scratch_cap: int = 0
 
+        # Raw value-head outputs, before any zero-sum centering, captured by a
+        # forward hook for drift/saturation diagnostics.
+        self._raw_values: torch.Tensor | None = None
+        value_head = getattr(self._base_model, "value_head", None)
+        if isinstance(value_head, torch.nn.Module):
+            value_head.register_forward_hook(self._capture_raw_values)
+
         # --- Optimizer setup ---
         if config.optimizer == "muon":
             self._setup_muon(model, config)
@@ -326,6 +333,26 @@ class Trainer:
             return result
         return policy_logits.new_zeros(2 * len(PHASES_WITH_PASS_SLOT))
 
+    def _capture_raw_values(
+        self, module: torch.nn.Module, inputs: Any, output: torch.Tensor,
+    ) -> None:
+        self._raw_values = output.detach()
+
+    def _raw_value_stats(
+        self, raw: torch.Tensor, value_mask: torch.Tensor, player_counts: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return (mean, mean |.|) of each row's raw mean over real players,
+        and the share of real-player raw outputs beyond ±0.99.
+
+        Zero-sum centering leaves the raw common level unconstrained by the
+        loss; if it drifts, players saturate where tanh passes no gradient.
+        """
+        raw = raw.reshape(value_mask.shape).float()
+        real = value_mask.to(raw.dtype)
+        row_mean = (raw * real).sum(dim=1) / player_counts.to(raw.dtype)
+        saturated = ((raw.abs() > 0.99) & value_mask).to(raw.dtype).sum() / real.sum()
+        return torch.stack([row_mean.mean(), row_mean.abs().mean(), saturated])
+
     def train_step(
         self,
         buffer: ReplayBuffer,
@@ -343,8 +370,10 @@ class Trainer:
             dict with ``policy_loss``, ``value_loss``, ``total_loss`` as
             floats, ``policy_target_entropy`` / ``policy_loss_residual`` for
             policy-fit diagnostics, ``policy_loss_<phase>`` per decision
-            phase bucket, and ``policy_loss_<Np>`` / ``value_loss_<Np>`` per
-            player-count bucket present in the batch.
+            phase bucket, ``policy_loss_<Np>`` / ``value_loss_<Np>`` per
+            player-count bucket present in the batch, and ``value_raw_mean``,
+            ``value_raw_mean_abs``, ``value_raw_saturated`` for models with a
+            ``value_head`` (see ``_raw_value_stats``).
         """
         self._ensure_scratch(batch_size)
         B = batch_size
@@ -400,9 +429,11 @@ class Trainer:
         # The model returns logits with illegal slots already masked to
         # -1e9 via ``legal_masks``, so log_softmax normalizes over the
         # legal set only (illegal log-probs are ~-∞ × 0 = 0 in the loss).
+        self._raw_values = None
         policy_logits, values = self.model(
             self._tok_d[:B], legal_masks, self._rel_d[:B],
         )
+        raw_values = self._raw_values
 
         # Policy loss: dense cross-entropy over the unified slot space.
         # ``policy_targets`` is zero on illegal slots, so only legal slots
@@ -430,6 +461,11 @@ class Trainer:
         value_mask = player_ids.unsqueeze(0) < player_counts.unsqueeze(1)
         value_sqerr = (values - value_targets).square()
         value_loss = value_sqerr.masked_select(value_mask).mean()
+        raw_value_stats = (
+            self._raw_value_stats(raw_values, value_mask, player_counts)
+            if raw_values is not None
+            else value_sqerr.new_zeros(0)
+        )
 
         # Combined loss
         total_loss = (
@@ -503,7 +539,7 @@ class Trainer:
         # host read is a single H←D sync instead of separate .item() calls.
         # Order: policy_loss, value_loss, total_loss, target_entropy,
         # policy_loss_residual, *per-phase, *pass-stats, *count policy,
-        # *count value, *per-phase target entropy.
+        # *count value, *raw value stats, *per-phase target entropy.
         # ``pass_stats`` carries (pass_abs, action_abs) interleaved over the
         # phases in PHASES_WITH_PASS_SLOT — used to detect logit-scale drift
         # between the Linear(d, 1) pass heads and the q·k/√dp scored logits.
@@ -519,6 +555,7 @@ class Trainer:
             pass_stats,
             per_count_policy_means,
             per_count_value_means,
+            raw_value_stats.to(per_count_value_means.dtype),
             per_phase_entropy_means,
         ])
 
@@ -585,6 +622,12 @@ class Trainer:
             result[f"value_loss_{num_players}p"] = scalars[
                 count_stats_offset + count_bucket_count + bucket_idx
             ]
+
+        if raw_values is not None:
+            raw_offset = count_stats_offset + 2 * count_bucket_count
+            result["value_raw_mean"] = scalars[raw_offset]
+            result["value_raw_mean_abs"] = scalars[raw_offset + 1]
+            result["value_raw_saturated"] = scalars[raw_offset + 2]
 
         return result
 

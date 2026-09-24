@@ -8,6 +8,7 @@
   "model_type": "transformer",
   "model_path": "nn/transformer-v3.py",
   "relation_input_mixing": true,
+  "zero_sum_values": true,
   "games_per_epoch": 500,
   "num_epochs": 500,
   "training_steps_per_epoch": 1000,

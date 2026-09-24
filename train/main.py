@@ -284,6 +284,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-relation-input-mixing", dest="relation_input_mixing", action="store_false",
         help="Disable relation input mixing, retaining relation attention biases (v3 only)",
     )
+    zero_sum_group = parser.add_mutually_exclusive_group()
+    zero_sum_group.add_argument(
+        "--zero-sum-values", action="store_true", default=None,
+        help="Subtract the mean over real players from value outputs (v3 only)",
+    )
+    zero_sum_group.add_argument(
+        "--no-zero-sum-values", dest="zero_sum_values", action="store_false",
+        help="Use raw per-player tanh value outputs (v3 only)",
+    )
     parser.add_argument(
         "--price-slot-fourier-bands",
         type=int,
@@ -295,6 +304,7 @@ def _build_parser() -> argparse.ArgumentParser:
 _CLI_FIELDS = (
     "num_players", "min_players", "max_players", "v3_behavior", "acq_same_president",
     "eval_dtype", "model_type", "model_path", "phase_conditioning", "relation_input_mixing",
+    "zero_sum_values",
     "d_model", "d_proj", "num_heads", "num_layers", "ff_mult",
     "price_slot_fourier_bands",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",
@@ -1488,6 +1498,7 @@ def main() -> None:
                     if k.startswith((
                         "policy_loss_",
                         "value_loss_",
+                        "value_raw_",
                         "pass_logit_abs_",
                         "action_logit_abs_",
                         "policy_target_entropy_",

@@ -188,6 +188,9 @@ class TransformerConfig:
     num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension is rounded up to a multiple of 64.
     relation_input_mixing: bool = True
+    # Subtract the mean over real players from the tanh values, so each row
+    # sums to zero like the terminal targets.
+    zero_sum_values: bool = False
 
     # Raw feature width per token (zero-padded to same size across types).
     # Sourced from core.token_data_v3 so the model and the Cython extractor
@@ -200,6 +203,9 @@ class TransformerConfig:
     def __post_init__(self) -> None:
         assert isinstance(self.relation_input_mixing, bool), (
             f"relation_input_mixing must be bool, got {self.relation_input_mixing!r}"
+        )
+        assert isinstance(self.zero_sum_values, bool), (
+            f"zero_sum_values must be bool, got {self.zero_sum_values!r}"
         )
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
         assert self.d_model > 0, f"d_model must be positive, got {self.d_model}"
@@ -1621,9 +1627,12 @@ class RSSTransformerNet(nn.Module):
             policy_logits: ``(batch, UNIFIED_LOGIT_DIM)`` fp32 logits with
                 illegal slots set to ``-1e9``. Static-shape regardless of phase.
             values: ``(batch, cfg.num_players)`` per-player expected outcomes
-                in ``[-1, 1]``. In mixed-count training this is padded to the
-                model capacity; callers mask or slice slots beyond the state's
-                actual player count.
+                in ``[-1, 1]``. With ``cfg.zero_sum_values``, the mean over
+                real players is subtracted after tanh, so each row sums to zero,
+                values can reach ``±2(n-1)/n``, and padded slots are zero. In
+                mixed-count training this is padded to the model capacity;
+                callers mask or slice slots beyond the state's actual player
+                count.
         """
         if x.ndim != 3:
             raise AssertionError(f"x must be rank-3 (batch, num_tokens, token_dim); got {tuple(x.shape)}")
@@ -1726,6 +1735,12 @@ class RSSTransformerNet(nn.Module):
         policy_logits = unified.masked_fill(~legal_mask, -1e9)
 
         values = self.value_head(tokens[:, self._player_slice]).squeeze(-1)  # (B, N)
+        if self.cfg.zero_sum_values:
+            # Padded player rows are all-zero, including the attention-mask flag.
+            present = (x[:, self._player_slice, 0] > 0.5).to(values.dtype)
+            count = present.sum(dim=1, keepdim=True).clamp_min(1.0)
+            mean = (values * present).sum(dim=1, keepdim=True) / count
+            values = (values - mean) * present
         return policy_logits, values
 
     # ------------------------------------------------------------------

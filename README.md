@@ -69,6 +69,14 @@ mixing weights are retained in either mode so the same checkpoint can be used
 for both runs. Disabling mixing skips its computation while retaining relation
 attention biases and type embeddings. This option does not affect v2.
 
+V3 can also make value outputs zero-sum, matching the terminal targets. With
+`"zero_sum_values": true` (set in `train_configs/v3-09-20-26.json`), the value
+head subtracts the mean over the state's real players after tanh, so outputs
+may exceed ±1 (bound ±2(n-1)/n). `--zero-sum-values` and
+`--no-zero-sum-values` override it, including when resuming. The setting is
+checkpointed and adds no weights; checkpoints saved without it load with it
+off. This option does not affect v2.
+
 `core/token_data.pyx/.pxd` is a thin dispatcher. Each model owns its extractor
 and constants in `core/token_data_v2.pyx/.pxd` or `core/token_data_v3.pyx/.pxd`;
 feature changes belong in that version's files. V2 was restored from `v2-final`

@@ -339,3 +339,47 @@ def test_v3_cuda_forward_backward():
     company_grad = getattr(model, "company_proj").weight.grad
     assert company_grad is not None and torch.isfinite(company_grad).all()
     assert company_grad[:, 14].abs().sum() > 0  # raw company slot 15, actor_controls_company
+
+
+def test_v3_zero_sum_values_through_checkpoint_evaluator_and_trainer(tmp_path):
+    config = _config(3, num_players=0, min_players=3, max_players=5, zero_sum_values=True)
+    path = tmp_path / "checkpoint.pt"
+    save_checkpoint(path, 0, create_model(config), {}, config, {}, {})
+    loaded, loaded_config, _ = load_model_from_checkpoint(path, torch.device("cpu"))
+    assert loaded_config.zero_sum_values is True
+    assert getattr(loaded, "cfg").zero_sum_values is True
+    raw = create_model(replace(config, zero_sum_values=False))
+    raw.load_state_dict(loaded.state_dict())
+
+    spec = get_model_input_spec(config)
+    states = [_state(n) for n in (3, 4, 5)]
+    centered = NNEvaluator(loaded, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
+    uncentered = NNEvaluator(raw, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
+    raw_sums = []
+    for i, (actual, reference) in enumerate(zip(centered, uncentered)):
+        values, raw_values = actual[1], reference[1]
+        assert values.shape == (3 + i,)
+        np.testing.assert_array_equal(actual[0], reference[0])
+        np.testing.assert_allclose(values, raw_values - raw_values.mean(), atol=1e-6)
+        assert abs(float(values.sum())) < 1e-5
+        raw_sums.append(abs(float(raw_values.sum())))
+    assert max(raw_sums) > 1e-3  # centering is not vacuous at this init
+
+    # Identical 3p rows make the sampled batch known and leave two padded
+    # value slots that the raw-value diagnostics must ignore.
+    replay = ReplayBuffer(3, get_layout(5).total_size, 5, min_players=3, max_players=5)
+    masks = np.zeros((3, UNIFIED_LOGIT_DIM), np.uint8)
+    masks[:, 0] = 1
+    replay.add_stacked(
+        np.stack([states[0]._array] * 3), np.zeros(3, np.int8), masks,
+        masks.astype(np.float32), np.zeros((3, 5), np.float32),
+        player_counts=np.array([3, 3, 3], np.uint8),
+    )
+    losses = Trainer(loaded, config, torch.device("cpu")).train_step(
+        replay, 3, np.random.default_rng(0),
+    )
+    assert np.isfinite(losses["value_loss"])
+    raw_mean = float(uncentered[0][1].mean())
+    assert losses["value_raw_mean"] == pytest.approx(raw_mean, abs=1e-5)
+    assert losses["value_raw_mean_abs"] == pytest.approx(abs(raw_mean), abs=1e-5)
+    assert losses["value_raw_saturated"] == 0.0

@@ -88,6 +88,23 @@ def test_relation_input_mixing_config_and_cli_round_trip() -> None:
             TrainingConfig.from_json('{"relation_input_mixing":' + invalid + '}')
 
 
+def test_zero_sum_values_config_and_cli_round_trip() -> None:
+    assert TrainingConfig.from_json('{}').zero_sum_values is False
+    config = TrainingConfig.from_json('{"zero_sum_values": true}')
+    assert config.zero_sum_values is True
+    assert TrainingConfig.from_json(config.to_json()).zero_sum_values is True
+    parser = _build_parser()
+    _apply_overrides(config, parser.parse_args([]))
+    assert config.zero_sum_values is True
+    for option, enabled in (("--no-zero-sum-values", False), ("--zero-sum-values", True)):
+        _apply_overrides(config, parser.parse_args([option]))
+        config.validate()
+        assert config.zero_sum_values is enabled
+    for invalid in ('1', '"true"', 'null'):
+        with pytest.raises(ValueError, match="zero_sum_values must be bool"):
+            TrainingConfig.from_json('{"zero_sum_values":' + invalid + '}')
+
+
 def test_cli_overrides_model_path() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--model-path", "nn/transformer-v2.py"])

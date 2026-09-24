@@ -130,6 +130,8 @@ class TrainingConfig:
     phase_conditioning: bool = False
     # V3 pre-trunk relation messages; relation attention biases remain active.
     relation_input_mixing: bool = True
+    # V3 value head subtracts the mean over real players after tanh (zero-sum).
+    zero_sum_values: bool = False
     # Transformer model hyperparameters. These are checkpointed so runs can
     # reload multiple model sizes from the same implementation module.
     d_model: int = 256
@@ -319,6 +321,10 @@ class TrainingConfig:
         if not isinstance(self.relation_input_mixing, bool):
             raise ValueError(
                 f"relation_input_mixing must be bool, got {self.relation_input_mixing!r}"
+            )
+        if not isinstance(self.zero_sum_values, bool):
+            raise ValueError(
+                f"zero_sum_values must be bool, got {self.zero_sum_values!r}"
             )
         if self.d_model < 1:
             raise ValueError(f"d_model must be >= 1, got {self.d_model}")

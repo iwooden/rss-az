@@ -31,6 +31,8 @@ The key scalar tags are:
 
 **Loss curves:** `loss/total`, `loss/policy`, `loss/value` (per training step, every 100 steps); `epoch/total_loss_avg`, `epoch/policy_loss_avg`, `epoch/value_loss_avg` (per epoch); `lr` (learning rate)
 
+**Value head (per epoch):** `epoch/value_raw_mean_avg` and `epoch/value_raw_mean_abs_avg` (per-state mean of the raw tanh outputs over real players; with `zero_sum_values` the loss does not constrain it, so steady growth means drift), `epoch/value_raw_saturated_avg` (share of raw outputs beyond ±0.99, where tanh passes almost no gradient)
+
 **Self-play stats (per epoch):** `self_play/game_length_mean`, `self_play/duration_mean`, `self_play/examples_per_game`, `self_play/total_examples`, `self_play/net_worth_{1st,2nd,3rd}`, `self_play/net_worth_{1st,2nd,3rd}_{min,max}`
 
 **Buffer (per epoch):** `buffer/size`, `buffer/utilization`
