@@ -143,3 +143,37 @@ def test_gpu_dense_training_fullgraph(model):
     gpu.apply_optimizations()
     compiled = torch.compile(model, fullgraph=True, **gpu.get_compile_kwargs(for_training=True))
     _assert_backward_parity(model, compiled, _batch(model, NUM_PHASES, sparse=False, device='cuda'))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA/ROCm GPU required')
+def test_sparse_eval_explicit_graph_replay_with_changed_edges_and_weights(model):
+    """Fullgraph is insufficient: replay one captured graph with fresh data."""
+    model = model.cuda().eval()
+    gpu = detect_gpu('cuda')
+    gpu.apply_optimizations()
+    kwargs = gpu.get_compile_kwargs(for_training=False, eval_batch_shape_mode='bucketed')
+    kwargs['options']['triton.cudagraphs'] = False  # Capture explicitly below.
+    compiled = torch.compile(model, fullgraph=True, dynamic=False, **kwargs)
+    batch = _batch(model, 8, sparse=True, device='cuda', wire=True)
+    with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16, cache_enabled=False):
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                compiled(*batch)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = compiled(*batch)
+        for empty in (False, True, False):
+            changed = _batch(model, 8, sparse=True, device='cuda', wire=True)
+            if empty:
+                changed[2].zero_()
+            for destination, source in zip(batch, changed):
+                destination.copy_(source)
+            # Weight snapshots must take effect without recapture or cached copies.
+            model.relation_input_mixing.relation_gains.add_(.05)
+            graph.replay()
+            expected = compiled(*batch)
+            for actual, reference in zip(output, expected):
+                torch.testing.assert_close(actual, reference, rtol=.03, atol=.003)

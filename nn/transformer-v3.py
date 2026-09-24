@@ -340,9 +340,9 @@ class RelationInputMixing(nn.Module):
     divides by sqrt(neighbor count), and applies its own bias-free projection
     and independent signed gain. Empty neighborhoods contribute exactly zero.
     Source RMSNorm controls feature scale without erasing aggregate magnitude.
-    Dense/sparse weights are already normalized. Sparse inputs aggregate
-    directly, without materializing relation planes. Static company relations
-    use the same source map, restricted to the company-token block.
+    Dense/sparse weights are already normalized. Sparse inputs aggregate all
+    relations in one pass, without materializing relation planes. Static company
+    relations use the same source map, restricted to the company-token block.
     """
 
     def __init__(self, d_model: int) -> None:
@@ -360,6 +360,42 @@ class RelationInputMixing(nn.Module):
         # Nonzero gains let the message weights learn on the first step.
         self.relation_gains = nn.Parameter(torch.full((_NUM_MODEL_RELATIONS,), 0.1))
 
+    @staticmethod
+    def _aggregate_sparse(
+        sources: torch.Tensor,
+        visible: torch.Tensor,
+        ctx: _SparseRelationContext,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Route each edge once to its (relation, batch, recipient) row.
+
+        Relation-major storage makes each relation's subsequent projection
+        contiguous. Both allocation sizes depend only on input shapes, never
+        on edge counts. Padded/hidden edges add zero; repeated edges retain
+        their separate contributions and neighbor counts.
+        """
+        batch, num_tokens, width = sources.shape
+        edge_sources = sources.gather(
+            1, ctx.key_tokens.unsqueeze(-1).expand(-1, -1, width),
+        )
+        edge_sources = edge_sources * ctx.edge_weights.unsqueeze(-1).to(sources.dtype)
+        selected = ctx.valid_edges & visible.gather(1, ctx.key_tokens)
+        edge_sources = edge_sources.masked_fill(~selected.unsqueeze(-1), 0)
+        batch_ids = torch.arange(batch, device=sources.device)[:, None]
+        rows = (ctx.relation_ids * batch + batch_ids) * num_tokens + ctx.query_tokens
+        rows = rows.reshape(-1, 1)
+        aggregate = sources.new_zeros(NUM_ATTENTION_RELATIONS * batch * num_tokens, width)
+        aggregate = aggregate.scatter_add(
+            0, rows.expand(-1, width), edge_sources.reshape(-1, width),
+        )
+        count = sources.new_zeros(
+            NUM_ATTENTION_RELATIONS * batch * num_tokens, 1, dtype=torch.float32,
+        )
+        count = count.scatter_add(0, rows, selected.reshape(-1, 1).float())
+        return (
+            aggregate.reshape(NUM_ATTENTION_RELATIONS, batch, num_tokens, width),
+            count.reshape(NUM_ATTENTION_RELATIONS, batch, num_tokens, 1),
+        )
+
     def forward(
         self,
         tokens: torch.Tensor,
@@ -373,16 +409,11 @@ class RelationInputMixing(nn.Module):
         gains = self.relation_gains.to(dtype=sources.dtype)
         messages = torch.zeros_like(tokens)
 
-        edge_sources: torch.Tensor | None = None
-        edge_visible: torch.Tensor | None = None
-        if sparse_ctx is not None:
-            edge_sources = sources.gather(
-                1, sparse_ctx.key_tokens.unsqueeze(-1).expand(-1, -1, sources.shape[-1]),
-            )
-            edge_sources = edge_sources * sparse_ctx.edge_weights.unsqueeze(-1).to(
-                dtype=sources.dtype,
-            )
-            edge_visible = sparse_ctx.valid_edges & visible.gather(1, sparse_ctx.key_tokens)
+        sparse_aggregate: torch.Tensor | None = None
+        sparse_count: torch.Tensor | None = None
+        if relation_flags is None:
+            assert sparse_ctx is not None
+            sparse_aggregate, sparse_count = self._aggregate_sparse(sources, visible, sparse_ctx)
 
         for relation_id, proj in enumerate(self.relation_projs):
             if relation_id >= NUM_ATTENTION_RELATIONS:
@@ -408,17 +439,9 @@ class RelationInputMixing(nn.Module):
                 # must double this contribution at a fixed neighborhood size.
                 count = (adjacency > 0).sum(-1, keepdim=True, dtype=torch.float32)
             else:
-                assert sparse_ctx is not None and edge_sources is not None
-                assert edge_visible is not None
-                selected = edge_visible & (sparse_ctx.relation_ids == relation_id)
-                edge_messages = edge_sources.masked_fill(~selected.unsqueeze(-1), 0)
-                query_indices = sparse_ctx.query_tokens.unsqueeze(-1)
-                aggregate = torch.zeros_like(sources).scatter_add(
-                    1, query_indices.expand_as(edge_messages), edge_messages,
-                )
-                count = sources.new_zeros(
-                    sources.shape[0], sources.shape[1], 1, dtype=torch.float32,
-                ).scatter_add(1, query_indices, selected.unsqueeze(-1).float())
+                assert sparse_aggregate is not None and sparse_count is not None
+                aggregate = sparse_aggregate[relation_id]
+                count = sparse_count[relation_id]
 
             scale = count.clamp_min(1).rsqrt().to(dtype=aggregate.dtype)
             messages = messages + gains[relation_id] * proj(aggregate * scale)

@@ -172,6 +172,45 @@ def test_dense_sparse_messages_and_parameter_gradients_match(model):
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_sparse_aggregation_isolated_batches_duplicates_and_padding(model, device):
+    """Compare with an edge-by-edge definition, including duplicated quantities."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    model = model.to(device)
+    n, d = model.cfg.num_tokens, model.cfg.d_model
+    sources = torch.randn(3, n, d, device=device, requires_grad=True)
+    visible = torch.ones(3, n, dtype=torch.bool, device=device)
+    visible[0, 3] = False
+    coords = torch.zeros(3, MAX_ATTENTION_RELATION_EDGES, ATTENTION_RELATION_COORD_WIDTH,
+                         dtype=torch.uint8, device=device)
+    # Same recipient IDs across batches and relations must remain independent.
+    # Batch 2 is completely empty. Some valid edges have invisible sources.
+    for relation in range(NUM_ATTENTION_RELATIONS):
+        coords[0, 3 * relation:3 * relation + 3] = torch.tensor(
+            [[relation, 1, 2, 1], [relation, 1, 2, 3], [relation, 1, 3, 2]],
+            dtype=torch.uint8, device=device,
+        )
+        coords[1, relation] = torch.tensor([relation, 1, 3, 4], dtype=torch.uint8, device=device)
+    ctx = model._prepare_sparse_relation_context(coords)
+    actual, counts = model.relation_input_mixing._aggregate_sparse(sources, visible, ctx)
+    expected = torch.zeros_like(actual)
+    expected_counts = torch.zeros_like(counts)
+    # Python loops are deliberately a small independent test oracle, not a runtime path.
+    for batch, rows in enumerate(coords.cpu().tolist()):
+        for relation, query, key, quantity in rows:
+            if quantity and visible[batch, key]:
+                weight = quantity * model._relation_scales[relation]
+                expected[relation, batch, query] = expected[relation, batch, query] + sources[batch, key] * weight
+                expected_counts[relation, batch, query] += 1
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(counts, expected_counts, rtol=0, atol=0)
+    target = torch.randn_like(actual)
+    actual_grad, = torch.autograd.grad((actual * target).sum(), sources)
+    expected_grad, = torch.autograd.grad((expected * target).sum(), sources)
+    torch.testing.assert_close(actual_grad, expected_grad)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_forward_backward_and_sparse_parity(model, device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA required")
