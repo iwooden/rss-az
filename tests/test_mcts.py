@@ -113,7 +113,8 @@ def test_search_cross_president_price_is_forced(evaluator, price_cap, seller_kin
         dirichlet_epsilon=0, max_acq_price_actions=price_cap,
     )
     root = run_search(state, evaluator, config)
-    np.testing.assert_array_equal(root.legal_actions, [3])
+    company = COMPANIES[TARGET]
+    np.testing.assert_array_equal(root.legal_actions, [company.get_high_price() - company.get_low_price()])
     np.testing.assert_array_equal(root.priors, [1.0])
 
     # Within search, selecting the company skips the forced price decision.
@@ -123,7 +124,7 @@ def test_search_cross_president_price_is_forced(evaluator, price_cap, seller_kin
     offer_child = root.children[TARGET]
     offer_state = GameState.from_array(pool.states[offer_child.state_idx], 3, v3_behavior=True)
     assert TURN.get_phase(offer_state) == int(GamePhases.PHASE_ACQ_OFFER)
-    assert TURN.get_acq_offer_price(offer_state) == COMPANIES[TARGET].get_low_price() + 3
+    assert TURN.get_acq_offer_price(offer_state) == company.get_high_price()
     assert offer_child.active_player_id == 0
     np.testing.assert_array_equal(offer_child.legal_actions, [0, 1])
 

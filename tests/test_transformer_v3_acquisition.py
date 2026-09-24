@@ -70,6 +70,8 @@ def test_acquisition_price_features_match_buyer_and_seller_balances(num_players,
     target = 14
     float_corp_for_test(state, corp_id=0, player_id=actor, company_id=0, par_index=10)
     buyer_cash = COMPANIES[target].get_low_price() + 3
+    if v3_behavior and seller_kind == "foreign_player":
+        buyer_cash = COMPANIES[target].get_high_price()
     CORPS[0].set_cash(state, buyer_cash)
     PLAYERS[actor].set_cash(state, 95)
     if seller_kind == "corp":
@@ -150,7 +152,8 @@ def test_acquisition_price_features_match_buyer_and_seller_balances(num_players,
         priors, values, ids, count, phase = evaluator.evaluate(state)
     finally:
         handle.remove()
-    expected_ids = np.array([3]) if v3_behavior and seller_kind == "foreign_player" else np.arange(4)
+    expected_ids = (np.array([COMPANIES[target].get_high_price() - COMPANIES[target].get_low_price()])
+                    if v3_behavior and seller_kind == "foreign_player" else np.arange(4))
     np.testing.assert_array_equal(ids, expected_ids)
     assert count == len(expected_ids) and phase == int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
     np.testing.assert_allclose(

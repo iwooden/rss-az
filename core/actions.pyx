@@ -569,8 +569,9 @@ cdef int _enumerate_bid(
 cdef inline int _acq_min_price_offset(
     GameState state, int company_id, int player_id,
 ) noexcept nogil:
-    """Keep price action IDs absolute; only raise the legal lower bound."""
+    """Apply v3 rejection and cross-president high-price floors to absolute IDs."""
     cdef int minimum = 0
+    cdef int loc, seller_player, high_offset
     if state.v3_behavior:
         minimum = (
             company_max_rejected_price(state, company_id, player_id)
@@ -578,6 +579,14 @@ cdef inline int _acq_min_price_offset(
         )
         if minimum < 0:
             minimum = 0
+        loc = company_location(state, company_id)
+        seller_player = company_owner_id(state, company_id)
+        if loc == <int>LOC_CORP:
+            seller_player = corp_president_id(state, seller_player)
+        if (loc == <int>LOC_CORP or loc == <int>LOC_PLAYER) and seller_player != player_id:
+            high_offset = COMPANY_HIGH_PRICE[company_id] - COMPANY_LOW_PRICE[company_id]
+            if minimum < high_offset:
+                minimum = high_offset
     return minimum
 
 
@@ -596,9 +605,11 @@ cdef inline bint _acq_pair_has_legal_price(
       - LOC_CORP:   target isn't self-owned, seller isn't in receivership,
                     seller retains >= 2 companies after sale, and under
                     same-president gating the active player presides the
-                    seller. Affordability includes the v3 rejection floor.
+                    seller. V3 requires high price for cross-president offers
+                    and applies the rejection floor.
       - LOC_PLAYER: under same-president gating the seller is the active
-                    player. Affordability includes the v3 rejection floor.
+                    player. V3 requires high price for cross-president offers
+                    and applies the rejection floor.
 
     All other locations (LOC_CORP_ACQ, LOC_DECK, LOC_AUCTION) are unreachable
     as acquisition targets.
@@ -761,7 +772,8 @@ cdef int _enumerate_acq_select_price(
       ``ids min_offset..max_offset`` where v3's minimum exceeds the actor's
       highest rejected price (zero minimum offset in legacy mode), and
       ``max_offset = min(high - low, cash - low, 50)``.
-      V3 cross-president offers emit only ``max_offset``.
+      V3 cross-president offers require ``high - low`` as the minimum too:
+      only the company's full high price is legal, and must be affordable.
 
     Trusts SELECT_COMPANY's filter: by the time we're here, the
     (active_corp, active_company) pair has at least one legal price and
@@ -790,18 +802,11 @@ cdef int _enumerate_acq_select_price(
     cdef int price_offset
     cdef int player_id = <int>state._data[LAYOUT.turn_offset + TURN_OFFSETS.active_player]
     cdef int min_offset = _acq_min_price_offset(state, company_id, player_id)
-    cdef int seller_player
 
     if cash - low_price < max_offset:
         max_offset = cash - low_price
     if max_offset > 50:
         max_offset = 50
-    if state.v3_behavior:
-        seller_player = company_owner_id(state, company_id)
-        if company_location(state, company_id) == <int>LOC_CORP:
-            seller_player = corp_president_id(state, seller_player)
-        if seller_player != player_id and max_offset >= min_offset:
-            min_offset = max_offset
     for price_offset in range(min_offset, max_offset + 1):
         _require_action_capacity(count, b"ACQ_SELECT_PRICE")
         ids[count] = <uint16_t>encode_acq_select_price(price_offset)
