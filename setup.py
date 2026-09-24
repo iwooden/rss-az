@@ -12,6 +12,10 @@ import sysconfig
 
 NUM_BUILD_JOBS = os.cpu_count() or 1
 
+# Packages whose .pyx files are compiled. `clean` touches nothing outside
+# these and build/, so reference builds elsewhere (e.g. scratchpad/) survive.
+EXTENSION_DIRS = ('core', 'entities', 'phases', 'mcts')
+
 
 RELEASE_FLAG = '--release'
 RELEASE_BUILD = RELEASE_FLAG in sys.argv
@@ -42,31 +46,14 @@ class CleanCommand(Command):
         pass
 
     def run(self):
-        # Patterns to clean
-        patterns = [
-            '*.c',
-            '*.h',
-            '*.cpp',
-            '*.so',
-            '*.html',
-            '**/*.c',
-            '**/*.cpp',
-            '**/*.so',
-        ]
-        # Clean Cython-generated .html annotation files, but NOT interp reports
-        cython_html_dirs = ['core', 'entities', 'phases', 'mcts']
-
         files_removed = 0
         dirs_removed = 0
 
-        for pattern in patterns:
-            for path in glob.glob(pattern, recursive=True):
-                os.remove(path)
-                files_removed += 1
-        for d in cython_html_dirs:
-            for path in glob.glob(f'{d}/**/*.html', recursive=True):
-                os.remove(path)
-                files_removed += 1
+        for d in EXTENSION_DIRS:
+            for ext in ('c', 'cpp', 'so', 'html'):
+                for path in glob.glob(f'{d}/**/*.{ext}', recursive=True):
+                    os.remove(path)
+                    files_removed += 1
 
         # Remove build directory
         if os.path.exists('build'):
@@ -171,12 +158,7 @@ def find_pyx_files(directory):
                 pyx_files.append(os.path.join(root, file))
     return pyx_files
 
-pyx_files = (
-    find_pyx_files('core')
-    + find_pyx_files('entities')
-    + find_pyx_files('phases')
-    + find_pyx_files('mcts')
-)
+pyx_files = [path for d in EXTENSION_DIRS for path in find_pyx_files(d)]
 
 extensions = []
 

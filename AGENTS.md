@@ -2,9 +2,11 @@
 
 ## Direction
 
-- This branch develops and trains a successor to `nn/transformer-v2.py`.
-  A v2 checkpoint performed well against top-level human players over summer
-  2026; use it as the baseline for incorporating lessons from those games.
+- This branch develops and trains a successor to `nn/transformer-v2.py`
+  (`nn/transformer-v3.py`, currently trained with
+  `train_configs/v3-09-20-26.json`). A v2 checkpoint performed well against
+  top-level human players over summer 2026; use it as the baseline for
+  incorporating lessons from those games.
 - **V2 behavior is locked.** Existing `nn/transformer-v2.py` checkpoints must
   continue to load and produce the same policy and value outputs for the same
   game states. Preserve this baseline when changing shared token extraction,
@@ -26,7 +28,9 @@
 - `RULES.md` defines intended game behavior. Code and targeted tests establish
   current implementation behavior; investigate discrepancies.
 - `README.md` provides navigation and launch commands. Consult `VECTORS.md`
-  and `token-data.md` as needed, checking their claims against current code.
+  and the token spec for the model being changed (`token-data.md` for v2,
+  `token-data-v3.md` for v3) as needed, checking their claims against current
+  code.
   Read files relevant to the task; these references are not a mandatory tour.
 
 ## Boundaries worth preserving
@@ -59,19 +63,19 @@ affected producers, consumers, tests, and documentation together.
 
 - Run from the repo root with `.venv/bin/python` and `.venv/bin/pytest`.
   `pyright` is a system command, not a virtualenv binary.
-- The default Codex sandbox blocks GPU access. Request escalation for CUDA
-  tests and other GPU workloads; a sandboxed CUDA availability check does not
-  establish that the host lacks CUDA. Rerun tests skipped for unavailable CUDA
-  with escalation to verify them on the GPU.
+- Some agent sandboxes, including Codex's default, block GPU access. Request
+  escalation for CUDA tests and other GPU workloads; a sandboxed CUDA
+  availability check does not establish that the host lacks CUDA. Rerun tests
+  skipped for unavailable CUDA with escalation to verify them on the GPU.
 - Build missing or stale Cython extensions before imports/tests:
   `.venv/bin/python setup.py build_ext --inplace`.
-- Changes to `.pxd`, Cython signatures, or layouts require a clean rebuild.
-  `setup.py clean_build` performs one, but its current cleaner recursively
-  deletes `.c`, `.cpp`, and `.so` files beyond the engine directories;
-  inspect its scope before using it in a checkout with vendored code.
+- Changes to `.pxd`, Cython signatures, or layouts require a clean rebuild:
+  `.venv/bin/python setup.py clean_build`. It removes generated files only
+  from the extension packages and `build/`.
 - Run focused tests for affected behavior using
   `.venv/bin/pytest <relevant paths> -q`; include downstream integration checks
-  when changing pipeline contracts. Documentation-only changes need no build.
+  when changing pipeline contracts. The full suite (`.venv/bin/pytest -q`)
+  takes 2-4 minutes locally. Documentation-only changes need no build.
 - Judge tests against intended behavior; legacy compatibility expectations may
   need updating. Report unrelated failures without expanding the task to fix
   them. Prefer invariant and end-to-end checks over tests that mirror code.
