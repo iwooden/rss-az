@@ -418,6 +418,10 @@ class TrainingLogger:
             "adaLN enabled" if config.phase_conditioning else "disabled",
         )
         table.add_row(
+            "Relation input mixing (v3 only)",
+            "enabled" if config.relation_input_mixing else "disabled",
+        )
+        table.add_row(
             "Price slot keys",
             f"Fourier bands={config.price_slot_fourier_bands}",
         )

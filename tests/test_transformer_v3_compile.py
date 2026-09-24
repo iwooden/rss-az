@@ -19,12 +19,13 @@ from tests.test_transformer_v3_relations import _inputs
 from train.gpu import detect_gpu
 
 
-@pytest.fixture
-def model():
+@pytest.fixture(params=[True, False], ids=['mixing', 'no_mixing'])
+def model(request):
     torch.manual_seed(42)
     module = _load_model_module('nn/transformer-v3.py')
     net = module.RSSTransformerNet(module.TransformerConfig(
         num_players=5, d_model=32, num_heads=4, num_layers=2,
+        relation_input_mixing=request.param,
     ))
     with torch.no_grad():
         net.relation_bias_mult.normal_(std=.1)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from train.config import TrainingConfig
 from train.main import _apply_overrides, _build_parser, _scaled_training_steps
 
@@ -67,6 +69,23 @@ def test_json_config_threads_phase_conditioning() -> None:
 
     assert config.phase_conditioning is False
     assert '"phase_conditioning": false' in config.to_json()
+
+
+def test_relation_input_mixing_config_and_cli_round_trip() -> None:
+    assert TrainingConfig.from_json('{}').relation_input_mixing is True
+    config = TrainingConfig.from_json('{"relation_input_mixing": false}')
+    assert config.relation_input_mixing is False
+    assert TrainingConfig.from_json(config.to_json()).relation_input_mixing is False
+    parser = _build_parser()
+    _apply_overrides(config, parser.parse_args([]))
+    assert config.relation_input_mixing is False
+    for option, enabled in (("--relation-input-mixing", True), ("--no-relation-input-mixing", False)):
+        _apply_overrides(config, parser.parse_args([option]))
+        config.validate()
+        assert config.relation_input_mixing is enabled
+    for invalid in ('1', '"false"', 'null'):
+        with pytest.raises(ValueError, match="relation_input_mixing must be bool"):
+            TrainingConfig.from_json('{"relation_input_mixing":' + invalid + '}')
 
 
 def test_cli_overrides_model_path() -> None:

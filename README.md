@@ -61,6 +61,14 @@ to select the layout. Query `get_token_dim(layout_version)` and
 model and extraction calls without a version remain v2 for checkpoint
 compatibility; v2 is retained as the evaluation baseline for v3.
 
+V3 enables relation input mixing before type embeddings by default. For an
+ablation, set `"relation_input_mixing": false` in the training JSON or pass
+`--no-relation-input-mixing` (including when resuming). Use
+`--relation-input-mixing` to enable it again. The setting is checkpointed;
+mixing weights are retained in either mode so the same checkpoint can be used
+for both runs. Disabling mixing skips its computation while retaining relation
+attention biases and type embeddings. This option does not affect v2.
+
 `core/token_data.pyx/.pxd` is a thin dispatcher. Each model owns its extractor
 and constants in `core/token_data_v2.pyx/.pxd` or `core/token_data_v3.pyx/.pxd`;
 feature changes belong in that version's files. V2 was restored from `v2-final`

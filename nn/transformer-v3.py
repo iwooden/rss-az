@@ -187,6 +187,7 @@ class TransformerConfig:
     num_heads: int = 4
     num_layers: int = 15
     ff_mult: float = 3.0  # FFN inner dimension is rounded up to a multiple of 64.
+    relation_input_mixing: bool = True
 
     # Raw feature width per token (zero-padded to same size across types).
     # Sourced from core.token_data_v3 so the model and the Cython extractor
@@ -197,6 +198,9 @@ class TransformerConfig:
     _num_tokens: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        assert isinstance(self.relation_input_mixing, bool), (
+            f"relation_input_mixing must be bool, got {self.relation_input_mixing!r}"
+        )
         assert 3 <= self.num_players <= 5, f"num_players must be 3-5, got {self.num_players}"
         assert self.d_model > 0, f"d_model must be positive, got {self.d_model}"
         assert self.num_heads > 0, f"num_heads must be positive, got {self.num_heads}"
@@ -680,6 +684,8 @@ class RSSTransformerNet(nn.Module):
         )
 
         # Explicit relation messages enrich projected tokens before attention.
+        # Retain weights in both modes so A/B runs can share initialization and
+        # resume the same checkpoint. Disabled mixing does no forward work.
         self.relation_input_mixing = RelationInputMixing(d)
         # The engine stores each synergy pair once for income accounting.
         # Attention/messages need both directions, independent of current owner.
@@ -1683,10 +1689,11 @@ class RSSTransformerNet(nn.Module):
                 f"got {tuple(relations.shape)}"
             )
         attn_mask = self._attention_mask(x)
-        tokens = self.relation_input_mixing(
-            tokens, attn_mask[:, 0, 0, :], relation_flags, sparse_relation_ctx,
-            self._static_company_relations, self._company_slice,
-        )
+        if self.cfg.relation_input_mixing:
+            tokens = self.relation_input_mixing(
+                tokens, attn_mask[:, 0, 0, :], relation_flags, sparse_relation_ctx,
+                self._static_company_relations, self._company_slice,
+            )
         # Supply recipient type identity to the trunk without feeding type
         # embeddings into the relation messages. Broadcast across the batch.
         tokens = tokens + self._match_dtype_device(self.type_embeds(self._type_ids), tokens)

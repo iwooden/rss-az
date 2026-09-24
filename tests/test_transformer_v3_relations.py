@@ -1,5 +1,7 @@
 """Input relation messages: routing, degree scaling, sparse parity, and training."""
 
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -204,6 +206,35 @@ def test_dense_sparse_messages_and_parameter_gradients_match(model):
     for dense_grad, sparse_grad in zip(dense_grads, sparse_grads):
         torch.testing.assert_close(dense_grad, sparse_grad, rtol=1e-4, atol=1e-6)
         assert torch.isfinite(dense_grad).all() and dense_grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_disabled_mixing_skips_messages_but_trains_type_embeddings_and_relation_attention(model, sparse):
+    disabled = type(model)(replace(model.cfg, relation_input_mixing=False))
+    with torch.no_grad():
+        model.relation_bias_mult.normal_(std=.3)
+    disabled.load_state_dict(model.state_dict())
+    _, visible, dense, coords = _inputs(model)
+    x = torch.randn(2, model.cfg.num_tokens, model.cfg.token_dim)
+    x[:, :, 0] = visible
+    legal = torch.ones(2, UNIFIED_LOGIT_DIM, dtype=torch.bool)
+    relations = coords if sparse else dense
+    with torch.no_grad():
+        # Zero messages give the same function as disabling the mixing stage.
+        model.relation_input_mixing.relation_gains.zero_()
+        # Poison unused parameters to catch implementations that compute the
+        # messages and multiply them by zero instead of skipping the stage.
+        for parameter in disabled.relation_input_mixing.parameters():
+            parameter.fill_(float('nan'))
+    expected = model(x, legal, relations)
+    actual = disabled(x, legal, relations)
+    for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result, reference, rtol=0, atol=0)
+    (actual[0].square().mean() + actual[1].square().mean()).backward()
+    assert all(p.grad is None for p in disabled.relation_input_mixing.parameters())
+    for parameter in (disabled.type_embeds.weight, disabled.relation_bias_mult):
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])

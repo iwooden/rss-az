@@ -275,6 +275,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable per-block adaLN phase conditioning (v2 only)",
     )
+    mixing_group = parser.add_mutually_exclusive_group()
+    mixing_group.add_argument(
+        "--relation-input-mixing", action="store_true", default=None,
+        help="Enable relation input mixing before type embeddings (v3 only; default)",
+    )
+    mixing_group.add_argument(
+        "--no-relation-input-mixing", dest="relation_input_mixing", action="store_false",
+        help="Disable relation input mixing, retaining relation attention biases (v3 only)",
+    )
     parser.add_argument(
         "--price-slot-fourier-bands",
         type=int,
@@ -285,7 +294,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 _CLI_FIELDS = (
     "num_players", "min_players", "max_players", "v3_behavior", "acq_same_president",
-    "eval_dtype", "model_type", "model_path", "phase_conditioning",
+    "eval_dtype", "model_type", "model_path", "phase_conditioning", "relation_input_mixing",
     "d_model", "d_proj", "num_heads", "num_layers", "ff_mult",
     "price_slot_fourier_bands",
     "games_per_epoch", "num_epochs", "training_steps_per_epoch",

@@ -192,6 +192,7 @@ def create_model(
     num_layers: int = 15,
     ff_mult: float = 3.0,
     phase_conditioning: bool = False,
+    relation_input_mixing: bool = True,
     price_slot_fourier_bands: int = 4,
     model_path: str | None = None,
 ) -> nn.Module:
@@ -215,6 +216,7 @@ def create_model(
             "num_layers": num_layers,
             "ff_mult": ff_mult,
             "phase_conditioning": phase_conditioning,
+            "relation_input_mixing": relation_input_mixing,
             "price_slot_fourier_bands": price_slot_fourier_bands,
         }
     else:
@@ -232,6 +234,7 @@ def create_model(
             "phase_conditioning": bool(
                 _config_value(config, "phase_conditioning", False)
             ),
+            "relation_input_mixing": _config_value(config, "relation_input_mixing", True),
             "price_slot_fourier_bands": int(
                 _config_value(config, "price_slot_fourier_bands", 4)
             ),

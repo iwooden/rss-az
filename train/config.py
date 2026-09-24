@@ -128,6 +128,8 @@ class TrainingConfig:
     model_path: str | None = None
     # V2 per-block adaLN-Zero conditioning; filtered out of the v3 model config.
     phase_conditioning: bool = False
+    # V3 pre-trunk relation messages; relation attention biases remain active.
+    relation_input_mixing: bool = True
     # Transformer model hyperparameters. These are checkpointed so runs can
     # reload multiple model sizes from the same implementation module.
     d_model: int = 256
@@ -312,6 +314,10 @@ class TrainingConfig:
         if not isinstance(self.phase_conditioning, bool):
             raise ValueError(
                 f"phase_conditioning must be bool, got {self.phase_conditioning!r}"
+            )
+        if not isinstance(self.relation_input_mixing, bool):
+            raise ValueError(
+                f"relation_input_mixing must be bool, got {self.relation_input_mixing!r}"
             )
         if self.d_model < 1:
             raise ValueError(f"d_model must be >= 1, got {self.d_model}")

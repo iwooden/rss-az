@@ -185,10 +185,14 @@ def test_history_survives_auction_return_and_resets_at_next_turn():
 
 @pytest.mark.parametrize("version", [2, 3])
 @pytest.mark.parametrize("phase_conditioning", [False, True])
-def test_checkpoint_evaluator_and_trainer_use_model_layout(version, phase_conditioning, tmp_path):
+@pytest.mark.parametrize("relation_input_mixing", [False, True])
+def test_checkpoint_evaluator_and_trainer_use_model_layout(
+    version, phase_conditioning, relation_input_mixing, tmp_path,
+):
     config = _config(
         version, num_players=0, min_players=3, max_players=5,
         phase_conditioning=phase_conditioning,
+        relation_input_mixing=relation_input_mixing,
     )
     model = create_model(config)
     if version == 3:
@@ -196,16 +200,26 @@ def test_checkpoint_evaluator_and_trainer_use_model_layout(version, phase_condit
         # the phase one-hot from the ordinary global-token projection.
         assert not hasattr(getattr(model, "cfg"), "phase_conditioning")
         assert not hasattr(model, "phase_mod_diagnostics")
+        assert getattr(model, "cfg").relation_input_mixing is relation_input_mixing
         assert getattr(model, "global_info_proj").in_features == int(TokenWidth.TW_GLOBAL_INFO) - 1
     spec = get_model_input_spec(config)
     assert spec.layout_version == version
     assert getattr(model, "cfg").layout_version == version
     path = tmp_path / "checkpoint.pt"
     save_checkpoint(path, 0, model, {}, config, {}, {})
-    loaded, _, _ = load_model_from_checkpoint(path, torch.device("cpu"))
+    loaded, loaded_config, _ = load_model_from_checkpoint(path, torch.device("cpu"))
+    assert loaded_config.relation_input_mixing is relation_input_mixing
+    if version == 3:
+        assert getattr(loaded, "cfg").relation_input_mixing is relation_input_mixing
+    else:
+        assert not hasattr(getattr(loaded, "cfg"), "relation_input_mixing")
     evaluator = NNEvaluator(loaded, torch.device("cpu"), 5, input_spec=spec)
     states = [_state(n) for n in (3, 4, 5)]
     outputs = evaluator.evaluate_batch(states)
+    reference = NNEvaluator(model, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
+    for actual, expected in zip(outputs, reference):
+        np.testing.assert_array_equal(actual[0], expected[0])
+        np.testing.assert_array_equal(actual[1], expected[1])
     for i, state in enumerate(states):
         np.testing.assert_array_equal(evaluator._tok_h_np[i], _tokens(state, version))
         assert outputs[i][1].shape == (3 + i,)
