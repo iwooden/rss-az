@@ -16,7 +16,7 @@ def test_v3_behavior_is_explicit_validated_and_serialized():
     assert TrainingConfig.from_json(config.to_json()).v3_behavior is True
     for invalid in (1, "true", None):
         with pytest.raises(ValueError, match="v3_behavior must be bool"):
-            TrainingConfig(v3_behavior=invalid)
+            TrainingConfig(v3_behavior=invalid)  # type: ignore[arg-type]
     for option, expected in (("--v3-behavior", True), ("--no-v3-behavior", False)):
         args = _build_parser().parse_args([option])
         _apply_overrides(config, args)
@@ -29,7 +29,7 @@ def test_cross_player_acquisition_config_and_cli_round_trip():
     assert TrainingConfig.from_json(config.to_json()).acq_same_president is False
     for invalid in (1, "false", None):
         with pytest.raises(ValueError, match="acq_same_president must be bool"):
-            TrainingConfig(acq_same_president=invalid)
+            TrainingConfig(acq_same_president=invalid)  # type: ignore[arg-type]
     for option, expected in (("--acq-same-president", True), ("--no-acq-same-president", False)):
         args = _build_parser().parse_args([option])
         _apply_overrides(config, args)
@@ -54,7 +54,7 @@ def test_acquisition_price_cap_config_and_cli_round_trip():
     assert config.to_mcts_config().max_acq_price_actions == 8
     for invalid in (-2, 9, 52, True, 8.0, "8"):
         with pytest.raises(ValueError, match="max_acq_price_actions"):
-            TrainingConfig(max_acq_price_actions=invalid)
+            TrainingConfig(max_acq_price_actions=invalid)  # type: ignore[arg-type]
     args = _build_parser().parse_args(["--max-acq-price-actions", "0"])
     _apply_overrides(config, args)
     assert config.max_acq_price_actions == 0

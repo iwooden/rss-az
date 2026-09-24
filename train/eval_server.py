@@ -203,50 +203,6 @@ def _partition_request_groups(
     return groups
 
 
-def _materialize_relation_coords_(
-    *,
-    dense_rel: torch.Tensor,
-    dense_rel_flat: torch.Tensor,
-    relation_coords: torch.Tensor,
-    flat_idx: torch.Tensor,
-    flat_idx_flat: torch.Tensor,
-    tmp_idx: torch.Tensor,
-    batch_offsets: torch.Tensor,
-    sentinel_flat: torch.Tensor,
-    actual_n: int,
-    launch_n: int,
-    num_tokens: int,
-) -> None:
-    """Materialize sparse relation coordinates into dense relation planes.
-
-    ``relation_coords`` is uint8 ``(B, max_edges, 4)`` where each row is
-    ``(relation_id, query_token, key_token, value)``. Padding is all-zero;
-    after filling all coordinates, the per-batch sentinel slot is cleared so
-    padding cannot introduce a real edge.
-    """
-    dense_rel[:launch_n].zero_()
-    if actual_n <= 0:
-        return
-
-    coords = relation_coords[:actual_n]
-    idx = flat_idx[:actual_n]
-    tmp = tmp_idx[:actual_n]
-
-    relation_stride = num_tokens * num_tokens
-    idx.copy_(coords[..., 0])
-    idx.mul_(relation_stride)
-    tmp.copy_(coords[..., 1])
-    idx.add_(tmp, alpha=num_tokens)
-    tmp.copy_(coords[..., 2])
-    idx.add_(tmp)
-    idx.add_(batch_offsets[:actual_n])
-
-    dense_rel_flat.scatter_(
-        0, flat_idx_flat[:idx.numel()], coords[..., 3].reshape(-1),
-    )
-    dense_rel_flat.index_fill_(0, sentinel_flat[:actual_n], 0)
-
-
 class SharedEvalBuffers:
     """Pre-allocated shared memory for zero-copy worker <-> server communication.
 

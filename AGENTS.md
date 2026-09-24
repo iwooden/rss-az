@@ -66,7 +66,8 @@ affected producers, consumers, tests, and documentation together.
 ## Development loop
 
 - Run from the repo root with `.venv/bin/python` and `.venv/bin/pytest`.
-  `pyright` is a system command, not a virtualenv binary.
+  `pyright` is a system command, not a virtualenv binary. Run from the repo
+  root, it reports zero errors; keep it that way.
 - Some agent sandboxes, including Codex's default, block GPU access. Request
   escalation for CUDA tests and other GPU workloads; a sandboxed CUDA
   availability check does not establish that the host lacks CUDA. Rerun tests

@@ -11,7 +11,8 @@ import torch
 from core.data import GamePhases
 from core.driver import DRIVER
 from core.state import GameState, get_layout
-from core import token_data_v2, token_data_v3
+import core.token_data_v2 as token_data_v2
+import core.token_data_v3 as token_data_v3
 from core.token_data import TokenWidth, get_num_tokens, get_token_data, get_token_data_batch, get_token_dim
 from entities.player import PLAYERS
 from entities.company import COMPANIES

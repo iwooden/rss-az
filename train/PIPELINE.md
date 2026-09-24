@@ -109,10 +109,9 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
   run no torch ops on the hot path.
 - **Two relation formats.** Model `forward` accepts dense planes (trainer,
   `NNEvaluator`) or sparse records (eval server). It scatters sparse records
-  straight into the per-head attention bias; only tests use
-  `_materialize_relation_coords_`. V2 reads its original 10 binary relations,
-  while v3 reads all relations and scales edges by value. Keep both formats in
-  parity.
+  straight into the per-head attention bias; the server never builds dense
+  planes. V2 reads its original 10 binary relations, while v3 reads all
+  relations and scales edges by value. Keep both formats in parity.
 - **Precision and weights.** Eval servers keep autocast (`eval_dtype`) open
   with `cache_enabled=False`, because same-device servers share trainer
   parameters through CUDA IPC. After training, every server reloads a CPU
