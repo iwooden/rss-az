@@ -62,7 +62,7 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
   (10), rising linearly to 1 at `value_blend_end_epoch` (200). Targets are
   `alpha * A0GB + (1 - alpha) * terminal_values`, frozen per replay row.
   Without an `EpochConfig`, they are pure A0GB. The v2 config ramps over epochs
-  100-300. The v3 config sets both to 999, making targets pure game outcomes.
+  100-300; the v3 config over 10-200.
 - **Blended terminal reward.** `compute_terminal_values` (`mcts/evaluator.py`)
   returns `terminal_blend * rank + (1 - terminal_blend) * margin`, default
   0.75. Rank spaces +1..-1 evenly with averaged ties. Margin is
