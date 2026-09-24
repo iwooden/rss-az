@@ -396,7 +396,7 @@ class SharedEvalBuffers:
         return self._legal_mask[worker_idx].numpy()
 
     def get_input_relation_coords_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, max_relation_edges, 3) uint8 sparse relation coordinates."""
+        """(batch, max_relation_edges, 4) uint8 (relation, query, key, value) records."""
         return self._relation_coords[worker_idx].numpy()
 
     # ------------------------------------------------------------------

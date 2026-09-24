@@ -9,11 +9,14 @@
   incorporating lessons from those games.
 - **V2 behavior is locked.** Existing `nn/transformer-v2.py` checkpoints must
   continue to load and produce the same policy and value outputs for the same
-  game states. Preserve this baseline when changing shared token extraction,
-  relations, IPC, or model loading; new v3 features must not affect v2 outputs.
-  Verify output parity against the pre-change v2 with identical checkpoint
-  weights when touching these paths; successful checkpoint loading alone is
-  insufficient.
+  game states. With `v3_behavior=False`, legality, the token features and
+  relation planes supplied to v2, and v2 outputs stay identical; the raw
+  `GameState` layout may change underneath. New v3 features must not affect v2.
+  `tests/test_v2_parity.py` enforces this and must pass without regenerating
+  its fixture; regenerate it only for a v2 behavior change the user approved.
+  Its random games reach every decision phase but not every situation, so when
+  a change targets a specific situation, also compare v2 outputs there before
+  and after.
 - Outside the locked v2 baseline, backward compatibility is not a requirement:
   old model APIs, checkpoints, and configs may break. Update active consumers
   together when contracts change.
@@ -30,7 +33,8 @@
 - `README.md` provides navigation and launch commands. Consult `VECTORS.md`
   and the token spec for the model being changed (`token-data.md` for v2,
   `token-data-v3.md` for v3) as needed, checking their claims against current
-  code.
+  code. `train/PIPELINE.md` lists where search, self-play targets, and training
+  depart from textbook AlphaZero; read it before changing or diagnosing them.
   Read files relevant to the task; these references are not a mandatory tour.
 
 ## Boundaries worth preserving
@@ -51,8 +55,8 @@ affected producers, consumers, tests, and documentation together.
   Phase handlers assume legal actions. Engine/MCTS use sparse phase-local
   actions; NN/eval/trainer boundaries use dense unified masks and targets.
 - Transformer inputs come from `core/token_data.pyx` and `core/relations.pyx`.
-  Forward calls require relation planes; eval-server IPC transports sparse
-  relation coordinates and materializes dense planes on-device.
+  Forward calls require relations: dense planes (trainer, `NNEvaluator`) or
+  the sparse relation records that eval-server IPC passes straight through.
 - Transformer values and replay/self-play/evaluator values use canonical
   player order. Preserve player identity across the pipeline.
 - When changing model/input/output contracts, follow the active path through

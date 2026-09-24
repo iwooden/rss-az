@@ -37,7 +37,7 @@ class TrainingExample(NamedTuple):
     phase_id: int  # decision phase 0-10 (TB reporting only)
     legal_mask: np.ndarray  # (UNIFIED_LOGIT_DIM,) uint8 — 1 = legal slot
     policy_target: np.ndarray  # (UNIFIED_LOGIT_DIM,) f32 — zero on illegal
-    value_target: np.ndarray  # (num_players,) f32 — canonical A0GB
+    value_target: np.ndarray  # (num_players,) f32 — canonical outcome/A0GB blend
     player_count: int  # actual player count for this state
 
 

@@ -85,6 +85,23 @@ def get_legal_actions(state):
     return result
 
 
+def play_random_decisions(state, seed, max_decisions=5000):
+    """Play uniformly random legal actions until the game ends.
+
+    Yields each chosen action id before applying it, so callers can inspect
+    the decision state. Deterministic for a given engine and seed.
+    """
+    rng = np.random.default_rng(seed)
+    for _ in range(max_decisions):
+        if TURN.get_phase(state) == int(GamePhases.PHASE_GAME_OVER):
+            return
+        actions = get_legal_actions(state)
+        action_id = actions[int(rng.integers(len(actions)))][0]
+        yield action_id
+        DRIVER.apply_action(state, action_id)
+    raise AssertionError(f"random game (seed={seed}) did not end within {max_decisions} decisions")
+
+
 def _legal_action_matches(info, action_type=None, corp_id=None, company_id=None, amount=None):
     if action_type is not None and info.action_type != action_type:
         return False

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
@@ -35,11 +33,11 @@ from core.token_data import (
     get_token_data_batch,
     get_token_widths,
 )
+from tests.phases.conftest import play_random_decisions
 
 
 NUM_PLAYERS = 3
 U_DIM = int(UNIFIED_LOGIT_DIM)
-STATES_NPZ = Path(__file__).with_name("states.npz")
 
 
 @pytest.fixture(scope="module")
@@ -656,11 +654,17 @@ def test_attention_mask_matches_input_attention_rows(
 
 
 def _phase_state_cases() -> list[tuple[str, np.ndarray]]:
-    with np.load(STATES_NPZ, allow_pickle=False) as data:
-        assert int(data["num_players"]) == NUM_PLAYERS
-        phase_names = [str(name) for name in data["phase_names"].tolist()]
-        states = [state.copy() for state in data["states"]]
-    return list(zip(phase_names, states, strict=True))
+    """First state of each decision phase in seeded random games."""
+    states: dict[int, np.ndarray] = {}
+    for seed in range(10):
+        state = GameState(NUM_PLAYERS)
+        state.initialize_game(NUM_PLAYERS, seed=seed)
+        for _ in play_random_decisions(state, seed):
+            states.setdefault(get_decision_phase_py(state), state._array.copy())
+        if len(states) == len(DecisionPhase):
+            break
+    assert len(states) == len(DecisionPhase), f"random games reached only phases {sorted(states)}"
+    return [(DecisionPhase(p).name.removeprefix("DPHASE_"), states[p]) for p in sorted(states)]
 
 
 def _token_buffer_for_state(state: GameState) -> torch.Tensor:

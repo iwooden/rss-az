@@ -232,7 +232,8 @@ class TrainingConfig:
 
     # --- Terminal reward blending ---
     # Blend between rank-based rewards (1.0) and net-worth-margin rewards (0.0).
-    # Default 0.5 = equal blend. Set to 1.0 for pure [-1, 0, +1] rank rewards.
+    # Default 0.75 favors rank. Set to 1.0 for pure rank rewards (evenly spaced
+    # in [-1, +1]).
     terminal_blend: float = 0.75
 
     # --- Replay Buffer ---
