@@ -603,8 +603,9 @@ class RSSTransformerNet(nn.Module):
         # Fixed company/corp row order supplies identity without extra input data.
         self.company_id_embed = nn.Embedding(num_companies, d)
         self.corp_id_embed = nn.Embedding(num_corps, d)
-        # Per-type additive embedding for every token. Added
-        # post-projection in ``_project_tokens`` so the trunk still sees a
+        # Per-type additive embedding for every token. Added after relation
+        # input mixing so messages depend on projected features and entity
+        # identities, while the trunk still sees a
         # type-distinct vector even when a token's feature slice is all-zero
         # (e.g. the DIVIDEND context token outside DIVIDENDS, or the owned-
         # company field of a player with no companies). Without this, zero
@@ -614,7 +615,7 @@ class RSSTransformerNet(nn.Module):
         # all instances of a type (36 companies, 8 corps, N players).
         self.type_embeds = nn.Embedding(len(_TokenType), d)
         # Static ``(cfg.num_tokens,)`` type-id lookup. Built once here so
-        # ``_project_tokens`` can do a single indexed gather against
+        # ``forward`` can do a single indexed gather against
         # ``type_embeds``. Registered as a buffer so ``.to(device)`` carries
         # it along. Must match the concat order inside ``_project_tokens``.
         type_ids = torch.empty(self._num_tokens, dtype=torch.long)
@@ -1113,8 +1114,8 @@ class RSSTransformerNet(nn.Module):
     def _project_tokens(self, x: torch.Tensor) -> torch.Tensor:
         """Project raw token features to d_model via type-specific projections.
 
-        Token rows receive a learned token-type embed after projection, and
-        corp rows also receive learned row-order corp ID embeds. Entity
+        Company and corp rows receive learned row-order ID embeddings here;
+        token-type embeddings are added in forward after relation mixing. Entity
         ownership/share/presidency reference tails are intentionally excluded
         from projection because the same relations supply input messages and
         attention biases. Other entity IDs, active-entity refs, and phase refs are
@@ -1148,12 +1149,8 @@ class RSSTransformerNet(nn.Module):
             corp_tokens,                                                                # (B, 8, d)
             self._project_player_tokens(x),                                              # (B, N, d)
         ]
-        # Additive per-type embedding broadcast over the batch. A single
-        # indexed gather against ``type_embeds`` gives every token a
-        # type-distinct signal even when its feature slice is all-zero.
-        input_tokens = torch.cat(input_parts, dim=1)                                     # (B, cfg.num_tokens, d)
-        type_embeds = self._match_dtype_device(self.type_embeds(self._type_ids), input_tokens)
-        return input_tokens + type_embeds                                               # (B, num_tokens, d)
+        # Type embeddings are added in forward, after relation input mixing.
+        return torch.cat(input_parts, dim=1)                                            # (B, cfg.num_tokens, d)
 
     def _active_token(
         self,
@@ -1690,6 +1687,9 @@ class RSSTransformerNet(nn.Module):
             tokens, attn_mask[:, 0, 0, :], relation_flags, sparse_relation_ctx,
             self._static_company_relations, self._company_slice,
         )
+        # Supply recipient type identity to the trunk without feeding type
+        # embeddings into the relation messages. Broadcast across the batch.
+        tokens = tokens + self._match_dtype_device(self.type_embeds(self._type_ids), tokens)
 
         for layer_idx, block in enumerate(self.blocks):
             if relation_flags is not None:

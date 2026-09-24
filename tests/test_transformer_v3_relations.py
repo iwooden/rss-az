@@ -96,6 +96,41 @@ def test_zero_edges_are_identity_and_unrelated_tokens_are_unchanged(model):
     assert torch.all((actual - tokens)[recipients].abs().sum(-1) > 0)
 
 
+@pytest.mark.parametrize("sparse", [False, True])
+def test_type_embedding_changes_reach_trunk_without_changing_relation_messages(model, sparse):
+    model.eval()
+    _, visible, dense, coords = _inputs(model)
+    x = torch.randn(2, model.cfg.num_tokens, model.cfg.token_dim)
+    x[:, :, 0] = visible
+    legal = torch.ones(2, UNIFIED_LOGIT_DIM, dtype=torch.bool)
+    mixed, trunk_inputs = [], []
+
+    def capture_mixed(module, args, output):
+        mixed.append(output.detach().clone())
+
+    def capture_trunk_input(module, args):
+        trunk_inputs.append(args[0].detach().clone())
+
+    mixing_hook = model.relation_input_mixing.register_forward_hook(capture_mixed)
+    trunk_hook = model.blocks[0].register_forward_pre_hook(capture_trunk_input)
+    try:
+        with torch.no_grad():
+            model(x, legal, coords if sparse else dense)
+            # Alter only company type identity. Connected recipients must not
+            # receive this change through either dynamic or static relations.
+            delta = torch.zeros_like(model.type_embeds.weight)
+            delta[model._type_ids[model._company_slice.start]] = torch.randn(model.cfg.d_model)
+            model.type_embeds.weight.add_(delta)
+            model(x, legal, coords if sparse else dense)
+    finally:
+        mixing_hook.remove()
+        trunk_hook.remove()
+
+    torch.testing.assert_close(mixed[1], mixed[0], rtol=0, atol=0)
+    expected_delta = delta[model._type_ids].unsqueeze(0).expand_as(trunk_inputs[0])
+    torch.testing.assert_close(trunk_inputs[1] - trunk_inputs[0], expected_delta)
+
+
 def test_degree_scaling_and_independent_gains(model):
     tokens, visible, dense, _ = _inputs(model)
     dense = model._normalize_dense_relations(dense, tokens)
@@ -230,7 +265,8 @@ def test_forward_backward_and_sparse_parity(model, device):
     torch.testing.assert_close(logits, sparse_logits, rtol=rtol, atol=atol)
     torch.testing.assert_close(values, sparse_values, rtol=rtol, atol=atol)
     loss.backward()
-    for parameter in [model.company_id_embed.weight, *model.relation_input_mixing.parameters()]:
+    for parameter in [model.company_id_embed.weight, model.type_embeds.weight,
+                      *model.relation_input_mixing.parameters()]:
         assert parameter.grad is not None
         assert torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0
 
