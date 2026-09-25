@@ -8,6 +8,7 @@ Regressions this catches:
 - relation input-mixing gains routed to a decay group
 - phase-conditioning modulation weights routed to a decay group
 - Muon claiming embedding/anchor tables instead of leaving them to AdamW
+- Muon claiming input projections or output layers instead of AdamW with decay
 - any trainable param orphaned from, or double-claimed by, the optimizer(s)
 """
 
@@ -29,8 +30,10 @@ _NORM_TYPES: tuple[type[nn.Module], ...] = (nn.LayerNorm, nn.RMSNorm)
 def _make_trainer(optimizer: str, *, v3: bool = False) -> Trainer:
     if v3:
         module = _load_model_module("nn/transformer-v3.py")
+        # Default d_model exceeds every raw input width and head output width,
+        # so hidden matrices are exactly those d_model-wide on both sides.
         model = module.RSSTransformerNet(module.TransformerConfig(
-            num_players=NUM_PLAYERS, d_model=32, num_heads=4, num_layers=1,
+            num_players=NUM_PLAYERS, num_layers=1,
         ))
     else:
         model = RSSTransformerNet(
@@ -265,3 +268,43 @@ def test_muon_routes_embedding_params_to_aux_adamw_no_decay_group() -> None:
         assert g["weight_decay"] == 0.0, (
             f"{name} routed to aux AdamW with weight_decay={g['weight_decay']}"
         )
+
+
+def _muon_param_ids(trainer: Trainer) -> set[int]:
+    return {id(p) for g in trainer.optimizer.param_groups for p in g["params"]}
+
+
+def test_v3_muon_claims_exactly_the_hidden_matrices() -> None:
+    trainer = _make_trainer("muon", v3=True)
+    assert trainer._aux_optimizer is not None, "expected Muon to have aux AdamW"
+    model = trainer.model
+    d_model = _load_model_module("nn/transformer-v3.py").TransformerConfig().d_model
+    muon_ids = _muon_param_ids(trainer)
+    aux_groups = list(trainer._aux_optimizer.param_groups)
+
+    io_names: list[str] = []
+    for name, module in model.named_modules():
+        if not isinstance(module, nn.Linear):
+            continue
+        if min(module.weight.shape) >= d_model:
+            assert id(module.weight) in muon_ids, f"hidden layer {name} not on Muon"
+            continue
+        io_names.append(name)
+        assert id(module.weight) not in muon_ids, f"{name} was routed to Muon"
+        g = _group_of(id(module.weight), aux_groups)
+        assert g is not None, f"{name} not routed to aux AdamW"
+        assert g["weight_decay"] == 0.01, f"{name} routed to an undecayed group"
+
+    # Sanity: both kinds are present, including the rank-1 cases.
+    assert "invest_proj" in io_names and "bid_head.2" in io_names
+    assert "invest_pass_head.2" in io_names and "value_head.2" in io_names
+
+
+@pytest.mark.parametrize("v3", [False, True])
+def test_muon_routes_value_output_to_aux_adamw_decay_group(v3: bool) -> None:
+    trainer = _make_trainer("muon", v3=v3)
+    assert trainer._aux_optimizer is not None, "expected Muon to have aux AdamW"
+    value_out = trainer.model.get_submodule("value_head.2").weight
+    assert id(value_out) not in _muon_param_ids(trainer)
+    g = _group_of(id(value_out), list(trainer._aux_optimizer.param_groups))
+    assert g is not None and g["weight_decay"] == 0.01

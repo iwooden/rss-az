@@ -1792,6 +1792,36 @@ class RSSTransformerNet(nn.Module):
         return torch.stack(stats)
 
     # ------------------------------------------------------------------
+    # Optimizer routing
+    # ------------------------------------------------------------------
+
+    def input_output_layers(self) -> list[nn.Module]:
+        """Token input projections and final head Linears.
+
+        Muon targets hidden-layer matrices, so the trainer keeps these on
+        AdamW. Head hidden layers stay Muon-eligible.
+        """
+        heads = [
+            self.invest_auction_head, self.invest_trade_head, self.invest_pass_head,
+            self.closing_company_head, self.closing_pass_head,
+            self.bid_head,
+            self.ipo_corp_head, self.ipo_pass_head, self.par_head,
+            self.dividend_head,
+            self.acq_corp_head, self.acq_pass_head, self.acq_company_head,
+            self.acq_price_head,
+            self.issue_head, self.acq_offer_head,
+            self.value_head,
+        ]
+        return [
+            self.player_proj, self.corp_proj, self.company_proj,
+            self.fi_proj, self.market_info_proj, self.global_info_proj,
+            self.invest_proj, self.auction_proj, self.dividend_proj,
+            self.issue_proj, self.par_proj, self.acq_offer_proj,
+            self.acq_price_proj,
+            *(head[2] for head in heads),
+        ]
+
+    # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
 

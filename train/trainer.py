@@ -170,6 +170,13 @@ class Trainer:
         Uses adjust_lr_fn="match_rms_adamw" (Moonshot) so Muon reuses
         the same LR and weight decay as AdamW — no separate tuning needed.
         """
+        # Input projections read raw features and output layers emit logits
+        # or values; several are rank-1, where orthogonalization only rescales.
+        # Muon's scope is hidden layers, so these go to AdamW with decay.
+        input_output_layers: Any = getattr(self._base_model, "input_output_layers", None)
+        if input_output_layers is None:
+            raise TypeError("Muon requires the model to define input_output_layers()")
+        io_layer_ids = {id(layer) for layer in input_output_layers()}
         muon_params: list[torch.nn.Parameter] = []
         adam_decay: list[torch.nn.Parameter] = []
         adam_no_decay: list[torch.nn.Parameter] = []
@@ -194,7 +201,11 @@ class Trainer:
                 # Newton-Schulz orthogonalization across the stack axis isn't
                 # what Muon means by "matrix." Embedding/anchor tables are
                 # also kept on AdamW per Muon's intended hidden-layer scope.
-                if param.ndim == 2 and not no_weight_decay:
+                if (
+                    param.ndim == 2
+                    and not no_weight_decay
+                    and id(module) not in io_layer_ids
+                ):
                     muon_params.append(param)
                 elif no_weight_decay:
                     adam_no_decay.append(param)

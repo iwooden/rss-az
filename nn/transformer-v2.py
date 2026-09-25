@@ -1633,6 +1633,27 @@ class RSSTransformerNet(nn.Module):
         return scalars
 
     # ------------------------------------------------------------------
+    # Optimizer routing
+    # ------------------------------------------------------------------
+
+    def input_output_layers(self) -> list[nn.Module]:
+        """Raw-feature input projections and the value output Linear.
+
+        Muon targets hidden-layer matrices, so the trainer keeps these on
+        AdamW. Query/key readout projections act on trunk activations and
+        stay Muon-eligible.
+        """
+        return [
+            self.player_proj, self.corp_proj, self.company_proj,
+            self.fi_proj, self.market_info_proj, self.global_info_proj,
+            self.invest_proj, self.auction_proj, self.dividend_proj,
+            self.issue_proj, self.par_proj, self.acq_offer_proj,
+            self.acq_price_proj,
+            self.price_slot_proj,
+            self.value_head[2],
+        ]
+
+    # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
 

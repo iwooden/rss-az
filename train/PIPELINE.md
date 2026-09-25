@@ -92,9 +92,11 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 - **Step-based LR schedule.** Warmup plus cosine decay to `lr_min` spans
   `lr_decay_end_epoch * training_steps_per_epoch` optimizer steps. Because of
   step scaling, `lr_min` arrives after that epoch.
-- **Optimizer and loss.** The default `"muon"` puts 2-D weights on
-  `torch.optim.Muon` (`match_rms_adamw`) and other parameters on an auxiliary
-  AdamW. Both active configs use `"adamw"`. Weight decay skips Embedding,
+- **Optimizer and loss.** The default `"muon"` puts 2-D hidden-layer weights
+  on `torch.optim.Muon` (`match_rms_adamw`) and other parameters on an
+  auxiliary AdamW. Layers listed by the model's `input_output_layers()`
+  (raw-feature input projections and final head Linears) stay on AdamW with
+  decay; policy-head hidden layers remain on Muon. Both active configs use `"adamw"`. Weight decay skips Embedding,
   LayerNorm, and RMSNorm modules; `bias`; `*embeds`; `relation_bias_mult`;
   `relation_gains`; and `phase_mod.weight`. Policy cross-entropy uses masked
   logits and sharpened targets, and value loss is masked MSE. The
