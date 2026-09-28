@@ -484,7 +484,7 @@ Acquisition history:
 
 - `acq_rejections` (raw slot 26). Number of this player's cross-president
   offers rejected during this acquisition phase, divided by
-  `GameConstants.ACQ_REJECTION_CAP` (2). All actual player tokens expose
+  `GameConstants.ACQ_REJECTION_CAP` (1). All actual player tokens expose
   their own count, independent of the active player. Zero means the full
   allowance remains; 1 means exhausted under v3 behavior. Legacy replay
   counts may exceed the cap and are not clipped in token extraction.

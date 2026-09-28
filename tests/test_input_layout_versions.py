@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from core.data import GamePhases
+from core.data import GameConstants, GamePhases
 from core.driver import DRIVER
 from core.state import GameState, get_layout
 import core.token_data_v2 as token_data_v2
@@ -108,7 +108,8 @@ def test_layouts_share_unchanged_features_but_own_their_history_and_movements():
     np.testing.assert_array_equal(v2[54:, :14], v3[54:, :14])
     np.testing.assert_array_equal(v2[54:, 15:26], v3[54:, 15:26])
     np.testing.assert_array_equal(v2[54:, 26:62], v3[54:, 27:63])
-    np.testing.assert_array_equal(v3[54:57, 26], [0, 0.5, 1])
+    # Player p has p rejections; legacy counts above the cap stay unclipped.
+    np.testing.assert_array_equal(v3[54:57, 26], np.arange(3) / int(GameConstants.ACQ_REJECTION_CAP))
 
 
 def test_v2_observations_ignore_acquisition_rejection_history():

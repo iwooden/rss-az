@@ -73,7 +73,7 @@ Stride: **32**. Player `i` lives at `players_offset + i * 32`. Field offsets via
 | 13 | share_buys      | 8 | Per-corp buy counts (this turn) |
 | 21 | share_sells     | 8 | Per-corp sell counts (this turn) |
 | 29 | has_passed      | 1 | `1` once this player has passed in the current phase |
-| 30 | acq_rejections  | 1 | Rejected cross-president offers made by this player in the current acquisition phase. Always tracked; reset at phase exit. V3 blocks further cross-president offers at 2. |
+| 30 | acq_rejections  | 1 | Rejected cross-president offers made by this player in the current acquisition phase. Always tracked; reset at phase exit. V3 blocks further cross-president offers at `ACQ_REJECTION_CAP` (1). |
 | 31 | invest_roundtrip_cap_hits | 1 | Lifetime INVEST cap crossings across all corporations and turns. Preserved when turn-local trade history resets; telemetry only. |
 
 All per-player tracking lives inside one player block, so a single pointer hop reaches everything for player `i`. Presidency is tracked per-corp via `CORP_FIELDS.president_id` (see [Corp block](#corp-block)), not in the player block. Round-trip counts are derived on demand from `min(share_buys, share_sells)` per corp — no dedicated slot for the current-turn count. Lifetime cap hits have their own slot. The generic `has_passed` flag previously lived in the turn block as an auction-specific per-player array; moving it into the player block makes the player block fully self-contained and the turn block fixed-size.

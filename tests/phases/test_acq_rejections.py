@@ -48,6 +48,21 @@ def select_target(state, corp=0, target=TARGET):
     assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_PRICE)
 
 
+def reject_offers_until_cap(state):
+    """Reject full-price offers until the proposer reaches the v3 cap.
+
+    Buyers alternate between the proposer's two corporations, which share one
+    allowance. The seller must own ``TARGET + i`` for each offer ``i``.
+    """
+    for i in range(int(GameConstants.ACQ_REJECTION_CAP)):
+        corp, target = i % 2, TARGET + i
+        CORPS[corp].set_cash(state, 200)
+        select_target(state, corp, target)
+        company = COMPANIES[target]
+        DRIVER.apply_action(state, company.get_high_price() - company.get_low_price())
+        DRIVER.apply_action(state, 0)
+
+
 @pytest.mark.parametrize("v3", [False, True])
 @pytest.mark.parametrize("seller_kind", ["player", "corp"])
 @pytest.mark.parametrize("same_president", [False, True])
@@ -173,6 +188,8 @@ def test_rejections_track_buyer_share_across_corps_and_gate_only_v3(n, v3, selle
         assert company.get_max_rejected_price(clone, n - 1) == price
         assert PLAYERS[n - 1].get_acq_rejections(clone) == 1
     if v3:
+        # Isolate the price threshold from the rejection cap.
+        PLAYERS[n - 1].clear_acq_rejections(state)
         # Even a richer corporation with the same president cannot retry a
         # rejected full-price offer for this company in the same phase.
         if seller_kind == "corp":
@@ -200,6 +217,8 @@ def test_exhausted_prices_remove_targets_and_corps_then_cleanup_resets_history()
     DRIVER.apply_action(state, rejected_price - company.get_low_price())
     DRIVER.apply_action(state, 0)
     assert company.get_max_rejected_price(state, 2) == rejected_price
+    # Isolate the price threshold from the rejection cap until cleanup.
+    PLAYERS[2].clear_acq_rejections(state)
     assert [aid for aid, _ in get_legal_actions(state)] == [0]
 
     # Both selection levels must agree with the price mask.
@@ -210,6 +229,7 @@ def test_exhausted_prices_remove_targets_and_corps_then_cleanup_resets_history()
     assert TARGET not in [aid for aid, _ in get_legal_actions(state)]
     TURN.clear_active_corp(state)
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    PLAYERS[2].increment_acq_rejections(state)
     DRIVER.apply_action(state, 0)
     assert TURN.get_phase(state) == int(GamePhases.PHASE_CLOSING)
     assert all(c.get_max_rejected_price(state, p) == 0
@@ -269,19 +289,15 @@ def test_new_game_has_zero_history_for_all_six_players():
 @pytest.mark.parametrize("n", [3, 6])
 @pytest.mark.parametrize("v3", [False, True])
 @pytest.mark.parametrize("seller_kind", ["player", "corp"])
-def test_two_rejections_close_cross_player_negotiation_only_in_v3(n, v3, seller_kind):
+def test_rejection_cap_closes_cross_player_negotiation_only_in_v3(n, v3, seller_kind):
     state = negotiation_state(n, v3, seller_kind)
     if seller_kind == "corp":
         give_company_to_corp(state, TARGET + 1, 2)
     else:
         give_company_to_player(state, TARGET + 1, 0)
-    for corp, target in ((0, TARGET), (1, TARGET + 1)):
-        CORPS[corp].set_cash(state, 200)
-        select_target(state, corp, target)
-        company = COMPANIES[target]
-        DRIVER.apply_action(state, company.get_high_price() - company.get_low_price())
-        DRIVER.apply_action(state, 0)
-    assert PLAYERS[n - 1].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP)
+    reject_offers_until_cap(state)
+    cap = int(GameConstants.ACQ_REJECTION_CAP)
+    assert PLAYERS[n - 1].get_acq_rejections(state) == cap
     if v3:
         assert [aid for aid, _ in get_legal_actions(state)] == [0]
         # Even a different company is blocked. A different player can still offer.
@@ -298,18 +314,13 @@ def test_two_rejections_close_cross_player_negotiation_only_in_v3(n, v3, seller_
         select_target(state)
         DRIVER.apply_action(state, 0)
         DRIVER.apply_action(state, 0)
-        assert PLAYERS[n - 1].get_acq_rejections(state) == 3
+        assert PLAYERS[n - 1].get_acq_rejections(state) == cap + 1
 
 
 def test_cap_preserves_same_president_player_and_corp_purchases():
     state = negotiation_state()
     give_company_to_player(state, TARGET + 1, 0)
-    for corp, target in ((0, TARGET), (1, TARGET + 1)):
-        CORPS[corp].set_cash(state, 200)
-        select_target(state, corp, target)
-        company = COMPANIES[target]
-        DRIVER.apply_action(state, company.get_high_price() - company.get_low_price())
-        DRIVER.apply_action(state, 0)
+    reject_offers_until_cap(state)
     give_company_to_player(state, 3, 2)
     give_company_to_corp(state, 4, 1)
     DRIVER.apply_action(state, 1)
@@ -319,4 +330,4 @@ def test_cap_preserves_same_president_player_and_corp_purchases():
     DRIVER.apply_action(state, 3)
     DRIVER.apply_action(state, 0)
     assert COMPANIES[3].get_location(state) == int(CompanyLocation.LOC_CORP_ACQ)
-    assert PLAYERS[2].get_acq_rejections(state) == 2
+    assert PLAYERS[2].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP)
