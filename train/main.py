@@ -715,6 +715,15 @@ def _apply_overrides(
             setattr(config, field, val)
 
 
+def _latest_checkpoint_dir(args: argparse.Namespace) -> Path:
+    """Directory searched by ``--resume latest``, with config precedence."""
+    if args.checkpoint_dir:
+        return Path(args.checkpoint_dir)
+    if args.config:
+        return Path(TrainingConfig.from_json(Path(args.config).read_text()).checkpoint_dir)
+    return Path(TrainingConfig.checkpoint_dir)
+
+
 def _resolve_eval_devices(
     config: TrainingConfig,
     training_device: torch.device,
@@ -905,10 +914,10 @@ def main() -> None:
     if args.resume:
         cp_path: Path | None = None
         if args.resume == "latest":
-            cp_dir = args.checkpoint_dir or "checkpoints"
-            cp_path = find_latest_checkpoint(Path(cp_dir))
+            cp_dir = _latest_checkpoint_dir(args)
+            cp_path = find_latest_checkpoint(cp_dir)
             if cp_path is None:
-                print("No checkpoint found, starting from scratch.")
+                print(f"No checkpoint found in {cp_dir}, starting from scratch.")
         else:
             cp_path = Path(args.resume)
 
@@ -1393,6 +1402,7 @@ def main() -> None:
                     f"\n  Buffer size: {len(buffer):,}"
                     f"\n  Trained: {'yes' if did_train else 'no'}"
                     f"\n  Resume with: python -m train --resume latest"
+                    f" --checkpoint-dir {config.checkpoint_dir}"
                 )
                 break
 
