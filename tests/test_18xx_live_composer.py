@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import utils_18xx.live as live_module
+from core.actions import ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT
 from core.driver import DRIVER, STATUS_INVALID_PY as STATUS_INVALID
 from core.data import (
     COMPANY_NAME_TO_ID,
@@ -19,6 +20,7 @@ from entities.corp import CORPS
 from entities.market import MARKET
 from entities.player import PLAYERS
 from entities.turn import TURN
+from mcts.evaluator import CrossPresidentOfferPriorEvaluator
 from tests.phases.conftest import float_corp_for_test
 from tests.phases.helpers.ownership import (
     give_company_to_corp,
@@ -27,7 +29,6 @@ from tests.phases.helpers.ownership import (
 )
 from utils_18xx.live import (
     EvalRequest,
-    _CrossPresidentAcqOfferPriorEvaluator,
     _LiveActionComposer,
     _SearchEngine,
     _acquisition_compatibility_action,
@@ -511,7 +512,7 @@ def _fi_preemption_offer_state_for_prior_test():
 
 def test_cross_president_acq_offer_prior_adapter_equalizes_response_priors():
     state = _cross_president_offer_state_for_prior_test()
-    adapter = _CrossPresidentAcqOfferPriorEvaluator(
+    adapter = CrossPresidentOfferPriorEvaluator(
         _BiasedAcqOfferEvaluator(),
         num_players=3,
         max_players=3,
@@ -537,7 +538,7 @@ def test_cross_president_acq_offer_prior_adapter_equalizes_response_priors():
 
 def test_cross_president_acq_offer_prior_adapter_leaves_fi_priors_unchanged():
     state = _fi_preemption_offer_state_for_prior_test()
-    adapter = _CrossPresidentAcqOfferPriorEvaluator(
+    adapter = CrossPresidentOfferPriorEvaluator(
         _BiasedAcqOfferEvaluator(),
         num_players=3,
         max_players=3,
@@ -1447,7 +1448,7 @@ def _fake_offer_queue_planner(engine, seen, accept_offers=None):
 
         accept = (company, price, corporation) in accept_offers
         action_type = (
-            live_module.ACTION_ACQ_OFFER_ACCEPT
+            ACTION_ACQ_OFFER_ACCEPT
             if accept
             else live_module.ACTION_PASS
         )

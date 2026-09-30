@@ -240,6 +240,11 @@ Compare checkpoints in a small tournament:
   --simulations 200
 ```
 
+Checkpoints trained under different engine rules (e.g. v2 and v3) can play
+together. Games default to the most permissive checkpoint rules, and each
+checkpoint searches under the rules stored in its own config; the startup
+output lists both.
+
 ## Live 18xx.games Play
 
 The live server receives webhook notifications, fetches the game from the

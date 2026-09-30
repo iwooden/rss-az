@@ -32,7 +32,6 @@ import numpy as np
 import torch
 
 from core.actions import (
-    ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_PASS_PY as ACTION_PASS,
 )
 from core.data import (
@@ -41,7 +40,6 @@ from core.data import (
     CorpIndices,
     CORP_NAME_TO_ID,
     CORP_NAMES,
-    DecisionPhase,
     GamePhases,
 )
 from core.driver import (
@@ -55,7 +53,7 @@ from entities.corp import CORPS
 from entities.deck import DECK
 from entities.market import MARKET
 from entities.turn import TURN
-from mcts.evaluator import NNEvaluator
+from mcts.evaluator import CrossPresidentOfferPriorEvaluator, NNEvaluator
 from mcts.node import MCTSNode
 from mcts.search import (
     StatePool,
@@ -65,7 +63,6 @@ from mcts.search import (
     run_search,
 )
 from nn import get_model_input_spec
-from nn.policy_layout import build_action_lut
 from train.analyze_game import (
     _apply_player_names as _apply_analyze_player_names,
     _format_mcts_visits as _format_analyze_mcts_visits,
@@ -1100,121 +1097,6 @@ def _should_track_acq_offer_rejection(action: dict) -> bool:
     )
 
 
-def _is_cross_president_acq_offer_state(state) -> bool:
-    """Return whether ACQ_OFFER is deciding a non-FI cross-president offer."""
-    if TURN.get_phase(state) != GamePhases.PHASE_ACQ_OFFER:
-        return False
-
-    company_id = TURN.get_active_company(state)
-    if company_id < 0:
-        return False
-
-    location = COMPANIES[company_id].get_location(state)
-    return location in (
-        int(CompanyLocation.LOC_PLAYER),
-        int(CompanyLocation.LOC_CORP),
-    )
-
-
-def _equalize_sparse_acq_offer_priors(
-    state,
-    priors: np.ndarray,
-    action_ids: np.ndarray,
-) -> np.ndarray:
-    pass_action = find_legal_action(state, action_type=ACTION_PASS)
-    accept_action = find_legal_action(
-        state,
-        action_type=ACTION_ACQ_OFFER_ACCEPT,
-    )
-    response_mask = np.isin(action_ids, [pass_action, accept_action])
-    if int(response_mask.sum()) != 2:
-        return priors
-
-    adjusted = np.zeros_like(priors, dtype=np.float32)
-    adjusted[response_mask] = 0.5
-    return adjusted
-
-
-def _equalize_dense_acq_offer_priors(
-    state,
-    priors: np.ndarray,
-    row_idx: int,
-    action_lut_np: np.ndarray,
-) -> None:
-    pass_action = find_legal_action(state, action_type=ACTION_PASS)
-    accept_action = find_legal_action(
-        state,
-        action_type=ACTION_ACQ_OFFER_ACCEPT,
-    )
-    slots = action_lut_np[
-        int(DecisionPhase.DPHASE_ACQ_OFFER),
-        np.array([pass_action, accept_action], dtype=np.intp),
-    ]
-    priors[row_idx] = 0.0
-    priors[row_idx, slots] = 0.5
-
-
-class _CrossPresidentAcqOfferPriorEvaluator:
-    """Live-only evaluator adapter that neutralizes cross-president offer priors."""
-
-    def __init__(self, base, *, num_players: int, max_players: int) -> None:
-        self._base = base
-        self._num_players = num_players
-        self._max_players = max_players
-        self._action_lut_np = build_action_lut().numpy()
-        self._scratch_state = None
-
-    def __getattr__(self, name: str):
-        return getattr(self._base, name)
-
-    def evaluate(self, state):
-        priors, values, action_ids, n_legal, phase_id = self._base.evaluate(state)
-        if _is_cross_president_acq_offer_state(state):
-            priors = _equalize_sparse_acq_offer_priors(
-                state,
-                priors,
-                action_ids[:n_legal],
-            )
-        return priors, values, action_ids, n_legal, phase_id
-
-    def evaluate_leaves(
-        self,
-        state_arrays: list[np.ndarray],
-        legal_mask: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        priors, values = self._base.evaluate_leaves(state_arrays, legal_mask)
-        if not state_arrays:
-            return priors, values
-
-        scratch = self._scratch_state
-        if scratch is None:
-            scratch = GameState.from_buffer(
-                state_arrays[0],
-                self._num_players,
-                max_players=self._max_players,
-            )
-            self._scratch_state = scratch
-
-        for row_idx, state_array in enumerate(state_arrays):
-            scratch.rebind(
-                state_array,
-                self._num_players,
-                max_players=self._max_players,
-            )
-            if _is_cross_president_acq_offer_state(scratch):
-                _equalize_dense_acq_offer_priors(
-                    scratch,
-                    priors,
-                    row_idx,
-                    self._action_lut_np,
-                )
-
-        return priors, values
-
-    def evaluate_terminal(self, state):
-        return self._base.evaluate_terminal(state)
-
-
 def _acquisition_compatibility_action(
     game_data: dict,
     session: GameSession,
@@ -2205,7 +2087,7 @@ class _SearchEngine:
     def _live_evaluator_for(self, num_players: int):
         if not getattr(self, "allow_cross_president_offers", False):
             return self._evaluator
-        return _CrossPresidentAcqOfferPriorEvaluator(
+        return CrossPresidentOfferPriorEvaluator(
             self._evaluator,
             num_players=num_players,
             max_players=self.max_players,

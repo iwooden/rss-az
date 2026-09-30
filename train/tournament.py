@@ -15,27 +15,42 @@ Usage:
 
     # Quick comparison of 2 checkpoints
     .venv/bin/python -m train.tournament cp_old.pt,cp_new.pt --simulations 100
+
+Checkpoints trained under different engine rules can share a game. The game
+uses the most permissive checkpoint rules (v3 behavior and cross-president
+offers if any checkpoint was trained with them). Each checkpoint searches under
+its own training rules within the game's: a model trained with same-president
+acquisitions searches only those, and a legacy (v2) model sees legacy
+trade-history lifetime. A model trained without cross-president offers answers
+incoming ones with equal accept/reject priors, as in live play.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import itertools
 import math
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
 
-from core.data import GamePhases
-from core.driver import DRIVER, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
+from core.actions import enumerate_legal_actions_py
+from core.data import MAX_ACTION_SIZE, GamePhases
+from core.driver import (
+    DRIVER,
+    STATUS_GAME_OVER_PY as STATUS_GAME_OVER,
+    STATUS_INVALID_PY as STATUS_INVALID,
+)
 from core.state import GameState, get_layout
 from entities.player import PLAYERS
 from entities.turn import TURN
-from mcts.evaluator import NNEvaluator
+from mcts.evaluator import CrossPresidentOfferPriorEvaluator, NNEvaluator
 from mcts.search import StatePool, run_search
 from nn import get_model_input_spec
 from train.checkpoint import load_model_from_checkpoint
@@ -64,39 +79,136 @@ def _load_model(cp_path: Path, device: torch.device) -> tuple[torch.nn.Module, T
     return model, config, epoch
 
 
+def _model_name(config: TrainingConfig) -> str:
+    """Short model family name, e.g. ``transformer-v3``."""
+    return (config.model_path or "model").rsplit("/", 1)[-1].removesuffix(".py")
+
+
+# ---------------------------------------------------------------------------
+# Engine rules
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EngineRules:
+    """Engine rule flags (runtime-only; not stored in the raw state array)."""
+    v3_behavior: bool
+    acq_same_president: bool
+
+    @classmethod
+    def from_config(cls, config: TrainingConfig) -> EngineRules:
+        return cls(config.v3_behavior, config.acq_same_president)
+
+    def describe(self) -> str:
+        mode = "v3" if self.v3_behavior else "legacy"
+        acq = ("same-president acquisitions" if self.acq_same_president
+               else "cross-president offers")
+        return f"{mode} rules, {acq}"
+
+
+def _resolve_game_rules(
+    entries: list[ModelEntry],
+    v3_behavior: bool | None = None,
+    acq_same_president: bool | None = None,
+) -> EngineRules:
+    """Game rules: explicit overrides, else the most permissive checkpoint's."""
+    trained = [EngineRules.from_config(e.config) for e in entries]
+    return EngineRules(
+        v3_behavior=(any(r.v3_behavior for r in trained)
+                     if v3_behavior is None else v3_behavior),
+        acq_same_president=(all(r.acq_same_president for r in trained)
+                            if acq_same_president is None else acq_same_president),
+    )
+
+
+def _search_rules(game: EngineRules, trained: EngineRules) -> EngineRules:
+    """Rules a checkpoint searches under: its training rules, within the game's.
+
+    Searching same-president only restricts the game's legal actions. Legacy
+    behavior drops v3's cross-president price floors, so it is used only with
+    same-president search; there it differs from v3 only in trade-history
+    lifetime (the rejection floor never applies to a player that makes no
+    cross-president offers).
+    """
+    same_president = game.acq_same_president or trained.acq_same_president
+    return EngineRules(
+        v3_behavior=game.v3_behavior and (trained.v3_behavior or not same_president),
+        acq_same_president=same_president,
+    )
+
+
+# Phases where legacy rules keep trade history; they clear it when INVEST ends.
+_INVEST_ROUND_PHASES = (int(GamePhases.PHASE_INVEST), int(GamePhases.PHASE_BID))
+
+
+def _search_state(
+    state: GameState, rules: EngineRules, num_players: int, max_players: int,
+) -> GameState:
+    """Return ``state`` as seen under ``rules``, copying when they differ."""
+    if (rules.v3_behavior == state.v3_behavior
+            and rules.acq_same_president == state.acq_same_president):
+        return state
+    view = GameState.from_array(
+        state._array, num_players, max_players=max_players,
+        v3_behavior=rules.v3_behavior,
+    )
+    view.acq_same_president = rules.acq_same_president
+    if (state.v3_behavior and not rules.v3_behavior
+            and TURN.get_phase(view) not in _INVEST_ROUND_PHASES):
+        # V3 keeps trade history until the next INVEST.
+        for player_id in range(num_players):
+            PLAYERS[player_id].clear_roundtrip_tracking(view)
+    return view
+
+
+@dataclass
+class ModelPlayer:
+    """How one checkpoint searches in this tournament."""
+    evaluator: Any
+    mcts_config: MCTSConfig
+    rules: EngineRules
+
+
 # ---------------------------------------------------------------------------
 # Game play
 # ---------------------------------------------------------------------------
 
 def _play_game(
-    evaluators: list[NNEvaluator],
+    players: list[ModelPlayer],
     seat_to_model: list[int],
     num_players: int,
     max_players: int,
-    mcts_config: MCTSConfig,
+    game_rules: EngineRules,
     game_seed: int,
     rng: np.random.Generator,
     state_pool: StatePool,
-    v3_behavior: bool = False,
-    acq_same_president: bool = True,
 ) -> list[int]:
     """Play one tournament game. Returns net worths per seat."""
-    state = GameState(num_players, max_players=max_players, v3_behavior=v3_behavior,
-                      acq_same_president=acq_same_president)
+    state = GameState(num_players, max_players=max_players,
+                      v3_behavior=game_rules.v3_behavior,
+                      acq_same_president=game_rules.acq_same_president)
     state.initialize_game(num_players, seed=game_seed, max_players=max_players)
+    legal = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
 
     while TURN.get_phase(state) != GamePhases.PHASE_GAME_OVER:
         active_player = TURN.get_active_player(state)
-        evaluator = evaluators[seat_to_model[active_player]]
+        player = players[seat_to_model[active_player]]
+        search_state = _search_state(state, player.rules, num_players, max_players)
 
-        # Fresh search each move (no subtree reuse — different models)
-        root = run_search(state, evaluator, mcts_config, rng, state_pool=state_pool)
-
-        assert root.legal_actions is not None and root.visit_counts is not None
-        action = int(root.legal_actions[np.argmax(root.visit_counts)])
+        if enumerate_legal_actions_py(search_state, legal) == 1:
+            # Forced under this seat's rules; its own driver would auto-apply it.
+            action = int(legal[0])
+        else:
+            # Fresh search each move (no subtree reuse — different models)
+            root = run_search(search_state, player.evaluator, player.mcts_config,
+                              rng, state_pool=state_pool)
+            assert root.legal_actions is not None and root.visit_counts is not None
+            action = int(root.legal_actions[np.argmax(root.visit_counts)])
 
         history: list[tuple[int, int]] = []
         status = DRIVER.apply_action(state, action, history=history)
+        assert status != STATUS_INVALID, (
+            f"seat {active_player} chose action {action}, illegal under game rules"
+        )
         if status == STATUS_GAME_OVER:
             break
 
@@ -266,37 +378,59 @@ def _format_report(
 # Main
 # ---------------------------------------------------------------------------
 
-def run_tournament(
+def _build_players(
     entries: list[ModelEntry],
     device: torch.device,
     num_players: int,
     max_players: int,
-    mcts_config: MCTSConfig,
-    min_games_per_pair: int,
-    base_seed: int,
-    terminal_rank_weight: float,
-    v3_behavior: bool | None = None,
-    acq_same_president: bool | None = None,
-) -> tuple[list[GameResult], float]:
-    """Run the full tournament. Returns (results, elapsed_seconds)."""
-    if v3_behavior is None:
-        v3_behavior = entries[0].config.v3_behavior
-    if acq_same_president is None:
-        acq_same_president = entries[0].config.acq_same_president
-    input_specs = [get_model_input_spec(e.config) for e in entries]
-    evaluators = [
-        NNEvaluator(
+    game_rules: EngineRules,
+    mcts_configs: list[MCTSConfig],
+    terminal_rank_weights: list[float],
+) -> list[ModelPlayer]:
+    """Build each checkpoint's evaluator and search rules for this game."""
+    players: list[ModelPlayer] = []
+    for e, mcts_config, terminal_rank_weight in zip(
+        entries, mcts_configs, terminal_rank_weights, strict=True,
+    ):
+        input_spec = get_model_input_spec(e.config)
+        evaluator: Any = NNEvaluator(
             e.model,
             device,
             num_players=input_spec.num_players,
             terminal_rank_weight=terminal_rank_weight,
             input_spec=input_spec,
         )
-        for e, input_spec in zip(entries, input_specs, strict=True)
-    ]
+        trained = EngineRules.from_config(e.config)
+        if trained.acq_same_president and not game_rules.acq_same_president:
+            evaluator = CrossPresidentOfferPriorEvaluator(
+                evaluator, num_players=num_players, max_players=max_players,
+            )
+        players.append(ModelPlayer(
+            evaluator, mcts_config, _search_rules(game_rules, trained),
+        ))
+    return players
+
+
+def run_tournament(
+    entries: list[ModelEntry],
+    device: torch.device,
+    num_players: int,
+    max_players: int,
+    mcts_configs: list[MCTSConfig],
+    min_games_per_pair: int,
+    base_seed: int,
+    terminal_rank_weights: list[float],
+    game_rules: EngineRules,
+) -> tuple[list[GameResult], float]:
+    """Run the full tournament. Returns (results, elapsed_seconds)."""
+    players = _build_players(
+        entries, device, num_players, max_players, game_rules,
+        mcts_configs, terminal_rank_weights,
+    )
 
     layout = get_layout(max_players)
-    state_pool = StatePool(2 * (mcts_config.num_simulations + 1), layout.total_size)
+    max_sims = max(c.num_simulations for c in mcts_configs)
+    state_pool = StatePool(2 * (max_sims + 1), layout.total_size)
     rng = np.random.default_rng(base_seed)
 
     schedule = _generate_schedule(len(entries), min_games_per_pair, num_players)
@@ -304,8 +438,18 @@ def run_tournament(
 
     print(f"Tournament: {len(entries)} models, {total_games} games scheduled")
     print(f"  Players/game: {num_players}")
-    print(f"  Simulations/move: {mcts_config.num_simulations}, "
-          f"batch size: {mcts_config.search_batch_size}")
+    print(f"  Game rules: {game_rules.describe()}")
+    for i, (e, player) in enumerate(zip(entries, players, strict=True)):
+        cfg = player.mcts_config
+        price_cap = cfg.max_acq_price_actions or "all"
+        offer_priors = (
+            "; equal cross-president offer priors"
+            if isinstance(player.evaluator, CrossPresidentOfferPriorEvaluator) else ""
+        )
+        print(f"  [{i}] {e.label}: searches {player.rules.describe()}{offer_priors}; "
+              f"{cfg.num_simulations} sims, batch {cfg.search_batch_size}, "
+              f"c_puct {cfg.c_puct}, dirichlet eps {cfg.dirichlet_epsilon}, "
+              f"acq prices {price_cap}")
     print()
 
     results: list[GameResult] = []
@@ -321,10 +465,8 @@ def run_tournament(
 
             t_game = time.perf_counter()
             net_worths = _play_game(
-                evaluators, seat_to_model, num_players, max_players,
-                mcts_config, int(game_seed), rng, state_pool,
-                v3_behavior=v3_behavior,
-                acq_same_president=acq_same_president,
+                players, seat_to_model, num_players, max_players,
+                game_rules, int(game_seed), rng, state_pool,
             )
             ranks = _rank_players(net_worths)
             dt = time.perf_counter() - t_game
@@ -403,11 +545,13 @@ def main() -> None:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--v3-behavior", action=argparse.BooleanOptionalAction, default=None,
-        help="Engine behavior for every seat (default: first checkpoint's config)",
+        help="Game engine behavior (default: v3 if any checkpoint was trained "
+             "with it). Each checkpoint still searches under its own rules.",
     )
     parser.add_argument(
         "--acq-same-president", action=argparse.BooleanOptionalAction, default=None,
-        help="Acquisition scope for every seat (default: first checkpoint's config)",
+        help="Game acquisition scope (default: cross-president offers if any "
+             "checkpoint was trained with them)",
     )
     parser.add_argument("--seed", type=int, default=42,
                         help="Base random seed (default: 42)")
@@ -428,7 +572,7 @@ def main() -> None:
     parser.add_argument(
         "--terminal-blend", type=float, default=None,
         help="Rank vs margin weight for terminal rewards "
-             "(0=margin, 1=rank, default from first checkpoint)",
+             "(0=margin, 1=rank, default from each checkpoint)",
     )
     noise_group = parser.add_mutually_exclusive_group()
     noise_group.add_argument(
@@ -438,7 +582,7 @@ def main() -> None:
     )
     noise_group.add_argument(
         "--dirichlet-epsilon", type=float, default=None,
-        help="Dirichlet noise epsilon (default from checkpoint)",
+        help="Dirichlet noise epsilon (default from each checkpoint)",
     )
     dyn_group = parser.add_mutually_exclusive_group()
     dyn_group.add_argument(
@@ -479,7 +623,7 @@ def main() -> None:
         if ref_config is None:
             ref_config = config
 
-        label = f"epoch {epoch}" if epoch >= 0 else f"model {i}"
+        label = f"{_model_name(config)} " + (f"epoch {epoch}" if epoch >= 0 else f"model {i}")
         entries.append(ModelEntry(cp_path, epoch, model, config, label))
         print(f"  [{i}] {label}: {cp_path.name}")
 
@@ -499,31 +643,30 @@ def main() -> None:
         *(entry.config.effective_max_players for entry in entries),
     )
 
-    # Build MCTS config from first checkpoint + CLI overrides
-    base_mcts = ref_config.to_mcts_config(num_players=tournament_num_players)
-    terminal_blend = (args.terminal_blend if args.terminal_blend is not None
-                      else ref_config.terminal_blend)
-    mcts_config = MCTSConfig(
-        num_simulations=args.simulations,
-        c_puct=base_mcts.c_puct,
-        dirichlet_alpha=base_mcts.dirichlet_alpha,
-        dirichlet_epsilon=(args.dirichlet_epsilon if args.dirichlet_epsilon is not None
-                           else base_mcts.dirichlet_epsilon),
-        dirichlet_dynamic=(args.dirichlet_dynamic if args.dirichlet_dynamic is not None
-                           else base_mcts.dirichlet_dynamic),
-        dirichlet_alpha_numerator=base_mcts.dirichlet_alpha_numerator,
-        num_players=tournament_num_players,
-        search_batch_size=args.search_batch_size,
-        check_nonfinite=base_mcts.check_nonfinite,
-        max_acq_price_actions=base_mcts.max_acq_price_actions,
-    )
+    # Each checkpoint's own search settings, with tournament-wide CLI overrides
+    mcts_configs: list[MCTSConfig] = []
+    terminal_blends: list[float] = []
+    for entry in entries:
+        overrides: dict[str, Any] = {
+            "num_simulations": args.simulations,
+            "search_batch_size": args.search_batch_size,
+        }
+        if args.dirichlet_epsilon is not None:
+            overrides["dirichlet_epsilon"] = args.dirichlet_epsilon
+        if args.dirichlet_dynamic is not None:
+            overrides["dirichlet_dynamic"] = args.dirichlet_dynamic
+        mcts_configs.append(dataclasses.replace(
+            entry.config.to_mcts_config(num_players=tournament_num_players),
+            **overrides,
+        ))
+        terminal_blends.append(args.terminal_blend if args.terminal_blend is not None
+                               else entry.config.terminal_blend)
 
     # Run tournament
     results, elapsed = run_tournament(
-        entries, device, tournament_num_players, tournament_max_players, mcts_config,
-        args.games_per_pair, args.seed, terminal_blend,
-        v3_behavior=args.v3_behavior,
-        acq_same_president=args.acq_same_president,
+        entries, device, tournament_num_players, tournament_max_players, mcts_configs,
+        args.games_per_pair, args.seed, terminal_blends,
+        _resolve_game_rules(entries, args.v3_behavior, args.acq_same_president),
     )
 
     # Build report
