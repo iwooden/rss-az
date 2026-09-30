@@ -247,9 +247,15 @@ output lists both.
 
 ## Live 18xx.games Play
 
-The live server receives webhook notifications, fetches the game from the
-18xx.games API, synchronizes it into this engine, runs MCTS, and posts the
-chosen action back.
+The live server receives webhook notifications, synchronizes the game into
+this engine, runs MCTS, and posts the chosen action back. Each game is
+downloaded from the 18xx.games API once; after that the server follows the
+actions 18xx.games publishes on its MessageBus (the same long-poll updates the
+browser uses), recomputes whose turn it is locally, and only re-downloads when
+the update stream has a gap. Followed games are saved under
+`runtime/game_feeds/` so restarts resume without downloading.
+`--no-message-bus` restores the old behavior of downloading the full game on
+every turn and after every post.
 
 Create a private runtime directory. It is gitignored.
 
@@ -302,6 +308,23 @@ endpoint:
 ```bash
 curl http://localhost:8080/poke/GAME_ID
 ```
+
+Webhooks start following a game automatically. Loopback-only endpoints also
+manage followed games:
+
+```bash
+curl http://localhost:8080/listen                  # followed games and state
+curl -X POST http://localhost:8080/listen/GAME_ID  # download once, then follow
+curl -X POST 'http://localhost:8080/listen/GAME_ID?resync=1'  # force a re-download
+curl -X POST http://localhost:8080/unlisten/GAME_ID
+```
+
+Following a game queues any bot whose turn it currently is, and later queues
+bots whenever they become an acting player or, in the simultaneous
+Acquisition and Closing rounds, whenever another player acts while they are
+still acting. Webhooks are optional for followed games; note that 18xx.games
+only delivers webhooks to `https` URLs on public addresses. Finished games stop being followed automatically; blacklisted
+games are followed but never queued.
 
 The loopback-only eval endpoint can evaluate either a live game or an exported
 18xx.games JSON file without posting an action. File evaluations read a direct

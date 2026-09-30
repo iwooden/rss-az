@@ -6,12 +6,14 @@ from http.client import HTTPMessage
 from utils_18xx.live import (
     AcqOfferTracker,
     EvalRequest,
+    FeedRequest,
     GameBlacklist,
     WebhookHandler,
     default_api_min_interval,
     is_local_request_host,
     is_turn_webhook_text,
     parse_eval_request,
+    parse_feed_request,
     parse_poke_game_id,
 )
 
@@ -283,4 +285,115 @@ def test_manual_eval_is_local_only(monkeypatch):
     handler.do_GET()
 
     assert handler.status_codes == [403]
+    assert work_queue.empty()
+
+
+def test_parse_feed_request():
+    assert parse_feed_request("/listen") == FeedRequest("status")
+    assert parse_feed_request("/listen/12345") == FeedRequest(
+        "listen", game_id="12345",
+    )
+    assert parse_feed_request("/listen/12345?resync=1") == FeedRequest(
+        "listen", game_id="12345", resync=True,
+    )
+    assert parse_feed_request("/unlisten/12345") == FeedRequest(
+        "unlisten", game_id="12345",
+    )
+    assert parse_feed_request("/unlisten") is None
+    assert parse_feed_request("/listen/..%2Fx") is None
+    assert parse_feed_request("/listen/12/extra") is None
+    assert parse_feed_request("/poke/12345") is None
+
+
+class _RecordingFeeds:
+    def __init__(self, known=()):
+        self.calls = []
+        self.known = set(known)
+
+    def listen(self, game_id, *, resync=False):
+        self.calls.append(("listen", game_id, resync))
+
+    def unlisten(self, game_id):
+        self.calls.append(("unlisten", game_id))
+
+    def has_feed(self, game_id):
+        return game_id in self.known
+
+    def notify_webhook(self, bot_name, game_id):
+        self.calls.append(("webhook", bot_name, game_id))
+
+    def status(self):
+        return [{"game_id": game_id} for game_id in sorted(self.known)]
+
+
+def _use_feeds(monkeypatch, feeds, work_queue=None):
+    monkeypatch.setattr(WebhookHandler, "game_feeds", feeds, raising=False)
+    monkeypatch.setattr(
+        WebhookHandler, "work_queue", work_queue or queue.Queue(), raising=False,
+    )
+    monkeypatch.setattr(
+        WebhookHandler, "auth", {"rss-az-1": {"token": "token"}}, raising=False,
+    )
+    monkeypatch.setattr(WebhookHandler, "game_blacklist", None, raising=False)
+
+
+def test_listen_routes_drive_game_feeds(monkeypatch):
+    feeds = _RecordingFeeds(known={"254153"})
+    _use_feeds(monkeypatch, feeds)
+
+    listen = _make_handler("/listen/254153?resync=1")
+    listen.do_POST()
+    unlisten = _make_handler("/unlisten/254153")
+    unlisten.do_GET()
+    status = _make_handler("/listen")
+    status.do_GET()
+
+    assert listen.status_codes == [202]
+    assert unlisten.status_codes == [202]
+    assert status.status_codes == [200]
+    assert json.loads(status.response_body.getvalue()) == {
+        "games": [{"game_id": "254153"}],
+    }
+    assert feeds.calls == [
+        ("listen", "254153", True),
+        ("unlisten", "254153"),
+    ]
+
+
+def test_unlisten_unknown_game_is_404(monkeypatch):
+    feeds = _RecordingFeeds()
+    _use_feeds(monkeypatch, feeds)
+
+    handler = _make_handler("/unlisten/254153")
+    handler.do_POST()
+
+    assert handler.status_codes == [404]
+    assert feeds.calls == []
+
+
+def test_listen_routes_are_local_only_and_need_message_bus(monkeypatch):
+    feeds = _RecordingFeeds()
+    _use_feeds(monkeypatch, feeds)
+    remote = _make_handler("/listen/254153")
+    remote.client_address = ("203.0.113.7", 12345)
+    remote.do_POST()
+    assert remote.status_codes == [403]
+
+    _use_feeds(monkeypatch, None)
+    disabled = _make_handler("/listen/254153")
+    disabled.do_POST()
+    assert disabled.status_codes == [409]
+    assert feeds.calls == []
+
+
+def test_webhook_goes_to_game_feeds_when_enabled(monkeypatch):
+    feeds = _RecordingFeeds()
+    work_queue = queue.Queue()
+    _use_feeds(monkeypatch, feeds, work_queue)
+
+    handler = _make_handler("/webhook/rss-az-1", _turn_webhook_body("254153"))
+    handler.do_POST()
+
+    assert handler.status_codes == [200]
+    assert feeds.calls == [("webhook", "rss-az-1", "254153")]
     assert work_queue.empty()

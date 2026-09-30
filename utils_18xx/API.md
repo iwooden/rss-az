@@ -38,8 +38,50 @@ as a quick reference for maintaining `utils_18xx/api_client.py`,
   `max_players`.
 - `actions`: full action history when `include_actions` is true.
 
+## MessageBus Game Updates
+
+`POST /api/game/:id/action` publishes the accepted action to the MessageBus
+channel `/game/<id>` (`routes/game.rb`, `publish("/game/#{game.id}", **action)`).
+The payload is `engine.raw_actions.last.to_h` plus `_client_id` (the poster's
+browser client id, or null). It matches the action entry later returned by
+`GET /api/game/:id` except for `_client_id` and `created_at` (engine time vs
+DB row time). The browser (`assets/app/view/game_page.rb`) appends a pushed
+action when its `id` is the current action id + 1 and re-fetches the game
+otherwise. `utils_18xx/message_bus.py` and `utils_18xx/game_feed.py` do the
+same for live play.
+
+Protocol (gem `message_bus` 4.2, mounted by `api.rb`, no auth required):
+
+- `POST /message-bus/<client_id>/poll` with a JSON body
+  `{"/game/<id>": <last message id>, ..., "__seq": <n>}`. Any client id works;
+  one poll covers every channel.
+- Last id -1 returns the channel's current position as
+  `[{"global_id": -1, "message_id": -1, "channel": "/__status", "data": {"/game/<id>": <pos>}}]`.
+  Subscribing ahead of the bus also returns a status.
+- Responses are JSON lists of `{global_id, message_id, channel, data}`. Long
+  polls are held for up to 25 seconds; `?dlp=t` answers immediately. The
+  `Dont-Chunk: true` header disables chunked streaming.
+- `lib/bus.rb` keeps a backlog of one message per channel and expires channel
+  positions after two idle days (ids then restart). A poller that falls
+  behind by two or more messages only sees the latest, so consumers must
+  detect action id gaps.
+- Publishing happens after the action's DB lock is released, so concurrent
+  actions (unordered ACQ/CLO rounds) can arrive out of id order.
+- `GET /api/game/:id` drops chat (`message`) actions for users who are not
+  players, so ids in that response can have holes; the bus does not filter.
+- nginx applies no `limit_req` to `/message-bus/`.
+
+The fields the server stores after each action (`acting`, `round`, `turn`,
+`status`, `result`; `routes/game.rb#set_game_state`) are not published.
+`utils_18xx/game_status.rb` recomputes them with the local engine.
+
+## Webhooks
+
 Webhook turn notifications are produced from the `/turn` MessageBus channel in
-`submodules/18xx/queue.rb:99`. The message text is roughly:
+`submodules/18xx/queue.rb`. A user is notified when they become acting
+(`acting - prev` in `routes/game.rb`), so a player who stays acting (for
+example in the simultaneous Acquisition and Closing rounds) gets no webhook.
+The message text is roughly:
 
 ```text
 Your Turn in Rolling Stock Stars "<description>" (<round> <turn>)
@@ -49,6 +91,11 @@ Your Turn in Rolling Stock Stars "<description>" (<round> <turn>)
 `submodules/18xx/lib/hooks.rb` sends custom webhooks as JSON. For Slack/Google
 style destinations the payload is `{ "text": "<@webhook_user_id> ..." }`; for
 Discord it is `{ "content": "...", "allowed_mentions": ... }`.
+
+Webhooks are only sent when `RACK_ENV` is `production` (never from a local
+dev stack). Since upstream commit `7fa03e659` (2026-07-01) the webhook URL
+must be `https` and resolve only to public addresses; other URLs are skipped
+silently.
 
 ## Action Hash Conventions
 

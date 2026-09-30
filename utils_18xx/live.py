@@ -3,6 +3,10 @@
 Receives turn notifications via webhook, fetches game state from the
 18xx.games API, runs MCTS search, and posts the selected move back.
 
+By default each game is downloaded once and then kept current from the
+18xx.games MessageBus (see ``game_feed.py``), which also detects the bots'
+turns; ``--no-message-bus`` restores a full download per turn and per post.
+
 Usage:
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --simulations 800
@@ -10,6 +14,7 @@ Usage:
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --model-output
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --allow-cross-president-offers
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --determinization-count 4
+    .venv/bin/python -m utils_18xx.live --runtime-dir runtime --no-message-bus
 """
 
 from __future__ import annotations
@@ -78,6 +83,7 @@ from .action_mapper import engine_action_to_18xx
 from .api_client import ApiClient, PermanentError, TransientError
 from .action_parser import find_legal_action, get_legal_actions, map_action
 from .auto_actions import attach_expected_auto_actions
+from .game_feed import FEED_DIR_NAME, GameFeedManager, is_valid_game_id
 from .game_session import GameSession, format_state_mismatches
 from .share_ledger import (
     build_share_ownership as _build_share_ownership,
@@ -346,6 +352,32 @@ def parse_eval_request(path: str) -> EvalRequest | None:
         player_index=player_index,
         bot_name=_first_query_value(query, "bot", "bot_name"),
         filename=filename,
+    )
+
+
+@dataclass(frozen=True)
+class FeedRequest:
+    command: str  # "listen", "unlisten", or "status"
+    game_id: str | None = None
+    resync: bool = False
+
+
+def parse_feed_request(path: str) -> FeedRequest | None:
+    """Parse /listen, /listen/<id>[?resync=1], and /unlisten/<id>."""
+    parsed = urlparse(path)
+    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if not path_parts or path_parts[0] not in {"listen", "unlisten"}:
+        return None
+    command = path_parts[0]
+    if len(path_parts) == 1:
+        return FeedRequest("status") if command == "listen" else None
+    if len(path_parts) != 2 or not is_valid_game_id(path_parts[1]):
+        return None
+    resync_s = _first_query_value(parse_qs(parsed.query), "resync")
+    return FeedRequest(
+        command,
+        game_id=path_parts[1],
+        resync=command == "listen" and resync_s in {"1", "true", "yes"},
     )
 
 
@@ -3065,9 +3097,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
     work_queue: queue.Queue  # set by LiveService before serving
     auth: dict[str, dict]  # set by LiveService
     game_blacklist: GameBlacklist | None = None  # set by LiveService
+    game_feeds: GameFeedManager | None = None  # set by LiveService
 
     def do_GET(self):
         logger.info(f"Incoming GET: {self.path}")
+        if self._is_feed_path():
+            if not self._is_local_request():
+                self._send_json(403, {"error": "local_only"})
+                return
+            self._handle_feed()
+            return
         if self._is_poke_path():
             if not self._is_local_request():
                 self._send_json(403, {"error": "local_only"})
@@ -3084,6 +3123,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         logger.info(f"Incoming POST: {self.path}")
+
+        if self._is_feed_path():
+            if not self._is_local_request():
+                self._send_json(403, {"error": "local_only"})
+                return
+            self._handle_feed()
+            return
 
         if self._is_poke_path():
             if not self._is_local_request():
@@ -3172,10 +3218,17 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         logger.info(f"Webhook: bot={bot_name}, game={game_id}")
-        self.work_queue.put((bot_name, game_id))
+        if self.game_feeds is not None:
+            self.game_feeds.notify_webhook(bot_name, game_id)
+        else:
+            self.work_queue.put((bot_name, game_id))
 
         self.send_response(200)
         self.end_headers()
+
+    def _is_feed_path(self) -> bool:
+        parsed = urlparse(self.path)
+        return parsed.path.strip("/").split("/", 1)[0] in {"listen", "unlisten"}
 
     def _is_poke_path(self) -> bool:
         parsed = urlparse(self.path)
@@ -3187,6 +3240,57 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def _is_local_request(self) -> bool:
         return is_local_request_host(str(self.client_address[0]))
+
+    def _handle_feed(self):
+        request = parse_feed_request(self.path)
+        if request is None:
+            self._send_json(
+                400,
+                {
+                    "error": "invalid_listen_request",
+                    "usage": (
+                        "/listen, /listen/<game_id>[?resync=1], "
+                        "/unlisten/<game_id>"
+                    ),
+                },
+            )
+            return
+        feeds = self.game_feeds
+        if feeds is None:
+            self._send_json(409, {"error": "message_bus_disabled"})
+            return
+
+        if request.command == "status":
+            self._send_json(200, {"games": feeds.status()})
+            return
+
+        assert request.game_id is not None
+        if request.command == "unlisten":
+            if not feeds.has_feed(request.game_id):
+                self._send_json(
+                    404, {"error": "not_listening", "game_id": request.game_id},
+                )
+                return
+            feeds.unlisten(request.game_id)
+            logger.info(f"Unlisten: game={request.game_id}")
+            self._send_json(
+                202, {"status": "unlistening", "game_id": request.game_id},
+            )
+            return
+
+        feeds.listen(request.game_id, resync=request.resync)
+        logger.info(f"Listen: game={request.game_id}, resync={request.resync}")
+        response: dict = {
+            "status": "listening",
+            "game_id": request.game_id,
+            "resync": request.resync,
+        }
+        if (
+            self.game_blacklist is not None
+            and self.game_blacklist.contains(request.game_id)
+        ):
+            response["blacklisted"] = True
+        self._send_json(202, response)
 
     def _handle_poke(self):
         game_id = parse_poke_game_id(self.path)
@@ -3341,6 +3445,7 @@ class MoveWorker(threading.Thread):
         auth: dict[str, dict],
         registry: ModelRegistry,
         acq_offer_tracker: AcqOfferTracker | None = None,
+        game_feeds: GameFeedManager | None = None,
     ):
         super().__init__(daemon=True, name="move-worker")
         self._queue = work_queue
@@ -3348,6 +3453,18 @@ class MoveWorker(threading.Thread):
         self._auth = auth
         self._registry = registry
         self._acq_offer_tracker = acq_offer_tracker
+        self._game_feeds = game_feeds
+
+    def _feed_game_data(self, game_id: str) -> dict | None:
+        """Return the listened game's current data, or None if not listened."""
+        if self._game_feeds is None or not self._game_feeds.is_listening(game_id):
+            return None
+        game_data = self._game_feeds.snapshot(game_id)
+        if game_data is None:
+            logger.warning(
+                f"Game feed for {game_id} is not ready; downloading instead"
+            )
+        return game_data
 
     def _fetch_game_data(self, bot_name: str, game_id: str, token: str) -> dict | None:
         try:
@@ -3409,7 +3526,11 @@ class MoveWorker(threading.Thread):
             eval_name = f"eval/{bot_name}"
             token = auth_info["token"]
             assert request.game_id is not None
-            game_data = self._fetch_game_data(eval_name, request.game_id, token)
+            game_data = self._feed_game_data(request.game_id)
+            if game_data is None:
+                game_data = self._fetch_game_data(
+                    eval_name, request.game_id, token,
+                )
             if game_data is None:
                 return
 
@@ -3442,9 +3563,14 @@ class MoveWorker(threading.Thread):
 
     def _process(self, bot_name: str, game_id: str):
         token = self._auth[bot_name]["token"]
+        if self._game_feeds is not None:
+            self._game_feeds.claim_turn(bot_name, game_id)
 
-        # Fetch game data
-        game_data = self._fetch_game_data(bot_name, game_id, token)
+        # Listened games come from the MessageBus feed; others are fetched.
+        game_data = self._feed_game_data(game_id)
+        from_feed = game_data is not None
+        if game_data is None:
+            game_data = self._fetch_game_data(bot_name, game_id, token)
         if game_data is None:
             return
 
@@ -3536,6 +3662,7 @@ class MoveWorker(threading.Thread):
 
             # Post each action (IPO+PAR is a single compound action)
             post_game_data = game_data
+            last_seen_action_id = _next_synthetic_action_id(game_data) - 1
             for post_idx, action in enumerate(api_actions):
                 tracking_action = action
                 post_action = _strip_internal_action_metadata(action)
@@ -3580,13 +3707,29 @@ class MoveWorker(threading.Thread):
                         action,
                     )
 
-            # Wait for the server to process the action before re-fetching
-            time.sleep(5)
-
-            # Re-fetch game data and check if we're still acting
-            game_data = self._fetch_game_data(bot_name, game_id, token)
-            if game_data is None:
-                return
+            # Refresh game data to see whether we are still acting: no webhook
+            # arrives when our own action leaves us acting (e.g. we finish one
+            # phase and open the next).
+            if from_feed:
+                assert self._game_feeds is not None
+                game_data = self._game_feeds.wait_for_posted_actions(
+                    game_id,
+                    bot_user_id,
+                    last_seen_action_id,
+                    len(api_actions),
+                )
+                if game_data is None:
+                    logger.error(
+                        f"[{bot_name}] Game feed for {game_id} did not "
+                        "confirm posted actions"
+                    )
+                    return
+            else:
+                # Wait for the server to process the action before re-fetching
+                time.sleep(5)
+                game_data = self._fetch_game_data(bot_name, game_id, token)
+                if game_data is None:
+                    return
 
             acting = game_data.get("acting", [])
             if not acting:
@@ -3636,6 +3779,7 @@ class LiveService:
         port: int = 8080,
         game_blacklist: GameBlacklist | None = None,
         acq_offer_tracker: AcqOfferTracker | None = None,
+        feed_dir: Path | None = None,
     ):
         self._api = api
         self._auth = auth
@@ -3645,6 +3789,18 @@ class LiveService:
         self._game_blacklist = game_blacklist
         self._acq_offer_tracker = acq_offer_tracker
         self._work_queue: queue.Queue = queue.Queue()
+        self._game_feeds = (
+            GameFeedManager(
+                api,
+                auth,
+                feed_dir,
+                self._work_queue,
+                base_url=api.base_url,
+                game_blacklist=game_blacklist,
+            )
+            if feed_dir is not None
+            else None
+        )
 
     def start(self):
         """Start webhook server and worker thread."""
@@ -3652,6 +3808,7 @@ class LiveService:
         WebhookHandler.work_queue = self._work_queue
         WebhookHandler.auth = self._auth
         WebhookHandler.game_blacklist = self._game_blacklist
+        WebhookHandler.game_feeds = self._game_feeds
 
         # Start worker
         worker = MoveWorker(
@@ -3660,8 +3817,11 @@ class LiveService:
             self._auth,
             self._registry,
             acq_offer_tracker=self._acq_offer_tracker,
+            game_feeds=self._game_feeds,
         )
         worker.start()
+        if self._game_feeds is not None:
+            self._game_feeds.start()
 
         # Start HTTP server (blocks)
         server = HTTPServer((self._host, self._port), WebhookHandler)
@@ -3687,6 +3847,14 @@ class LiveService:
             "Manual eval file URL: "
             f"http://<host>:{self._port}/eval/file/<filename> (reads /tmp)"
         )
+        if self._game_feeds is not None:
+            logger.info(
+                "Game listen URLs: "
+                f"http://<host>:{self._port}/listen[/<game_id>], "
+                f"http://<host>:{self._port}/unlisten/<game_id>"
+            )
+        else:
+            logger.info("MessageBus disabled: downloading games on each turn")
 
         try:
             server.serve_forever()
@@ -3778,6 +3946,16 @@ def main():
             "ACQ offers instead of auto-rejecting them"
         ),
     )
+    parser.add_argument(
+        "--no-message-bus",
+        dest="message_bus",
+        action="store_false",
+        help=(
+            "Download the full game on every turn and after every post "
+            "instead of keeping listened games current from the 18xx.games "
+            "MessageBus"
+        ),
+    )
     compile_group = parser.add_mutually_exclusive_group()
     compile_group.add_argument(
         "--compile",
@@ -3851,6 +4029,7 @@ def main():
         acq_offer_tracker=AcqOfferTracker(
             runtime_dir / ACQ_OFFER_TRACKING_FILE
         ),
+        feed_dir=runtime_dir / FEED_DIR_NAME if args.message_bus else None,
     )
     service.start()
 
