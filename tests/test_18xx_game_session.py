@@ -108,9 +108,16 @@ def test_new_game_sync_uses_initial_extractor_records_for_committed_ids(monkeypa
     assert session.committed_ids == set()
 
 
+def _replay_log(game_id: int) -> dict:
+    """Load a gitignored 18xx.games replay log, skipping when it is absent."""
+    path = Path(__file__).parent / "games_18xx" / "data" / f"{game_id}.json"
+    if not path.exists():
+        pytest.skip(f"18xx replay log {path.name} is not present")
+    return json.loads(path.read_text())
+
+
 def test_extractor_undo_after_message_ignores_chat(tmp_path):
-    game_path = Path(__file__).parent / "games_18xx" / "data" / "223139.json"
-    game_data = json.loads(game_path.read_text())
+    game_data = _replay_log(223139)
     game_data["actions"].extend([
         {
             "type": "message",
@@ -142,6 +149,21 @@ def test_extractor_undo_after_message_ignores_chat(tmp_path):
     records = json.loads(result.stdout)
     assert [record["action_id"] for record in records] == [0]
     assert records[0]["committed_action_ids"] == []
+
+
+def test_v3_session_replays_offers_outside_v3_limits():
+    # 18xx.games accepts cross-president offers below the company maximum
+    # and repeated offers after rejections (game 204324, actions 57-91).
+    game_data = _replay_log(204324)
+    game_data["actions"] = [a for a in game_data["actions"] if a["id"] <= 91]
+    session = GameSession(3, max_players=5, v3_behavior=True)
+
+    state = session.sync(game_data)
+
+    ref = session._last_extract_record
+    game_data["round"], game_data["acting"] = ref["current_round"], ref["acting"]
+    assert session.validate_against_18xx(game_data, state) == []
+    assert state.v3_behavior is True
 
 
 def test_split_followup_replays_18xx_par_price_after_ipo_selection():

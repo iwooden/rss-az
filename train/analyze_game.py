@@ -209,6 +209,7 @@ def _load_18xx_continuation_state(
     # generated continuation.
     state.v3_behavior = v3_behavior
     state.acq_same_president = acq_same_president
+    state.acq_offer_limits = True
     state.allow_positive_income_closing = False
     return state
 

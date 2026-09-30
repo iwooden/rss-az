@@ -123,12 +123,13 @@ def default_api_min_interval(base_url: str) -> float:
     return 0.0
 
 
-def prepare_live_decision_state(state) -> None:
+def prepare_live_decision_state(state, *, acq_same_president: bool) -> None:
     """Set model-side rule flags after 18xx replay synchronization."""
-    # Replay uses acq_same_president=False so historical 18xx cross-president
-    # offers can be consumed. The live model/search policy should still only
-    # consider same-president acquisition offers.
-    state.acq_same_president = True
+    # Replay accepts any recorded 18xx offer: cross-president offers, and
+    # offers outside v3's limits. Decisions use the checkpoint's acquisition
+    # scope and v3's limits.
+    state.acq_same_president = acq_same_president
+    state.acq_offer_limits = True
     state.allow_positive_income_closing = False
 
 
@@ -699,7 +700,16 @@ def _validate_planned_post_state(
         planned_actions,
     )
     session = GameSession(num_players, max_players=max_players)
-    session.sync(synthetic_game_data)
+    replayed_state = session.sync(synthetic_game_data)
+    for _ in range(len(COMPANY_NAMES)):
+        company = _unparable_18xx_ipo_company(session, replayed_state)
+        if company is None:
+            break
+        synthetic_game_data = _game_data_with_synthetic_post_action(
+            synthetic_game_data,
+            _ipo_pass_action(company),
+        )
+        replayed_state = session.sync(synthetic_game_data)
     if _apply_expected_post_auto_actions(
         validation_state,
         synthetic_game_data,
@@ -774,9 +784,15 @@ def _apply_expected_post_auto_action(
             return False
 
     if atype == "pass" and player_idx is not None:
+        # 18xx auto-passes come from Investment share-pass and Closing
+        # close-pass programs. RSS skips Closing when no one must decide, so
+        # a Closing pass may have no counterpart here.
         if phase == GamePhases.PHASE_CLOSING:
             TURN.set_active_player(state, player_idx)
-        elif TURN.get_active_player(state) != player_idx:
+        elif (
+            phase != GamePhases.PHASE_INVEST
+            or TURN.get_active_player(state) != player_idx
+        ):
             return False
 
         try:
@@ -828,6 +844,7 @@ def _auto_advanced_validation_state(
         max_players=max_players,
     )
     validation_state.acq_same_president = state.acq_same_president
+    validation_state.acq_offer_limits = state.acq_offer_limits
     validation_state.v3_behavior = state.v3_behavior
     validation_state.allow_positive_income_closing = (
         state.allow_positive_income_closing
@@ -1242,6 +1259,57 @@ def _dividend_compatibility_action(
     }
 
 
+def _ipo_pass_action(company: str) -> dict:
+    return {"type": "pass", "entity": company, "entity_type": "company"}
+
+
+def _unparable_18xx_ipo_company(session: GameSession, state) -> str | None:
+    """Return the IPO company 18xx waits on that RSS passed as forced.
+
+    18xx.games waits for an explicit pass when a company's owner cannot
+    afford any par price; RSS applies that forced pass automatically.
+    """
+    ref = session._last_extract_record
+    company = ref.get("active_company")
+    if ref.get("current_round") != "IPO" or company not in COMPANY_NAME_TO_ID:
+        return None
+    company_id = COMPANY_NAME_TO_ID[company]
+    if (
+        TURN.get_phase(state) == GamePhases.PHASE_IPO
+        and TURN.get_active_company(state) == company_id
+    ):
+        return None
+    if COMPANIES[company_id].get_location(state) != int(CompanyLocation.LOC_PLAYER):
+        return None
+
+    probe = _clone_live_state(state, TURN.get_num_players(state), state.max_players)
+    TURN.set_phase(probe, int(GamePhases.PHASE_IPO))
+    TURN.set_active_company(probe, company_id)
+    TURN.set_active_player(probe, COMPANIES[company_id].get_owner_id(state))
+    legal_actions = get_legal_actions(probe)
+    if len(legal_actions) != 1 or legal_actions[0][1].action_type != ACTION_PASS:
+        return None
+    return company
+
+
+def _ipo_compatibility_action(
+    game_data: dict,
+    session: GameSession,
+    state,
+    bot_user_id,
+    engine_player_idx: int,
+) -> dict | None:
+    """Return the explicit 18xx IPO pass for a company RSS passed as forced."""
+    if bot_user_id is None or not _bot_is_acting(game_data, bot_user_id):
+        return None
+    company = _unparable_18xx_ipo_company(session, state)
+    if company is None:
+        return None
+    if COMPANIES[COMPANY_NAME_TO_ID[company]].get_owner_id(state) != engine_player_idx:
+        return None
+    return _ipo_pass_action(company)
+
+
 def _acting_engine_player_indices(
     game_data: dict,
     session: GameSession,
@@ -1350,6 +1418,7 @@ def _clone_live_state(state, num_players: int, max_players: int):
     clone.step_mode = state.step_mode
     clone.v3_behavior = state.v3_behavior
     clone.acq_same_president = state.acq_same_president
+    clone.acq_offer_limits = state.acq_offer_limits
     clone.allow_positive_income_closing = state.allow_positive_income_closing
     return clone
 
@@ -1987,10 +2056,18 @@ class _SearchEngine:
         self.device = device
         self.num_simulations = num_simulations
         self.model_output = model_output
-        self.allow_cross_president_offers = allow_cross_president_offers
         self.determinization_count = determinization_count
 
         model, self.config, cp = load_model_from_checkpoint(checkpoint_path, device)
+        # Checkpoints trained with cross-president offers make and answer them
+        # with their own priors. Same-president checkpoints answer them only
+        # with --allow-cross-president-offers, searching from neutral priors.
+        self.allow_cross_president_offers = (
+            allow_cross_president_offers or not self.config.acq_same_president
+        )
+        self.neutral_offer_priors = (
+            allow_cross_president_offers and self.config.acq_same_president
+        )
         self.search_batch_size = _resolve_live_search_batch_size(
             self.config,
             search_batch_size,
@@ -2038,13 +2115,18 @@ class _SearchEngine:
         self._sessions: dict[str, GameSession] = {}
 
         epoch = cp.get("epoch", "?")
+        acquisition_scope = (
+            "same-president" if self.config.acq_same_president else "cross-president"
+        )
         logger.info(
             f"Loaded model epoch {epoch}, supports "
             f"{self.min_players}-{self.max_players} players, "
             f"{num_simulations} sims/move, "
             f"search batch={self.search_batch_size}, "
             f"eval dtype={self.eval_dtype or 'float32'}, "
-            f"cross-president offers={self.allow_cross_president_offers}, "
+            f"v3 behavior={self.config.v3_behavior}, "
+            f"acquisition offers={acquisition_scope}, "
+            f"answers cross-president offers={self.allow_cross_president_offers}, "
             f"determinization_count={self.determinization_count}"
         )
 
@@ -2082,7 +2164,7 @@ class _SearchEngine:
         )
 
     def _live_evaluator_for(self, num_players: int):
-        if not getattr(self, "allow_cross_president_offers", False):
+        if not getattr(self, "neutral_offer_priors", False):
             return self._evaluator
         return CrossPresidentOfferPriorEvaluator(
             self._evaluator,
@@ -2101,7 +2183,9 @@ class _SearchEngine:
         session = self._session_for(game_data)
         synced_state = session.sync(game_data)
         state = _clone_live_state(synced_state, num_players, self.max_players)
-        prepare_live_decision_state(state)
+        prepare_live_decision_state(
+            state, acq_same_president=self.config.acq_same_president,
+        )
 
         if TURN.get_phase(state) == GamePhases.PHASE_GAME_OVER:
             logger.info("Game is over")
@@ -2253,7 +2337,9 @@ class _SearchEngine:
         self.validate_player_count(num_players)
         session = self._session_for(game_data)
         state = session.sync(game_data)
-        prepare_live_decision_state(state)
+        prepare_live_decision_state(
+            state, acq_same_president=self.config.acq_same_president,
+        )
 
         if TURN.get_phase(state) == GamePhases.PHASE_GAME_OVER:
             logger.info("Game is over")
@@ -2367,6 +2453,14 @@ class _SearchEngine:
             )
         if compatibility_action is None:
             compatibility_action = _dividend_compatibility_action(
+                game_data,
+                session,
+                state,
+                bot_user_id,
+                engine_player_idx,
+            )
+        if compatibility_action is None:
+            compatibility_action = _ipo_compatibility_action(
                 game_data,
                 session,
                 state,
@@ -3907,8 +4001,10 @@ def main():
         "--allow-cross-president-offers",
         action="store_true",
         help=(
-            "Let the model/search answer represented pending cross-president "
-            "ACQ offers instead of auto-rejecting them"
+            "Let checkpoints trained with same-president acquisitions answer "
+            "represented pending cross-president ACQ offers, searching from "
+            "neutral accept/reject priors, instead of auto-rejecting them. "
+            "Checkpoints trained with cross-president offers always answer them"
         ),
     )
     parser.add_argument(

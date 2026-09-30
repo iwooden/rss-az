@@ -331,3 +331,21 @@ def test_cap_preserves_same_president_player_and_corp_purchases():
     DRIVER.apply_action(state, 0)
     assert COMPANIES[3].get_location(state) == int(CompanyLocation.LOC_CORP_ACQ)
     assert PLAYERS[2].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP)
+
+
+def test_cleared_offer_limits_accept_recorded_offers_and_keep_history():
+    # 18xx.games replay clears acq_offer_limits because recorded offers need
+    # not satisfy v3's limits. Their rejections still count once limits return.
+    state = negotiation_state()
+    reject_offers_until_cap(state)
+    state.acq_offer_limits = False
+    select_target(state)
+    company = COMPANIES[TARGET]
+    max_offset = company.get_high_price() - company.get_low_price()
+    assert [aid for aid, _ in get_legal_actions(state)] == list(range(max_offset + 1))
+    DRIVER.apply_action(state, 0)
+    assert TURN.get_acq_offer_price(state) == company.get_low_price()
+    DRIVER.apply_action(state, 0)
+    assert PLAYERS[2].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP) + 1
+    state.acq_offer_limits = True
+    assert [aid for aid, _ in get_legal_actions(state)] == [0]

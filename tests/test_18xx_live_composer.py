@@ -23,6 +23,8 @@ from entities.market import MARKET
 from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import CrossPresidentOfferPriorEvaluator
+from phases.acq_select_corp import setup_acquisition_phase_py
+from phases.ipo import setup_ipo_phase_py
 from tests.phases.conftest import float_corp_for_test
 from tests.phases.helpers.ownership import (
     give_company_to_corp,
@@ -53,10 +55,17 @@ from utils_18xx.live import (
 )
 from utils_18xx.game_session import GameSession, StateMismatch
 from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
+from train.config import TrainingConfig
 
-ACQ_PASS_OPENS_CLOSING = (
-    Path(__file__).parent / "games_18xx" / "fixtures" / "acq_pass_opens_closing.json"
-)
+FIXTURES = Path(__file__).parent / "games_18xx" / "fixtures"
+ACQ_PASS_OPENS_CLOSING = FIXTURES / "acq_pass_opens_closing.json"
+IPO_UNPARABLE_COMPANY = FIXTURES / "ipo_unparable_company.json"
+
+
+def _bare_search_engine() -> _SearchEngine:
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.config = TrainingConfig()
+    return engine
 
 
 def _game_data():
@@ -568,7 +577,7 @@ def test_cross_president_acq_offer_prior_adapter_leaves_fi_priors_unchanged():
 def test_search_engine_threads_cross_president_flag_to_acq_compatibility(monkeypatch):
     state = GameState(3)
     state.initialize_game(3, seed=42)
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     engine.allow_cross_president_offers = True
     engine.validate_player_count = lambda num_players: None
     monkeypatch.setattr(engine, "_session_for", lambda game_data: _FakeProcessTurnSession(
@@ -794,7 +803,7 @@ def test_search_engine_retargets_acquisition_before_compatibility_pass(monkeypat
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
     TURN.set_active_player(state, 0)
 
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     engine.allow_cross_president_offers = False
     engine.validate_player_count = lambda num_players: None
     monkeypatch.setattr(engine, "_session_for", lambda game_data: _FakeProcessTurnSession(
@@ -845,7 +854,7 @@ def test_search_engine_plans_bot_offer_queue_before_active_player_check(monkeypa
         0,
     )
 
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     engine.allow_cross_president_offers = True
     engine.validate_player_count = lambda num_players: None
     monkeypatch.setattr(engine, "_session_for", lambda game_data: _FakeProcessTurnSession(
@@ -912,7 +921,7 @@ def test_search_engine_eval_retargets_acquisition_to_selected_actor(monkeypatch)
     TURN.set_active_player(state, 0)
     session = _FakeProcessTurnSession(state, player_ids=[101, 202, 303])
 
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     engine.max_players = 3
     engine.validate_player_count = lambda num_players: None
     monkeypatch.setattr(engine, "_session_for", lambda game_data: session)
@@ -980,7 +989,7 @@ def test_search_engine_eval_prints_each_offer_for_selected_responder(monkeypatch
     }
     monkeypatch.setattr(session, "pending_offers_for_user_id", lambda user_id: offers_by_user.get(str(user_id), []), raising=False)
 
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     engine.max_players = 3
     engine.validate_player_count = lambda num_players: None
     monkeypatch.setattr(engine, "_session_for", lambda game_data: session)
@@ -1058,14 +1067,19 @@ def test_composer_uses_user_id_override_for_engine_player_index():
     assert composer.finish()[0]["entity"] == 202
 
 
-def test_prepare_live_decision_state_restores_model_acquisition_rule():
-    state = GameState(3, acq_same_president=False)
+@pytest.mark.parametrize("acq_same_president", [True, False])
+def test_prepare_live_decision_state_restores_model_acquisition_rules(
+    acq_same_president,
+):
+    state = GameState(3, acq_same_president=not acq_same_president)
     state.initialize_game(3, seed=42)
+    state.acq_offer_limits = False
     state.allow_positive_income_closing = True
 
-    prepare_live_decision_state(state)
+    prepare_live_decision_state(state, acq_same_president=acq_same_president)
 
-    assert state.acq_same_president is True
+    assert state.acq_same_president is acq_same_president
+    assert state.acq_offer_limits is True
     assert state.allow_positive_income_closing is False
 
 
@@ -1246,26 +1260,37 @@ def test_unordered_active_validation_prefers_live_acting_over_extractor_actor():
     assert mismatches == []
 
 
+def _fixture_search_engine(
+    monkeypatch,
+    config: TrainingConfig,
+    choices: list[int],
+) -> _SearchEngine:
+    """Search engine for fixture games whose search replays recorded picks."""
+    engine = _bare_search_engine()
+    engine.config = config
+    engine.min_players, engine.max_players = 3, 5
+    engine.model_output = False
+    engine.allow_cross_president_offers = not config.acq_same_president
+    engine.determinization_count = 1
+    engine._sessions = {}
+    monkeypatch.setattr(engine, "_evaluator", None, raising=False)
+    picks = iter(choices)
+    monkeypatch.setattr(
+        engine,
+        "_search",
+        lambda *args, **kwargs: (next(picks), None, 0.0, None),
+    )
+    return engine
+
+
 def test_planned_acq_pass_into_closing_accepts_any_18xx_closing_actor(monkeypatch):
     # The other players have passed Acquisition, so yernab's offer and pass open
     # Closing. 18xx's current entity there is rss-az-1 (players holding private
     # companies come first) while the engine starts with the lowest closable
     # seat, yernab; both are in 18xx's Closing acting list.
     game_data = json.loads(ACQ_PASS_OPENS_CLOSING.read_text())
-    engine = _SearchEngine.__new__(_SearchEngine)
-    engine.min_players, engine.max_players = 3, 5
-    engine.model_output = False
-    engine.allow_cross_president_offers = False
-    engine.determinization_count = 1
-    engine._sessions = {"4": GameSession(3, max_players=5)}
-    monkeypatch.setattr(engine, "_evaluator", None, raising=False)
     # The live model's picks: OS offers $16 for BY, then yernab passes.
-    choices = iter([3, 7, 10])
-    monkeypatch.setattr(
-        engine,
-        "_search",
-        lambda *args, **kwargs: (next(choices), None, 0.0, None),
-    )
+    engine = _fixture_search_engine(monkeypatch, TrainingConfig(), [3, 7, 10])
 
     actions = engine.process_turn(
         game_data, 0, bot_user_id=1, bot_user_ids={1, 2, 3},
@@ -1282,6 +1307,40 @@ def test_planned_acq_pass_into_closing_accepts_any_18xx_closing_actor(monkeypatc
         },
         {"type": "pass", "entity": 1, "entity_type": "player"},
     ]
+
+
+def test_planned_issue_pass_expects_18xx_to_wait_on_unparable_ipo(monkeypatch):
+    # rss-az-1's pass ends Issue Shares. rss-az-2 cannot afford any par for
+    # HH, so RSS passes it as forced while 18xx waits for an explicit pass.
+    game_data = json.loads(IPO_UNPARABLE_COMPANY.read_text())
+    v3_config = TrainingConfig(v3_behavior=True, acq_same_president=False)
+    engine = _fixture_search_engine(monkeypatch, v3_config, [0])
+
+    actions = engine.process_turn(
+        game_data, 2, bot_user_id=2, bot_user_ids={1, 2, 3},
+    )
+
+    assert actions == [{"type": "pass", "entity": "DA", "entity_type": "corporation"}]
+
+
+def test_bot_posts_explicit_18xx_pass_for_unparable_ipo(monkeypatch):
+    game_data = json.loads(IPO_UNPARABLE_COMPANY.read_text())
+    game_data["actions"].append({
+        "type": "pass",
+        "entity": "DA",
+        "entity_type": "corporation",
+        "id": 195,
+        "user": 2,
+    })
+    game_data["round"], game_data["acting"] = "IPO", [3]
+    v3_config = TrainingConfig(v3_behavior=True, acq_same_president=False)
+    engine = _fixture_search_engine(monkeypatch, v3_config, [])
+
+    actions = engine.process_turn(
+        game_data, 0, bot_user_id=3, bot_user_ids={1, 2, 3},
+    )
+
+    assert actions == [{"type": "pass", "entity": "HH", "entity_type": "company"}]
 
 
 def test_unordered_round_alignment_does_not_pass_bot_player():
@@ -1468,7 +1527,7 @@ def _fake_offer_queue_planner(engine, seen, accept_offers=None):
 
 def test_pending_offer_queue_evaluates_higher_price_first_within_company():
     state = _queued_offer_state()
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     seen = []
     _fake_offer_queue_planner(engine, seen)
 
@@ -1515,7 +1574,7 @@ def test_pending_offer_queue_evaluates_higher_price_first_within_company():
 
 def test_pending_offer_queue_accept_clears_remaining_same_company_offers():
     state = _queued_offer_state()
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     seen = []
     _fake_offer_queue_planner(
         engine,
@@ -1567,7 +1626,7 @@ def test_pending_offer_queue_accept_clears_remaining_same_company_offers():
 
 def test_pending_offer_queue_auto_rejects_proposer_at_rejection_limit():
     state = _queued_offer_state()
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
 
     def fail_plan(*args, **kwargs):
         raise AssertionError("MCTS should not run for capped proposer")
@@ -1607,7 +1666,7 @@ def test_pending_offer_queue_auto_rejects_proposer_at_rejection_limit():
 
 def test_pending_offer_queue_uses_working_rejection_count_within_batch():
     state = _queued_offer_state()
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     seen = []
     _fake_offer_queue_planner(engine, seen)
 
@@ -1763,7 +1822,7 @@ def _single_dividend_engine_state():
 
 
 def _single_dividend_engine():
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     engine.model_output = False
     engine.max_players = 3
     return engine
@@ -1814,6 +1873,71 @@ def test_live_planning_validates_post_action_state(monkeypatch):
     assert calls[0][3] == {"num_players": 3, "max_players": 3}
 
 
+def test_live_planning_stops_after_cross_president_offer(monkeypatch):
+    # The offer waits in ACQ_OFFER for the seller, so it is posted alone even
+    # though the bot could still buy its own company.
+    state = GameState(3, acq_same_president=False, v3_behavior=True)
+    state.initialize_game(3, seed=42)
+    target, own = 14, 3
+    float_corp_for_test(state, corp_id=0, company_id=0, player_id=0, par_index=10)
+    CORPS[0].set_cash(state, COMPANIES[target].get_high_price() + 20)
+    give_company_to_player(state, target, 1)
+    give_company_to_player(state, own, 0)
+    setup_acquisition_phase_py(state)
+    TURN.set_active_player(state, 0)
+    state.step_mode = True
+
+    engine = _bare_search_engine()
+    engine.model_output = False
+    engine.max_players = 3
+    engine.determinization_count = 1
+    monkeypatch.setattr(engine, "_evaluator", None, raising=False)
+    picks = {
+        int(GamePhases.PHASE_ACQ_SELECT_CORP): 1,  # corporation 0
+        int(GamePhases.PHASE_ACQ_SELECT_COMPANY): target,
+    }
+
+    def fake_search(state, num_players, **kwargs):
+        del num_players, kwargs
+        return picks.pop(TURN.get_phase(state)), None, 0.0, None
+
+    monkeypatch.setattr(engine, "_search", fake_search)
+    monkeypatch.setattr(
+        live_module,
+        "_validate_planned_post_state",
+        lambda *args, **kwargs: [],
+    )
+
+    actions = engine._plan_live_actions(
+        state,
+        {
+            "id": 1,
+            "round": "Acquisition",
+            "acting": [101],
+            "players": [
+                {"id": 101, "name": "bot"},
+                {"id": 202, "name": "p2"},
+                {"id": 303, "name": "p3"},
+            ],
+        },
+        bot_player_idx=0,
+        num_players=3,
+        committed_ids=set(),
+        bot_user_id=101,
+    )
+
+    assert actions == [{
+        "type": "offer",
+        "entity": 101,
+        "entity_type": "player",
+        "corporation": CORP_NAMES[0],
+        "company": COMPANY_NAMES[target],
+        "price": COMPANIES[target].get_high_price(),
+    }]
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_OFFER)
+    assert TURN.get_active_player(state) == 1
+
+
 def test_live_planning_skips_post_action_state_validation_in_closing(monkeypatch):
     state = GameState(3)
     state.initialize_game(3, seed=42)
@@ -1822,7 +1946,7 @@ def test_live_planning_skips_post_action_state_validation_in_closing(monkeypatch
     state.step_mode = True
     assert len(live_module.get_legal_actions(state)) == 1
 
-    engine = _SearchEngine.__new__(_SearchEngine)
+    engine = _bare_search_engine()
     engine.model_output = False
     engine.max_players = 3
 
@@ -2104,6 +2228,36 @@ def test_post_validation_applies_expected_program_share_auto_pass():
     assert TURN.get_phase(state) == int(GamePhases.PHASE_INVEST)
     assert TURN.get_active_player(state) == 0
     assert TURN.get_consecutive_passes(state) == 3
+
+
+def test_post_validation_skips_closing_auto_pass_after_rss_skipped_closing():
+    # 18xx auto-passed everyone through Closing; RSS skipped that round and is
+    # already in IPO, where the same player's pass would decline to float.
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    give_company_to_player(state, COMPANY_NAME_TO_ID["MHE"], 1)
+    give_company_to_player(state, COMPANY_NAME_TO_ID["BPM"], 0)
+    setup_ipo_phase_py(state)
+    assert TURN.get_active_player(state) == 1
+    before = state._array.copy()
+
+    applied = _apply_expected_post_auto_actions(
+        state,
+        {"actions": [{
+            "type": "pass",
+            "entity": 202,
+            "entity_type": "player",
+            "auto_actions": [
+                {"type": "pass", "entity": 101, "entity_type": "player"},
+                {"type": "pass", "entity": 202, "entity_type": "player"},
+            ],
+        }]},
+        original_action_count=0,
+        session=cast(GameSession, _FakeSession(player_ids=[101, 202, 303])),
+    )
+
+    assert not applied
+    np.testing.assert_array_equal(state._array, before)
 
 
 def test_compatibility_mismatch_filter_keeps_economic_mismatches():

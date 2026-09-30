@@ -198,6 +198,9 @@ cdef class GameState:
     cdef public bint allow_positive_income_closing
     # General engine behavior switch, independent of NN input layout.
     cdef public bint v3_behavior
+    # Enforce v3's acquisition offer limits (rejection floors, cross-president
+    # maximum price, rejection cap). 18xx.games replay clears it.
+    cdef public bint acq_offer_limits
 
     # Game initialization (note: __cinit__ takes acq_same_president=True)
     cpdef void initialize_game(self, int num_players, int seed=*, int max_players=*)

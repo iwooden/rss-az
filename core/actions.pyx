@@ -572,7 +572,7 @@ cdef inline int _acq_min_price_offset(
     """Apply v3 rejection and cross-president high-price floors to absolute IDs."""
     cdef int minimum = 0
     cdef int loc, seller_player, high_offset
-    if state.v3_behavior:
+    if state.v3_behavior and state.acq_offer_limits:
         minimum = (
             company_max_rejected_price(state, company_id, player_id)
             - COMPANY_LOW_PRICE[company_id] + 1
@@ -632,7 +632,7 @@ cdef inline bint _acq_pair_has_legal_price(
             return False
         if same_pres and corp_president_id(state, owner_id) != player_id:
             return False
-        if (state.v3_behavior
+        if (state.v3_behavior and state.acq_offer_limits
                 and corp_president_id(state, owner_id) != player_id
                 and player_acq_rejections(state, player_id) >= <int>GameConstants.ACQ_REJECTION_CAP):
             return False
@@ -648,7 +648,8 @@ cdef inline bint _acq_pair_has_legal_price(
         owner_id = company_owner_id(state, company_id)
         if same_pres and owner_id != player_id:
             return False
-        if (state.v3_behavior and owner_id != player_id
+        if (state.v3_behavior and state.acq_offer_limits
+                and owner_id != player_id
                 and player_acq_rejections(state, player_id) >= <int>GameConstants.ACQ_REJECTION_CAP):
             return False
         low_price = COMPANY_LOW_PRICE[company_id]

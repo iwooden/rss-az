@@ -153,6 +153,7 @@ def build_snapshot(game, action_id:, action_type:, round_override: nil)
   entity = game.round.current_entity
   active_player_id = nil
   active_corp_name = nil
+  active_company_name = nil
 
   if entity&.player?
     active_player_id = entity.id
@@ -161,6 +162,7 @@ def build_snapshot(game, action_id:, action_type:, round_override: nil)
   elsif entity&.company?
     # IPO round: entity is a Company, the acting player is the owner
     active_player_id = entity.owner.id if entity.owner&.player?
+    active_company_name = entity.sym
   end
 
   {
@@ -174,6 +176,7 @@ def build_snapshot(game, action_id:, action_type:, round_override: nil)
     # rounds (ACQ/CLO) list every player who can still act.
     acting:           game.active_players_id,
     active_corp:      active_corp_name,
+    active_company:   active_company_name,
     players:          snapshot_players(game),
     corporations:     snapshot_corporations(game),
     foreign_investor: snapshot_foreign_investor(game),

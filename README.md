@@ -126,6 +126,11 @@ subtree reuse, including the `acq_same_president` scope flag. Tournament
 acquisition scope defaults to the first checkpoint's config and accepts
 `--[no-]acq-same-president` as an override.
 
+18xx.games does not enforce v3's acquisition offer limits, so its replay
+(`utils_18xx`) clears the `GameState.acq_offer_limits` runtime flag while
+keeping the rest of v3 behavior. Rejections are still recorded, and live
+decisions and analysis continuations restore the limits.
+
 Replay stores raw counters, so newly generated replay can supply either layout.
 Older replay rows saved after INVEST already lost that turn's trade counters;
 the persistent history features cannot be recovered from those rows.
@@ -256,6 +261,13 @@ the update stream has a gap. Followed games are saved under
 `runtime/game_feeds/` so restarts resume without downloading.
 `--no-message-bus` restores the old behavior of downloading the full game on
 every turn and after every post.
+
+Live decisions use the checkpoint's `v3_behavior` and acquisition scope.
+Checkpoints trained with `"acq_same_president": false` make cross-president
+offers, stop planning after posting one, and answer offers made to them with
+their own priors. Same-president checkpoints auto-reject such offers unless
+`--allow-cross-president-offers` is set, which lets search answer them from
+neutral accept/reject priors.
 
 Create a private runtime directory. It is gitignored.
 

@@ -755,6 +755,7 @@ cdef class GameState:
         self.acq_same_president = acq_same_president
         self.allow_positive_income_closing = allow_positive_income_closing
         self.v3_behavior = v3_behavior
+        self.acq_offer_limits = True
 
         if not _alloc:
             # Caller will set _array and _data (used by from_buffer). The

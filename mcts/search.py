@@ -182,6 +182,7 @@ class StatePool:
         "_max_players",
         "_v3_behavior",
         "_acq_same_president",
+        "_acq_offer_limits",
         "_action_lut_np",
         "_legal_scratch",
         "_pending_action_ids_buf",
@@ -202,6 +203,7 @@ class StatePool:
         self._max_players = get_storage_player_capacity(state_size)
         self._v3_behavior = False
         self._acq_same_president = True
+        self._acq_offer_limits = True
         # (phase_id, phase-local action id) → unified-slot LUT. Used both
         # to scatter the dense legal mask per leaf and to gather the sparse
         # prior slice out of the server's dense priors for node.expand.
@@ -448,6 +450,7 @@ def run_search(
         # with the pool so reuse_root searches (without root_state) retain it.
         state_pool._v3_behavior = root_state.v3_behavior
         state_pool._acq_same_president = root_state.acq_same_president
+        state_pool._acq_offer_limits = root_state.acq_offer_limits
 
         # Check if root state is terminal. GameState doesn't expose get_phase
         # directly — the canonical accessor lives on the TURN handle.
@@ -559,6 +562,7 @@ def run_search(
         v3_behavior=state_pool._v3_behavior,
     )
     scratch_gs.acq_same_president = state_pool._acq_same_president
+    scratch_gs.acq_offer_limits = state_pool._acq_offer_limits
 
     if root_priors_out is not None:
         assert root.priors is not None
