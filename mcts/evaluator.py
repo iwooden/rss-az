@@ -8,7 +8,7 @@ softmax priors over legal actions plus canonical-order values.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -30,9 +30,10 @@ from core.actions import (
     get_decision_phase_py,
     enumerate_legal_actions_py,
 )
-from core.data import MAX_ACTION_SIZE, DecisionPhase, GamePhases
+from core.data import MAX_ACTION_SIZE, DecisionPhase, GameConstants, GamePhases
 from core.state import GameState
 from entities.company import COMPANIES, CompanyLocation
+from entities.corp import CORPS
 from entities.player import PLAYERS
 from entities.turn import TURN
 from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
@@ -638,6 +639,25 @@ def is_cross_president_acq_offer_state(state: Any) -> bool:
     )
 
 
+def is_acq_offer_outside_v3_limits(state: Any) -> bool:
+    """Return whether ACQ_OFFER is deciding a cross-president offer v3 forbids.
+
+    V3 players offer cross-president only at the company's high price, and
+    only until one such offer is rejected in the acquisition phase. V3
+    checkpoints never answered other offers; 18xx.games players can make them.
+    """
+    if not is_cross_president_acq_offer_state(state):
+        return False
+
+    company_id = TURN.get_active_company(state)
+    proposer = CORPS[TURN.get_active_corp(state)].get_president_id(state)
+    return (
+        TURN.get_acq_offer_price(state) < COMPANIES[company_id].get_high_price()
+        or PLAYERS[proposer].get_acq_rejections(state)
+        >= int(GameConstants.ACQ_REJECTION_CAP)
+    )
+
+
 def _acq_offer_response_actions(state: Any) -> tuple[int, int]:
     """Return the legal ACQ_OFFER ``(pass, accept)`` action IDs."""
     buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
@@ -681,15 +701,25 @@ def _equalize_dense_acq_offer_priors(
 class CrossPresidentOfferPriorEvaluator:
     """Evaluator adapter that neutralizes cross-president offer priors.
 
-    For models trained with same-president acquisitions only, whose accept /
-    reject priors for cross-president offers are untrained. Search then
-    decides those responses from values alone.
+    By default it covers every cross-president offer, for models trained with
+    same-president acquisitions only. Models trained under v3's offer limits
+    pass ``applies_to=is_acq_offer_outside_v3_limits`` to cover the offers
+    those limits forbid. The priors for these responses are untrained, so
+    search decides them from values alone.
     """
 
-    def __init__(self, base: Any, *, num_players: int, max_players: int) -> None:
+    def __init__(
+        self,
+        base: Any,
+        *,
+        num_players: int,
+        max_players: int,
+        applies_to: Callable[[Any], bool] = is_cross_president_acq_offer_state,
+    ) -> None:
         self._base = base
         self._num_players = num_players
         self._max_players = max_players
+        self._applies_to = applies_to
         self._action_lut_np = build_action_lut().numpy()
         self._scratch_state: GameState | None = None
 
@@ -698,7 +728,7 @@ class CrossPresidentOfferPriorEvaluator:
 
     def evaluate(self, state: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
         priors, values, action_ids, n_legal, phase_id = self._base.evaluate(state)
-        if is_cross_president_acq_offer_state(state):
+        if self._applies_to(state):
             priors = _equalize_sparse_acq_offer_priors(
                 state,
                 priors,
@@ -730,7 +760,7 @@ class CrossPresidentOfferPriorEvaluator:
                 self._num_players,
                 max_players=self._max_players,
             )
-            if is_cross_president_acq_offer_state(scratch):
+            if self._applies_to(scratch):
                 _equalize_dense_acq_offer_priors(
                     scratch,
                     priors,

@@ -265,9 +265,12 @@ every turn and after every post.
 Live decisions use the checkpoint's `v3_behavior` and acquisition scope.
 Checkpoints trained with `"acq_same_president": false` make cross-president
 offers, stop planning after posting one, and answer offers made to them with
-their own priors. Same-president checkpoints auto-reject such offers unless
+their own priors. 18xx.games players can also make offers v3 forbids, such as
+offers below the high price. V3 checkpoints never trained on those, and their
+priors ignore the price, so search answers them from neutral accept/reject
+priors. Same-president checkpoints auto-reject cross-president offers unless
 `--allow-cross-president-offers` is set, which lets search answer them from
-neutral accept/reject priors.
+neutral priors.
 
 Create a private runtime directory. It is gitignored.
 

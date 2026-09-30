@@ -14,6 +14,7 @@ from core.data import (
     CORP_NAME_TO_ID,
     CORP_NAMES,
     DecisionPhase,
+    GameConstants,
     GamePhases,
 )
 from core.state import GameState
@@ -22,7 +23,10 @@ from entities.corp import CORPS
 from entities.market import MARKET
 from entities.player import PLAYERS
 from entities.turn import TURN
-from mcts.evaluator import CrossPresidentOfferPriorEvaluator
+from mcts.evaluator import (
+    CrossPresidentOfferPriorEvaluator,
+    is_acq_offer_outside_v3_limits,
+)
 from phases.acq_select_corp import setup_acquisition_phase_py
 from phases.ipo import setup_ipo_phase_py
 from tests.phases.conftest import float_corp_for_test
@@ -44,6 +48,7 @@ from utils_18xx.live import (
     _closing_compatibility_action,
     _dividend_compatibility_action,
     _filter_compatibility_mismatches,
+    _neutral_offer_prior_condition,
     _resolve_buyable_share,
     _resolve_issuable_share,
     _resolve_sellable_share,
@@ -474,7 +479,7 @@ class _BiasedAcqOfferEvaluator:
         return np.zeros(3, dtype=np.float32)
 
 
-def _cross_president_offer_state_for_prior_test():
+def _cross_president_offer_state_for_prior_test(price=None):
     state = GameState(3, acq_same_president=False)
     state.initialize_game(3, seed=42)
     corp_id = CORP_NAME_TO_ID["PR"]
@@ -492,11 +497,35 @@ def _cross_president_offer_state_for_prior_test():
         state,
         corp_id,
         target_company,
-        COMPANIES[target_company].get_low_price(),
+        COMPANIES[target_company].get_low_price() if price is None else price,
         corp_id,
         1,
     )
     return state
+
+
+def _v3_offer_state_for_prior_test(below_high: int, proposer_rejections: int = 0):
+    high = COMPANIES[COMPANY_NAME_TO_ID["OL"]].get_high_price()
+    state = _cross_president_offer_state_for_prior_test(high - below_high)
+    for _ in range(proposer_rejections):
+        PLAYERS[0].increment_acq_rejections(state)
+    return state
+
+
+def _adapter_response_priors(adapter, state):
+    sparse_priors, _values, _action_ids, _n_legal, _phase_id = adapter.evaluate(
+        state,
+    )
+    dense_priors, _values = adapter.evaluate_leaves(
+        [state._array],
+        np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8),
+    )
+    slots = build_action_lut().numpy()[
+        int(DecisionPhase.DPHASE_ACQ_OFFER),
+        np.array([0, 1], dtype=np.intp),
+    ]
+    np.testing.assert_allclose(dense_priors[0, slots], sparse_priors)
+    return sparse_priors.tolist()
 
 
 def _fi_preemption_offer_state_for_prior_test():
@@ -572,6 +601,84 @@ def test_cross_president_acq_offer_prior_adapter_leaves_fi_priors_unchanged():
         np.array([0, 1], dtype=np.intp),
     ]
     np.testing.assert_allclose(dense_priors[0, slots], [0.9, 0.1])
+
+
+@pytest.mark.parametrize(
+    ("below_high", "proposer_rejections", "outside_limits"),
+    [
+        (0, 0, False),
+        (1, 0, True),
+        (0, int(GameConstants.ACQ_REJECTION_CAP), True),
+    ],
+)
+def test_v3_offer_prior_adapter_equalizes_only_offers_outside_v3_limits(
+    below_high,
+    proposer_rejections,
+    outside_limits,
+):
+    # V3 checkpoints trained on high-price offers from players with no
+    # rejected cross-president offer this phase.
+    state = _v3_offer_state_for_prior_test(below_high, proposer_rejections)
+    adapter = CrossPresidentOfferPriorEvaluator(
+        _BiasedAcqOfferEvaluator(),
+        num_players=3,
+        max_players=3,
+        applies_to=is_acq_offer_outside_v3_limits,
+    )
+
+    assert is_acq_offer_outside_v3_limits(state) == outside_limits
+    expected = [0.5, 0.5] if outside_limits else [0.9, 0.1]
+    np.testing.assert_allclose(_adapter_response_priors(adapter, state), expected)
+
+
+def test_fi_preemption_below_high_price_is_not_outside_v3_limits():
+    state = _fi_preemption_offer_state_for_prior_test()
+    company = COMPANIES[TURN.get_active_company(state)]
+    assert TURN.get_acq_offer_price(state) < company.get_high_price()
+    assert not is_acq_offer_outside_v3_limits(state)
+
+
+@pytest.mark.parametrize(
+    ("acq_same_president", "v3_behavior", "allow_flag", "neutral_low", "neutral_high"),
+    [
+        (True, False, False, False, False),
+        (True, False, True, True, True),
+        (False, True, False, True, False),
+        (False, False, False, False, False),
+    ],
+)
+def test_live_evaluator_neutralizes_offers_checkpoint_never_answered(
+    monkeypatch,
+    acq_same_president,
+    v3_behavior,
+    allow_flag,
+    neutral_low,
+    neutral_high,
+):
+    engine = _bare_search_engine()
+    engine.config = TrainingConfig(
+        acq_same_president=acq_same_president,
+        v3_behavior=v3_behavior,
+    )
+    engine.neutral_offer_condition = _neutral_offer_prior_condition(
+        engine.config,
+        allow_flag,
+    )
+    monkeypatch.setattr(
+        engine, "_evaluator", _BiasedAcqOfferEvaluator(), raising=False,
+    )
+    engine.max_players = 3
+    evaluator = engine._live_evaluator_for(3)
+
+    for state, neutral in (
+        (_v3_offer_state_for_prior_test(below_high=1), neutral_low),
+        (_v3_offer_state_for_prior_test(below_high=0), neutral_high),
+    ):
+        expected = [0.5, 0.5] if neutral else [0.9, 0.1]
+        np.testing.assert_allclose(
+            _adapter_response_priors(evaluator, state),
+            expected,
+        )
 
 
 def test_search_engine_threads_cross_president_flag_to_acq_compatibility(monkeypatch):

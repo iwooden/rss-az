@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import cast
+from typing import Any, Callable, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
@@ -58,7 +58,12 @@ from entities.corp import CORPS
 from entities.deck import DECK
 from entities.market import MARKET
 from entities.turn import TURN
-from mcts.evaluator import CrossPresidentOfferPriorEvaluator, NNEvaluator
+from mcts.evaluator import (
+    CrossPresidentOfferPriorEvaluator,
+    NNEvaluator,
+    is_acq_offer_outside_v3_limits,
+    is_cross_president_acq_offer_state,
+)
 from mcts.node import MCTSNode
 from mcts.search import (
     StatePool,
@@ -145,6 +150,24 @@ def _resolve_live_eval_dtype(config, override: str | None) -> str | None:
     if override == "float32":
         return None
     return override
+
+
+def _neutral_offer_prior_condition(
+    config,
+    allow_cross_president_offers: bool,
+) -> Callable[[Any], bool] | None:
+    """Return which pending offers live search answers from neutral priors.
+
+    Same-president checkpoints never answered cross-president offers, and v3
+    checkpoints answered only offers within v3's limits. Legacy
+    cross-president checkpoints answered every offer.
+    """
+    if config.acq_same_president:
+        return (
+            is_cross_president_acq_offer_state
+            if allow_cross_president_offers else None
+        )
+    return is_acq_offer_outside_v3_limits if config.v3_behavior else None
 
 
 def _nonnegative_int(value: str) -> int:
@@ -2059,14 +2082,16 @@ class _SearchEngine:
         self.determinization_count = determinization_count
 
         model, self.config, cp = load_model_from_checkpoint(checkpoint_path, device)
-        # Checkpoints trained with cross-president offers make and answer them
-        # with their own priors. Same-president checkpoints answer them only
-        # with --allow-cross-president-offers, searching from neutral priors.
+        # Checkpoints trained with cross-president offers make and answer them.
+        # Same-president checkpoints answer them only with
+        # --allow-cross-president-offers. Search answers offers unlike any the
+        # checkpoint trained on from neutral priors.
         self.allow_cross_president_offers = (
             allow_cross_president_offers or not self.config.acq_same_president
         )
-        self.neutral_offer_priors = (
-            allow_cross_president_offers and self.config.acq_same_president
+        self.neutral_offer_condition = _neutral_offer_prior_condition(
+            self.config,
+            allow_cross_president_offers,
         )
         self.search_batch_size = _resolve_live_search_batch_size(
             self.config,
@@ -2118,6 +2143,11 @@ class _SearchEngine:
         acquisition_scope = (
             "same-president" if self.config.acq_same_president else "cross-president"
         )
+        neutral_offers = {
+            None: "none",
+            is_cross_president_acq_offer_state: "cross-president",
+            is_acq_offer_outside_v3_limits: "outside v3 limits",
+        }[self.neutral_offer_condition]
         logger.info(
             f"Loaded model epoch {epoch}, supports "
             f"{self.min_players}-{self.max_players} players, "
@@ -2127,6 +2157,7 @@ class _SearchEngine:
             f"v3 behavior={self.config.v3_behavior}, "
             f"acquisition offers={acquisition_scope}, "
             f"answers cross-president offers={self.allow_cross_president_offers}, "
+            f"neutral offer priors={neutral_offers}, "
             f"determinization_count={self.determinization_count}"
         )
 
@@ -2164,12 +2195,14 @@ class _SearchEngine:
         )
 
     def _live_evaluator_for(self, num_players: int):
-        if not getattr(self, "neutral_offer_priors", False):
+        condition = getattr(self, "neutral_offer_condition", None)
+        if condition is None:
             return self._evaluator
         return CrossPresidentOfferPriorEvaluator(
             self._evaluator,
             num_players=num_players,
             max_players=self.max_players,
+            applies_to=condition,
         )
 
     def evaluate_turn(
@@ -4004,7 +4037,8 @@ def main():
             "Let checkpoints trained with same-president acquisitions answer "
             "represented pending cross-president ACQ offers, searching from "
             "neutral accept/reject priors, instead of auto-rejecting them. "
-            "Checkpoints trained with cross-president offers always answer them"
+            "Checkpoints trained with cross-president offers always answer them, "
+            "from neutral priors when v3 rules forbid the offer"
         ),
     )
     parser.add_argument(
