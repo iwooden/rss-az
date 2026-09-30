@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from typing import cast
 
 import numpy as np
@@ -40,7 +42,6 @@ from utils_18xx.live import (
     _closing_compatibility_action,
     _dividend_compatibility_action,
     _filter_compatibility_mismatches,
-    _planned_post_validation_game_data,
     _resolve_buyable_share,
     _resolve_issuable_share,
     _resolve_sellable_share,
@@ -52,6 +53,10 @@ from utils_18xx.live import (
 )
 from utils_18xx.game_session import GameSession, StateMismatch
 from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
+
+ACQ_PASS_OPENS_CLOSING = (
+    Path(__file__).parent / "games_18xx" / "fixtures" / "acq_pass_opens_closing.json"
+)
 
 
 def _game_data():
@@ -1241,57 +1246,42 @@ def test_unordered_active_validation_prefers_live_acting_over_extractor_actor():
     assert mismatches == []
 
 
-def test_planned_post_validation_preserves_unordered_closing_actors():
-    session = _FakeSession(player_ids=[101, 202, 303])
-    session._last_extract_record = {
-        "current_round": "CLO",
-        "active_player": 303,
-    }
-
-    game_data = _planned_post_validation_game_data(
-        {"round": "Closing", "acting": [101, 202]},
-        cast(GameSession, session),
+def test_planned_acq_pass_into_closing_accepts_any_18xx_closing_actor(monkeypatch):
+    # The other players have passed Acquisition, so yernab's offer and pass open
+    # Closing. 18xx's current entity there is rss-az-1 (players holding private
+    # companies come first) while the engine starts with the lowest closable
+    # seat, yernab; both are in 18xx's Closing acting list.
+    game_data = json.loads(ACQ_PASS_OPENS_CLOSING.read_text())
+    engine = _SearchEngine.__new__(_SearchEngine)
+    engine.min_players, engine.max_players = 3, 5
+    engine.model_output = False
+    engine.allow_cross_president_offers = False
+    engine.determinization_count = 1
+    engine._sessions = {"4": GameSession(3, max_players=5)}
+    monkeypatch.setattr(engine, "_evaluator", None, raising=False)
+    # The live model's picks: OS offers $16 for BY, then yernab passes.
+    choices = iter([3, 7, 10])
+    monkeypatch.setattr(
+        engine,
+        "_search",
+        lambda *args, **kwargs: (next(choices), None, 0.0, None),
     )
 
-    assert game_data["acting"] == [101, 202, 303]
+    actions = engine.process_turn(
+        game_data, 0, bot_user_id=1, bot_user_ids={1, 2, 3},
+    )
 
-
-def test_planned_post_validation_removes_planned_closing_pass_actor():
-    session = _FakeSession(player_ids=[101, 202, 303])
-    session._last_extract_record = {
-        "current_round": "CLO",
-        "active_player": 303,
-    }
-
-    game_data = _planned_post_validation_game_data(
+    assert actions == [
         {
-            "round": "Closing",
-            "acting": [101, 202, 303],
-            "actions": [{
-                "type": "pass",
-                "entity": 202,
-                "entity_type": "player",
-            }],
+            "type": "offer",
+            "entity": 1,
+            "entity_type": "player",
+            "corporation": "OS",
+            "company": "BY",
+            "price": 16,
         },
-        cast(GameSession, session),
-    )
-
-    assert game_data["acting"] == [101, 303]
-
-
-def test_planned_post_validation_narrows_ordered_round_actor():
-    session = _FakeSession(player_ids=[101, 202, 303])
-    session._last_extract_record = {
-        "current_round": "INV",
-        "active_player": 303,
-    }
-
-    game_data = _planned_post_validation_game_data(
-        {"round": "Investment", "acting": [101, 202]},
-        cast(GameSession, session),
-    )
-
-    assert game_data["acting"] == [303]
+        {"type": "pass", "entity": 1, "entity_type": "player"},
+    ]
 
 
 def test_unordered_round_alignment_does_not_pass_bot_player():

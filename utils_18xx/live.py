@@ -715,7 +715,6 @@ def _validate_planned_post_state(
     validation_game_data = _planned_post_validation_game_data(
         synthetic_game_data,
         session,
-        original_action_count=len(game_data.get("actions", [])),
     )
 
     return session.validate_against_18xx(
@@ -728,48 +727,14 @@ def _validate_planned_post_state(
 def _planned_post_validation_game_data(
     synthetic_game_data: dict,
     session: GameSession,
-    *,
-    original_action_count: int = 0,
 ) -> dict:
-    """Return game data with the best available post-action acting surface."""
+    """Return game data with 18xx's round and acting list after planned actions."""
     validation_game_data = dict(synthetic_game_data)
     ref = session._last_extract_record
-    ref_active_player = ref.get("active_player")
-    ref_round = ref.get("current_round") or synthetic_game_data.get("round", "")
-
-    if GameSession._round_stage_key(str(ref_round)) == 2:
-        actors = list(synthetic_game_data.get("acting") or [])
-        planned_actions = synthetic_game_data.get("actions", [])[original_action_count:]
-        passed_actors = {
-            str(action.get("entity"))
-            for action in planned_actions
-            if action.get("type") == "pass"
-            and action.get("entity_type") == "player"
-        }
-        passed_actors.update(
-            str(auto_action.get("entity"))
-            for action in planned_actions
-            for auto_action in action.get("auto_actions", [])
-            if auto_action.get("type") == "pass"
-            and auto_action.get("entity_type") == "player"
-        )
-        if passed_actors:
-            actors = [
-                actor for actor in actors
-                if str(actor) not in passed_actors
-            ]
-        if (
-            ref_active_player is not None
-            and not any(_same_id(ref_active_player, actor) for actor in actors)
-            and str(ref_active_player) not in passed_actors
-        ):
-            actors.append(ref_active_player)
-        validation_game_data["acting"] = actors
-        return validation_game_data
-
-    validation_game_data["acting"] = (
-        [ref_active_player] if ref_active_player is not None else []
+    validation_game_data["round"] = (
+        ref.get("current_round") or synthetic_game_data.get("round", "")
     )
+    validation_game_data["acting"] = list(ref.get("acting") or [])
     return validation_game_data
 
 

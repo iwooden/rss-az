@@ -170,6 +170,9 @@ def build_snapshot(game, action_id:, action_type:, round_override: nil)
     current_round:    game.round.class.short_name,
     turn:             game.turn,
     active_player:    active_player_id,
+    # The server's `acting` list (routes/game.rb#set_game_state); unordered
+    # rounds (ACQ/CLO) list every player who can still act.
+    acting:           game.active_players_id,
     active_corp:      active_corp_name,
     players:          snapshot_players(game),
     corporations:     snapshot_corporations(game),
