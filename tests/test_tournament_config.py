@@ -20,6 +20,8 @@ from train.tournament import (
     EngineRules,
     ModelEntry,
     ModelPlayer,
+    _entry_mcts_config,
+    _parse_checkpoint_spec,
     _resolve_game_rules,
     _resolve_tournament_num_players,
     _search_rules,
@@ -35,6 +37,26 @@ V3_CONFIG = TrainingConfig(
 
 def _entry(path: str, config: TrainingConfig) -> ModelEntry:
     return ModelEntry(Path(path), 0, torch.nn.Identity(), config, path)
+
+
+def test_checkpoint_spec_parses_optional_c_puct_override() -> None:
+    assert _parse_checkpoint_spec(" cp.pt ") == (Path("cp.pt"), None)
+    assert _parse_checkpoint_spec("dir/cp.pt@c_puct=1.2") == (Path("dir/cp.pt"), 1.2)
+    with pytest.raises(ValueError, match="expected c_puct=VALUE"):
+        _parse_checkpoint_spec("cp.pt@sims=10")
+    with pytest.raises(ValueError, match="invalid c_puct value"):
+        _parse_checkpoint_spec("cp.pt@c_puct=high")
+
+
+def test_entry_c_puct_override_beats_checkpoint_setting() -> None:
+    config = TrainingConfig(num_players=3, c_puct_final=1.7)
+    overrides = {"num_simulations": 50}
+    plain = _entry_mcts_config(_entry("cp.pt", config), 3, overrides)
+    entry = ModelEntry(Path("cp.pt"), 0, torch.nn.Identity(), config, "cp", c_puct=1.2)
+    tuned = _entry_mcts_config(entry, 3, overrides)
+    assert (plain.c_puct, plain.num_simulations) == (1.7, 50)
+    assert (tuned.c_puct, tuned.num_simulations) == (1.2, 50)
+    assert overrides == {"num_simulations": 50}
 
 
 def test_tournament_num_players_defaults_to_effective_minimum() -> None:

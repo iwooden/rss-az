@@ -75,7 +75,8 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
   Action sampling and A0GB use unpruned visits.
 - **Outcome/A0GB blend by epoch.** `compute_epoch_config` gives
   `value_blend_alpha = 0` before zero-indexed epoch `value_blend_start_epoch`
-  (10), rising linearly to 1 at `value_blend_end_epoch` (200). Targets are
+  (10), rising linearly to `value_blend_final` (default 1) at
+  `value_blend_end_epoch` (200). Targets are
   `alpha * A0GB + (1 - alpha) * terminal_values`, frozen per replay row.
   Without an `EpochConfig`, they are pure A0GB. The v2 config ramps over epochs
   100-300; the v3 config over 10-200.

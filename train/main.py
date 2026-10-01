@@ -209,6 +209,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--value-blend-start-epoch", type=int)
     parser.add_argument("--value-blend-end-epoch", type=int)
     parser.add_argument(
+        "--value-blend-final", type=float,
+        help="A0GB share of value targets after the blend ramp (default: 1.0)",
+    )
+    parser.add_argument(
         "--terminal-blend", type=float,
         help="Rank vs margin weight for terminal rewards (0=margin, 1=rank, default 0.5)",
     )
@@ -341,7 +345,7 @@ _CLI_FIELDS = (
     "policy_target_temp_anneal_starts", "policy_target_temp_anneal_ends",
     "policy_target_temp_final",
     "c_puct_initial", "c_puct_final", "c_puct_anneal_epochs",
-    "value_blend_start_epoch", "value_blend_end_epoch",
+    "value_blend_start_epoch", "value_blend_end_epoch", "value_blend_final",
     "terminal_blend", "lr_min", "warmup_epochs", "lr_decay_end_epoch",
     "optimizer", "weight_decay", "grad_clip",
     "dirichlet_alpha", "dirichlet_epsilon",

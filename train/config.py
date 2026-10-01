@@ -244,10 +244,12 @@ class TrainingConfig:
 
     # --- Value target blending ---
     # Blend between game outcome (alpha=0) and A0GB (alpha=1).
-    # Pure game outcome for epochs < value_blend_start_epoch,
-    # linear ramp to pure A0GB by value_blend_end_epoch.
+    # Pure game outcome for epochs < value_blend_start_epoch, then a linear
+    # ramp to an A0GB share of value_blend_final by value_blend_end_epoch.
+    # Below 1, game outcomes keep anchoring every target.
     value_blend_start_epoch: int = 10
     value_blend_end_epoch: int = 200
+    value_blend_final: float = 1.0
 
     # --- Terminal reward blending ---
     # Blend between rank-based rewards (1.0) and net-worth-margin rewards (0.0).
@@ -497,6 +499,10 @@ class TrainingConfig:
             raise ValueError(
                 f"value_blend_start_epoch ({self.value_blend_start_epoch}) must be <= "
                 f"value_blend_end_epoch ({self.value_blend_end_epoch})"
+            )
+        if not 0.0 <= self.value_blend_final <= 1.0:
+            raise ValueError(
+                f"value_blend_final must be in [0, 1], got {self.value_blend_final}"
             )
 
         # Terminal blend
@@ -816,10 +822,12 @@ class TrainingConfig:
         if epoch < self.value_blend_start_epoch:
             value_blend_alpha = 0.0
         elif epoch >= self.value_blend_end_epoch:
-            value_blend_alpha = 1.0
+            value_blend_alpha = self.value_blend_final
         else:
             span = self.value_blend_end_epoch - self.value_blend_start_epoch
-            value_blend_alpha = (epoch - self.value_blend_start_epoch) / max(span, 1)
+            value_blend_alpha = self.value_blend_final * (
+                (epoch - self.value_blend_start_epoch) / max(span, 1)
+            )
 
         # MCTS simulation count ramp
         if (self.mcts_sims_start is not None and self.mcts_sims_end is not None

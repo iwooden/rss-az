@@ -16,6 +16,9 @@ Usage:
     # Quick comparison of 2 checkpoints
     .venv/bin/python -m train.tournament cp_old.pt,cp_new.pt --simulations 100
 
+    # One checkpoint at two c_puct values
+    .venv/bin/python -m train.tournament cp.pt@c_puct=1.2,cp.pt@c_puct=1.7
+
 Checkpoints trained under different engine rules can share a game. The game
 uses the most permissive checkpoint rules (v3 behavior and cross-president
 offers if any checkpoint was trained with them). Each checkpoint searches under
@@ -69,6 +72,33 @@ class ModelEntry:
     model: torch.nn.Module
     config: TrainingConfig
     label: str  # short display name
+    c_puct: float | None = None  # per-entry override of the checkpoint's c_puct
+
+
+def _parse_checkpoint_spec(spec: str) -> tuple[Path, float | None]:
+    """Split ``PATH`` or ``PATH@c_puct=VALUE`` into path and c_puct override."""
+    path, sep, override = spec.strip().partition("@")
+    if not sep:
+        return Path(path), None
+    key, _, value = override.partition("=")
+    if key.strip() != "c_puct":
+        raise ValueError(f"unsupported checkpoint override {override!r} (expected c_puct=VALUE)")
+    try:
+        c_puct = float(value)
+    except ValueError:
+        raise ValueError(f"invalid c_puct value {value!r} in {spec!r}") from None
+    if c_puct < 0:
+        raise ValueError(f"c_puct must be >= 0, got {c_puct}")
+    return Path(path), c_puct
+
+
+def _entry_mcts_config(
+    entry: ModelEntry, num_players: int, overrides: dict[str, Any],
+) -> MCTSConfig:
+    """Checkpoint search settings with tournament-wide and per-entry overrides."""
+    if entry.c_puct is not None:
+        overrides = {**overrides, "c_puct": entry.c_puct}
+    return dataclasses.replace(entry.config.to_mcts_config(num_players=num_players), **overrides)
 
 
 def _load_model(cp_path: Path, device: torch.device) -> tuple[torch.nn.Module, TrainingConfig, int]:
@@ -540,7 +570,9 @@ def main() -> None:
     parser.add_argument(
         "checkpoints",
         type=str,
-        help="Comma-separated list of checkpoint file paths",
+        help="Comma-separated list of checkpoint file paths. Append "
+             "@c_puct=VALUE to override an entry's c_puct; the same "
+             "checkpoint may appear with different values.",
     )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
@@ -603,8 +635,13 @@ def main() -> None:
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Parse checkpoint paths
-    cp_paths = [Path(p.strip()) for p in args.checkpoints.split(",")]
+    # Parse checkpoint paths and per-entry overrides
+    try:
+        specs = [_parse_checkpoint_spec(spec) for spec in args.checkpoints.split(",")]
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    cp_paths = [path for path, _ in specs]
     if len(cp_paths) < 2:
         print("Error: need at least 2 checkpoint paths (comma-separated)")
         sys.exit(1)
@@ -618,13 +655,15 @@ def main() -> None:
     entries: list[ModelEntry] = []
     ref_config: TrainingConfig | None = None
 
-    for i, cp_path in enumerate(cp_paths):
+    for i, (cp_path, c_puct) in enumerate(specs):
         model, config, epoch = _load_model(cp_path, device)
         if ref_config is None:
             ref_config = config
 
         label = f"{_model_name(config)} " + (f"epoch {epoch}" if epoch >= 0 else f"model {i}")
-        entries.append(ModelEntry(cp_path, epoch, model, config, label))
+        if c_puct is not None:
+            label += f" c_puct {c_puct:g}"
+        entries.append(ModelEntry(cp_path, epoch, model, config, label, c_puct))
         print(f"  [{i}] {label}: {cp_path.name}")
 
     assert ref_config is not None
@@ -655,10 +694,9 @@ def main() -> None:
             overrides["dirichlet_epsilon"] = args.dirichlet_epsilon
         if args.dirichlet_dynamic is not None:
             overrides["dirichlet_dynamic"] = args.dirichlet_dynamic
-        mcts_configs.append(dataclasses.replace(
-            entry.config.to_mcts_config(num_players=tournament_num_players),
-            **overrides,
-        ))
+        mcts_configs.append(
+            _entry_mcts_config(entry, tournament_num_players, overrides),
+        )
         terminal_blends.append(args.terminal_blend if args.terminal_blend is not None
                                else entry.config.terminal_blend)
 

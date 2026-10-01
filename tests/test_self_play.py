@@ -277,6 +277,17 @@ def test_pruning_config_validation():
         TrainingConfig(forced_playouts_k=-1.0, policy_target_pruning="raw_prior")
 
 
+def test_value_blend_ramps_to_final_share():
+    config = TrainingConfig(
+        value_blend_start_epoch=10, value_blend_end_epoch=20, value_blend_final=0.6,
+    )
+    alphas = [config.compute_epoch_config(e).value_blend_alpha for e in (5, 15, 20, 100)]
+    assert alphas == pytest.approx([0.0, 0.3, 0.6, 0.6])
+    assert TrainingConfig().compute_epoch_config(500).value_blend_alpha == 1.0
+    with pytest.raises(ValueError, match="value_blend_final"):
+        TrainingConfig(value_blend_final=1.5)
+
+
 def test_epoch_player_count_schedule_is_quota_round_robin():
     config = TrainingConfig(num_players=0, min_players=3, max_players=5)
 

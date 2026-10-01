@@ -245,6 +245,10 @@ Compare checkpoints in a small tournament:
   --simulations 200
 ```
 
+Append `@c_puct=VALUE` to a checkpoint path to override its c_puct; the same
+checkpoint can appear twice to compare settings
+(`cp.pt@c_puct=1.2,cp.pt@c_puct=1.7`).
+
 Checkpoints trained under different engine rules (e.g. v2 and v3) can play
 together. Games default to the most permissive checkpoint rules, and each
 checkpoint searches under the rules stored in its own config; the startup

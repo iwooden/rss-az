@@ -486,7 +486,7 @@ class TrainingLogger:
         )
         table.add_row(
             "Value target",
-            f"game outcome \u2192 A0GB "
+            f"game outcome \u2192 {config.value_blend_final:g} A0GB "
             f"(blend epochs {config.value_blend_start_epoch}\u2013{config.value_blend_end_epoch})",
         )
         table.add_row("Epochs", str(config.num_epochs))
