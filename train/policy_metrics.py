@@ -39,6 +39,22 @@ _KEYS = (*_COUNTS, *_MEANS, *_CONDITIONAL)
 _INDEX = {key: i for i, key in enumerate(_KEYS)}
 
 
+def kl_to_prior(dist: np.ndarray, priors: np.ndarray) -> float:
+    """Return KL(dist || priors) in nats over aligned actions.
+
+    Both inputs are normalized in float64. Logarithms floor probabilities at
+    1e-12 so float32 softmax underflow stays finite; zero-mass ``dist``
+    entries contribute zero. Self-play also stores this, for the policy
+    target, as each replay row's priority.
+    """
+    q = dist.astype(np.float64)
+    q /= q.sum()
+    p = priors.astype(np.float64)
+    p /= p.sum()
+    logs = np.log(np.maximum(q, 1e-12)) - np.log(np.maximum(p, 1e-12))
+    return max(0.0, float((q * logs).sum()))
+
+
 @dataclass
 class PolicyMetrics:
     """Small additive payload for worker IPC and epoch aggregation.
@@ -90,8 +106,8 @@ class PolicyMetrics:
             high95, high98 = p_top > 0.95, p_top > 0.98
             target_changed = bool(p[q == q.max()].max() < p_top - 1e-7)
             sharper = not target_changed and entropy[0] < entropy[2] - 1e-7
-            search_kl = max(0.0, float((r * (logs[1] - logs[0])).sum()))
-            target_kl = max(0.0, float((q * (logs[2] - logs[0])).sum()))
+            search_kl = kl_to_prior(r, p)
+            target_kl = kl_to_prior(q, p)
             values = {
                 "decision_count": 1,
                 "search_changed_count": changed,

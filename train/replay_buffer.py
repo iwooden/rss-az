@@ -4,7 +4,8 @@ Dense unified-slot schema — mirrors ``train.self_play.GameRecord``: raw
 compact int16 game states, per-row ``phase_id`` kept purely for per-phase
 TB reporting, dense ``legal_mask`` + ``policy_target`` rows over
 ``UNIFIED_LOGIT_DIM`` unified logit slots, and canonical-order per-player
-``value_target``.
+``value_target``. Each row also carries a sampling priority,
+KL(policy target || unnoised prior), used when prioritized replay is on.
 
 The trainer materializes token and relation inputs per sampled state at
 training time. Keeping replay in compact state form avoids storing derived NN
@@ -56,7 +57,19 @@ class ReplayBuffer:
         *,
         min_players: int = 0,
         max_players: int = 0,
+        priority_fraction: float = 0.0,
+        priority_exponent: float = 0.5,
     ) -> None:
+        if not 0.0 <= priority_fraction < 1.0:
+            raise ValueError(
+                f"priority_fraction must be in [0, 1), got {priority_fraction}"
+            )
+        if priority_exponent < 0:
+            raise ValueError(
+                f"priority_exponent must be >= 0, got {priority_exponent}"
+            )
+        self._priority_fraction = priority_fraction
+        self._priority_exponent = priority_exponent
         self._capacity = capacity
         self._state_size = state_size_int16
         self._max_players = max_players or num_players
@@ -97,6 +110,13 @@ class ReplayBuffer:
         self._value_targets = np.zeros(
             (capacity, self._max_players), dtype=np.float32,
         )
+        # Raw KL priorities; NaN marks rows saved before priorities existed.
+        self._priorities = np.full(capacity, np.nan, dtype=np.float32)
+        # Sampling weights derived from priorities, rebuilt after writes.
+        self._priority_version = 0
+        self._sampler_version = -1
+        self._sampler_rel = np.empty(0, dtype=np.float32)
+        self._sampler_cdf = np.empty(0, dtype=np.float64)
 
     def add_stacked(
         self,
@@ -107,6 +127,7 @@ class ReplayBuffer:
         value_targets: np.ndarray,
         player_counts: np.ndarray | None = None,
         num_players: int | None = None,
+        priorities: np.ndarray | None = None,
     ) -> None:
         """Add pre-stacked arrays directly into the ring buffer.
 
@@ -115,10 +136,19 @@ class ReplayBuffer:
         ``policy_target`` is already zero on slots outside the legal set.
         ``value_targets`` may be actual-width ``(n, num_players)`` or
         max-width ``(n, max_players)``. Padded player slots are zeroed.
+        ``priorities`` are per-row KL(policy target || unnoised prior); rows
+        added without them sample at the average priority.
         """
         n = states.shape[0]
         if n == 0:
             return
+        priorities_arr = (
+            np.full(n, np.nan, dtype=np.float32) if priorities is None
+            else np.asarray(priorities, dtype=np.float32)
+        )
+        if priorities_arr.shape != (n,):
+            raise ValueError(f"priorities shape {priorities_arr.shape} != ({n},)")
+        self._priority_version += 1
         player_counts_arr = self._resolve_player_counts(
             n, value_targets, player_counts, num_players,
         )
@@ -135,6 +165,7 @@ class ReplayBuffer:
             self._legal_masks[:] = legal_masks[tail:]
             self._policy_targets[:] = policy_targets[tail:]
             self._value_targets[:] = padded_value_targets[tail:]
+            self._priorities[:] = priorities_arr[tail:]
             self._size = self._capacity
             self._index = 0
             return
@@ -148,6 +179,7 @@ class ReplayBuffer:
             self._legal_masks[self._index : end] = legal_masks
             self._policy_targets[self._index : end] = policy_targets
             self._value_targets[self._index : end] = padded_value_targets
+            self._priorities[self._index : end] = priorities_arr
         else:
             # Wrap around
             first = self._capacity - self._index
@@ -157,6 +189,7 @@ class ReplayBuffer:
             self._legal_masks[self._index :] = legal_masks[:first]
             self._policy_targets[self._index :] = policy_targets[:first]
             self._value_targets[self._index :] = padded_value_targets[:first]
+            self._priorities[self._index :] = priorities_arr[:first]
 
             remainder = n - first
             self._states[:remainder] = states[first:]
@@ -165,6 +198,7 @@ class ReplayBuffer:
             self._legal_masks[:remainder] = legal_masks[first:]
             self._policy_targets[:remainder] = policy_targets[first:]
             self._value_targets[:remainder] = padded_value_targets[first:]
+            self._priorities[:remainder] = priorities_arr[first:]
 
         self._index = end % self._capacity
         self._size = min(self._size + n, self._capacity)
@@ -226,6 +260,78 @@ class ReplayBuffer:
             padded[i, :actual_int] = value_targets[i, :actual_int]
         return padded
 
+    def _sampling_weights(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return ``(rel, cdf)`` over occupied rows for priority sampling.
+
+        Row weight is ``priority ** exponent``; rows without a priority take
+        the mean weight. ``rel`` is each weight relative to the mean (its
+        prioritized sampling rate versus uniform), ``cdf`` the running sum.
+        """
+        if self._sampler_version != self._priority_version:
+            n = self._size
+            kl = self._priorities[:n].astype(np.float64)
+            known = np.isfinite(kl)
+            weights = np.empty(n, dtype=np.float64)
+            weights[known] = np.power(kl[known], self._priority_exponent)
+            weights[~known] = weights[known].mean() if known.any() else 1.0
+            total = float(weights.sum())
+            if total <= 0.0:
+                weights.fill(1.0)
+                total = float(n)
+            self._sampler_rel = (weights * (n / total)).astype(np.float32)
+            self._sampler_cdf = np.cumsum(weights)
+            self._sampler_version = self._priority_version
+        return self._sampler_rel, self._sampler_cdf
+
+    def _sample_indices(
+        self, batch_size: int, rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Draw batch indices and their importance weights versus uniform.
+
+        Without prioritization this is one uniform draw without replacement
+        and the weights are ``None``. Otherwise ``round(fraction * B)`` rows
+        come from the priority distribution (with replacement) and the rest
+        uniformly. Each row's weight, uniform probability over its mixture
+        probability, makes weighted batch averages estimate uniform ones.
+        """
+        if self._priority_fraction == 0.0:
+            return rng.choice(self._size, size=batch_size, replace=False), None
+        k = round(self._priority_fraction * batch_size)
+        fraction = k / batch_size
+        rel, cdf = self._sampling_weights()
+        uniform = rng.choice(self._size, size=batch_size - k, replace=False)
+        prioritized = np.minimum(
+            np.searchsorted(cdf, rng.random(k) * cdf[-1], side="right"),
+            self._size - 1,
+        )
+        indices = np.concatenate((uniform, prioritized))
+        weights = 1.0 / ((1.0 - fraction) + fraction * rel[indices])
+        return indices, weights.astype(np.float32)
+
+    def priority_stats(self) -> dict[str, float]:
+        """Priority diagnostics for Tensorboard (empty while the buffer is).
+
+        ``priority_kl_mean`` averages known priorities. With prioritization
+        on, ``priority_max_rate`` is the most-sampled row's rate versus
+        uniform and ``priority_ess_fraction`` the effective sample size of
+        the sampling distribution as a share of the buffer.
+        """
+        n = self._size
+        if n == 0:
+            return {}
+        kl = self._priorities[:n]
+        known = np.isfinite(kl)
+        stats = {"priority_unknown_fraction": float(1.0 - known.mean())}
+        if known.any():
+            stats["priority_kl_mean"] = float(kl[known].mean())
+        if self._priority_fraction > 0.0:
+            rel, _ = self._sampling_weights()
+            f = self._priority_fraction
+            rate = (1.0 - f) + f * rel.astype(np.float64)
+            stats["priority_max_rate"] = float(rate.max())
+            stats["priority_ess_fraction"] = float(1.0 / np.mean(rate**2))
+        return stats
+
     def sample(
         self, batch_size: int, rng: np.random.Generator
     ) -> dict[str, torch.Tensor]:
@@ -234,13 +340,18 @@ class ReplayBuffer:
         Relation planes are generated from the sampled compact states rather
         than stored in the ring buffer for transformer-oriented callers.
 
+        ``is_weights`` are the rows' importance weights versus uniform
+        sampling (all 1 without prioritization).
+
         Raises ValueError if batch_size > current buffer size.
         """
         if batch_size > self._size:
             raise ValueError(
                 f"batch_size ({batch_size}) exceeds buffer size ({self._size})"
             )
-        indices = rng.choice(self._size, size=batch_size, replace=False)
+        indices, weights = self._sample_indices(batch_size, rng)
+        if weights is None:
+            weights = np.ones(batch_size, dtype=np.float32)
         states = self._states[indices]
         relations = np.empty(
             (
@@ -264,6 +375,7 @@ class ReplayBuffer:
             "relations": torch.from_numpy(relations),
             "policy_targets": torch.from_numpy(self._policy_targets[indices]),
             "value_targets": torch.from_numpy(self._value_targets[indices]),
+            "is_weights": torch.from_numpy(weights),
         }
 
     def sample_into(
@@ -277,6 +389,7 @@ class ReplayBuffer:
         value_targets_out: np.ndarray,
         relations_out: np.ndarray | None = None,
         player_counts_out: np.ndarray | None = None,
+        is_weights_out: np.ndarray | None = None,
     ) -> None:
         """Fill caller-provided arrays with a random batch.
 
@@ -286,13 +399,16 @@ class ReplayBuffer:
         wider than the stored dtype (e.g. int64); widening happens
         during the fancy-index copy. If ``relations_out`` is supplied,
         relation planes are generated from the sampled states into that
-        caller-owned scratch buffer.
+        caller-owned scratch buffer. ``is_weights_out`` receives importance
+        weights versus uniform sampling (all 1 without prioritization).
         """
         if batch_size > self._size:
             raise ValueError(
                 f"batch_size ({batch_size}) exceeds buffer size ({self._size})"
             )
-        indices = rng.choice(self._size, size=batch_size, replace=False)
+        indices, weights = self._sample_indices(batch_size, rng)
+        if is_weights_out is not None:
+            is_weights_out[:] = 1.0 if weights is None else weights
         states_out[:] = self._states[indices]
         phase_ids_out[:] = self._phase_ids[indices]
         if player_counts_out is not None:
@@ -332,6 +448,7 @@ class ReplayBuffer:
             np.save(directory / "legal_masks.npy", self._legal_masks[:n])
             np.save(directory / "policy_targets.npy", self._policy_targets[:n])
             np.save(directory / "value_targets.npy", self._value_targets[:n])
+            np.save(directory / "priorities.npy", self._priorities[:n])
         else:
             # Full buffer: save entire arrays
             np.save(directory / "states.npy", self._states)
@@ -340,6 +457,7 @@ class ReplayBuffer:
             np.save(directory / "legal_masks.npy", self._legal_masks)
             np.save(directory / "policy_targets.npy", self._policy_targets)
             np.save(directory / "value_targets.npy", self._value_targets)
+            np.save(directory / "priorities.npy", self._priorities)
         (directory / "metadata.json").write_text(
             json.dumps({
                 "size": self._size,
@@ -406,6 +524,12 @@ class ReplayBuffer:
         legal_masks = np.load(directory / "legal_masks.npy")
         policy_targets = np.load(directory / "policy_targets.npy")
         value_targets = np.load(directory / "value_targets.npy")
+        # Buffers saved before priorities existed load as unknown (NaN).
+        priorities_path = directory / "priorities.npy"
+        priorities = (
+            np.load(priorities_path) if priorities_path.exists()
+            else np.full(n, np.nan, dtype=np.float32)
+        )
         expected_shapes = {
             "states.npy": (n, self._state_size),
             "phase_ids.npy": (n,),
@@ -413,6 +537,7 @@ class ReplayBuffer:
             "legal_masks.npy": (n, self._unified_dim),
             "policy_targets.npy": (n, self._unified_dim),
             "value_targets.npy": (n, self._max_players),
+            "priorities.npy": (n,),
         }
         actual_shapes = {
             "states.npy": states.shape,
@@ -421,6 +546,7 @@ class ReplayBuffer:
             "legal_masks.npy": legal_masks.shape,
             "policy_targets.npy": policy_targets.shape,
             "value_targets.npy": value_targets.shape,
+            "priorities.npy": priorities.shape,
         }
         for name, expected in expected_shapes.items():
             if actual_shapes[name] != expected:
@@ -436,6 +562,8 @@ class ReplayBuffer:
         self._legal_masks[:n] = legal_masks
         self._policy_targets[:n] = policy_targets
         self._value_targets[:n] = value_targets
+        self._priorities[:n] = priorities
+        self._priority_version += 1
         self._size = saved_size
         self._index = saved_index
         return self._size

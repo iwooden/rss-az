@@ -26,6 +26,7 @@ from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import RSSTransformerNet, TransformerConfig, create_model, get_model_input_spec
 from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import EpochConfig, TrainingConfig
+from train.policy_metrics import kl_to_prior
 from train.self_play import (
     _compute_policy_target_temperature,
     _compute_temperature,
@@ -252,6 +253,16 @@ def test_play_game_pruned_policy_targets(evaluator, pruning, forced_k):
     )
     scalars = record.policy_metrics.scalars()
     assert scalars["policy/all/target_pruned_visit_fraction_mean"] > 0.0
+    # Replay priority is KL(stored target || unnoised prior); the trace
+    # re-evaluates each root, so allow batched-vs-single eval rounding.
+    masks = record.legal_masks.astype(bool)
+    priors = trace.nn_policy_pct / 100.0
+    expected = [
+        kl_to_prior(targets[i][masks[i]], priors[i][masks[i]])
+        for i in range(record.num_examples)
+    ]
+    assert record.policy_priorities.shape == (record.num_examples,)
+    np.testing.assert_allclose(record.policy_priorities, expected, rtol=1e-3, atol=1e-5)
 
 
 def test_pruning_config_validation():

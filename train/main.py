@@ -250,6 +250,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Numerator for dynamic alpha: alpha = N / n_legal (default: 10.0)",
     )
     parser.add_argument(
+        "--replay-priority-fraction", type=float,
+        help="Share of each training batch sampled by policy KL priority; "
+             "0 disables (default: 0)",
+    )
+    parser.add_argument(
+        "--replay-priority-exponent", type=float,
+        help="Exponent on the KL priority (default: 0.5)",
+    )
+    parser.add_argument(
         "--forced-playouts-k", type=float,
         help="KataGo forced playouts at self-play roots, sqrt(k*P*N) visits "
              "per child; 0 disables (default: 0)",
@@ -338,6 +347,7 @@ _CLI_FIELDS = (
     "dirichlet_alpha", "dirichlet_epsilon",
     "dirichlet_dynamic", "dirichlet_alpha_numerator",
     "forced_playouts_k", "policy_target_pruning",
+    "replay_priority_fraction", "replay_priority_exponent",
 )
 
 
@@ -995,6 +1005,8 @@ def main() -> None:
         max_players,
         min_players=config.effective_min_players,
         max_players=max_players,
+        priority_fraction=config.replay_priority_fraction,
+        priority_exponent=config.replay_priority_exponent,
     )
     logger = TrainingLogger(config.tensorboard_dir)
 
@@ -1239,6 +1251,7 @@ def main() -> None:
                     record.policy_targets,  # type: ignore[union-attr]
                     record.value_targets,  # type: ignore[union-attr]
                     num_players=record.num_players,  # type: ignore[union-attr]
+                    priorities=record.policy_priorities,  # type: ignore[union-attr]
                 )
                 self_play_metrics.add_record(record)
                 if record.profile is not None:  # type: ignore[union-attr]
@@ -1424,6 +1437,10 @@ def main() -> None:
                 {
                     "buffer/size": float(len(buffer)),
                     "buffer/utilization": len(buffer) / config.buffer_capacity,
+                    **{
+                        f"buffer/{key}": value
+                        for key, value in buffer.priority_stats().items()
+                    },
                     "schedule/c_puct": epoch_cfg.c_puct,
                     "schedule/value_blend_alpha": epoch_cfg.value_blend_alpha,
                     "schedule/num_simulations": epoch_cfg.num_simulations,

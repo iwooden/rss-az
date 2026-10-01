@@ -258,6 +258,13 @@ class TrainingConfig:
     # --- Replay Buffer ---
     buffer_capacity: int = 500_000
     min_buffer_size: int = 10_000
+    # Prioritized replay: this share of each training batch is drawn in
+    # proportion to KL(policy target || unnoised prior) ** exponent, the rest
+    # uniformly. 0 disables. The policy loss trains on the mixed batch; the
+    # value loss and logged training metrics are importance-weighted back to
+    # uniform sampling.
+    replay_priority_fraction: float = 0.0
+    replay_priority_exponent: float = 0.5
 
     # --- Training ---
     batch_size: int = 256
@@ -410,6 +417,18 @@ class TrainingConfig:
         if self.dirichlet_alpha_numerator <= 0:
             raise ValueError(
                 f"dirichlet_alpha_numerator must be > 0, got {self.dirichlet_alpha_numerator}"
+            )
+
+        # Prioritized replay
+        if not 0.0 <= self.replay_priority_fraction < 1.0:
+            raise ValueError(
+                "replay_priority_fraction must be in [0, 1), "
+                f"got {self.replay_priority_fraction}"
+            )
+        if self.replay_priority_exponent < 0:
+            raise ValueError(
+                "replay_priority_exponent must be >= 0, "
+                f"got {self.replay_priority_exponent}"
             )
 
         # Forced playouts and policy-target pruning

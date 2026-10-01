@@ -467,6 +467,12 @@ class TrainingLogger:
         )
         if config.max_acq_price_actions > 0:
             table.add_row("ACQ price cap", str(config.max_acq_price_actions))
+        if config.replay_priority_fraction > 0:
+            table.add_row(
+                "Prioritized replay",
+                f"{config.replay_priority_fraction:g} of batch by "
+                f"policy KL^{config.replay_priority_exponent:g}",
+            )
         if config.forced_playouts_k > 0 or config.policy_target_pruning != "none":
             table.add_row(
                 "Forced playouts",

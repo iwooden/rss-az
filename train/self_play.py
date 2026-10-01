@@ -61,7 +61,7 @@ from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from train.config import EpochConfig, TrainingConfig
 from train.eval_server import RemoteEvaluator
 from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
-from train.policy_metrics import PolicyMetrics
+from train.policy_metrics import PolicyMetrics, kl_to_prior
 
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
@@ -124,6 +124,7 @@ class SelfPlayExample:
     legal_mask: np.ndarray  # (UNIFIED_LOGIT_DIM,), uint8 — 1 = legal slot
     policy_target: np.ndarray  # (UNIFIED_LOGIT_DIM,), float32 — MCTS visit probs
     value_target: np.ndarray  # (num_players,), float32 — canonical A0GB
+    policy_priority: float  # KL(policy target || unnoised prior), replay priority
 
 
 @dataclass
@@ -244,9 +245,9 @@ class AcquisitionStats:
 class GameRecord:
     """Results from a single self-play game.
 
-    Training data is pre-stacked into contiguous arrays (5 arrays instead
-    of N×5 small arrays) so that pickling through mp.Queue is a fast
-    memcpy rather than per-object serialization. ``legal_masks`` and
+    Training data is pre-stacked into one contiguous array per field
+    (instead of per-example arrays) so that pickling through mp.Queue is a
+    fast memcpy rather than per-object serialization. ``legal_masks`` and
     ``policy_targets`` are dense over ``UNIFIED_LOGIT_DIM`` unified
     slots; illegal slots carry 0 in both.
     """
@@ -256,6 +257,7 @@ class GameRecord:
     legal_masks: np.ndarray  # (num_examples, UNIFIED_LOGIT_DIM), uint8
     policy_targets: np.ndarray  # (num_examples, UNIFIED_LOGIT_DIM), float32
     value_targets: np.ndarray  # (num_examples, num_players), float32
+    policy_priorities: np.ndarray  # (num_examples,), float32 — replay priority
     num_players: int  # Actual player count for this game
     num_examples: int  # Number of training examples
     total_moves: int  # Decision points (MCTS searches)
@@ -1108,6 +1110,7 @@ def play_game(
                 legal_mask=dense_legal_mask,
                 policy_target=dense_policy_target,
                 value_target=value_target,
+                policy_priority=kl_to_prior(policy_target_sparse, root_priors[0]),
             )
         )
 
@@ -1218,12 +1221,14 @@ def play_game(
     stacked_legal_masks = np.empty((n_examples, U_DIM), dtype=np.uint8)
     stacked_policy_targets = np.empty((n_examples, U_DIM), dtype=np.float32)
     stacked_value_targets = np.empty((n_examples, num_players), dtype=np.float32)
+    stacked_policy_priorities = np.empty(n_examples, dtype=np.float32)
     for i, ex in enumerate(examples):
         stacked_states[i] = ex.state
         stacked_phase_ids[i] = ex.phase_id
         stacked_legal_masks[i] = ex.legal_mask
         stacked_policy_targets[i] = ex.policy_target
         stacked_value_targets[i] = ex.value_target
+        stacked_policy_priorities[i] = ex.policy_priority
 
     # Blend A0GB value targets with canonical game outcome if configured.
     # No rotation — compute_terminal_values already returns canonical order.
@@ -1255,6 +1260,7 @@ def play_game(
         legal_masks=stacked_legal_masks,
         policy_targets=stacked_policy_targets,
         value_targets=stacked_value_targets,
+        policy_priorities=stacked_policy_priorities,
         num_players=num_players,
         num_examples=n_examples,
         total_moves=move_count,

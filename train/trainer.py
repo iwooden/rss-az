@@ -274,6 +274,8 @@ class Trainer:
         self._pt_h_np = self._pt_h.numpy()
         self._vt_h = torch.empty((cap, N), dtype=torch.float32, pin_memory=pm)
         self._vt_h_np = self._vt_h.numpy()
+        self._w_h = torch.empty(cap, dtype=torch.float32, pin_memory=pm)
+        self._w_h_np = self._w_h.numpy()
 
         if pm:
             self._tok_d = torch.empty(
@@ -291,6 +293,7 @@ class Trainer:
                 (cap, U_DIM), dtype=torch.float32, device=self.device,
             )
             self._vt_d = torch.empty((cap, N), dtype=torch.float32, device=self.device)
+            self._w_d = torch.empty(cap, dtype=torch.float32, device=self.device)
         else:
             self._tok_d = self._tok_h
             self._rel_d = self._rel_h
@@ -299,6 +302,7 @@ class Trainer:
             self._mask_d = self._mask_h
             self._pt_d = self._pt_h
             self._vt_d = self._vt_h
+            self._w_d = self._w_h
 
         self._scratch_cap = cap
 
@@ -316,6 +320,7 @@ class Trainer:
         self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
         self._pt_d[:n].copy_(self._pt_h[:n], non_blocking=True)
         self._vt_d[:n].copy_(self._vt_h[:n], non_blocking=True)
+        self._w_d[:n].copy_(self._w_h[:n], non_blocking=True)
 
     def _fill_token_batch(self, n: int) -> None:
         """Fill ``_tok_h_np[:n]`` from ``_states_np[:n]`` via the batched
@@ -385,6 +390,12 @@ class Trainer:
             player-count bucket present in the batch, and ``value_raw_mean``,
             ``value_raw_mean_abs``, ``value_raw_saturated`` for models with a
             ``value_head`` (see ``_raw_value_stats``).
+
+            With prioritized replay, the policy gradient uses the batch as
+            sampled, while the value loss and every reported loss average
+            rows by their importance weights, estimating uniform-sampling
+            values. ``policy_kl_sampled`` then reports the unweighted KL the
+            policy actually trained on.
         """
         self._ensure_scratch(batch_size)
         B = batch_size
@@ -399,6 +410,7 @@ class Trainer:
             self._vt_h_np[:B],
             relations_out=self._rel_h_np[:B],
             player_counts_out=self._pc_h_np[:B],
+            is_weights_out=self._w_h_np[:B],
         )
 
         # NaN in any training target is a self-play inference bug —
@@ -422,6 +434,7 @@ class Trainer:
         player_counts = self._pc_d[:B]
         policy_targets = self._pt_d[:B]
         value_targets = self._vt_d[:B]
+        is_weights = self._w_d[:B]
 
         # Per-phase row counts: needed only to filter empty buckets out of
         # the host-side per-phase loss report. Numpy nonzero on the already-
@@ -460,18 +473,35 @@ class Trainer:
             torch.zeros_like(policy_targets),
         )
         per_example_target_entropy = -(policy_targets * target_log).sum(dim=-1)
-        policy_target_entropy = per_example_target_entropy.mean()
-        policy_loss_residual = policy_loss - policy_target_entropy
+        policy_kl_sampled = policy_loss - per_example_target_entropy.mean()
+        # Reported policy losses are importance-weighted row averages, which
+        # estimate uniform-sampling values (plain means without prioritization).
+        weight_sum = is_weights.sum()
+        reported_policy_loss = (
+            is_weights * per_example_policy_loss
+        ).sum() / weight_sum
+        policy_target_entropy = (
+            is_weights * per_example_target_entropy
+        ).sum() / weight_sum
+        policy_loss_residual = reported_policy_loss - policy_target_entropy
 
         # Value loss: mean squared error over real players only. Mixed-count
         # transformer batches carry padded value slots up to max_players; those
         # slots are not game entities and should not contribute to gradients or
         # the loss denominator. Single-count batches get an all-true mask
-        # because their sampled player_counts equal N.
+        # because their sampled player_counts equal N. Rows are importance-
+        # weighted, so prioritized replay doesn't bias the value fit.
         player_ids = torch.arange(self._num_players, device=self.device)
         value_mask = player_ids.unsqueeze(0) < player_counts.unsqueeze(1)
         value_sqerr = (values - value_targets).square()
-        value_loss = value_sqerr.masked_select(value_mask).mean()
+        per_example_value_sqerr_sums = (
+            value_sqerr.masked_fill(~value_mask, 0.0).sum(dim=1)
+        )
+        weighted_players = is_weights * player_counts.to(value_sqerr.dtype)
+        value_loss = (
+            (is_weights * per_example_value_sqerr_sums).sum()
+            / weighted_players.sum()
+        )
         raw_value_stats = (
             self._raw_value_stats(raw_values, value_mask, player_counts)
             if raw_values is not None
@@ -483,28 +513,32 @@ class Trainer:
             self.config.policy_loss_weight * policy_loss
             + self.config.value_loss_weight * value_loss
         )
+        reported_total_loss = (
+            self.config.policy_loss_weight * reported_policy_loss
+            + self.config.value_loss_weight * value_loss
+        )
 
-        # Per-phase policy loss: scatter-add into a (NUM_PHASES,) bucket
-        # tensor using phase_ids as the index. Single fused op replaces
-        # the per-phase index_select + mean loop; empty buckets stay zero
-        # and are filtered out on the host side using phase_counts.
-        per_phase = per_example_policy_loss.detach()
+        # Per-phase policy loss: scatter-add weighted rows into a
+        # (NUM_PHASES,) bucket tensor using phase_ids as the index. Single
+        # fused op replaces the per-phase index_select + mean loop; empty
+        # buckets stay zero and are filtered out on the host side using
+        # phase_counts.
+        row_weights = is_weights.detach()
+        per_phase = per_example_policy_loss.detach() * row_weights
         device = per_phase.device
         per_phase_sums = torch.zeros(NUM_PHASES, device=device, dtype=per_phase.dtype)
         per_phase_sums.index_add_(0, phase_ids, per_phase)
-        # ``ones_like`` mirrors per_phase's dtype; counts in fp avoid
-        # an int↔float divide guard later.
         per_phase_counts = torch.zeros(NUM_PHASES, device=device, dtype=per_phase.dtype)
-        per_phase_counts.index_add_(0, phase_ids, torch.ones_like(per_phase))
+        per_phase_counts.index_add_(0, phase_ids, row_weights)
         # Empty buckets divide 0 / 1 = 0 — same placeholder behavior the
         # old per-phase mean loop produced, and the host filter drops them.
-        per_phase_means = per_phase_sums / per_phase_counts.clamp(min=1)
+        per_phase_means = per_phase_sums / per_phase_counts.clamp(min=1e-12)
         per_phase_entropy_sums = torch.zeros_like(per_phase_sums)
         per_phase_entropy_sums.index_add_(
-            0, phase_ids, per_example_target_entropy.detach(),
+            0, phase_ids, per_example_target_entropy.detach() * row_weights,
         )
         per_phase_entropy_means = (
-            per_phase_entropy_sums / per_phase_counts.clamp(min=1)
+            per_phase_entropy_sums / per_phase_counts.clamp(min=1e-12)
         )
 
         # Per-player-count policy/value losses. Policy buckets average rows;
@@ -514,43 +548,38 @@ class Trainer:
         per_count_policy_sums = torch.zeros(
             count_bucket_count, device=device, dtype=per_phase.dtype,
         )
-        per_count_policy_sums.index_add_(
-            0, count_bucket_ids, per_example_policy_loss.detach(),
-        )
+        per_count_policy_sums.index_add_(0, count_bucket_ids, per_phase)
         per_count_row_counts = torch.zeros(
             count_bucket_count, device=device, dtype=per_phase.dtype,
         )
-        per_count_row_counts.index_add_(
-            0, count_bucket_ids, torch.ones_like(per_example_policy_loss),
-        )
+        per_count_row_counts.index_add_(0, count_bucket_ids, row_weights)
         per_count_policy_means = (
-            per_count_policy_sums / per_count_row_counts.clamp(min=1)
+            per_count_policy_sums / per_count_row_counts.clamp(min=1e-12)
         )
 
-        per_example_value_sqerr_sums = (
-            value_sqerr.masked_fill(~value_mask, 0.0).sum(dim=1).detach()
-        )
         per_count_value_sums = torch.zeros(
             count_bucket_count, device=device, dtype=value_sqerr.dtype,
         )
         per_count_value_sums.index_add_(
-            0, count_bucket_ids, per_example_value_sqerr_sums,
+            0, count_bucket_ids,
+            per_example_value_sqerr_sums.detach() * row_weights,
         )
         per_count_value_denoms = torch.zeros(
             count_bucket_count, device=device, dtype=value_sqerr.dtype,
         )
         per_count_value_denoms.index_add_(
-            0, count_bucket_ids, player_counts.to(value_sqerr.dtype),
+            0, count_bucket_ids, weighted_players.detach(),
         )
         per_count_value_means = (
-            per_count_value_sums / per_count_value_denoms.clamp(min=1)
+            per_count_value_sums / per_count_value_denoms.clamp(min=1e-12)
         )
 
         # Pack every scalar we want to read back into one tensor so the
         # host read is a single H←D sync instead of separate .item() calls.
         # Order: policy_loss, value_loss, total_loss, target_entropy,
-        # policy_loss_residual, *per-phase, *pass-stats, *count policy,
-        # *count value, *raw value stats, *per-phase target entropy.
+        # policy_loss_residual, policy_kl_sampled, *per-phase, *pass-stats,
+        # *count policy, *count value, *raw value stats, *per-phase target
+        # entropy.
         # ``pass_stats`` carries (pass_abs, action_abs) interleaved over the
         # phases in PHASES_WITH_PASS_SLOT — used to detect logit-scale drift
         # between the Linear(d, 1) pass heads and the q·k/√dp scored logits.
@@ -559,8 +588,9 @@ class Trainer:
         )
         all_scalars = torch.cat([
             torch.stack([
-                policy_loss.detach(), value_loss.detach(), total_loss.detach(),
-                policy_target_entropy.detach(), policy_loss_residual.detach(),
+                reported_policy_loss.detach(), value_loss.detach(),
+                reported_total_loss.detach(), policy_target_entropy.detach(),
+                policy_loss_residual.detach(), policy_kl_sampled.detach(),
             ]),
             per_phase_means,
             pass_stats,
@@ -607,15 +637,17 @@ class Trainer:
             "policy_loss_residual": scalars[4],
             "policy_kl": scalars[4],
         }
+        if self.config.replay_priority_fraction > 0.0:
+            result["policy_kl_sampled"] = scalars[5]
         for phase_idx, name in enumerate(_PHASE_NAMES):
             if phase_counts[phase_idx] > 0:
-                result[f"policy_loss_{name}"] = scalars[5 + phase_idx]
+                result[f"policy_loss_{name}"] = scalars[6 + phase_idx]
                 entropy = scalars[-NUM_PHASES + phase_idx]
                 result[f"policy_target_entropy_{name}"] = entropy
-                result[f"policy_kl_{name}"] = scalars[5 + phase_idx] - entropy
+                result[f"policy_kl_{name}"] = scalars[6 + phase_idx] - entropy
                 result[f"policy_samples_{name}"] = float(phase_counts[phase_idx])
 
-        pass_stats_offset = 5 + NUM_PHASES
+        pass_stats_offset = 6 + NUM_PHASES
         for i, phase_idx in enumerate(PHASES_WITH_PASS_SLOT):
             if phase_counts[phase_idx] == 0:
                 continue

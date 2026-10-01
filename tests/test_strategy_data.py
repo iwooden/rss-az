@@ -83,6 +83,7 @@ def _fake_record(game_id: int, num_examples: int = 2) -> GameRecord:
         legal_masks=np.ones((num_examples, U_DIM), dtype=np.uint8),
         policy_targets=policy,
         value_targets=np.zeros((num_examples, num_players), dtype=np.float32),
+        policy_priorities=np.zeros(num_examples, dtype=np.float32),
         num_players=num_players,
         num_examples=num_examples,
         total_moves=num_examples,

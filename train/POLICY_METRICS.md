@@ -87,6 +87,12 @@ The existing phase loss curves therefore change from averaging nonempty batch
 means to averaging sampled rows when this logging is installed. Global loss
 aggregation and training objectives are unchanged.
 
+With prioritized replay (`replay_priority_fraction > 0`), every reported
+training loss, entropy and KL weights rows by importance weight, so the curves
+keep estimating uniform-sampling values and stay comparable across the switch.
+`policy_samples_<phase>` still counts rows as drawn, and `policy_kl_sampled` is
+the unweighted KL of the batches the policy actually trained on.
+
 The collection adds one sparse prior copy per root and small CPU reductions per
 played decision; it adds no NN evaluations and stores no extra replay arrays.
 Worker IPC carries only additive summaries. A running process must be restarted

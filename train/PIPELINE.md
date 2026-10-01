@@ -99,7 +99,16 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 - **Replay stores raw state.** Rows hold compact int16 state, dense masks and
   targets, and padded values. Tokens and relation planes are rebuilt with the
   current extractors when sampled, so extractor changes also affect old rows.
-  Sampling is uniform.
+- **Optional prioritized replay.** Each row stores KL(policy target ||
+  unnoised prior) from self-play (`kl_to_prior`). With
+  `replay_priority_fraction` f > 0, `round(f * batch_size)` rows per batch
+  are drawn with replacement in proportion to `KL ** replay_priority_exponent`
+  and the rest uniformly; rows saved without a priority count as average. The
+  policy gradient uses the batch as drawn. Value loss and all reported
+  training metrics weight rows by `uniform / mixture` probability, so they
+  estimate uniform values; `policy_kl_sampled` is the unweighted KL actually
+  trained on. `buffer/priority_*` scalars track the sampling skew. With
+  f = 0 (default), sampling is uniform without replacement.
 - **Synchronous generations.** Each epoch plays `games_per_epoch` games with
   frozen weights, trains, then syncs eval servers. Training waits for
   `min_buffer_size`, then runs `training_steps_per_epoch * len(buffer) /
