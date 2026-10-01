@@ -15,7 +15,7 @@ from __future__ import annotations
 import queue
 import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, TypedDict
 
 import numpy as np
@@ -52,6 +52,7 @@ from mcts.search import (
     _filter_acq_price_root_priors,
     get_greedy_leaf_depth,
     get_greedy_leaf_value,
+    policy_target_visits,
     prepare_reuse_root,
     run_search,
     scale_visit_counts_by_temperature,
@@ -975,6 +976,9 @@ def play_game(
         num_simulations_override=sims_override,
         num_players=num_players,
     )
+    # Forced playouts only make sense with pruned self-play targets, so
+    # to_mcts_config (shared with tournament/live/analysis) leaves them off.
+    mcts_config = replace(mcts_config, forced_playouts_k=config.forced_playouts_k)
 
     # Profile stats (None when --profile not set → zero overhead)
     search_stats: SearchStats | None = None
@@ -1048,21 +1052,26 @@ def play_game(
         )
 
         # Sparse policy target: temperature-shaped visit-count proportions
-        # over legal actions. Setting policy_target_temp_* to a constant 1.0
-        # recovers raw visit-count targets.
+        # over legal actions, after any policy-target pruning. Setting
+        # policy_target_temp_* to a constant 1.0 recovers raw visit-count
+        # targets. Action sampling below uses the unpruned visits.
         assert root.visit_counts is not None
         counts = root.visit_counts.astype(np.float32)
         counts_sum = float(counts.sum())
         assert counts_sum > 0.0, "run_search produced zero total visits"
+        target_counts = policy_target_visits(
+            root, mcts_config.c_puct, config.policy_target_pruning,
+            root_priors[0], mcts_config.forced_playouts_k,
+        )
         target_temperature = _compute_policy_target_temperature(
             move_count, config, num_players,
         )
         policy_target_sparse = scale_visit_counts_by_temperature(
-            counts, target_temperature,
+            target_counts, target_temperature,
         )
         policy_metrics.observe(
             root_priors[0], counts, policy_target_sparse, phase_id,
-            move_count, target_anneal_window,
+            move_count, target_anneal_window, target_counts=target_counts,
         )
 
         # A0GB value target — already canonical (no np.roll).

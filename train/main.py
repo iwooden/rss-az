@@ -34,7 +34,7 @@ from train.checkpoint import (
     load_checkpoint,
     save_checkpoint,
 )
-from train.config import TrainingConfig
+from train.config import POLICY_TARGET_PRUNING_MODES, TrainingConfig
 from train.eval_server import EvaluationServer, SharedEvalBuffers
 from train.logging import TrainingLogger
 from train.profile_stats import EvalServerStats, GameProfileData, format_epoch_profile
@@ -250,6 +250,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Numerator for dynamic alpha: alpha = N / n_legal (default: 10.0)",
     )
     parser.add_argument(
+        "--forced-playouts-k", type=float,
+        help="KataGo forced playouts at self-play roots, sqrt(k*P*N) visits "
+             "per child; 0 disables (default: 0)",
+    )
+    parser.add_argument(
+        "--policy-target-pruning", choices=POLICY_TARGET_PRUNING_MODES,
+        help="Prune root visits before building policy targets (default: none)",
+    )
+    parser.add_argument(
         "--profile", action="store_true", default=None,
         help="Enable per-epoch self-play performance profiling",
     )
@@ -328,6 +337,7 @@ _CLI_FIELDS = (
     "optimizer", "weight_decay", "grad_clip",
     "dirichlet_alpha", "dirichlet_epsilon",
     "dirichlet_dynamic", "dirichlet_alpha_numerator",
+    "forced_playouts_k", "policy_target_pruning",
 )
 
 

@@ -28,6 +28,7 @@ _MEANS = (
     "target_kl_same_top_prior_sharper_contribution",
     "target_kl_same_top_prior_not_sharper_contribution",
     "same_top_prior_sharper_fraction",
+    "target_pruned_visit_fraction_mean",
 )
 _CONDITIONAL = {
     "search_changed_choice_prior_mean": "search_changed_count",
@@ -57,6 +58,7 @@ class PolicyMetrics:
         phase_id: int,
         move_count: int,
         anneal_window: tuple[int, int],
+        target_counts: np.ndarray | None = None,
     ) -> None:
         start, end = anneal_window
         stage = (
@@ -111,6 +113,11 @@ class PolicyMetrics:
                     target_kl if not target_changed and not sharper else 0
                 ),
                 "same_top_prior_sharper_fraction": sharper,
+                # Share of root visits policy-target pruning removed.
+                "target_pruned_visit_fraction_mean": (
+                    0.0 if target_counts is None
+                    else 1.0 - float(target_counts.sum()) / float(visits.sum())
+                ),
                 "search_changed_choice_prior_mean": p[choice] if changed else 0,
                 "search_changed_from_above_95_fraction": changed and high95,
                 "search_changed_from_above_98_fraction": changed and high98,

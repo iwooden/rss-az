@@ -70,6 +70,18 @@ def test_temperature_effect_zero_probabilities_and_stage_boundaries():
     assert s["policy/stage/pre_anneal/search_unvisited_fraction_mean"] == pytest.approx(1 / 3)
 
 
+def test_pruned_visit_fraction_is_decision_weighted():
+    stats = PolicyMetrics()
+    observe(stats, [.6, .4], [6, 4])
+    stats.observe(
+        np.array([.6, .4]), np.array([6, 4]), np.array([1., 0.]), 0, 0, (2, 4),
+        target_counts=np.array([6., 0.]),
+    )
+    s = stats.scalars()
+    # Unpruned decision contributes 0, pruned one 4/10.
+    assert s["policy/all/target_pruned_visit_fraction_mean"] == pytest.approx(.2)
+
+
 def test_epoch_aggregation_weights_decisions_and_survives_worker_serialization(tmp_path):
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
     from tests.test_self_play_metrics import _fake_record

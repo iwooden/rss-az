@@ -38,6 +38,12 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 - **Dynamic Dirichlet alpha.** By default (`dirichlet_dynamic`), alpha is
   `dirichlet_alpha_numerator / num_legal` (10/n). `dirichlet_alpha` applies
   only when dynamic mode is off. Every root gets noise, reused roots included.
+- **Optional forced playouts.** With `forced_playouts_k > 0` (default 0;
+  KataGo uses 2), self-play roots select any child with fewer than
+  `sqrt(k * P * N)` visits first, using the noised priors and the root's
+  `visit_count` as N. Locked edges are never forced. Only `play_game` sets
+  `MCTSConfig.forced_playouts_k`; tournament, live play and analysis leave
+  it at 0.
 - **ACQ price cap.** `max_acq_price_actions > 0` (v3 config: 8) keeps only the
   lowest and highest halves of legal `ACQ_SELECT_PRICE` offsets
   (`enumerate_policy_actions`, `_filter_acq_price_root_priors`). The cap covers
@@ -57,6 +63,16 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 - **A0GB value targets.** `get_greedy_leaf_value` follows max-visit children
   to a terminal node or to a node whose best child has 0 visits. That node's
   `value_sum / visit_count` is its single NN value or its terminal reward.
+- **Policy-target pruning.** `policy_target_visits` (`mcts/search.py`)
+  chooses the visits that targets are built from, per
+  `policy_target_pruning`. `none` uses raw visits. Otherwise the most-visited
+  child keeps all its visits, and every other child loses visits while its
+  PUCT, with Q held fixed, stays below the best child's unpruned PUCT; a child
+  left with one visit drops to zero. `forced` is KataGo's version: noised
+  priors, removal capped at the child's forced allotment. `raw_prior` uses
+  the unnoised prior with no cap, so it also strips visits that root noise or
+  since-revised Q estimates earned. Forced playouts require one of these.
+  Action sampling and A0GB use unpruned visits.
 - **Outcome/A0GB blend by epoch.** `compute_epoch_config` gives
   `value_blend_alpha = 0` before zero-indexed epoch `value_blend_start_epoch`
   (10), rising linearly to 1 at `value_blend_end_epoch` (200). Targets are

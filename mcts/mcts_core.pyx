@@ -138,6 +138,7 @@ cdef (int, int) _select_child_impl(
     const int[:] legal_actions, const float[:] priors,
     const int[:] visit_counts, const float[:, :] value_sums,
     int active_player_id, int parent_visit_count, float c_puct,
+    float forced_k,
 ) noexcept nogil:
     """Select the child action with the highest PUCT value.
 
@@ -148,12 +149,19 @@ cdef (int, int) _select_child_impl(
     Q(a) = value_sums[a, active_player] / max(1, visit_counts[a])
     Unvisited actions (vc=0) use the FPU default stored in value_sums.
 
+    With ``forced_k > 0`` (KataGo forced playouts), any action with
+    N(a) < sqrt(forced_k * P(a) * N_parent) is selected first, the highest
+    UCB among them winning. Locked edges (Q = -inf) are never forced.
+
     Returns (action_index, array_index).
     """
     cdef int n = legal_actions.shape[0]
     cdef float sqrt_parent = sqrtf(<float>parent_visit_count)
+    cdef float forced_scale = forced_k * <float>parent_visit_count
     cdef float best_ucb = -1e30
+    cdef float forced_ucb = -1e30
     cdef int best_idx = 0
+    cdef int forced_idx = -1
     cdef int i, vc
     cdef float q, ucb
 
@@ -167,11 +175,22 @@ cdef (int, int) _select_child_impl(
         if ucb > best_ucb:
             best_ucb = ucb
             best_idx = i
+        # vc < sqrt(k P N) without the sqrt; vc >= 0 so squaring is safe.
+        if (
+            forced_scale > 0.0
+            and <float>vc * <float>vc < forced_scale * priors[i]
+            and not isinf(q)
+            and ucb > forced_ucb
+        ):
+            forced_ucb = ucb
+            forced_idx = i
 
+    if forced_idx >= 0:
+        best_idx = forced_idx
     return legal_actions[best_idx], best_idx
 
 
-def select_child(node, float c_puct):
+def select_child(node, float c_puct, float forced_k=0.0):
     """Select the child action with the highest PUCT value.
 
     Drop-in replacement for search.py:select_child. Extracts typed
@@ -181,6 +200,7 @@ def select_child(node, float c_puct):
     Args:
         node: MCTSNode (must be expanded).
         c_puct: Exploration constant.
+        forced_k: Forced-playout coefficient; 0 disables.
 
     Returns:
         Tuple of (action_index, array_index).
@@ -194,7 +214,7 @@ def select_child(node, float c_puct):
 
     cdef int action_idx, array_idx
     action_idx, array_idx = _select_child_impl(
-        legal_actions, priors, vc, vs, player, parent_vc, c_puct,
+        legal_actions, priors, vc, vs, player, parent_vc, c_puct, forced_k,
     )
     return action_idx, array_idx
 
@@ -205,7 +225,7 @@ DESCEND_VIRTUAL_BACKUP = 1
 DESCEND_EXISTING_LEAF = 2
 
 
-def descend_path(root, float c_puct, list path_out):
+def descend_path(root, float c_puct, list path_out, float forced_k=0.0):
     """PUCT-descend from ``root`` until the descent must stop.
 
     Fuses the per-level selection loop from ``run_search``. Each descent
@@ -218,6 +238,8 @@ def descend_path(root, float c_puct, list path_out):
         c_puct: PUCT exploration constant.
         path_out: Mutable list; one tuple appended per descent level.
             Caller creates and owns it (cleared per iteration).
+        forced_k: Forced-playout coefficient applied at the root only;
+            0 disables.
 
     Returns:
         ``(outcome, node, action_idx, array_idx)`` where outcome is one of:
@@ -254,6 +276,7 @@ def descend_path(root, float c_puct, list path_out):
         action_idx, array_idx = _select_child_impl(
             legal_actions_view, priors_view, vc_view, vs_view,
             active_player_id, parent_vc, c_puct,
+            forced_k if is_root else 0.0,
         )
         path_out.append((node, action_idx, array_idx))
 

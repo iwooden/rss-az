@@ -10,6 +10,7 @@ Implements AlphaZero-style MCTS for multiplayer games:
 - Lock propagation: when all children of a node are locked, the parent edge
   is locked too, preventing wasted PUCT selections into fully-locked subtrees
 - Subtree reuse: reuse the chosen child's subtree as the next search root
+- Optional KataGo forced playouts at the root, with policy-target pruning
 """
 
 from __future__ import annotations
@@ -606,7 +607,7 @@ def run_search(
             path: _Path = path_pool[len(pending)]
             path.clear()
             outcome, descend_node, descend_aidx, descend_arr = _descend_path(
-                root, config.c_puct, path,
+                root, config.c_puct, path, config.forced_playouts_k,
             )
 
             if outcome == DESCEND_VIRTUAL_BACKUP:
@@ -937,6 +938,99 @@ def scale_visit_counts_by_temperature(
         probs[positive] = (weights / total).astype(np.float32)
 
     return probs
+
+
+def prune_root_visits(
+    root: MCTSNode,
+    c_puct: float,
+    priors: np.ndarray,
+    max_removed: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return root visit counts after KataGo policy-target pruning.
+
+    Keeps the most-visited child c*. From each other child c, removes visits
+    while PUCT(c), computed from ``priors`` with c's Q held fixed, stays below
+    PUCT(c*) at the unpruned counts, removing at most ``floor(max_removed[c])``
+    when given. A child reduced to one visit is dropped. Visits are never
+    added, and the root is not modified. Reference: Wu, "Accelerating
+    Self-Play Learning in Go" (2019), section 3.1.
+
+    Args:
+        root: Searched root node.
+        c_puct: PUCT constant the search used.
+        priors: Priors aligned to ``root.legal_actions``.
+        max_removed: Optional per-child removal cap, aligned the same way.
+
+    Returns:
+        Pruned float32 counts aligned to ``root.legal_actions``.
+    """
+    assert root.visit_counts is not None and root.value_sums is not None
+    visits = root.visit_counts.astype(np.float64)
+    best = int(np.argmax(visits))
+    q = (
+        root.value_sums[:, root.active_player_id].astype(np.float64)
+        / np.maximum(visits, 1.0)
+    )
+    explore = c_puct * np.asarray(priors, dtype=np.float64) * np.sqrt(
+        float(root.visit_count),
+    )
+    gap = q[best] + explore[best] / (1.0 + visits[best]) - q
+    # PUCT(c) < PUCT(c*) iff 1 + n > explore / gap, so c keeps at least
+    # floor(explore / gap) visits. A child whose Q alone reaches PUCT(c*)
+    # keeps everything.
+    keep = np.full_like(visits, np.inf)
+    positive = gap > 0.0
+    keep[positive] = np.floor(explore[positive] / gap[positive])
+    if max_removed is not None:
+        keep = np.maximum(keep, visits - np.floor(max_removed))
+    pruned = np.minimum(visits, keep)
+    pruned[(pruned < visits) & (pruned <= 1.0)] = 0.0
+    pruned[best] = visits[best]
+    return pruned.astype(np.float32)
+
+
+def policy_target_visits(
+    root: MCTSNode,
+    c_puct: float,
+    pruning: str,
+    raw_priors: np.ndarray,
+    forced_playouts_k: float = 0.0,
+) -> np.ndarray:
+    """Return the root visit counts that replay policy targets are built from.
+
+    Modes (``TrainingConfig.policy_target_pruning``):
+
+    - ``"none"``: raw root visits.
+    - ``"forced"``: KataGo pruning. PUCT uses the search priors (after root
+      noise), and each child loses at most its forced-playout allotment
+      sqrt(k * P * N), so only forced visits are undone.
+    - ``"raw_prior"``: PUCT uses the unnoised prior, with no cap. This also
+      removes visits that root noise, or Q estimates the search has since
+      revised downward, earned beyond what the raw prior justifies.
+
+    Args:
+        root: Searched root node.
+        c_puct: PUCT constant the search used.
+        pruning: One of the modes above.
+        raw_priors: Unnoised search-legal priors aligned to
+            ``root.legal_actions`` (``run_search``'s ``root_priors_out``).
+        forced_playouts_k: Forced-playout coefficient the search used.
+
+    Returns:
+        Float32 counts aligned to ``root.legal_actions``.
+    """
+    assert root.visit_counts is not None
+    if pruning == "none":
+        return root.visit_counts.astype(np.float32)
+    if pruning == "forced":
+        assert root.priors is not None
+        forced = np.sqrt(
+            forced_playouts_k * root.priors.astype(np.float64) * root.visit_count,
+        )
+        return prune_root_visits(root, c_puct, root.priors, max_removed=forced)
+    if pruning == "raw_prior":
+        return prune_root_visits(root, c_puct, raw_priors)
+    raise ValueError(f"unknown policy_target_pruning mode {pruning!r}")
 
 
 def _get_greedy_leaf_node_and_depth(root: MCTSNode) -> tuple[MCTSNode, int]:

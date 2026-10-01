@@ -21,8 +21,10 @@ equal thirds of a game. Each player count uses its own configured window.
 - `prior` is the network policy **before root Dirichlet noise**, normalized over
   search-available actions, including the acquisition-price action restriction.
   Reused subtrees supply their existing NN priors; no extra inference is run.
-- `search` is normalized raw root visit counts, including subtree reuse backups.
-- `target` is those visits after the configured policy-target temperature.
+- `search` is normalized raw root visit counts, including subtree reuse backups
+  and any forced playouts.
+- `target` is those visits after `policy_target_pruning` and the configured
+  policy-target temperature.
 - Probabilities and fractions use **0–1**, not 0–100. Entropies and KL use nats.
 - These metrics compare the same position's distributions at self-play time.
   They are distinct from `epoch/policy_kl_avg`, which measures the changing
@@ -44,6 +46,7 @@ equal thirds of a game. Each player count uses its own configured window.
 | `search_unvisited_fraction_mean` | Average fraction of available actions receiving zero root visits. |
 | `search_kl_to_prior_mean` | KL(raw search visits \|\| unnoised prior). |
 | `target_kl_to_prior_mean` | KL(temperature-adjusted target \|\| unnoised prior). |
+| `target_pruned_visit_fraction_mean` | Average share of root visits removed by policy-target pruning; 0 when pruning is off. |
 
 Conditional means/fractions are omitted when their denominator is zero;
 they do not imply a zero measurement. Groups containing only forced moves

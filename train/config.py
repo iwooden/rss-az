@@ -9,6 +9,9 @@ from typing import Any
 from nn.model_contract import ModelKind, normalize_model_type
 
 
+POLICY_TARGET_PRUNING_MODES = ("none", "forced", "raw_prior")
+
+
 def _validate_max_acq_price_actions(value: int) -> None:
     from core.data import ActionSize
 
@@ -49,6 +52,9 @@ class MCTSConfig:
     search_batch_size: int = 8
     check_nonfinite: bool = True
     max_acq_price_actions: int = 0
+    # KataGo forced playouts: each root child gets at least sqrt(k * P * N)
+    # visits. 0 disables. Only self-play sets this.
+    forced_playouts_k: float = 0.0
     action_dim: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -89,6 +95,10 @@ class MCTSConfig:
         if self.dirichlet_alpha_numerator <= 0:
             raise ValueError(
                 f"dirichlet_alpha_numerator must be > 0, got {self.dirichlet_alpha_numerator}"
+            )
+        if self.forced_playouts_k < 0:
+            raise ValueError(
+                f"forced_playouts_k must be >= 0, got {self.forced_playouts_k}"
             )
 
 
@@ -150,6 +160,13 @@ class TrainingConfig:
     dirichlet_epsilon: float = 0.25
     dirichlet_dynamic: bool = True
     dirichlet_alpha_numerator: float = 10.0
+    # KataGo forced playouts at self-play roots: each child gets at least
+    # sqrt(k * P * N) visits (KataGo uses k = 2). 0 disables. Requires
+    # policy_target_pruning so forced visits don't leak into targets.
+    forced_playouts_k: float = 0.0
+    # Root visits that replay policy targets are built from; see
+    # mcts.search.policy_target_visits. One of POLICY_TARGET_PRUNING_MODES.
+    policy_target_pruning: str = "none"
     search_batch_size: int = 8
     check_nonfinite_mcts: bool = True
     # 0 = full ACQ_SELECT_PRICE legal set. Positive even values cap policy/search
@@ -393,6 +410,28 @@ class TrainingConfig:
         if self.dirichlet_alpha_numerator <= 0:
             raise ValueError(
                 f"dirichlet_alpha_numerator must be > 0, got {self.dirichlet_alpha_numerator}"
+            )
+
+        # Forced playouts and policy-target pruning
+        if self.forced_playouts_k < 0:
+            raise ValueError(
+                f"forced_playouts_k must be >= 0, got {self.forced_playouts_k}"
+            )
+        if self.policy_target_pruning not in POLICY_TARGET_PRUNING_MODES:
+            raise ValueError(
+                f"policy_target_pruning must be one of {POLICY_TARGET_PRUNING_MODES}, "
+                f"got {self.policy_target_pruning!r}"
+            )
+        if self.forced_playouts_k > 0 and self.policy_target_pruning == "none":
+            raise ValueError(
+                "forced_playouts_k > 0 requires policy_target_pruning "
+                "('forced' or 'raw_prior'); forced visits would otherwise "
+                "enter policy targets"
+            )
+        if self.policy_target_pruning == "forced" and self.forced_playouts_k == 0:
+            raise ValueError(
+                "policy_target_pruning 'forced' only undoes forced playouts; "
+                "set forced_playouts_k > 0"
             )
 
         # Temperature schedules. Scalar start/end fields are global overrides

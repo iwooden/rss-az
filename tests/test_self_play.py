@@ -225,6 +225,47 @@ def test_play_game_strategy_trace_captures_root_outputs(evaluator):
         assert (trace.acquisition_events[:, 5] >= 0).all()
 
 
+@pytest.mark.parametrize(
+    ("pruning", "forced_k"), [("forced", 2.0), ("raw_prior", 2.0), ("raw_prior", 0.0)],
+)
+def test_play_game_pruned_policy_targets(evaluator, pruning, forced_k):
+    """Pruning only removes non-best visits, so targets keep the visit winner."""
+    config = TrainingConfig(
+        num_players=NUM_PLAYERS,
+        num_simulations=8,
+        forced_playouts_k=forced_k,
+        policy_target_pruning=pruning,
+    )
+    record = play_game(
+        evaluator, config, game_seed=3, rng=np.random.default_rng(3),
+        collect_strategy_trace=True,
+    )
+    _assert_dense_policy_invariants(record)
+    trace = record.strategy_trace
+    assert trace is not None
+    visits = trace.mcts_visit_counts
+    targets = record.policy_targets
+    assert not targets[visits == 0].any()
+    rows = np.arange(record.num_examples)
+    np.testing.assert_allclose(
+        targets[rows, visits.argmax(axis=1)], targets.max(axis=1), atol=1e-6,
+    )
+    scalars = record.policy_metrics.scalars()
+    assert scalars["policy/all/target_pruned_visit_fraction_mean"] > 0.0
+
+
+def test_pruning_config_validation():
+    assert TrainingConfig().policy_target_pruning == "none"
+    with pytest.raises(ValueError, match="policy_target_pruning must be one of"):
+        TrainingConfig(policy_target_pruning="katago")
+    with pytest.raises(ValueError, match="requires policy_target_pruning"):
+        TrainingConfig(forced_playouts_k=2.0)
+    with pytest.raises(ValueError, match="set forced_playouts_k > 0"):
+        TrainingConfig(policy_target_pruning="forced")
+    with pytest.raises(ValueError, match="forced_playouts_k must be >= 0"):
+        TrainingConfig(forced_playouts_k=-1.0, policy_target_pruning="raw_prior")
+
+
 def test_epoch_player_count_schedule_is_quota_round_robin():
     config = TrainingConfig(num_players=0, min_players=3, max_players=5)
 

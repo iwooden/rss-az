@@ -467,6 +467,12 @@ class TrainingLogger:
         )
         if config.max_acq_price_actions > 0:
             table.add_row("ACQ price cap", str(config.max_acq_price_actions))
+        if config.forced_playouts_k > 0 or config.policy_target_pruning != "none":
+            table.add_row(
+                "Forced playouts",
+                f"k={config.forced_playouts_k:g}, "
+                f"target pruning={config.policy_target_pruning}",
+            )
         table.add_row(
             "c_puct",
             f"{config.c_puct_initial} \u2192 {config.c_puct_final} "

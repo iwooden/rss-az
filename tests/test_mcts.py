@@ -33,7 +33,9 @@ from entities.player import PLAYERS
 from entities.turn import TURN
 from mcts.evaluator import NNEvaluator, compute_terminal_values, fill_token_buffer
 from mcts.mcts_core import (
+    DESCEND_NEED_NEW_CHILD,
     backup,
+    descend_path,
     expand_node_sparse,
     gather_masks,
     gather_states,
@@ -54,7 +56,9 @@ from mcts.search import (
     get_action_probabilities,
     get_greedy_leaf_depth,
     get_greedy_leaf_value,
+    policy_target_visits,
     prepare_reuse_root,
+    prune_root_visits,
     run_search,
     scale_visit_counts_by_temperature,
 )
@@ -286,6 +290,11 @@ class TestMCTSConfig:
         assert cfg.search_batch_size == 8
         assert cfg.check_nonfinite is True
         assert cfg.max_acq_price_actions == 0
+        assert cfg.forced_playouts_k == 0.0
+
+    def test_validation_forced_playouts_k(self):
+        with pytest.raises(ValueError, match="forced_playouts_k"):
+            MCTSConfig(forced_playouts_k=-1.0)
 
     def test_action_dim_is_max_action_size(self):
         """Post-refactor: dense pad width is player-count independent."""
@@ -808,6 +817,181 @@ class TestPUCTSelection:
         )
         assert a0 == 0
         assert a1 == 1
+
+
+# ---------------------------------------------------------------------------
+# Forced playouts
+# ---------------------------------------------------------------------------
+
+def _forced_candidate_root() -> MCTSNode:
+    """Root whose low-prior action is under its forced allotment.
+
+    N = 92, so the 0.02-prior action needs sqrt(2 * 0.02 * 92) ~= 1.92
+    visits at k=2 but has 1. Plain PUCT prefers action 0 (Q +0.5 vs -0.5).
+    """
+    return _make_expanded_node(
+        active_player=0, num_actions=2,
+        priors=np.array([0.98, 0.02], dtype=np.float32),
+        visit_counts=np.array([90, 1], dtype=np.int32),
+        value_sums=np.array([[45.0, 0, 0], [-0.5, 0, 0]], dtype=np.float32),
+    )
+
+
+class _PeakedRootEvaluator:
+    """Root prior concentrated on the first legal action; flat, zero-valued leaves."""
+
+    def evaluate(self, state):
+        action_ids = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
+        n = enumerate_legal_actions_py(state, action_ids)
+        priors = np.full(n, 0.002, dtype=np.float32)
+        priors[0] = 1.0 - 0.002 * (n - 1)
+        values = np.zeros(NUM_PLAYERS, dtype=np.float32)
+        return priors, values, action_ids[:n].copy(), n, get_decision_phase_py(state)
+
+    def evaluate_leaves(self, state_arrays, legal_mask):
+        priors = legal_mask.astype(np.float32)
+        priors /= np.maximum(priors.sum(axis=1, keepdims=True), 1.0)
+        return priors, np.zeros((len(state_arrays), NUM_PLAYERS), dtype=np.float32)
+
+    def evaluate_terminal(self, state):
+        return np.zeros(NUM_PLAYERS, dtype=np.float32)
+
+
+class TestForcedPlayouts:
+    def test_under_allotment_action_is_forced(self):
+        root = _forced_candidate_root()
+        assert select_child(root, c_puct=1.0)[0] == 0
+        assert select_child(root, c_puct=1.0, forced_k=2.0)[0] == 1
+
+    def test_locked_edge_is_never_forced(self):
+        root = _forced_candidate_root()
+        assert root.value_sums is not None
+        root.value_sums[1] = -np.inf
+        assert select_child(root, c_puct=1.0, forced_k=2.0)[0] == 0
+
+    def test_forcing_applies_at_root_only(self):
+        # Root edge already caught up to the child's 92 visits (no virtual backup).
+        root = _make_expanded_node(
+            active_player=0, num_actions=1,
+            priors=np.array([1.0], dtype=np.float32),
+            visit_counts=np.array([92], dtype=np.int32),
+        )
+        child = _forced_candidate_root()
+        root.children[0] = child
+        path: list = []
+        outcome, node, action, _ = descend_path(root, 1.0, path, 2.0)
+        assert outcome == DESCEND_NEED_NEW_CHILD
+        assert node is child
+        assert action == 0
+
+    def test_search_gives_every_root_child_its_allotment(self, game_state):
+        k = 2.0
+        for forced_k in (0.0, k):
+            config = MCTSConfig(
+                num_simulations=400, search_batch_size=1, dirichlet_epsilon=0,
+                num_players=NUM_PLAYERS, forced_playouts_k=forced_k,
+            )
+            root = run_search(game_state, _PeakedRootEvaluator(), config)
+            assert root.priors is not None and root.visit_counts is not None
+            allotment = np.sqrt(k * root.priors * root.visit_count)
+            if forced_k == 0.0:
+                # Without forcing, plain PUCT starves the 0.2% actions.
+                assert (root.visit_counts[1:] == 0).all()
+            else:
+                # The final selection can raise N past an allotment boundary.
+                assert (root.visit_counts + 1 > allotment).all()
+            assert root.visit_count == 1 + int(root.visit_counts.sum())
+
+    @pytest.mark.parametrize("bs", [1, 8])
+    def test_forced_search_with_batching_and_reuse(self, game_state, evaluator, bs):
+        config = MCTSConfig(
+            num_simulations=64, search_batch_size=bs, num_players=NUM_PLAYERS,
+            forced_playouts_k=2.0,
+        )
+        pool = StatePool(2 * (config.num_simulations + 1), get_layout(NUM_PLAYERS).total_size)
+        root = run_search(game_state, evaluator, config, state_pool=pool)
+        assert root.legal_actions is not None and root.visit_counts is not None
+        action = int(root.legal_actions[np.argmax(root.visit_counts)])
+        reused = prepare_reuse_root(root, action, pool)
+        assert reused is not None
+        DRIVER.apply_action(game_state, action)
+        root = run_search(None, evaluator, config, state_pool=pool, reuse_root=reused)
+        assert root.visit_counts is not None
+        assert root.visit_count == 1 + config.num_simulations
+        assert root.visit_count == 1 + int(root.visit_counts.sum())
+
+
+# ---------------------------------------------------------------------------
+# Policy-target pruning
+# ---------------------------------------------------------------------------
+
+def _pruning_root(
+    priors: list[float], visits: list[int], q: list[float],
+) -> MCTSNode:
+    """Root with N = 1 + sum(visits) and per-action Q for player 0."""
+    visit_counts = np.array(visits, dtype=np.int32)
+    value_sums = np.zeros((len(visits), NUM_PLAYERS), dtype=np.float32)
+    value_sums[:, 0] = np.array(q) * np.maximum(visit_counts, 1)
+    return _make_expanded_node(
+        active_player=0, num_actions=len(visits),
+        priors=np.array(priors, dtype=np.float32),
+        visit_counts=visit_counts, value_sums=value_sums,
+    )
+
+
+class TestPolicyTargetPruning:
+    # N = 100, so sqrt(N) = 10. With c_puct = 1, PUCT(c*) = 0.5 + 0.8*10/81,
+    # and the 0.2-prior child stays below it with floor(2 / gap) = 10 visits.
+    PRIORS = [0.8, 0.2]
+    VISITS = [80, 19]
+    Q = [0.5, 0.4]
+
+    def test_uncapped_pruning_keeps_puct_below_best(self):
+        root = _pruning_root(self.PRIORS, self.VISITS, self.Q)
+        before = root.visit_counts.copy()  # type: ignore[union-attr]
+        pruned = prune_root_visits(root, 1.0, root.priors)  # type: ignore[arg-type]
+        np.testing.assert_array_equal(pruned, [80, 10])
+        np.testing.assert_array_equal(root.visit_counts, before)
+
+    def test_cap_limits_removal_to_whole_forced_visits(self):
+        root = _pruning_root(self.PRIORS, self.VISITS, self.Q)
+        # sqrt(2 * 0.2 * 100) ~= 6.3, so at most 6 visits come off.
+        cap = np.sqrt(2.0 * np.array(self.PRIORS) * root.visit_count)
+        pruned = prune_root_visits(root, 1.0, root.priors, max_removed=cap)  # type: ignore[arg-type]
+        np.testing.assert_array_equal(pruned, [80, 13])
+
+    def test_child_reduced_to_one_visit_is_dropped(self):
+        # floor(0.15 * 10 / gap) = 1 for gap ~= 1.09, so 4 visits fall to 1, then 0.
+        root = _pruning_root([0.85, 0.15], [95, 4], [0.5, -0.5])
+        np.testing.assert_array_equal(prune_root_visits(root, 1.0, root.priors), [95, 0])  # type: ignore[arg-type]
+
+    def test_child_whose_q_beats_best_puct_keeps_its_visits(self):
+        root = _pruning_root([0.5, 0.5], [60, 39], [0.0, 0.3])
+        np.testing.assert_array_equal(prune_root_visits(root, 1.0, root.priors), [60, 39])  # type: ignore[arg-type]
+
+    def test_modes(self):
+        root = _pruning_root(self.PRIORS, self.VISITS, self.Q)
+        raw = np.array(self.PRIORS, dtype=np.float32)
+        np.testing.assert_array_equal(
+            policy_target_visits(root, 1.0, "none", raw), self.VISITS,
+        )
+        np.testing.assert_array_equal(
+            policy_target_visits(root, 1.0, "forced", raw, forced_playouts_k=2.0), [80, 13],
+        )
+        np.testing.assert_array_equal(
+            policy_target_visits(root, 1.0, "raw_prior", raw), [80, 10],
+        )
+        with pytest.raises(ValueError, match="policy_target_pruning"):
+            policy_target_visits(root, 1.0, "bogus", raw)
+
+    def test_raw_prior_mode_removes_noise_earned_visits(self):
+        # Root noise lifted the second action from 0.02 to 0.2. Pruning
+        # against the search (noised) priors keeps 10 of its visits; against
+        # the raw prior it keeps floor(0.02 * 10 / gap) = 0.
+        root = _pruning_root([0.8, 0.2], self.VISITS, self.Q)
+        raw = np.array([0.98, 0.02], dtype=np.float32)
+        assert policy_target_visits(root, 1.0, "raw_prior", raw)[1] == 0
+        np.testing.assert_array_equal(prune_root_visits(root, 1.0, root.priors), [80, 10])  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

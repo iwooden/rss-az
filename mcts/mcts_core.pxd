@@ -4,6 +4,7 @@ cdef (int, int) _select_child_impl(
     const int[:] legal_actions, const float[:] priors,
     const int[:] visit_counts, const float[:, :] value_sums,
     int active_player_id, int parent_visit_count, float c_puct,
+    float forced_k,
 ) noexcept nogil
 
 cdef void _backup_node(
