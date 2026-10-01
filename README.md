@@ -115,6 +115,14 @@ played decisions, not search simulations. A phase is counted when self-play
 makes an acquisition decision; fully automated phases are excluded. Offer
 statistics exclude FI interventions. Cap hits count players reaching the
 rejection cap once per phase, including in uncapped legacy mode.
+`acq_offer_accept_prior_mean` averages the seller's unnoised root prior on
+accept, which the proposer's search also saw. Rejections split into
+`acq_rejections_expected_fraction` (accept prior below 0.2) and
+`acq_rejections_surprise_fraction` (above 0.5). An offer is a top choice when
+each searched proposer decision leading to it (corp, company, price) was the
+most-visited action; `acq_offers_top_choice_fraction` and
+`acq_top_choice_acceptance_rate` separate those offers from offers that
+self-play's temperature sampling picked.
 
 The setting is checkpointed with the config and applied by self-play, analysis,
 and live replay. Tournaments use one mode for all seats, defaulting to the first

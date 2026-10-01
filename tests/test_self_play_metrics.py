@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from rich.console import Console
@@ -101,23 +102,53 @@ def test_invest_cap_hits_average_games_by_count_and_finishing_rank() -> None:
     assert "self_play_3p/invest_roundtrip_cap_hits_4th" not in scalars
 
 
+def _observe(stats, state, action, *, accept_prior=0.5, top_choice=True):
+    """Observe ``action`` as if search played it with these root statistics."""
+    from core.actions import enumerate_legal_actions_py
+    from core.data import MAX_ACTION_SIZE
+
+    legal = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
+    legal = legal[:enumerate_legal_actions_py(state, legal)]
+    chosen = int(np.flatnonzero(legal == action)[0])
+    priors = np.where(legal == 1, accept_prior, 1.0 - accept_prior).astype(np.float32)
+    counts = np.ones(len(legal), dtype=np.float32)
+    counts[chosen] = 2.0 if top_choice else 0.0
+    stats.observe(state, legal, chosen, priors, counts)
+
+
 def test_acquisition_metrics_count_actual_responses_and_aggregate_by_phase():
     from core.driver import DRIVER
     from tests.phases.test_acq_rejections import negotiation_state, TARGET
 
     # Legacy replay can exceed the cap; record only its first crossing per phase.
+    # Each offer: seller response, seller accept prior, and whether the
+    # proposer's corp/company/price choices were search's top choice.
+    offers = (
+        (0, 0.1, (True, True, True)),    # expected rejection, top choice
+        (0, 0.6, (False, True, True)),   # surprise rejection
+        (0, 0.3, (True, True, False)),   # neither band
+        (1, 0.9, (True, True, True)),    # SELECT_CORP restarts the chain
+    )
     state = negotiation_state(v3=False)
     stats = AcquisitionStats()
-    for response in (0, 0, 0, 1):
-        for action in (1, TARGET, 1, response):
-            stats.observe(state, action)
+    for response, accept_prior, tops in offers:
+        for action, top in zip((1, TARGET, 1), tops):
+            _observe(stats, state, action, top_choice=top)
             DRIVER.apply_action(state, action)
+        _observe(stats, state, response, accept_prior=accept_prior, top_choice=False)
+        DRIVER.apply_action(state, response)
     assert (stats.phases, stats.decisions, stats.offers, stats.rejections, stats.cap_hits) == (1, 16, 4, 3, 1)
+    assert stats.accept_prior_sum == pytest.approx(1.9)
+    assert (stats.expected_rejections, stats.surprise_rejections) == (1, 1)
+    assert (stats.top_choice_offers, stats.top_choice_rejections) == (2, 1)
 
     first = _fake_record(3, [100, 200, 300])
     first.acquisition = stats
     second = _fake_record(5, [100, 200, 300, 400, 500])
-    second.acquisition = AcquisitionStats(phases=3, decisions=8, offers=1, rejections=0)
+    second.acquisition = AcquisitionStats(
+        phases=3, decisions=8, offers=1, rejections=0,
+        accept_prior_sum=0.7, top_choice_offers=1,
+    )
     metrics = _SelfPlayMetricAccumulator()
     metrics.add_record(first)
     metrics.add_record(second)
@@ -125,7 +156,13 @@ def test_acquisition_metrics_count_actual_responses_and_aggregate_by_phase():
     assert scalars["self_play_aggregate/acq_decisions_per_phase"] == 6
     assert scalars["self_play_aggregate/acq_offer_acceptance_rate"] == pytest.approx(2 / 5)
     assert scalars["self_play_aggregate/acq_cap_hits_per_phase"] == 0.25
+    assert scalars["self_play_aggregate/acq_offer_accept_prior_mean"] == pytest.approx(2.6 / 5)
+    assert scalars["self_play_aggregate/acq_rejections_expected_fraction"] == pytest.approx(1 / 3)
+    assert scalars["self_play_aggregate/acq_rejections_surprise_fraction"] == pytest.approx(1 / 3)
+    assert scalars["self_play_aggregate/acq_offers_top_choice_fraction"] == pytest.approx(3 / 5)
+    assert scalars["self_play_aggregate/acq_top_choice_acceptance_rate"] == pytest.approx(2 / 3)
     assert scalars["self_play_3p/acq_offer_acceptance_rate"] == 0.25
+    assert scalars["self_play_3p/acq_top_choice_acceptance_rate"] == 0.5
     assert scalars["self_play_5p/acq_offer_acceptance_rate"] == 1
 
 
@@ -139,11 +176,12 @@ def test_acquisition_metrics_ignore_fi_negotiation_and_other_phases():
     give_company_to_fi(state, TARGET)
     TURN.enter_acq_offer(state, 0, TARGET, 26, 1, 2)
     stats = AcquisitionStats()
-    stats.observe(state, 0)
+    _observe(stats, state, 0)
     assert stats.phases == 1 and stats.decisions == 1
     assert stats.offers == stats.rejections == stats.cap_hits == 0
+    assert stats.accept_prior_sum == stats.top_choice_offers == 0
     TURN.set_phase(state, int(GamePhases.PHASE_CLOSING))
-    stats.observe(state, 0)
+    stats.observe(state, np.zeros(1, dtype=np.uint16), 0, np.ones(1), np.ones(1))
     assert stats.decisions == 1
 
 

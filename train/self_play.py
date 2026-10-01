@@ -15,7 +15,7 @@ from __future__ import annotations
 import queue
 import signal
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import Any, TypedDict
 
 import numpy as np
@@ -189,10 +189,20 @@ class StrategyTrace:
     close_events: np.ndarray  # (n, 8), int32
 
 
+# Seller accept-prior bands splitting rejections the network expected from
+# rejections that surprised it.
+EXPECTED_REJECTION_ACCEPT_PRIOR = 0.2
+SURPRISE_REJECTION_ACCEPT_PRIOR = 0.5
+
+
 @dataclass
 class AcquisitionStats:
     """Real self-play decisions only; search simulations and FI offers are excluded
     from negotiation counts. Phases count turns with an acquisition decision.
+
+    Offers also record the seller's unnoised root prior on accept, which the
+    proposer's search saw at the same state, and whether every searched
+    proposer decision leading to the offer was search's most-visited action.
     """
 
     phases: int = 0
@@ -200,9 +210,23 @@ class AcquisitionStats:
     offers: int = 0
     rejections: int = 0
     cap_hits: int = 0
+    accept_prior_sum: float = 0.0
+    expected_rejections: int = 0
+    surprise_rejections: int = 0
+    top_choice_offers: int = 0
+    top_choice_rejections: int = 0
     _last_turn: int = -1
+    _top_choice: bool = True
 
-    def observe(self, state: GameState, action_id: int) -> None:
+    def observe(
+        self,
+        state: GameState,
+        legal_actions: np.ndarray,
+        chosen_idx: int,
+        priors: np.ndarray,
+        visit_counts: np.ndarray,
+    ) -> None:
+        """Record a played decision; arrays align with ``legal_actions``."""
         phase = TURN.get_phase(state)
         if phase not in (
             GamePhases.PHASE_ACQ_SELECT_CORP, GamePhases.PHASE_ACQ_SELECT_COMPANY,
@@ -214,30 +238,48 @@ class AcquisitionStats:
         if turn != self._last_turn:
             self.phases += 1
             self._last_turn = turn
+        top_choice = bool(visit_counts[chosen_idx] >= visit_counts.max())
+        # Each proposal starts at SELECT_CORP; company and price steps narrow it.
+        if phase == GamePhases.PHASE_ACQ_SELECT_CORP:
+            self._top_choice = top_choice
+            return
         if phase != GamePhases.PHASE_ACQ_OFFER:
+            self._top_choice = self._top_choice and top_choice
             return
         if COMPANIES[TURN.get_active_company(state)].get_location(state) == CompanyLocation.LOC_FI:
             return
+        # ACQ_OFFER pass/reject is 0; accept is 1.
+        accept_prior = float(priors[np.flatnonzero(legal_actions == 1)[0]])
         self.offers += 1
-        if action_id == 0:  # ACQ_OFFER pass/reject; accept is 1.
+        self.accept_prior_sum += accept_prior
+        self.top_choice_offers += self._top_choice
+        if legal_actions[chosen_idx] == 0:
             self.rejections += 1
+            self.expected_rejections += accept_prior < EXPECTED_REJECTION_ACCEPT_PRIOR
+            self.surprise_rejections += accept_prior > SURPRISE_REJECTION_ACCEPT_PRIOR
+            self.top_choice_rejections += self._top_choice
             proposer = CORPS[TURN.get_active_corp(state)].get_president_id(state)
             if PLAYERS[proposer].get_acq_rejections(state) == int(GameConstants.ACQ_REJECTION_CAP) - 1:
                 self.cap_hits += 1
 
     def add(self, other: AcquisitionStats) -> None:
-        self.phases += other.phases
-        self.decisions += other.decisions
-        self.offers += other.offers
-        self.rejections += other.rejections
-        self.cap_hits += other.cap_hits
+        for f in fields(self):
+            if not f.name.startswith("_"):
+                setattr(self, f.name, getattr(self, f.name) + getattr(other, f.name))
 
     def scalars(self) -> dict[str, float]:
+        offers, rejections = max(self.offers, 1), max(self.rejections, 1)
+        top_choice_accepts = self.top_choice_offers - self.top_choice_rejections
         return {
             "acq_decisions_per_phase": self.decisions / max(self.phases, 1),
             "acq_offers_per_phase": self.offers / max(self.phases, 1),
-            "acq_offer_acceptance_rate": (self.offers - self.rejections) / max(self.offers, 1),
+            "acq_offer_acceptance_rate": (self.offers - self.rejections) / offers,
             "acq_cap_hits_per_phase": self.cap_hits / max(self.phases, 1),
+            "acq_offer_accept_prior_mean": self.accept_prior_sum / offers,
+            "acq_rejections_expected_fraction": self.expected_rejections / rejections,
+            "acq_rejections_surprise_fraction": self.surprise_rejections / rejections,
+            "acq_offers_top_choice_fraction": self.top_choice_offers / offers,
+            "acq_top_choice_acceptance_rate": top_choice_accepts / max(self.top_choice_offers, 1),
         }
 
 
@@ -1117,7 +1159,7 @@ def play_game(
         # Sample and apply action.
         chosen_idx = int(rng.choice(n_legal, p=sample_probs))
         action_idx = int(legal_actions[chosen_idx])
-        acquisition.observe(state, action_idx)
+        acquisition.observe(state, legal_actions, chosen_idx, root_priors[0], counts)
         if trace_builder is not None:
             selected_slot = int(action_lut_np[phase_id, action_idx])
             action_info = decode_action_py(phase_id, action_idx)
