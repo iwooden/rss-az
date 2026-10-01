@@ -36,7 +36,7 @@ for development guidance.
 - `train_configs/` - JSON training configs. `bigger-multi.json` is the current
   transformer-v2 mixed 3-5 player config.
 - `utils_18xx/` - 18xx.games replay parsing, replay analysis, API client, and
-  live-play webhook server.
+  live-play server.
 - `tests/` - phase tests, engine invariants, model contract tests, MCTS tests,
   training tests, and 18xx compatibility checks.
 - [`token-data.md`](token-data.md) - transformer v2 input layout specification.
@@ -264,15 +264,13 @@ output lists both.
 
 ## Live 18xx.games Play
 
-The live server receives webhook notifications, synchronizes the game into
-this engine, runs MCTS, and posts the chosen action back. Each game is
+The live server follows games, synchronizes them into this engine, runs MCTS
+on the bots' turns, and posts the chosen actions back. Each followed game is
 downloaded from the 18xx.games API once; after that the server follows the
 actions 18xx.games publishes on its MessageBus (the same long-poll updates the
 browser uses), recomputes whose turn it is locally, and only re-downloads when
 the update stream has a gap. Followed games are saved under
-`runtime/game_feeds/` so restarts resume without downloading.
-`--no-message-bus` restores the old behavior of downloading the full game on
-every turn and after every post.
+`runtime/game_feeds/` so restarts resume following them without downloading.
 
 Live decisions use the checkpoint's `v3_behavior` and acquisition scope.
 Checkpoints trained with `"acq_same_president": false` make cross-president
@@ -313,7 +311,7 @@ Start the live server:
   --checkpoint-dir checkpoints \
   --base-url http://localhost:9292 \
   --api-min-interval 0 \
-  --host 0.0.0.0 \
+  --host 127.0.0.1 \
   --port 8080 \
   --simulations 400 \
   --model-output
@@ -323,21 +321,9 @@ When `--base-url` points at `https://18xx.games`, outbound API requests are
 throttled by default to one request start every 10 seconds. Override with
 `--api-min-interval SECONDS`; local URLs default to no throttling.
 
-Configure the webhook URL for bot `rss-az-1` as:
-
-```text
-http://YOUR_HOST:8080/webhook/rss-az-1
-```
-
-For local manual testing, the server also supports a loopback-only poke
-endpoint:
-
-```bash
-curl http://localhost:8080/poke/GAME_ID
-```
-
-Webhooks start following a game automatically. Loopback-only endpoints also
-manage followed games:
+Follow games with the loopback-only listen endpoints. Starting a game
+publishes nothing on its MessageBus channel, so call `listen` after the game
+has started:
 
 ```bash
 curl http://localhost:8080/listen                  # followed games and state
@@ -349,9 +335,15 @@ curl -X POST http://localhost:8080/unlisten/GAME_ID
 Following a game queues any bot whose turn it currently is, and later queues
 bots whenever they become an acting player or, in the simultaneous
 Acquisition and Closing rounds, whenever another player acts while they are
-still acting. Webhooks are optional for followed games; note that 18xx.games
-only delivers webhooks to `https` URLs on public addresses. Finished games stop being followed automatically; blacklisted
+still acting. Finished games stop being followed automatically; blacklisted
 games are followed but never queued.
+
+For manual testing, the loopback-only poke endpoint queues every configured
+bot for a game, followed or not:
+
+```bash
+curl http://localhost:8080/poke/GAME_ID
+```
 
 The loopback-only eval endpoint can evaluate either a live game or an exported
 18xx.games JSON file without posting an action. File evaluations read a direct

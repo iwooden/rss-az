@@ -567,7 +567,8 @@ def test_worker_uses_feed_and_waits_for_posted_actions(tmp_path, monkeypatch):
     worker._process("bot", "42")
 
     # Each decision sees the previous post; the bot kept acting after its
-    # first post (no webhook would arrive) and was re-checked from the feed.
+    # first post (the feed does not queue it again) and was re-checked from
+    # the feed.
     assert engine.seen_action_ids == [[1], [1, 2], [1, 2, 3]]
     assert [post["n"] for post in api.posts] == [1, 2]
     assert api.fetches == 1

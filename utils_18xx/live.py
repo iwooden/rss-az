@@ -1,11 +1,9 @@
-"""Webhook-driven live play against humans on 18xx.games.
+"""Live play against humans on 18xx.games.
 
-Receives turn notifications via webhook, fetches game state from the
-18xx.games API, runs MCTS search, and posts the selected move back.
-
-By default each game is downloaded once and then kept current from the
-18xx.games MessageBus (see ``game_feed.py``), which also detects the bots'
-turns; ``--no-message-bus`` restores a full download per turn and per post.
+Each game followed via ``/listen/<game_id>`` is downloaded once and then kept
+current from the 18xx.games MessageBus (see ``game_feed.py``), which also
+detects the bots' turns. On a bot's turn the move worker runs MCTS search and
+posts the selected move back through the 18xx.games API.
 
 Usage:
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime
@@ -14,7 +12,6 @@ Usage:
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --model-output
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --allow-cross-president-offers
     .venv/bin/python -m utils_18xx.live --runtime-dir runtime --determinization-count 4
-    .venv/bin/python -m utils_18xx.live --runtime-dir runtime --no-message-bus
 """
 
 from __future__ import annotations
@@ -24,7 +21,6 @@ import ipaddress
 import json
 import logging
 import queue
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -278,11 +274,8 @@ def _format_live_model_output(
     return _apply_analyze_player_names("\n".join(lines), player_names)
 
 # ---------------------------------------------------------------------------
-# Webhook parsing
+# Request parsing
 # ---------------------------------------------------------------------------
-
-_GAME_URL_RE = re.compile(r"/game/(\d+)")
-_WEBHOOK_USER_RE = re.compile(r"<@([^>]+)>")
 
 
 @dataclass(frozen=True)
@@ -293,30 +286,6 @@ class EvalRequest:
     player_index: int | None = None
     bot_name: str | None = None
     filename: str | None = None
-
-
-def parse_webhook_text(text: str) -> tuple[str | None, str | None]:
-    """Extract (game_id, webhook_user_id) from webhook notification text.
-
-    Returns (None, None) if the text can't be parsed.
-    """
-    game_id: str | None = None
-    webhook_user_id: str | None = None
-
-    m = _GAME_URL_RE.search(text)
-    if m:
-        game_id = m.group(1)
-
-    m = _WEBHOOK_USER_RE.search(text)
-    if m:
-        webhook_user_id = m.group(1)
-
-    return game_id, webhook_user_id
-
-
-def is_turn_webhook_text(text: str) -> bool:
-    """Return whether a webhook body is a turn notification."""
-    return "your turn" in text.lower()
 
 
 def parse_poke_game_id(path: str) -> str | None:
@@ -454,7 +423,7 @@ def _parse_blacklisted_game_ids(data) -> set[str]:
 
 
 class GameBlacklist:
-    """Runtime-backed list of game IDs whose webhooks should be ignored."""
+    """Runtime-backed list of followed game IDs whose turns are never queued."""
 
     def __init__(self, path: Path):
         self._path = path
@@ -3179,159 +3148,38 @@ def load_models_config(runtime_dir: Path) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Webhook HTTP handler
+# Local control HTTP handler
 # ---------------------------------------------------------------------------
 
 
-class WebhookHandler(BaseHTTPRequestHandler):
-    """Receives webhook notifications and enqueues turn events."""
+class ControlHandler(BaseHTTPRequestHandler):
+    """Serves the loopback-only listen, poke, and eval endpoints."""
 
     work_queue: queue.Queue  # set by LiveService before serving
     auth: dict[str, dict]  # set by LiveService
     game_blacklist: GameBlacklist | None = None  # set by LiveService
-    game_feeds: GameFeedManager | None = None  # set by LiveService
+    game_feeds: GameFeedManager  # set by LiveService
 
     def do_GET(self):
-        logger.info(f"Incoming GET: {self.path}")
-        if self._is_feed_path():
-            if not self._is_local_request():
-                self._send_json(403, {"error": "local_only"})
-                return
-            self._handle_feed()
-            return
-        if self._is_poke_path():
-            if not self._is_local_request():
-                self._send_json(403, {"error": "local_only"})
-                return
-            self._handle_poke()
-            return
-        if self._is_eval_path():
-            if not self._is_local_request():
-                self._send_json(403, {"error": "local_only"})
-                return
-            self._handle_eval()
-            return
-        self._send_json(404, {"error": "not_found"})
+        self._route("GET")
 
     def do_POST(self):
-        logger.info(f"Incoming POST: {self.path}")
+        self._route("POST")
 
-        if self._is_feed_path():
-            if not self._is_local_request():
-                self._send_json(403, {"error": "local_only"})
-                return
-            self._handle_feed()
-            return
-
-        if self._is_poke_path():
-            if not self._is_local_request():
-                self._send_json(403, {"error": "local_only"})
-                return
-            self._handle_poke()
-            return
-
-        if self._is_eval_path():
-            if not self._is_local_request():
-                self._send_json(403, {"error": "local_only"})
-                return
-            self._handle_eval()
-            return
-
-        # Extract bot name from URL path: /webhook/<bot_name>
-        path_parts = self.path.strip("/").split("/")
-        if len(path_parts) != 2 or path_parts[0] != "webhook":
-            logger.warning(f"Rejected path: {self.path}")
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        bot_name = path_parts[1]
-        if bot_name not in self.auth:
-            logger.warning(f"Unknown bot name in webhook: {bot_name}")
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        # Parse body
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode()
-
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            logger.warning(
-                f"Webhook JSON parse failed: bot={bot_name}, body={body[:500]!r}"
-            )
-            self.send_response(400)
-            self.end_headers()
-            return
-
-        # Extract game_id from webhook text
-        text = data.get("text", "")
-        if not text and "content" in data:
-            text = data.get("content", "")
-        logger.info(
-            "Webhook payload: "
-            f"bot={bot_name}, keys={sorted(data.keys())}, "
-            f"text={str(text)[:500]!r}"
-        )
-
-        # Only respond to turn notifications.
-        if not is_turn_webhook_text(str(text)):
-            logger.info(
-                f"Ignoring webhook for bot={bot_name}: "
-                f"missing turn marker"
-            )
-            self.send_response(200)
-            self.end_headers()
-            return
-
-        game_id, _ = parse_webhook_text(text)
-
-        if not game_id:
-            logger.warning(
-                f"Ignoring webhook for bot={bot_name}: "
-                f"could not parse game id from text={text[:500]!r}"
-            )
-            self.send_response(200)
-            self.end_headers()
-            return
-
-        if (
-            self.game_blacklist is not None
-            and self.game_blacklist.contains(game_id)
-        ):
-            logger.info(
-                f"Ignoring webhook for blacklisted game: "
-                f"bot={bot_name}, game={game_id}"
-            )
-            self.send_response(200)
-            self.end_headers()
-            return
-
-        logger.info(f"Webhook: bot={bot_name}, game={game_id}")
-        if self.game_feeds is not None:
-            self.game_feeds.notify_webhook(bot_name, game_id)
+    def _route(self, method: str):
+        logger.info(f"Incoming {method}: {self.path}")
+        handler = {
+            "listen": self._handle_feed,
+            "unlisten": self._handle_feed,
+            "poke": self._handle_poke,
+            "eval": self._handle_eval,
+        }.get(urlparse(self.path).path.strip("/").split("/", 1)[0])
+        if handler is None:
+            self._send_json(404, {"error": "not_found"})
+        elif not is_local_request_host(str(self.client_address[0])):
+            self._send_json(403, {"error": "local_only"})
         else:
-            self.work_queue.put((bot_name, game_id))
-
-        self.send_response(200)
-        self.end_headers()
-
-    def _is_feed_path(self) -> bool:
-        parsed = urlparse(self.path)
-        return parsed.path.strip("/").split("/", 1)[0] in {"listen", "unlisten"}
-
-    def _is_poke_path(self) -> bool:
-        parsed = urlparse(self.path)
-        return parsed.path.strip("/").split("/", 1)[0] == "poke"
-
-    def _is_eval_path(self) -> bool:
-        parsed = urlparse(self.path)
-        return parsed.path.strip("/").split("/", 1)[0] == "eval"
-
-    def _is_local_request(self) -> bool:
-        return is_local_request_host(str(self.client_address[0]))
+            handler()
 
     def _handle_feed(self):
         request = parse_feed_request(self.path)
@@ -3348,10 +3196,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
             )
             return
         feeds = self.game_feeds
-        if feeds is None:
-            self._send_json(409, {"error": "message_bus_disabled"})
-            return
-
         if request.command == "status":
             self._send_json(200, {"games": feeds.status()})
             return
@@ -3717,7 +3561,7 @@ class MoveWorker(threading.Thread):
         }
 
         # Loop: play moves until it's no longer our turn.
-        # A single webhook may require multiple actions (e.g. sequential
+        # A single turn may require multiple actions (e.g. sequential
         # IPO decisions, ACQ offers, or Closing choices).
         max_consecutive = 50  # safety limit
         for _ in range(max_consecutive):
@@ -3799,9 +3643,9 @@ class MoveWorker(threading.Thread):
                         action,
                     )
 
-            # Refresh game data to see whether we are still acting: no webhook
-            # arrives when our own action leaves us acting (e.g. we finish one
-            # phase and open the next).
+            # Refresh game data to see whether we are still acting: the feed
+            # does not queue a bot whose own action leaves it acting (e.g. we
+            # finish one phase and open the next).
             if from_feed:
                 assert self._game_feeds is not None
                 game_data = self._game_feeds.wait_for_posted_actions(
@@ -3860,18 +3704,18 @@ class MoveWorker(threading.Thread):
 
 
 class LiveService:
-    """Webhook server + move worker."""
+    """Local control server + game feeds + move worker."""
 
     def __init__(
         self,
         api: ApiClient,
         auth: dict[str, dict],
         registry: ModelRegistry,
-        host: str = "0.0.0.0",
+        feed_dir: Path,
+        host: str = "127.0.0.1",
         port: int = 8080,
         game_blacklist: GameBlacklist | None = None,
         acq_offer_tracker: AcqOfferTracker | None = None,
-        feed_dir: Path | None = None,
     ):
         self._api = api
         self._auth = auth
@@ -3881,26 +3725,22 @@ class LiveService:
         self._game_blacklist = game_blacklist
         self._acq_offer_tracker = acq_offer_tracker
         self._work_queue: queue.Queue = queue.Queue()
-        self._game_feeds = (
-            GameFeedManager(
-                api,
-                auth,
-                feed_dir,
-                self._work_queue,
-                base_url=api.base_url,
-                game_blacklist=game_blacklist,
-            )
-            if feed_dir is not None
-            else None
+        self._game_feeds = GameFeedManager(
+            api,
+            auth,
+            feed_dir,
+            self._work_queue,
+            base_url=api.base_url,
+            game_blacklist=game_blacklist,
         )
 
     def start(self):
-        """Start webhook server and worker thread."""
+        """Start the game feeds, worker thread, and control server."""
         # Configure handler class attributes
-        WebhookHandler.work_queue = self._work_queue
-        WebhookHandler.auth = self._auth
-        WebhookHandler.game_blacklist = self._game_blacklist
-        WebhookHandler.game_feeds = self._game_feeds
+        ControlHandler.work_queue = self._work_queue
+        ControlHandler.auth = self._auth
+        ControlHandler.game_blacklist = self._game_blacklist
+        ControlHandler.game_feeds = self._game_feeds
 
         # Start worker
         worker = MoveWorker(
@@ -3912,20 +3752,20 @@ class LiveService:
             game_feeds=self._game_feeds,
         )
         worker.start()
-        if self._game_feeds is not None:
-            self._game_feeds.start()
+        self._game_feeds.start()
 
         # Start HTTP server (blocks)
-        server = HTTPServer((self._host, self._port), WebhookHandler)
+        server = HTTPServer((self._host, self._port), ControlHandler)
         logger.info(
-            f"Webhook server listening on {self._host}:{self._port}"
+            f"Control server listening on {self._host}:{self._port}"
         )
         logger.info(
             f"Bot accounts: {', '.join(self._auth.keys())}"
         )
         logger.info(
-            "Set webhook URLs to: "
-            f"http://<host>:{self._port}/webhook/<bot_name>"
+            "Game listen URLs: "
+            f"http://<host>:{self._port}/listen[/<game_id>], "
+            f"http://<host>:{self._port}/unlisten/<game_id>"
         )
         logger.info(
             "Manual poke URL: "
@@ -3939,14 +3779,6 @@ class LiveService:
             "Manual eval file URL: "
             f"http://<host>:{self._port}/eval/file/<filename> (reads /tmp)"
         )
-        if self._game_feeds is not None:
-            logger.info(
-                "Game listen URLs: "
-                f"http://<host>:{self._port}/listen[/<game_id>], "
-                f"http://<host>:{self._port}/unlisten/<game_id>"
-            )
-        else:
-            logger.info("MessageBus disabled: downloading games on each turn")
 
         try:
             server.serve_forever()
@@ -3962,7 +3794,7 @@ class LiveService:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Live play webhook server for 18xx.games",
+        description="Live play server for 18xx.games",
     )
     parser.add_argument(
         "--runtime-dir",
@@ -4015,7 +3847,7 @@ def main():
         help="Eval inference dtype override (default: checkpoint config)",
     )
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument(
         "--checkpoint-dir",
         type=str,
@@ -4039,16 +3871,6 @@ def main():
             "neutral accept/reject priors, instead of auto-rejecting them. "
             "Checkpoints trained with cross-president offers always answer them, "
             "from neutral priors when v3 rules forbid the offer"
-        ),
-    )
-    parser.add_argument(
-        "--no-message-bus",
-        dest="message_bus",
-        action="store_false",
-        help=(
-            "Download the full game on every turn and after every post "
-            "instead of keeping listened games current from the 18xx.games "
-            "MessageBus"
         ),
     )
     compile_group = parser.add_mutually_exclusive_group()
@@ -4124,7 +3946,7 @@ def main():
         acq_offer_tracker=AcqOfferTracker(
             runtime_dir / ACQ_OFFER_TRACKING_FILE
         ),
-        feed_dir=runtime_dir / FEED_DIR_NAME if args.message_bus else None,
+        feed_dir=runtime_dir / FEED_DIR_NAME,
     )
     service.start()
 

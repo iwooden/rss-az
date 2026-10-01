@@ -5,13 +5,12 @@ from http.client import HTTPMessage
 
 from utils_18xx.live import (
     AcqOfferTracker,
+    ControlHandler,
     EvalRequest,
     FeedRequest,
     GameBlacklist,
-    WebhookHandler,
     default_api_min_interval,
     is_local_request_host,
-    is_turn_webhook_text,
     parse_eval_request,
     parse_feed_request,
     parse_poke_game_id,
@@ -28,7 +27,7 @@ def test_parse_poke_game_id_from_query():
 
 
 def test_parse_poke_game_id_rejects_other_paths():
-    assert parse_poke_game_id("/webhook/rss-az-1") is None
+    assert parse_poke_game_id("/listen/12345") is None
     assert parse_poke_game_id("/poke") is None
 
 
@@ -62,29 +61,11 @@ def test_parse_eval_request_from_tmp_file_path():
 
 
 def test_parse_eval_request_rejects_other_paths():
-    assert parse_eval_request("/webhook/rss-az-1") is None
+    assert parse_eval_request("/listen/12345") is None
     assert parse_eval_request("/eval") is None
     assert parse_eval_request("/eval/123/extra") is None
     assert parse_eval_request("/eval/file") is None
     assert parse_eval_request("/eval/file/..%2Fsecret.json") is None
-
-
-def test_turn_webhook_text_is_case_insensitive():
-    assert is_turn_webhook_text(
-        '<@rss-az-2> Your Turn in Rolling Stock Stars "" (Investment 1)'
-    )
-    assert is_turn_webhook_text(
-        '<@rss-az-2> Your turn in Rolling Stock Stars "" (Investment 1)'
-    )
-    assert is_turn_webhook_text(
-        '<@rss-az-2> YOUR TURN in Rolling Stock Stars "" (Investment 1)'
-    )
-
-
-def test_turn_webhook_text_rejects_non_turn_notifications():
-    assert not is_turn_webhook_text(
-        '<@rss-az-2> Game Finished in Rolling Stock Stars "" (Issue Shares 13)'
-    )
 
 
 def test_public_18xx_host_defaults_to_conservative_api_throttle():
@@ -140,7 +121,7 @@ def test_acq_offer_tracker_records_and_resets_by_turn(tmp_path):
     }
 
 
-class _RecordingHandler(WebhookHandler):
+class _RecordingHandler(ControlHandler):
     """Exercise request handling without opening a network connection."""
 
     def __init__(self, path: str, body: str = "") -> None:
@@ -168,59 +149,20 @@ def _make_handler(path: str, body: str = "") -> _RecordingHandler:
     return _RecordingHandler(path, body)
 
 
-def _turn_webhook_body(game_id: str) -> str:
-    return json.dumps({
-        "text": (
-            f"<@rss-az-1> Your turn in "
-            f"https://18xx.games/game/{game_id} (Acquisition 8)"
-        ),
-    })
-
-
-def test_webhook_ignores_blacklisted_game(tmp_path, monkeypatch):
-    path = tmp_path / "blacklisted_games.json"
-    path.write_text(json.dumps([254153]))
-    work_queue = queue.Queue()
-
-    monkeypatch.setattr(WebhookHandler, "work_queue", work_queue, raising=False)
-    monkeypatch.setattr(
-        WebhookHandler,
-        "auth",
-        {"rss-az-1": {"token": "token"}},
-        raising=False,
-    )
-    monkeypatch.setattr(
-        WebhookHandler,
-        "game_blacklist",
-        GameBlacklist(path),
-        raising=False,
-    )
-
-    handler = _make_handler(
-        "/webhook/rss-az-1",
-        _turn_webhook_body("254153"),
-    )
-
-    handler.do_POST()
-
-    assert handler.status_codes == [200]
-    assert work_queue.empty()
-
-
 def test_manual_poke_bypasses_blacklist(tmp_path, monkeypatch):
     path = tmp_path / "blacklisted_games.json"
     path.write_text(json.dumps([254153]))
     work_queue = queue.Queue()
 
-    monkeypatch.setattr(WebhookHandler, "work_queue", work_queue, raising=False)
+    monkeypatch.setattr(ControlHandler, "work_queue", work_queue, raising=False)
     monkeypatch.setattr(
-        WebhookHandler,
+        ControlHandler,
         "auth",
         {"rss-az-1": {"token": "token"}},
         raising=False,
     )
     monkeypatch.setattr(
-        WebhookHandler,
+        ControlHandler,
         "game_blacklist",
         GameBlacklist(path),
         raising=False,
@@ -237,9 +179,9 @@ def test_manual_poke_bypasses_blacklist(tmp_path, monkeypatch):
 def test_manual_eval_queues_eval_request(monkeypatch):
     work_queue = queue.Queue()
 
-    monkeypatch.setattr(WebhookHandler, "work_queue", work_queue, raising=False)
+    monkeypatch.setattr(ControlHandler, "work_queue", work_queue, raising=False)
     monkeypatch.setattr(
-        WebhookHandler,
+        ControlHandler,
         "auth",
         {"rss-az-1": {"token": "token"}},
         raising=False,
@@ -260,7 +202,7 @@ def test_manual_eval_queues_eval_request(monkeypatch):
 def test_manual_file_eval_queues_eval_request(monkeypatch):
     work_queue = queue.Queue()
 
-    monkeypatch.setattr(WebhookHandler, "work_queue", work_queue, raising=False)
+    monkeypatch.setattr(ControlHandler, "work_queue", work_queue, raising=False)
 
     handler = _make_handler("/eval/file/256285.json?player_index=1")
 
@@ -277,7 +219,7 @@ def test_manual_file_eval_queues_eval_request(monkeypatch):
 def test_manual_eval_is_local_only(monkeypatch):
     work_queue = queue.Queue()
 
-    monkeypatch.setattr(WebhookHandler, "work_queue", work_queue, raising=False)
+    monkeypatch.setattr(ControlHandler, "work_queue", work_queue, raising=False)
 
     handler = _make_handler("/eval/254153")
     handler.client_address = ("203.0.113.7", 12345)
@@ -319,22 +261,19 @@ class _RecordingFeeds:
     def has_feed(self, game_id):
         return game_id in self.known
 
-    def notify_webhook(self, bot_name, game_id):
-        self.calls.append(("webhook", bot_name, game_id))
-
     def status(self):
         return [{"game_id": game_id} for game_id in sorted(self.known)]
 
 
 def _use_feeds(monkeypatch, feeds, work_queue=None):
-    monkeypatch.setattr(WebhookHandler, "game_feeds", feeds, raising=False)
+    monkeypatch.setattr(ControlHandler, "game_feeds", feeds, raising=False)
     monkeypatch.setattr(
-        WebhookHandler, "work_queue", work_queue or queue.Queue(), raising=False,
+        ControlHandler, "work_queue", work_queue or queue.Queue(), raising=False,
     )
     monkeypatch.setattr(
-        WebhookHandler, "auth", {"rss-az-1": {"token": "token"}}, raising=False,
+        ControlHandler, "auth", {"rss-az-1": {"token": "token"}}, raising=False,
     )
-    monkeypatch.setattr(WebhookHandler, "game_blacklist", None, raising=False)
+    monkeypatch.setattr(ControlHandler, "game_blacklist", None, raising=False)
 
 
 def test_listen_routes_drive_game_feeds(monkeypatch):
@@ -371,29 +310,24 @@ def test_unlisten_unknown_game_is_404(monkeypatch):
     assert feeds.calls == []
 
 
-def test_listen_routes_are_local_only_and_need_message_bus(monkeypatch):
+def test_listen_routes_are_local_only(monkeypatch):
     feeds = _RecordingFeeds()
     _use_feeds(monkeypatch, feeds)
     remote = _make_handler("/listen/254153")
     remote.client_address = ("203.0.113.7", 12345)
     remote.do_POST()
     assert remote.status_codes == [403]
-
-    _use_feeds(monkeypatch, None)
-    disabled = _make_handler("/listen/254153")
-    disabled.do_POST()
-    assert disabled.status_codes == [409]
     assert feeds.calls == []
 
 
-def test_webhook_goes_to_game_feeds_when_enabled(monkeypatch):
+def test_unknown_routes_are_404(monkeypatch):
     feeds = _RecordingFeeds()
     work_queue = queue.Queue()
     _use_feeds(monkeypatch, feeds, work_queue)
 
-    handler = _make_handler("/webhook/rss-az-1", _turn_webhook_body("254153"))
+    handler = _make_handler("/webhook/rss-az-1", '{"text": "Your Turn"}')
     handler.do_POST()
 
-    assert handler.status_codes == [200]
-    assert feeds.calls == [("webhook", "rss-az-1", "254153")]
+    assert handler.status_codes == [404]
+    assert feeds.calls == []
     assert work_queue.empty()

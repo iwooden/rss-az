@@ -412,67 +412,6 @@ def test_blacklisted_game_is_tracked_but_not_queued(tmp_path):
     assert _drain(work, manager) == []
 
 
-def test_webhook_for_new_game_listens_and_queues_after_download(tmp_path):
-    # Server acting disagrees with the webhook; the worker's replay decides.
-    api = _FakeApi(_game([_action(1, [2])]))
-    manager, bus, work = _manager(tmp_path, api)
-
-    manager.notify_webhook("bot", "42")
-    manager.pump()
-    assert bus.calls == [("subscribe", CHANNEL, -1)]
-    assert _drain(work, manager) == []
-
-    manager.on_bus_status(CHANNEL, 3, True)
-    manager.on_bus_synced({CHANNEL})
-    manager.pump()
-    assert _drain(work, manager) == [("bot", "42")]
-
-
-def test_webhook_matching_bus_turn_is_not_requeued(tmp_path):
-    api = _FakeApi(_game([_action(1, [2])]))
-    manager, _, work = _manager(tmp_path, api)
-    _bootstrap(manager)
-    _deliver(manager, 11, _action(2, [1]))
-    assert _drain(work, manager) == [("bot", "42")]
-
-    manager.notify_webhook("bot", "42")
-    manager.pump()
-    assert _drain(work, manager) == []
-    assert len(api.fetches) == 1
-
-
-def test_webhook_ahead_of_bus_waits_then_downloads(tmp_path):
-    clock = _Clock()
-    api = _FakeApi(_game([_action(1, [2])]))
-    manager, _, work = _manager(tmp_path, api, clock=clock)
-    _bootstrap(manager)
-
-    manager.notify_webhook("bot", "42")
-    manager.pump()
-    assert _drain(work, manager) == []
-
-    # The bus catches up within the grace period: one queue entry, no download.
-    _deliver(manager, 11, _action(2, [1]))
-    assert _drain(work, manager) == [("bot", "42")]
-    clock.now += game_feed.WEBHOOK_GRACE_SECS
-    manager.pump()
-    assert _drain(work, manager) == []
-    assert len(api.fetches) == 1
-
-    # Later turn whose action never reaches us: download after the grace.
-    clock.now += game_feed.WEBHOOK_MATCH_SECS + 1
-    _deliver(manager, 12, _action(3, [2]))
-    manager.notify_webhook("bot", "42")
-    manager.pump()
-    api.game = _game([_action(1, [2]), _action(2, [1]), _action(3, [2]),
-                      _action(4, [1])])
-    clock.now += game_feed.WEBHOOK_GRACE_SECS
-    manager.pump()
-    assert len(api.fetches) == 2
-    assert _feed_ids(manager) == [1, 2, 3, 4]
-    assert _drain(work, manager) == [("bot", "42")]
-
-
 def test_failed_listen_download_retries(tmp_path):
     clock = _Clock()
     api = _FakeApi(_game([_action(1, [1])]))

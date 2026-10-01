@@ -37,6 +37,9 @@ MIN_POLL_INTERVAL = 0.1
 # server-side). The browser would use 18xx's 1s callbackInterval.
 SHORT_POLL_INTERVAL = 5.0
 MAX_ERROR_BACKOFF = 60.0
+# 18xx.games' nginx often answers polls with brief 502s; log failures quietly
+# until this many in a row (about a minute of backoff), then warn.
+FAILURE_WARN_COUNT = 7
 _USER_AGENT = f"Python-urllib/{sys.version_info.major}.{sys.version_info.minor}"
 
 
@@ -150,7 +153,10 @@ class MessageBusClient:
                     continue
                 failures += 1
                 delay = min(MAX_ERROR_BACKOFF, 2.0 ** (failures - 1))
-                logger.warning(
+                logger.log(
+                    logging.WARNING
+                    if failures >= FAILURE_WARN_COUNT
+                    else logging.DEBUG,
                     "MessageBus poll failed (%d in a row): %s; retrying in %.0fs",
                     failures,
                     exc,
@@ -160,6 +166,8 @@ class MessageBusClient:
                 continue
             if result is None:
                 return
+            if failures >= FAILURE_WARN_COUNT:
+                logger.info("MessageBus poll recovered after %d failures", failures)
             failures = 0
             long_poll, message_count = result
             elapsed = time.monotonic() - started
@@ -268,9 +276,11 @@ class MessageBusClient:
             conn.close()
 
         if resp.status != 200:
-            raise MessageBusError(
-                f"HTTP {resp.status}: {raw[:200].decode(errors='replace')}"
-            )
+            detail = f"HTTP {resp.status} {resp.reason}"
+            # Skip proxy error pages (nginx's 502 HTML).
+            if not (resp.getheader("Content-Type") or "").startswith("text/html"):
+                detail += f": {raw[:200].decode(errors='replace')}"
+            raise MessageBusError(detail)
         text = raw.decode().strip()
         messages = json.loads(text) if text else []
         if not isinstance(messages, list):

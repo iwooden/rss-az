@@ -6,19 +6,21 @@ current from the actions 18xx.games publishes to the MessageBus channel
 action (``acting``, ``round``, ``turn``, ``status``, ``result``) are
 recomputed with the local Ruby engine (``game_status.rb``).
 
-Bots are queued for the move worker when they newly appear in ``acting``,
-mirroring the "Your Turn" webhooks 18xx.games sends (``acting - prev``), and
-when another player's action leaves them in ``acting``, which happens in the
-simultaneous Acquisition and Closing rounds (e.g. an answer to the bot's
-offer) and gets no webhook. Turns that continue through the bot's own actions
+Bots are queued for the move worker when they newly appear in ``acting``
+and when another player's action leaves them in ``acting``, which happens in
+the simultaneous Acquisition and Closing rounds (e.g. an answer to the bot's
+offer). Turns that continue through the bot's own actions
 (for example finishing one phase and opening the next) are handled by the
 move worker's own loop, which waits here for its posted actions instead of
 re-downloading the game.
 
 Re-downloads happen only when the bus stream cannot be trusted: an action id
 gap that is not filled in shortly (the server keeps one message per channel,
-and concurrent posts can publish out of order), a channel reset, a failed
-local status computation, or a webhook the bus never confirmed.
+and concurrent posts can publish out of order), a channel reset, or a failed
+local status computation.
+
+Starting a game publishes nothing on its channel, so listen to a game after
+it starts.
 
 Feeds persist to ``<runtime>/game_feeds/<id>.json`` so restarts resume from
 the saved game and bus position without downloading.
@@ -52,10 +54,6 @@ FEED_FILE_VERSION = 1
 GAP_GRACE_SECS = 5.0
 RESYNC_COOLDOWN_SECS = 30.0
 DOWNLOAD_RETRY_SECS = 60.0
-# A webhook whose turn the bus has not shown by then triggers a re-download.
-WEBHOOK_GRACE_SECS = 15.0
-# A turn edge this recent already covers a (late) webhook for the same bot.
-WEBHOOK_MATCH_SECS = 120.0
 ECHO_TIMEOUT_SECS = 30.0
 READY_TIMEOUT_SECS = 60.0
 # Longest per-action acting history computed for one update.
@@ -137,11 +135,10 @@ def _turn_user_ids(
 ) -> set[str]:
     """User ids that may have something to do after ``steps``.
 
-    A user qualifies when an action makes them newly acting (what 18xx's
-    "Your Turn" webhook reports), or when another player's game action
-    leaves them acting. The latter only happens in simultaneous rounds
-    (Acquisition, Closing), e.g. a response to an offer the user made, and
-    18xx sends no webhook for it. Unknown actions count as another player's.
+    A user qualifies when an action makes them newly acting, or when another
+    player's game action leaves them acting. The latter only happens in
+    simultaneous rounds (Acquisition, Closing), e.g. a response to an offer
+    the user made. Unknown actions count as another player's.
     """
     user_ids: set[str] = set()
     previous = before
@@ -196,9 +193,6 @@ class _Feed:
     enqueued_at_count: dict[str, int] = field(default_factory=dict)
     # Bots with a move-worker run queued but not yet started.
     queued: set[str] = field(default_factory=set)
-    edge_at: dict[str, float] = field(default_factory=dict)
-    webhook_due: dict[str, float] = field(default_factory=dict)
-    webhook_bots: set[str] = field(default_factory=set)
 
     @property
     def channel(self) -> str:
@@ -335,9 +329,6 @@ class GameFeedManager:
 
     def unlisten(self, game_id) -> None:
         self._events.put(("unlisten", str(game_id)))
-
-    def notify_webhook(self, bot_name: str, game_id) -> None:
-        self._events.put(("webhook", bot_name, str(game_id)))
 
     def request_resync(self, game_id) -> None:
         self._events.put(("resync", str(game_id)))
@@ -541,58 +532,6 @@ class GameFeedManager:
             return
         self._stop_listening(feed, "unlisten requested")
 
-    def _on_webhook(self, bot_name: str, game_id: str) -> None:
-        if not is_valid_game_id(game_id):
-            logger.warning("Ignoring webhook for invalid game id %r", game_id)
-            return
-        feed = self._feeds.get(game_id)
-        if feed is None or not feed.listening:
-            self._on_listen(game_id, resync=False)
-            feed = self._feeds.get(game_id)
-            if feed is None or not feed.listening:
-                # Finished game: let the worker take the webhook as before.
-                self._enqueue_bot(game_id, bot_name, "webhook")
-                return
-            # Queued once the feed has (re)synchronized.
-            feed.webhook_bots.add(bot_name)
-            return
-        if feed.game is None or not feed.announced:
-            feed.webhook_bots.add(bot_name)
-            return
-
-        now = self._clock()
-        edge_at = feed.edge_at.get(bot_name)
-        if edge_at is not None and now - edge_at <= WEBHOOK_MATCH_SECS:
-            logger.info(
-                "Webhook for %s in game %s matches a bus turn event",
-                bot_name,
-                game_id,
-            )
-            return
-        user_id = self._bots_in_game(feed.game).get(bot_name)
-        if user_id is not None and user_id in _acting_ids(feed.game):
-            self._enqueue(feed, bot_name, "webhook", dedupe=False)
-            return
-        logger.info(
-            "Webhook for %s in game %s is ahead of the bus; waiting %.0fs",
-            bot_name,
-            game_id,
-            WEBHOOK_GRACE_SECS,
-        )
-        feed.webhook_due[bot_name] = now + WEBHOOK_GRACE_SECS
-        self._schedule(WEBHOOK_GRACE_SECS, ("webhook_due", game_id, bot_name))
-
-    def _on_webhook_due(self, game_id: str, bot_name: str) -> None:
-        feed = self._feeds.get(game_id)
-        if feed is None or not feed.listening:
-            return
-        due = feed.webhook_due.get(bot_name)
-        if due is None or due > self._clock():
-            return
-        del feed.webhook_due[bot_name]
-        feed.webhook_bots.add(bot_name)
-        self._download(feed, f"webhook for {bot_name} not seen on the bus")
-
     def _on_resync(self, game_id: str) -> None:
         # The move worker is blocked on this; skip the cooldown.
         feed = self._feeds.get(game_id)
@@ -690,8 +629,6 @@ class GameFeedManager:
             feed.pending.clear()
             feed.gap_since = None
             feed.needs_download = False
-            feed.webhook_due.clear()
-            feed.webhook_bots.clear()
             self._cond.notify_all()
         logger.info("Stopped listening to game %s (%s)", feed.game_id, reason)
         self._persist(feed)
@@ -895,59 +832,35 @@ class GameFeedManager:
     def _queue_turns(self, feed: _Feed, turn_ids: set[str]) -> None:
         feed.announced = True
         assert feed.game is not None
-        acting = _acting_ids(feed.game)
-        now = self._clock()
-        queued: set[str] = set()
         for bot_name, user_id in self._bots_in_game(feed.game).items():
             if user_id in turn_ids:
-                feed.edge_at[bot_name] = now
-                feed.webhook_due.pop(bot_name, None)
-                self._enqueue(feed, bot_name, "turn")
-                queued.add(bot_name)
-            elif bot_name in feed.webhook_due and user_id in acting:
-                del feed.webhook_due[bot_name]
-                self._enqueue(feed, bot_name, "webhook", dedupe=False)
-                queued.add(bot_name)
-        for bot_name in sorted(feed.webhook_bots - queued):
-            feed.webhook_due.pop(bot_name, None)
-            self._enqueue(feed, bot_name, "webhook", dedupe=False)
-        feed.webhook_bots.clear()
+                self._enqueue(feed, bot_name)
 
-    def _enqueue(
-        self,
-        feed: _Feed,
-        bot_name: str,
-        reason: str,
-        *,
-        dedupe: bool = True,
-    ) -> None:
+    def _enqueue(self, feed: _Feed, bot_name: str) -> None:
         """Queue a bot unless a run for it is already waiting.
 
-        A waiting run reads the latest game data when it starts. Turn events
-        also queue each bot at most once per action count; webhooks skip that
-        check: like before the feed existed, the worker's replay decides
-        whether there is anything to do.
+        A waiting run reads the latest game data when it starts. Each bot is
+        queued at most once per action count.
         """
         count = feed.action_count
         with self._cond:
             if bot_name in feed.queued:
                 return
-            if dedupe and feed.enqueued_at_count.get(bot_name) == count:
+            if feed.enqueued_at_count.get(bot_name) == count:
                 return
-            if not self._enqueue_bot(feed.game_id, bot_name, reason):
+            if self._blacklist is not None and self._blacklist.contains(
+                feed.game_id,
+            ):
+                logger.info(
+                    "Not queueing %s for blacklisted game %s",
+                    bot_name,
+                    feed.game_id,
+                )
                 return
+            logger.info("Queueing %s for game %s", bot_name, feed.game_id)
+            self._work_queue.put((bot_name, feed.game_id))
             feed.queued.add(bot_name)
             feed.enqueued_at_count[bot_name] = count
-
-    def _enqueue_bot(self, game_id: str, bot_name: str, reason: str) -> bool:
-        if self._blacklist is not None and self._blacklist.contains(game_id):
-            logger.info(
-                "Not queueing %s for blacklisted game %s", bot_name, game_id,
-            )
-            return False
-        logger.info("Queueing %s for game %s (%s)", bot_name, game_id, reason)
-        self._work_queue.put((bot_name, game_id))
-        return True
 
     # -- helpers ---------------------------------------------------------------------
 
@@ -983,7 +896,6 @@ class GameFeedManager:
         candidates: list[str] = []
         if feed.game is not None:
             candidates.extend(self._bots_in_game(feed.game))
-        candidates.extend(sorted(feed.webhook_bots))
         candidates.extend(self._auth)
         for bot_name in candidates:
             token = self._auth.get(bot_name, {}).get("token")

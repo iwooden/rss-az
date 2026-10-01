@@ -75,27 +75,13 @@ The fields the server stores after each action (`acting`, `round`, `turn`,
 `status`, `result`; `routes/game.rb#set_game_state`) are not published.
 `utils_18xx/game_status.rb` recomputes them with the local engine.
 
-## Webhooks
+## Game Start
 
-Webhook turn notifications are produced from the `/turn` MessageBus channel in
-`submodules/18xx/queue.rb`. A user is notified when they become acting
-(`acting - prev` in `routes/game.rb`), so a player who stays acting (for
-example in the simultaneous Acquisition and Closing rounds) gets no webhook.
-The message text is roughly:
-
-```text
-Your Turn in Rolling Stock Stars "<description>" (<round> <turn>)
-<base_url>/game/<id>
-```
-
-`submodules/18xx/lib/hooks.rb` sends custom webhooks as JSON. For Slack/Google
-style destinations the payload is `{ "text": "<@webhook_user_id> ..." }`; for
-Discord it is `{ "content": "...", "allowed_mentions": ... }`.
-
-Webhooks are only sent when `RACK_ENV` is `production` (never from a local
-dev stack). Since upstream commit `7fa03e659` (2026-07-01) the webhook URL
-must be `https` and resolve only to public addresses; other URLs are skipped
-silently.
+`POST /api/game/:id/start` sets the first acting players but publishes nothing
+on `/game/<id>`; only the `/turn` channel (webhooks and email in
+`submodules/18xx/queue.rb`) announces it. A game followed before it starts
+does not see its first turn on the bus, so the live server's `listen` should
+be called after the game starts.
 
 ## Action Hash Conventions
 

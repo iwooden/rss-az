@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -237,6 +238,22 @@ def test_failed_poll_keeps_new_channels_pending(fake_bus):
         ("status", "/game/1", 0, True),
         ("synced", frozenset({"/game/1"})),
     ]
+
+
+def test_transient_poll_failure_does_not_warn(fake_bus, caplog):
+    fake_bus.fail_next = 1
+    listener = _Listener()
+    client = MessageBusClient(fake_bus.base_url, listener)
+    client.subscribe("/game/1")
+    with caplog.at_level(logging.DEBUG, logger="utils_18xx.message_bus"):
+        client.start()
+        try:
+            listener.wait_for(("synced", frozenset({"/game/1"})))
+        finally:
+            client.stop()
+
+    assert any("poll failed (1 in a row)" in r.message for r in caplog.records)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 def test_unsubscribed_channel_messages_are_dropped(fake_bus):
