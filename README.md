@@ -338,6 +338,11 @@ Acquisition and Closing rounds, whenever another player acts while they are
 still acting. Finished games stop being followed automatically; blacklisted
 games are followed but never queued.
 
+If another player moves or undoes (undos are new actions) while a bot is
+searching or posting in a followed game, the bot drops its plan and re-plans
+from the new state, or stops if it is no longer acting. Games the bot plays
+without following them (`poke`) have no such check.
+
 For manual testing, the loopback-only poke endpoint queues every configured
 bot for a game, followed or not:
 

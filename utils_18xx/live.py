@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import ipaddress
 import json
 import logging
@@ -81,7 +82,12 @@ from train.debug_trace import PHASE_NAMES, format_action, format_phase_context
 from train.profile_stats import SearchStats
 
 from .action_mapper import engine_action_to_18xx
-from .api_client import ApiClient, PermanentError, TransientError
+from .api_client import (
+    ApiClient,
+    PermanentError,
+    RequestAborted,
+    TransientError,
+)
 from .action_parser import find_legal_action, get_legal_actions, map_action
 from .auto_actions import attach_expected_auto_actions
 from .game_feed import FEED_DIR_NAME, GameFeedManager, is_valid_game_id
@@ -114,6 +120,15 @@ ACQ_OFFER_TRACKING_FILE = "acq_offer_tracking.json"
 ACQ_OFFER_REJECTION_LIMIT = 3
 _INTERNAL_ACTION_METADATA_PREFIX = "_"
 EVAL_FILE_DIR = Path("/tmp")
+
+
+class StaleGameState(Exception):
+    """The game changed while a live move was being searched."""
+
+
+def _raise_if_stale(should_stop: Callable[[], bool] | None) -> None:
+    if should_stop is not None and should_stop():
+        raise StaleGameState("game changed during search")
 
 
 def default_api_min_interval(base_url: str) -> float:
@@ -2333,8 +2348,13 @@ class _SearchEngine:
         bot_user_id=None,
         bot_user_ids: set | None = None,
         acq_offer_rejection_counts: dict[str, int] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> list[dict]:
-        """Sync state, run MCTS, return API-format actions to post."""
+        """Sync state, run MCTS, return API-format actions to post.
+
+        Raises ``StaleGameState`` when ``should_stop`` reports, during a
+        search, that ``game_data`` no longer matches the live game.
+        """
         num_players = len(game_data.get("players", []))
         self.validate_player_count(num_players)
         session = self._session_for(game_data)
@@ -2434,6 +2454,7 @@ class _SearchEngine:
                     bot_user_id=bot_user_id,
                     pending_offers=queued_offers,
                     offer_rejection_counts=acq_offer_rejection_counts,
+                    should_stop=should_stop,
                 )
             finally:
                 state.step_mode = previous_step_mode
@@ -2516,6 +2537,7 @@ class _SearchEngine:
             return self._plan_live_actions(
                 state, game_data, engine_player_idx, num_players,
                 session.committed_ids, bot_user_id=bot_user_id,
+                should_stop=should_stop,
             )
         finally:
             state.step_mode = previous_step_mode
@@ -2531,6 +2553,7 @@ class _SearchEngine:
         bot_user_id=None,
         pending_offers: list[dict],
         offer_rejection_counts: dict[str, int] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> list[dict]:
         """Plan responses to simultaneous 18xx ACQ offers without re-fetching."""
         queue = list(pending_offers)
@@ -2603,6 +2626,7 @@ class _SearchEngine:
                 committed_ids,
                 bot_user_id=bot_user_id,
                 validate_post_state=False,
+                should_stop=should_stop,
             )
             if not actions:
                 break
@@ -2664,6 +2688,7 @@ class _SearchEngine:
         committed_ids: set,
         bot_user_id=None,
         validate_post_state: bool = True,
+        should_stop: Callable[[], bool] | None = None,
     ) -> list[dict]:
         """Choose and apply engine steps until the bot no longer acts."""
         composer = _LiveActionComposer(
@@ -2739,6 +2764,7 @@ class _SearchEngine:
                     num_players,
                     reuse_root=search_reuse,
                     evaluator=live_evaluator,
+                    should_stop=should_stop,
                 )
                 if self.model_output:
                     assert model_eval is not None
@@ -2955,8 +2981,12 @@ class _SearchEngine:
         reuse_root=None,
         evaluator=None,
         collect_stats: bool | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ):
-        """Run MCTS and return the best action index."""
+        """Run MCTS and return the best action index.
+
+        Raises ``StaleGameState`` when ``should_stop`` ends the search.
+        """
         if evaluator is None:
             evaluator = self._evaluator
         if collect_stats is None:
@@ -2967,6 +2997,7 @@ class _SearchEngine:
                 num_players,
                 evaluator=evaluator,
                 collect_stats=collect_stats,
+                should_stop=should_stop,
             )
         search_stats = SearchStats() if collect_stats else None
         t0 = time.monotonic()
@@ -2978,7 +3009,9 @@ class _SearchEngine:
             state_pool=self._state_pool,
             reuse_root=reuse_root,
             profile=search_stats,
+            should_stop=should_stop,
         )
+        _raise_if_stale(should_stop)
         elapsed = time.monotonic() - t0
 
         assert root.legal_actions is not None and root.visit_counts is not None
@@ -2999,6 +3032,7 @@ class _SearchEngine:
         num_players: int,
         evaluator=None,
         collect_stats: bool | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ):
         """Run independent hidden-deck determinizations and aggregate visits."""
         if evaluator is None:
@@ -3024,7 +3058,9 @@ class _SearchEngine:
                 self._rng,
                 state_pool=self._state_pool,
                 profile=search_stats,
+                should_stop=should_stop,
             )
+            _raise_if_stale(should_stop)
             self._accumulate_root_visits(
                 root,
                 visit_counts,
@@ -3562,9 +3598,24 @@ class MoveWorker(threading.Thread):
 
         # Loop: play moves until it's no longer our turn.
         # A single turn may require multiple actions (e.g. sequential
-        # IPO decisions, ACQ offers, or Closing choices).
+        # IPO decisions, ACQ offers, or Closing choices). In listened games,
+        # another player's move or undo during the search or before a post
+        # abandons the plan, which is re-made from the new state.
         max_consecutive = 50  # safety limit
         for _ in range(max_consecutive):
+            last_seen_action_id = _next_synthetic_action_id(game_data) - 1
+            game_changed = None
+            post_kwargs = {}
+            if from_feed:
+                assert self._game_feeds is not None
+                game_changed = functools.partial(
+                    self._game_feeds.changed_by_others,
+                    game_id,
+                    last_seen_action_id,
+                    bot_user_id,
+                )
+                post_kwargs["abort_if"] = game_changed
+            stale = False
             try:
                 acq_offer_rejection_counts = None
                 if self._acq_offer_tracker is not None:
@@ -3582,23 +3633,32 @@ class MoveWorker(threading.Thread):
                     process_kwargs["acq_offer_rejection_counts"] = (
                         acq_offer_rejection_counts
                     )
+                if game_changed is not None:
+                    process_kwargs["should_stop"] = game_changed
                 api_actions = engine.process_turn(
                     game_data,
                     bot_player_idx,
                     **process_kwargs,
                 )
+            except StaleGameState:
+                logger.info(
+                    f"[{bot_name}] Game {game_id} changed during search; "
+                    "re-planning"
+                )
+                stale = True
+                api_actions = []
             except Exception:
                 logger.exception(
                     f"[{bot_name}] Error processing turn in game {game_id}"
                 )
                 return
 
-            if not api_actions:
+            if not api_actions and not stale:
                 return
 
             # Post each action (IPO+PAR is a single compound action)
             post_game_data = game_data
-            last_seen_action_id = _next_synthetic_action_id(game_data) - 1
+            posted = 0
             for post_idx, action in enumerate(api_actions):
                 tracking_action = action
                 post_action = _strip_internal_action_metadata(action)
@@ -3618,7 +3678,13 @@ class MoveWorker(threading.Thread):
                     f"[{bot_name}] Posting to game {game_id}: {action}"
                 )
                 try:
-                    self._api.post_action(game_id, action, token)
+                    self._api.post_action(game_id, action, token, **post_kwargs)
+                except RequestAborted:
+                    logger.info(
+                        f"[{bot_name}] Game {game_id} changed before post "
+                        f"{post_idx + 1}/{len(api_actions)}; re-planning"
+                    )
+                    break
                 except PermanentError as e:
                     logger.error(
                         f"[{bot_name}] Action rejected by server: {e}\n"
@@ -3630,6 +3696,7 @@ class MoveWorker(threading.Thread):
                         f"[{bot_name}] Failed to post action after retries"
                     )
                     return
+                posted += 1
 
                 self._record_acq_offer_rejection_if_needed(
                     game_id,
@@ -3648,16 +3715,19 @@ class MoveWorker(threading.Thread):
             # finish one phase and open the next).
             if from_feed:
                 assert self._game_feeds is not None
-                game_data = self._game_feeds.wait_for_posted_actions(
-                    game_id,
-                    bot_user_id,
-                    last_seen_action_id,
-                    len(api_actions),
-                )
+                if posted:
+                    game_data = self._game_feeds.wait_for_posted_actions(
+                        game_id,
+                        bot_user_id,
+                        last_seen_action_id,
+                        posted,
+                    )
+                else:
+                    game_data = self._game_feeds.snapshot(game_id)
                 if game_data is None:
                     logger.error(
                         f"[{bot_name}] Game feed for {game_id} did not "
-                        "confirm posted actions"
+                        "provide current game data"
                     )
                     return
             else:

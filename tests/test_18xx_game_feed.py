@@ -442,6 +442,40 @@ def test_unlisten_and_relisten(tmp_path):
     assert bus.calls[-1] == ("subscribe", CHANNEL, 10)
 
 
+def test_changed_by_others_ignores_own_actions_and_chat(tmp_path):
+    api = _FakeApi(_game([_action(1, [1, 2])]))
+    manager, _, _ = _manager(tmp_path, api)
+    _bootstrap(manager)
+    assert not manager.changed_by_others("42", 1, 1)
+
+    _deliver(manager, 11, _action(2, [1, 2], user=1))  # the bot's own post
+    chat = dict(_action(3, [1, 2], user=2), type="message", message="hi")
+    _deliver(manager, 12, chat)
+    assert not manager.changed_by_others("42", 1, 1)
+
+    # Undos are new actions, like any other player's move.
+    _deliver(manager, 13, dict(_action(4, [1, 2], user=2), type="undo"))
+    assert manager.changed_by_others("42", 1, 1)
+    assert not manager.changed_by_others("42", 4, 1)
+
+
+def test_changed_by_others_counts_gaps_and_stopped_feeds(tmp_path):
+    api = _FakeApi(_game([_action(1, [1, 2])]))
+    manager, _, _ = _manager(tmp_path, api)
+    _bootstrap(manager)
+
+    # Actions waiting behind a gap are not attributed yet.
+    _deliver(manager, 12, _action(3, [1, 2], user=1))
+    assert manager.changed_by_others("42", 1, 1)
+    _deliver(manager, 11, _action(2, [1, 2], user=1))
+    assert not manager.changed_by_others("42", 1, 1)
+
+    manager.unlisten("42")
+    manager.pump()
+    assert manager.changed_by_others("42", 3, 1)
+    assert manager.changed_by_others("99", 0, 1)
+
+
 def test_wait_for_posted_actions_returns_after_echo(tmp_path):
     api = _FakeApi(_game([_action(1, [1])]))
     manager, _, _ = _manager(tmp_path, api)

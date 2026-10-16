@@ -2,8 +2,10 @@ import json
 import logging
 import urllib.error
 
+import pytest
+
 from utils_18xx import api_client
-from utils_18xx.api_client import ApiClient
+from utils_18xx.api_client import ApiClient, RequestAborted
 
 
 class _Response:
@@ -76,6 +78,44 @@ def test_api_client_throttles_retry_attempts(monkeypatch):
 
     assert client._request("GET", "/api/test", "token", retries=2) == {"ok": True}
     assert sleeps == [1.0, 9.0]
+
+
+def test_api_client_checks_abort_after_throttling(monkeypatch):
+    now = [100.0]
+    sleeps = []
+    requested = []
+    checked_at = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    def fake_urlopen(req, timeout):
+        del timeout
+        requested.append(req.get_method())
+        return _Response({})
+
+    def game_changed():
+        checked_at.append(now[0])
+        return True
+
+    monkeypatch.setattr(api_client.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(api_client.time, "sleep", fake_sleep)
+    monkeypatch.setattr(api_client.urllib.request, "urlopen", fake_urlopen)
+
+    client = ApiClient("https://18xx.games", min_request_interval=10.0)
+    client.fetch_game("1", "token")
+
+    # The game can change while the post waits its turn, so the check runs
+    # after the throttle wait; an aborted post sends nothing.
+    with pytest.raises(RequestAborted):
+        client.post_action("1", {"type": "pass"}, "token", abort_if=game_changed)
+    assert sleeps == [10.0]
+    assert checked_at == [110.0]
+    assert requested == ["GET"]
+
+    client.post_action("1", {"type": "pass"}, "token", abort_if=lambda: False)
+    assert requested == ["GET", "POST"]
 
 
 def test_api_client_logs_method_and_route_without_payload(monkeypatch, caplog):

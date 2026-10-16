@@ -16,7 +16,7 @@ Implements AlphaZero-style MCTS for multiplayer games:
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from train.profile_stats import SearchStats
@@ -353,6 +353,7 @@ def run_search(
     profile: SearchStats | None = None,
     debug_context: str | None = None,
     root_priors_out: list[np.ndarray] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> MCTSNode:
     """Run MCTS search from the given root state.
 
@@ -398,6 +399,10 @@ def run_search(
             root's unnoised, search-legal priors before adding root noise.
             Reused children already carry NN priors, so no extra eval is needed.
             Empty for terminal roots. Does not change search or RNG consumption.
+        should_stop: Optional callable polled before each leaf batch. When it
+            returns True the search ends early and returns the root with the
+            simulations completed so far (live play cancels searches whose
+            game state went stale).
 
     Returns:
         The root MCTSNode with search statistics populated.
@@ -590,6 +595,8 @@ def run_search(
     # Run simulations in batches
     sim = 0
     while sim < num_sims:
+        if should_stop is not None and should_stop():
+            break
         if profile is not None:
             _t0 = perf_counter()
 

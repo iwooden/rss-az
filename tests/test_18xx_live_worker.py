@@ -1,11 +1,11 @@
-from typing import cast
+from typing import Callable, cast
 
 import copy
 import json
 import queue
 
 from utils_18xx import live
-from utils_18xx.api_client import ApiClient, PermanentError
+from utils_18xx.api_client import ApiClient, PermanentError, RequestAborted
 from utils_18xx.game_feed import GameFeedManager
 from utils_18xx.live import AcqOfferTracker, EvalRequest, ModelRegistry, MoveWorker
 
@@ -460,29 +460,45 @@ class _EchoFeedApi:
         # Acting after each accepted post: the first leaves the bot acting
         # (it opens the next phase), the second passes the turn on.
         self.acting_after_posts = [[1], [2]]
+        self.last_id = 1
+        # Runs once after the next accepted post, e.g. to publish a move
+        # another player makes before the bot's next post.
+        self.after_post: Callable[[], None] | None = None
 
     def fetch_game(self, game_id, token):
         del game_id, token
         self.fetches += 1
         return copy.deepcopy(self.game)
 
-    def post_action(self, game_id, action, token):
-        del token
-        assert self.manager is not None
+    def post_action(self, game_id, action, token, abort_if=None):
+        del game_id, token
+        if abort_if is not None and abort_if():
+            raise RequestAborted("not sent")
         self.posts.append(action)
-        action_id = len(self.posts) + 1
-        # Published like 18xx.games: without the stored ``user``.
+        self.publish(
+            action,
+            entity=1,
+            acting_after=self.acting_after_posts[len(self.posts) - 1],
+        )
+        after_post, self.after_post = self.after_post, None
+        if after_post is not None:
+            after_post()
+        return {}
+
+    def publish(self, action, *, entity, acting_after):
+        """Accept an action and publish it like 18xx.games: no stored ``user``."""
+        assert self.manager is not None
+        self.last_id += 1
         echoed = dict(
             action,
-            id=action_id,
-            entity=1,
+            id=self.last_id,
+            entity=entity,
             created_at=0,
-            acting_after=self.acting_after_posts[len(self.posts) - 1],
+            acting_after=acting_after,
             _client_id=None,
         )
-        self.manager.on_bus_message(f"/game/{game_id}", 100 + action_id, echoed)
+        self.manager.on_bus_message("/game/42", 100 + self.last_id, echoed)
         self.manager.pump()
-        return {}
 
 
 def _acting_status(game, from_count=None):
@@ -509,8 +525,9 @@ class _PhaseEngine:
         self.seen_action_ids = []
 
     def process_turn(self, game_data, bot_player_idx, bot_user_id=None,
-                     bot_user_ids=None):
+                     bot_user_ids=None, should_stop=None):
         del bot_player_idx, bot_user_id, bot_user_ids
+        assert should_stop is not None and not should_stop()
         self.seen_action_ids.append([a["id"] for a in game_data["actions"]])
         if len(self.seen_action_ids) <= 2:
             return [{"type": "pass", "n": len(self.seen_action_ids)}]
@@ -591,3 +608,84 @@ def test_worker_eval_reads_listened_game_from_feed(tmp_path):
 
     assert api.fetches == 1
     assert engine.calls[0][0]["actions"] == api.game["actions"]
+
+
+class _StaleCheckingEngine:
+    """Plans like live search: polls ``should_stop`` and gives up if it fires."""
+
+    def __init__(self, plans, during_first_search=None):
+        self.plans = list(plans)
+        self.during_first_search = during_first_search
+        self.seen_action_ids = []
+
+    def process_turn(self, game_data, bot_player_idx, bot_user_id=None,
+                     bot_user_ids=None, should_stop=None):
+        del bot_player_idx, bot_user_id, bot_user_ids
+        assert should_stop is not None
+        self.seen_action_ids.append([a["id"] for a in game_data["actions"]])
+        during_search, self.during_first_search = self.during_first_search, None
+        if during_search is not None:
+            during_search()
+        live._raise_if_stale(should_stop)
+        return self.plans.pop(0) if self.plans else []
+
+
+def _feed_worker(tmp_path, monkeypatch, api, engine):
+    work_queue = queue.Queue()
+    manager = _listened_feed(tmp_path, api, work_queue)
+    monkeypatch.setattr(live, "attach_expected_auto_actions", lambda game_data, action: action)
+    worker = MoveWorker(
+        work_queue,
+        cast(ApiClient, api),
+        {"bot": {"token": "token", "user_id": 1}},
+        cast(ModelRegistry, _FakeRegistry(engine)),
+        game_feeds=manager,
+    )
+    return worker, work_queue
+
+
+def test_worker_replans_when_another_player_acts_during_search(
+    tmp_path, monkeypatch,
+):
+    api = _EchoFeedApi()
+    api.acting_after_posts = [[2]]
+    engine = _StaleCheckingEngine(
+        [[{"type": "pass", "n": 1}]],
+        # E.g. an undo, or a move in a simultaneous round, leaving the bot
+        # acting in a different state.
+        during_first_search=lambda: api.publish(
+            {"type": "undo"}, entity=2, acting_after=[1],
+        ),
+    )
+    worker, work_queue = _feed_worker(tmp_path, monkeypatch, api, engine)
+
+    worker._process("bot", "42")
+
+    # The interrupted search posted nothing; the bot re-planned from the
+    # changed game and posted only the move chosen there.
+    assert engine.seen_action_ids == [[1], [1, 2], [1, 2, 3]]
+    assert api.posts == [{"type": "pass", "n": 1}]
+    assert api.fetches == 1
+    # The feed also queued a run for the change; it starts from the latest
+    # data and finds nothing left to do.
+    assert work_queue.get_nowait() == ("bot", "42")
+
+
+def test_worker_stops_posting_planned_actions_after_another_player_acts(
+    tmp_path, monkeypatch,
+):
+    api = _EchoFeedApi()
+    api.after_post = lambda: api.publish(
+        {"type": "undo"}, entity=2, acting_after=[1],
+    )
+    engine = _StaleCheckingEngine(
+        [[{"type": "pass", "n": 1}, {"type": "pass", "n": 2}]],
+    )
+    worker, _ = _feed_worker(tmp_path, monkeypatch, api, engine)
+
+    worker._process("bot", "42")
+
+    # The second planned action was dropped; the re-plan saw the bot's own
+    # first post and the other player's undo.
+    assert api.posts == [{"type": "pass", "n": 1}]
+    assert engine.seen_action_ids == [[1], [1, 2, 3]]

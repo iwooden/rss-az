@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from core.actions import get_decision_phase_py
 from core.state import GameState
@@ -76,12 +77,9 @@ def _search_root(actions, counts):
     return root
 
 
-def test_determinized_live_search_sums_root_visits(monkeypatch):
-    state = GameState(3)
-    state.initialize_game(3, seed=7)
-
+def _determinized_engine(monkeypatch, count):
     engine = _SearchEngine.__new__(_SearchEngine)
-    engine.determinization_count = 2
+    engine.determinization_count = count
     engine.model_output = False
     engine.num_simulations = 7
     monkeypatch.setattr(engine, "_evaluator", object(), raising=False)
@@ -97,6 +95,13 @@ def test_determinized_live_search_sums_root_visits(monkeypatch):
             search_batch_size=1,
         ),
     )
+    return engine
+
+
+def test_determinized_live_search_sums_root_visits(monkeypatch):
+    state = GameState(3)
+    state.initialize_game(3, seed=7)
+    engine = _determinized_engine(monkeypatch, 2)
 
     class _Deck:
         def __init__(self):
@@ -123,8 +128,9 @@ def test_determinized_live_search_sums_root_visits(monkeypatch):
         state_pool=None,
         reuse_root=None,
         profile=None,
+        should_stop=None,
     ):
-        del evaluator, rng, state_pool, profile
+        del evaluator, rng, state_pool, profile, should_stop
         assert root_state is state
         assert config.num_simulations == 7
         assert reuse_root is None
@@ -149,6 +155,35 @@ def test_determinized_live_search_sums_root_visits(monkeypatch):
     assert root.visit_counts is not None
     assert root.legal_actions.tolist() == [10, 20]
     assert root.visit_counts.tolist() == [10, 6]
+
+
+def test_determinized_live_search_stops_when_game_changes(monkeypatch):
+    state = GameState(3)
+    state.initialize_game(3, seed=7)
+    engine = _determinized_engine(monkeypatch, 3)
+    searches = []
+
+    class _Deck:
+        def determinize_remaining(self, source_state, rng):
+            del rng
+            return source_state
+
+    def fake_run_search(root_state, evaluator, config, rng, *, state_pool=None,
+                        reuse_root=None, profile=None, should_stop=None):
+        del root_state, evaluator, config, rng, state_pool, reuse_root, profile
+        searches.append(should_stop)
+        return _search_root([10, 20], [2, 5])
+
+    def game_changed():
+        # Another player acts during the first determinization.
+        return bool(searches)
+
+    monkeypatch.setattr(live, "DECK", _Deck())
+    monkeypatch.setattr(live, "run_search", fake_run_search)
+
+    with pytest.raises(live.StaleGameState):
+        _SearchEngine._search(engine, state, 3, should_stop=game_changed)
+    assert searches == [game_changed]
 
 
 def test_live_model_output_relabels_analyzer_player_values():

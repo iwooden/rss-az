@@ -110,6 +110,14 @@ When posting a new action, the client normally does not need to send `id`,
 `id`, `user`, `created_at`, `meta`, and `_client_id` before storing the raw
 action JSON (`submodules/18xx/models/action.rb:11`), then re-adds server-side
 `id`, `user`, and `created_at` in `Action#to_h`.
+
+Production posts have no optimistic concurrency: `Game::Base#process_action`
+overwrites any submitted `id`, so the server accepts an action planned on an
+older state whenever it is still legal. Undo and redo are ordinary new actions
+(an undo with `action_id` rolls back everything after that action), and the
+action route does not check who sends them. Clients must detect changes
+themselves; the live server checks its game feed while searching and right
+before each post.
 `auto_actions` is omitted when empty and present only when the engine generated
 automatic follow-up actions.
 

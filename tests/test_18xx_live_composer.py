@@ -925,6 +925,7 @@ def test_search_engine_retargets_acquisition_before_compatibility_pass(monkeypat
         num_players,
         committed_ids,
         bot_user_id=None,
+        should_stop=None,
     ):
         assert TURN.get_active_player(planned_state) == 1
         return [{"type": "planned-acquisition"}]
@@ -986,9 +987,10 @@ def test_search_engine_plans_bot_offer_queue_before_active_player_check(monkeypa
         bot_user_id=None,
         pending_offers,
         offer_rejection_counts=None,
+        should_stop=None,
     ):
         del planned_state, game_data, num_players, committed_ids
-        del offer_rejection_counts
+        del offer_rejection_counts, should_stop
         assert bot_player_idx == 2
         assert bot_user_id == 303
         assert pending_offers == [{
@@ -1593,9 +1595,10 @@ def _fake_offer_queue_planner(engine, seen, accept_offers=None):
         committed_ids,
         bot_user_id=None,
         validate_post_state=True,
+        should_stop=None,
     ):
         del game_data, bot_player_idx, num_players, committed_ids
-        del validate_post_state
+        del validate_post_state, should_stop
         phase = TURN.get_phase(planned_state)
         company = COMPANY_NAMES[TURN.get_active_company(planned_state)]
         corporation = CORP_NAMES[TURN.get_active_corp(planned_state)]

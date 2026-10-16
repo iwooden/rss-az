@@ -1792,6 +1792,27 @@ class TestBatchedSearch:
         root = run_search(game_state, evaluator, config)
         assert root.visit_count == 6
 
+    def test_should_stop_ends_search_between_batches(
+        self, game_state, evaluator,
+    ):
+        config = MCTSConfig(
+            num_simulations=40, search_batch_size=4, num_players=NUM_PLAYERS,
+        )
+        polls = []
+
+        def should_stop():
+            polls.append(None)
+            return len(polls) > 2
+
+        root = run_search(
+            game_state, evaluator, config, should_stop=should_stop,
+        )
+        # Two batches ran and were fully backed up before the stop.
+        assert len(polls) == 3
+        assert root.visit_counts is not None
+        assert 1 < root.visit_count < 41
+        assert root.visit_count == 1 + int(root.visit_counts.sum())
+
     def test_batched_visit_count_invariant(self, game_state, evaluator):
         """Visit count invariant holds across batched search too."""
         for bs in (2, 4, 8, 16):

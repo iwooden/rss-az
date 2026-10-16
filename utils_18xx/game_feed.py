@@ -12,7 +12,9 @@ the simultaneous Acquisition and Closing rounds (e.g. an answer to the bot's
 offer). Turns that continue through the bot's own actions
 (for example finishing one phase and opening the next) are handled by the
 move worker's own loop, which waits here for its posted actions instead of
-re-downloading the game.
+re-downloading the game. The worker also polls ``changed_by_others`` while it
+searches and before each post, so another player's move or undo in the
+meantime makes it re-plan from the new state instead of acting on stale data.
 
 Re-downloads happen only when the bus stream cannot be trusted: an action id
 gap that is not filled in shortly (the server keeps one message per channel,
@@ -372,6 +374,41 @@ class GameFeedManager:
             if not ready or feed is None or not feed.listening or not feed.ready:
                 return None
             return self._copy_game(feed)
+
+    def changed_by_others(self, game_id, after_id: int, user_id) -> bool:
+        """Return whether game data through ``after_id`` is out of date.
+
+        True once a game action after ``after_id`` comes from a user other
+        than ``user_id`` (other players' moves and undos alike), including an
+        action still waiting behind an id gap, or when the feed is
+        re-downloading or no longer listened. Chat does not count.
+        """
+        game_id = str(game_id)
+        with self._cond:
+            feed = self._feeds.get(game_id)
+            if (
+                feed is None
+                or not feed.listening
+                or feed.game is None
+                or feed.needs_download
+            ):
+                return True
+            # Unapplied bus actions lack the stored ``user``, so they count.
+            newer = [
+                action
+                for action in feed.pending.values()
+                if action["id"] > after_id
+            ]
+            for action in reversed(feed.game.get("actions") or []):
+                action_id = action.get("id")
+                if isinstance(action_id, int) and action_id <= after_id:
+                    break
+                newer.append(action)
+        return any(
+            action.get("type") != "message"
+            and str(action.get("user")) != str(user_id)
+            for action in newer
+        )
 
     def wait_for_posted_actions(
         self,

@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,10 @@ class TransientError(Exception):
 
 class PermanentError(Exception):
     """Non-retriable error (4xx, invalid action)."""
+
+
+class RequestAborted(Exception):
+    """A request's ``abort_if`` check fired just before sending; nothing was sent."""
 
 
 class ApiClient:
@@ -44,11 +49,23 @@ class ApiClient:
         return self._request("GET", f"/api/game/{game_id}", token)
 
     def post_action(
-        self, game_id: int | str, action: dict, token: str,
+        self,
+        game_id: int | str,
+        action: dict,
+        token: str,
+        abort_if: Callable[[], bool] | None = None,
     ) -> dict:
-        """POST /api/game/:id/action — submit a game action."""
+        """POST /api/game/:id/action — submit a game action.
+
+        ``abort_if`` is checked after throttling, right before each send
+        attempt; if it returns True, raises ``RequestAborted``.
+        """
         return self._request(
-            "POST", f"/api/game/{game_id}/action", token, data=action,
+            "POST",
+            f"/api/game/{game_id}/action",
+            token,
+            data=action,
+            abort_if=abort_if,
         )
 
     def _request(
@@ -59,6 +76,7 @@ class ApiClient:
         data: dict | None = None,
         retries: int = 3,
         backoff: float = 1.0,
+        abort_if: Callable[[], bool] | None = None,
     ) -> dict:
         """Make an HTTP request with retries on transient errors."""
         url = self.base_url + path
@@ -80,6 +98,8 @@ class ApiClient:
 
             try:
                 self._throttle_request(method, path)
+                if abort_if is not None and abort_if():
+                    raise RequestAborted(f"{method} {path} not sent")
                 logger.info("18xx API request: %s %s", method, path)
                 req = urllib.request.Request(
                     url, data=body, headers=headers, method=method,
