@@ -911,6 +911,25 @@ def _bot_is_acting(game_data: dict, bot_user_id) -> bool:
     return bool(acting) and any(_same_id(bot_user_id, actor) for actor in acting)
 
 
+def _open_acq_offers_to_wait_for(
+    game_data: dict,
+    session: GameSession,
+    bot_user_id,
+) -> list[dict]:
+    """Return open 18xx ACQ offers the acting bot must not pass or offer past.
+
+    18xx ends Acquisition once every player has passed, dropping unanswered
+    offers. While the bot has not passed, the round stays open for responders.
+    """
+    if bot_user_id is None or not _is_18xx_acquisition_round(game_data):
+        return []
+    if not _bot_is_acting(game_data, bot_user_id):
+        return []
+    if _pending_acq_offers_for_user(session, bot_user_id):
+        return []
+    return list(session._last_extract_record.get("offers") or [])
+
+
 def _pending_cross_president_offer_is_represented(
     state,
     pending_offer: dict,
@@ -2458,6 +2477,18 @@ class _SearchEngine:
                 )
             finally:
                 state.step_mode = previous_step_mode
+
+        open_offers = _open_acq_offers_to_wait_for(
+            game_data,
+            session,
+            bot_user_id,
+        )
+        if open_offers:
+            logger.info(
+                "Holding Acquisition until open offers are answered: %s",
+                open_offers,
+            )
+            return []
 
         compatibility_action = _acquisition_compatibility_action(
             game_data,

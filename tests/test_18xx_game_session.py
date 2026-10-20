@@ -1069,6 +1069,89 @@ def test_acq_sync_advances_between_simultaneous_pending_offers_without_accepting
     assert CORPS[pr_id].get_cash(state) == 26
 
 
+def test_acq_sync_records_bystander_pass_while_offer_is_pending():
+    # Game 270208: a third player's pass while a cross-president offer awaited
+    # its responder was dropped, so RSS kept that player in Acquisition after
+    # 18xx had them passed and the proposer's own pass ended the round.
+    state = GameState(3, acq_same_president=False)
+    state.initialize_game(3, seed=42)
+
+    vm_id = CORP_NAMES.index("VM")
+    sm_id = CORP_NAMES.index("SM")
+    pr_id = CORP_NAMES.index("PR")
+    bme_id = COMPANY_NAME_TO_ID["BME"]
+    price = COMPANIES[bme_id].get_low_price()
+
+    float_corp_for_test(state, corp_id=vm_id, player_id=0, par_index=10)
+    float_corp_for_test(state, corp_id=sm_id, player_id=1, par_index=10)
+    float_corp_for_test(
+        state,
+        corp_id=pr_id,
+        company_id=COMPANY_NAME_TO_ID["AKE"],
+        player_id=2,
+        par_index=10,
+    )
+    give_company_to_corp(state, bme_id, pr_id)
+    # Same-president targets keep both passes real choices, not forced.
+    give_company_to_player(state, COMPANY_NAME_TO_ID["OL"], 0)
+    give_company_to_player(state, COMPANY_NAME_TO_ID["BD"], 1)
+    CORPS[vm_id].set_cash(state, 100)
+    CORPS[sm_id].set_cash(state, 100)
+    setup_acquisition_phase_py(state)
+    state.step_mode = True
+
+    session = GameSession(3)
+    session._player_ids = [101, 202, 303]
+    pending = {"responder_id": 303, "corporation": "SM", "company": "BME", "price": price}
+    session._extract_records_by_action_id = {
+        11: {"offers": [pending]},
+        12: {"offers": []},
+        13: {"offers": []},
+    }
+
+    next_idx = session._sync_acq_round(
+        state,
+        [
+            {
+                "id": 10,
+                "type": "offer",
+                "entity": 202,
+                "entity_type": "player",
+                "corporation": "SM",
+                "company": "BME",
+                "price": price,
+            },
+            {"id": 11, "type": "pass", "entity": 101, "entity_type": "player"},
+            {
+                "id": 12,
+                "type": "respond",
+                "entity": 303,
+                "entity_type": "player",
+                "corporation": "SM",
+                "company": "BME",
+                "accept": "true",
+            },
+            {"id": 13, "type": "pass", "entity": 303, "entity_type": "player"},
+        ],
+        0,
+    )
+
+    assert next_idx == 4
+    assert COMPANIES[bme_id].is_in_corp_acquisition(state, sm_id)
+    assert PLAYERS[0].has_passed(state)
+    assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_CORP)
+    assert TURN.get_active_player(state) == 1
+
+    # The proposer is the last player in; their pass ends Acquisition as in 18xx.
+    session._apply_acq_pass(state, {"type": "pass", "entity": 202, "entity_type": "player"})
+    assert TURN.get_phase(state) not in (
+        int(GamePhases.PHASE_ACQ_SELECT_CORP),
+        int(GamePhases.PHASE_ACQ_SELECT_COMPANY),
+        int(GamePhases.PHASE_ACQ_SELECT_PRICE),
+        int(GamePhases.PHASE_ACQ_OFFER),
+    )
+
+
 def test_acq_sync_cancels_superseded_offer_and_replays_later_acquisitions():
     state = GameState(3, acq_same_president=False)
     state.initialize_game(3, seed=42)

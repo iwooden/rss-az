@@ -951,6 +951,112 @@ def test_search_engine_retargets_acquisition_before_compatibility_pass(monkeypat
     assert actions == [{"type": "planned-acquisition"}]
 
 
+def _open_offer_hold_engine(monkeypatch, session):
+    state = session.state
+    float_corp_for_test(state, corp_id=CORP_NAME_TO_ID["PR"], player_id=0, par_index=10)
+    float_corp_for_test(state, corp_id=CORP_NAME_TO_ID["SI"], player_id=1, par_index=12)
+    CORPS[CORP_NAME_TO_ID["SI"]].set_cash(state, 100)
+    TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_CORP))
+    TURN.set_active_player(state, 1)
+
+    engine = _bare_search_engine()
+    engine.allow_cross_president_offers = False
+    engine.validate_player_count = lambda num_players: None
+    monkeypatch.setattr(engine, "_session_for", lambda game_data: session)
+    monkeypatch.setattr(
+        engine,
+        "_plan_live_actions",
+        lambda *args, **kwargs: [{"type": "pass", "entity": 202}],
+    )
+    return engine
+
+
+def _open_offer_hold_game_data():
+    return {
+        "id": 1,
+        "round": "Acquisition",
+        "acting": [202, 303],
+        "players": [
+            {"id": 101, "name": "p1"},
+            {"id": 202, "name": "bot"},
+            {"id": 303, "name": "p3"},
+        ],
+    }
+
+
+def test_search_engine_holds_acquisition_until_open_offer_is_answered(monkeypatch):
+    # 18xx ends Acquisition when everyone has passed, dropping open offers.
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    session = _FakeProcessTurnSession(state, player_ids=[101, 202, 303])
+    engine = _open_offer_hold_engine(monkeypatch, session)
+    session._last_extract_record["offers"] = [{
+        "proposer_id": 202,
+        "responder_id": 303,
+        "corporation": "SI",
+        "company": "B",
+        "price": 5,
+    }]
+
+    held = engine.process_turn(
+        _open_offer_hold_game_data(),
+        bot_player_idx=1,
+        bot_user_id=202,
+    )
+    assert held == []
+
+    session._last_extract_record["offers"] = []
+    released = engine.process_turn(
+        _open_offer_hold_game_data(),
+        bot_player_idx=1,
+        bot_user_id=202,
+    )
+    assert released == [{"type": "pass", "entity": 202}]
+
+
+def test_search_engine_answers_offer_to_bot_while_other_offers_are_open(monkeypatch):
+    state = GameState(3)
+    state.initialize_game(3, seed=42)
+    offer_to_bot = {
+        "proposer_id": 303,
+        "responder_id": 202,
+        "corporation": "PR",
+        "company": "B",
+        "price": 5,
+    }
+    session = _FakeProcessTurnSession(
+        state,
+        offer=offer_to_bot,
+        player_ids=[101, 202, 303],
+    )
+    engine = _open_offer_hold_engine(monkeypatch, session)
+    session._last_extract_record["offers"] = [
+        offer_to_bot,
+        {
+            "proposer_id": 202,
+            "responder_id": 101,
+            "corporation": "SI",
+            "company": "C",
+            "price": 5,
+        },
+    ]
+
+    actions = engine.process_turn(
+        _open_offer_hold_game_data(),
+        bot_player_idx=1,
+        bot_user_id=202,
+    )
+
+    assert actions == [{
+        "type": "respond",
+        "entity": 202,
+        "entity_type": "player",
+        "corporation": "PR",
+        "company": "B",
+        "accept": "false",
+    }]
+
+
 def test_search_engine_plans_bot_offer_queue_before_active_player_check(monkeypatch):
     state = _queued_offer_state()
     TURN.enter_acq_offer(

@@ -1179,13 +1179,13 @@ class GameSession:
                         action,
                         pending_offer,
                     )
-                    if pending_after_pass is True:
-                        idx += 1
-                        continue
                     if pending_after_pass is False:
                         self._cancel_pending_acq_offer(state)
                         pending_offer = None
                     else:
+                        # 18xx keeps the offer open, but the passer is out of
+                        # the round; record it without answering the offer.
+                        self._mark_acq_player_passed(state, action)
                         idx += 1
                         continue
                 self._apply_acq_pass(state, action)
@@ -1287,6 +1287,12 @@ class GameSession:
                 "Invalid ACQ pass replay action "
                 f"phase={TURN.get_phase(state)}"
             )
+
+    def _mark_acq_player_passed(self, state: GameState, action: dict) -> None:
+        """Record an 18xx ACQ pass made while RSS waits in ACQ_OFFER."""
+        player_idx = self._player_index_for_action_entity(action)
+        if player_idx is not None:
+            PLAYERS[player_idx].set_has_passed(state, True)
 
     def _begin_acq_offer(
         self,

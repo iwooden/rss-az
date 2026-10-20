@@ -275,7 +275,11 @@ the update stream has a gap. Followed games are saved under
 Live decisions use the checkpoint's `v3_behavior` and acquisition scope.
 Checkpoints trained with `"acq_same_president": false` make cross-president
 offers, stop planning after posting one, and answer offers made to them with
-their own priors. 18xx.games players can also make offers v3 forbids, such as
+their own priors. While any acquisition offer is open, bots answer offers made
+to them but otherwise wait instead of offering or passing: 18xx.games ends
+Acquisition once every player has passed, dropping unanswered offers, so an
+unpassed bot keeps the round open for the responder. 18xx.games players can
+also make offers v3 forbids, such as
 offers below the high price. V3 checkpoints never trained on those, and their
 priors ignore the price, so search answers them from neutral accept/reject
 priors. Same-president checkpoints auto-reject cross-president offers unless
