@@ -2,8 +2,12 @@
 
 ## Direction
 
-- This branch develops and trains a successor to `nn/transformer-v2.py`
-  (`nn/transformer-v3.py`, currently trained with
+- The current branch (`az-1889`) adapts the engine and training pipeline to
+  Shikoku 1889, a standard 18xx game, alongside Rolling Stock Stars. Docs for
+  this work, including the rules spec and model blueprint, live in
+  [`1889/`](1889/).
+- The RSS work on `main` develops and trains a successor to
+  `nn/transformer-v2.py` (`nn/transformer-v3.py`, currently trained with
   `train_configs/v3-09-20-26.json`). A v2 checkpoint performed well against
   top-level human players over summer 2026; use it as the baseline for
   incorporating lessons from those games.
