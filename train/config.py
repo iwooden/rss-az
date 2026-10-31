@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from games import GAME_NAMES
 from nn.model_contract import ModelKind, normalize_model_type
 
 
@@ -121,6 +122,8 @@ class TrainingConfig:
     """All hyperparameters for the self-play training loop."""
 
     # --- Game ---
+    # A games.GAME_NAMES entry. Configs and checkpoints without it are RSS.
+    game: str = "rss"
     num_players: int = 3
     min_players: int = 0
     max_players: int = 0
@@ -322,6 +325,8 @@ class TrainingConfig:
         self.action_dim = int(MAX_ACTION_SIZE)
 
         self.model_type = normalize_model_type(self.model_type).value
+        if self.game not in GAME_NAMES:
+            raise ValueError(f"game must be one of {GAME_NAMES}, got {self.game!r}")
         if not isinstance(self.v3_behavior, bool):
             raise ValueError(f"v3_behavior must be bool, got {self.v3_behavior!r}")
         if not isinstance(self.acq_same_president, bool):

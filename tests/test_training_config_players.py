@@ -1,10 +1,30 @@
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
+import pytest
+import torch
+
+from train.checkpoint import load_checkpoint
 from train.config import TrainingConfig
 from train.logging import _format_player_range
 from train.main import _apply_overrides, _build_parser
+
+
+V2_PARITY_CHECKPOINT = Path(__file__).with_name("v2_parity") / "checkpoint.pt"
+
+
+def test_game_defaults_to_rss_and_rejects_unknown_names():
+    config = TrainingConfig()
+    assert config.game == "rss"
+    assert TrainingConfig.from_json(config.to_json()).game == "rss"
+    # Checkpoints saved before the field existed are RSS.
+    checkpoint = load_checkpoint(V2_PARITY_CHECKPOINT, torch.device("cpu"))
+    assert '"game"' not in checkpoint["config_json"]
+    assert TrainingConfig.from_json(checkpoint["config_json"]).game == "rss"
+    for invalid in ("chess", "RSS", None):
+        with pytest.raises(ValueError, match="game must be one of"):
+            TrainingConfig(game=invalid)  # type: ignore[arg-type]
 
 
 def test_v3_behavior_is_explicit_validated_and_serialized():

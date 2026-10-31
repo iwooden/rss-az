@@ -1,6 +1,6 @@
 # Pipeline Refactor for Shikoku 1889
 
-Status: plan (2026-10-30). Nothing here is implemented. This expands Section 11
+Status: steps 0-1 done (2026-10-31); the rest is plan. This expands Section 11
 of the model blueprint, [`1889.md`](1889.md). The rules are in
 [`1889-rules.md`](1889-rules.md).
 
@@ -118,7 +118,15 @@ class Game:
 - Two action sets. Engine legality is what the driver validates against;
   replay and live play need all of it. The policy set is what search expands
   and what masks and targets cover. Policy ⊆ engine-legal. The adapter exposes
-  only the policy set.
+  only the policy set once the ACQ cap moves (Section 4.1). Until then it also
+  has `enumerate_legal_actions`, because the evaluators' single-state paths use
+  the full set today.
+- States expose their raw row as `_array` and their player capacity as
+  `max_players`, and `rebind(row, num_players, max_players=)` repoints a state
+  at another row without allocating. The pipeline uses these directly; they
+  are rules for every game's state, not adapter fields.
+- Model inputs depend only on the row, never on runtime flags: batch
+  extractors build flagless states from raw rows.
 - Runtime flags travel with the state. RSS keeps `v3_behavior`,
   `acq_same_president`, and `acq_offer_limits` as Python attributes outside
   the `int16` row (`core/state.pyx:746-758`). Search inherits them from the
@@ -169,6 +177,11 @@ game hooks.
   engine-legal, so the driver still accepts human ones in replay and live play.
   - Alternative: bind the cap into the RSS `Game` with `functools.partial`.
     That needs no `.pxd` change, but tournament then needs one `Game` per seat.
+  - Steps 1-2 bind it this way for now. So from step 2, search expansion
+    reads the cap from the `Game` while the root filter reads
+    `MCTSConfig.max_acq_price_actions`. Callers that build an `MCTSConfig`
+    separately (tournament seats, `analyze_game.py:631`) must build their
+    `Game` from the same cap, or root and leaf action sets diverge.
 - Equivalence: both models use the legal mask only to mask logits
   (`nn/transformer-v3.py:1735`, `nn/transformer-v2.py:1567`). Softmax over
   the capped mask therefore equals the renormalized capped slice of the full
@@ -334,10 +347,11 @@ Pipeline track. Each step is a behavior-preserving commit or a short series:
 1. Add `games/`, `Game`, `PolicyLayout`, and the RSS adapter wrapping the
    existing functions, plus the conformance test. No consumer changes.
 2. Move consumers onto the adapter: search, evaluators, eval server, replay,
-   trainer, `play_game`, `train/main.py`, and `config.game`. Update RSS
-   tooling call sites mechanically, and add the boundary test.
+   trainer, `play_game`, and `train/main.py`. `StatePool` keeps the root state
+   instead of three named flags, since search builds its scratch state through
+   `scratch_state`. Update RSS tooling call sites mechanically, and add the
+   boundary test. (`config.game` landed in step 1.)
 3. Move game-specific behavior out of the pipeline:
-   - runtime flags behind `scratch_state`;
    - the self-play stats hook;
    - the cross-president adapter, into an RSS module;
    - then, as its own commit, the ACQ cap into the engine (Section 4.1).
