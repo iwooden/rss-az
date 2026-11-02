@@ -10,6 +10,9 @@ bids that land on the BID or RAISE grid use the grid point instead.
 
 Actions with no engine decision map to ``[]``: ``message``, ``program_*``,
 and ``run_routes`` whose revenue the engine's ROUTE step already matches.
+Any other ``run_routes`` maps to ``(ROUTE_OVERRIDE, revenue)``, which the
+harness applies with ``DRIVER.override_route_revenue``: humans' routes often
+earn less than the maximum, and Ruby pays logged revenue unchecked.
 ``end_game`` raises ``ReplayEnd``. An action the mapper cannot express yet
 raises ``UnsupportedAction`` naming its type.
 
@@ -34,6 +37,8 @@ from g1889.state import GameState
 from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TILE, TRAIN
 
 Decision = tuple[int, int]
+# Not a decision phase: ``(ROUTE_OVERRIDE, revenue)`` is ``DRIVER.override_route_revenue``.
+ROUTE_OVERRIDE = -2
 # TEMPORARY until 6.8 makes the buy-private slots legal: until then the mapper
 # reports a fixture's buy_company as unsupported rather than as an illegal id.
 BUY_PRIVATE_LANDED = False
@@ -147,10 +152,8 @@ def _place_token(action, pre, phase, state) -> list[Decision]:
 
 
 def _run_routes(action, pre, phase, state) -> list[Decision]:
-    if pre['revenue'] != TURN.route_revenue(state):
-        raise UnsupportedAction(f"run_routes for {pre['revenue']} against the engine's "
-                                f'{TURN.route_revenue(state)} needs override_route_revenue (6.6)')
-    return []
+    """Nothing when Ruby pays the engine's ROUTE revenue, else the override."""
+    return [] if pre['revenue'] == TURN.route_revenue(state) else [(ROUTE_OVERRIDE, pre['revenue'])]
 
 
 def _dividend(action, pre, phase, state) -> list[Decision]:

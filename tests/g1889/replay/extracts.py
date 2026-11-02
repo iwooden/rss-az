@@ -105,18 +105,16 @@ Every annotation has ``PRE_KEYS``:
 ``place_token``
     ``hex``; ``city``, the city's index on its tile (always 0 in 1889).
 ``run_routes``
-    ``revenue``: what Ruby pays. ``Action::RunRoutes`` hands a route's logged
-    revenue, if any, to ``Route.new``, which caches it, so Ruby checks and
-    computes only routes logged without one. 314 logs ``hexes`` and
-    ``revenue`` (Ruby pays the logged sum unchecked); 962 logs
+    ``revenue``: what Ruby pays, the human's logged revenue. ``Action::RunRoutes``
+    hands a route's logged revenue, if any, to ``Route.new``, which caches it,
+    so Ruby checks and computes only routes logged without one. 314 logs
+    ``hexes`` and ``revenue`` (Ruby pays the logged sum unchecked); 962 logs
     ``connections`` only (Ruby computes). ``trains``, the train ids run.
     ``recomputed_revenue`` and ``recomputed_routes`` (per route): Ruby's
     computation of the logged routes with any logged revenue dropped, or
     ``recomputed_revenue`` None with ``recomputed_error`` when it fails or a
-    route has no ``connections`` to rebuild it from (314). ``max_revenue``,
-    ``max_routes`` (``[{train, revenue, hexes}]``), and ``max_timed_out``:
-    AutoRouter's best combination, from its Ruby path walk and a port of its
-    JavaScript combination search.
+    route has no ``connections`` to rebuild it from (314). AutoRouter's best
+    for the same state is the Route snapshot's ``operating.auto_router``.
 ``dividend``
     ``revenue``: the revenue of this turn's routes, the amount being paid or
     withheld.
@@ -204,9 +202,19 @@ Snapshot (``state``)
     fresh ``Graph``, and as the game's own graph answers it from the route
     it has cached, whose ``route_train_purchase`` survives ``Graph#clear``
     (None when nothing is cached, and Ruby would compute it fresh; the cache
-    is read, never filled); and three oracles (schema 3), keyed by every
-    corporation with a placed token and computed on a fresh ``Graph`` so the
-    game's own graph caches stay untouched:
+    is read, never filled); ``auto_router`` (schema 5), None unless the
+    active step is ``Route``, else ``Engine::AutoRouter#compute`` for the
+    operator on a fresh ``Graph``: its Ruby path walk and a port of its
+    JavaScript combination search, with its own limits. It holds
+    ``revenue``, the best total; ``routes``, ``[{train, revenue, hexes,
+    ordered_hexes}]`` (train ids; ``Route#hexes``, the stops in order, and
+    ``Route#ordered_hexes``, every hex in route order, each stop once);
+    ``timed_out``, whether the path walk hit its 30 s limit; and
+    ``candidates``, ``{train id: routes kept}``, where 10,000 (``route_limit``)
+    would mean a cut list. Schema 4 kept this in the ``run_routes``
+    annotation; a Route snapshot is the state before it. And three oracles
+    (schema 3), keyed by every corporation with a placed token and computed
+    on a fresh ``Graph`` so the game's own graph caches stay untouched:
 
     ``graph``
         ``{corporation: {hexes, nodes, route}}``: ``hexes``, Ruby's
@@ -254,7 +262,7 @@ from typing import Any
 
 import pytest
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
@@ -285,8 +293,11 @@ HEX_KEYS = frozenset({'tile', 'rotation', 'tokens', 'reserved'})
 AUCTION_KEYS = frozenset({'companies', 'auctioning', 'min_bids'})
 STOCK_KEYS = frozenset({'sold', 'current_actions', 'bought_from_ipo', 'last_to_act', 'pass_order', 'legal'})
 OPERATING_KEYS = frozenset({
-    'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'must_buy', 'graph', 'tokens', 'lays',
+    'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'must_buy', 'auto_router', 'graph',
+    'tokens', 'lays',
 })
+AUTO_ROUTER_KEYS = frozenset({'revenue', 'routes', 'timed_out', 'candidates'})
+AUTO_ROUTE_KEYS = frozenset({'train', 'revenue', 'hexes', 'ordered_hexes'})
 
 PRE_KEYS = frozenset({
     'type', 'round', 'round_num', 'turn', 'step', 'handler', 'current_entity', 'active_players',
@@ -298,7 +309,7 @@ PRE_EXTRA_KEYS: dict[str, frozenset[str]] = {
     'sell_shares': frozenset({'corporation', 'percent', 'count', 'price'}),
     'lay_tile': frozenset({'hex', 'tile', 'rotation', 'old_tile', 'old_rotation'}),
     'place_token': frozenset({'hex', 'city'}),
-    'run_routes': frozenset({'revenue', 'trains', 'recomputed_revenue', 'max_revenue', 'max_routes', 'max_timed_out'}),
+    'run_routes': frozenset({'revenue', 'trains', 'recomputed_revenue'}),
     'dividend': frozenset({'revenue'}),
     'buy_train': frozenset({'train_type', 'source', 'price'}),
     'discard_train': frozenset({'train_type'}),
@@ -369,10 +380,14 @@ def load_graph_extract(label: str, specs: list[dict[str, Any]]) -> Extract:
     tile, rotation]`` lays a supply tile, and ``['token', corporation, hex]``
     places the corporation's next token free. An optional ``probe``,
     ``{corporation: [[hex, tile, rotation], ...]}``, lists lays to check.
+    An optional ``phase`` (``'D'``) is entered first, and ``trains``,
+    ``{corporation: [train name, ...]}``, gives corporations new trains.
     The extract's ``graphs`` holds, per spec, ``graph``, ``{corporation:
     {hexes, nodes, route}}`` as in ``operating.graph`` for every corporation
-    with a token, and ``restrictions``, ``{corporation: [ok, ...]}``, whether
-    ``check_track_restrictions!`` accepts each probed lay."""
+    with a token; ``restrictions``, ``{corporation: [ok, ...]}``, whether
+    ``check_track_restrictions!`` accepts each probed lay; and ``routes``,
+    ``{corporation: ...}`` as in ``operating.auto_router``, for each
+    corporation given trains."""
     inputs = json.dumps(specs, sort_keys=True).encode()
     CACHE_DIR.mkdir(exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix='.graphs.json')

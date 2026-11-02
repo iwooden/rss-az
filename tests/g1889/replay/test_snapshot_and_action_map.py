@@ -19,7 +19,7 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
 
-from tests.g1889.replay.action_map import ReplayEnd, UnsupportedAction, map_action
+from tests.g1889.replay.action_map import ROUTE_OVERRIDE, ReplayEnd, UnsupportedAction, map_action
 from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TRAIN, compare, load_state
 from tests.g1889.replay.test_differential_replay import new_game
@@ -277,6 +277,7 @@ def test_map_action_skips_and_rejects():
         map_action(corp_pass, {'round': 'OR', 'step': 'Dividend'}, K.DPHASE_DIVIDEND, scratch)
     with pytest.raises(UnsupportedAction, match='6.8'):
         map_action({'type': 'buy_company', 'entity_type': 'corporation'}, {}, K.DPHASE_TRACK, scratch)
+    # run_routes: nothing when Ruby pays the engine's revenue, else the override.
     TURN.set_route_revenue(scratch, 100)
-    with pytest.raises(UnsupportedAction, match='6.6'):
-        map_action({'type': 'run_routes'}, {'revenue': 120}, -1, scratch)
+    assert map_action({'type': 'run_routes'}, {'revenue': 100}, K.DPHASE_DIVIDEND, scratch) == []
+    assert map_action({'type': 'run_routes'}, {'revenue': 120}, K.DPHASE_DIVIDEND, scratch) == [(ROUTE_OVERRIDE, 120)]

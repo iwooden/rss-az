@@ -41,7 +41,9 @@ GRAPH's sides and nodes reached and ``route_available``, the cities the corp
 may token, and its lay candidates with their costs. They do not depend on
 whose turn it is; the oracle tests also check the operating corp's TRACK,
 TILE, and TOKEN ids. At a BuyTrain snapshot it checks ``must_buy_train``
-against Ruby's ``must_buy_train?`` on a fresh graph (``operating.must_buy``).
+against Ruby's ``must_buy_train?`` on a fresh graph (``operating.must_buy``),
+and at a Route snapshot the route solver's maximum against AutoRouter's
+(``operating.auto_router``; ``test_route_oracles.py`` checks the routes).
 
 Not compared, because the engine does not model them (or not yet): player
 ``value`` and the game ``result`` (``final_scores``, 6.8); a corporation's
@@ -75,6 +77,7 @@ from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
+from g1889.routes.solver import max_route_revenue
 from g1889.state import GameState
 
 Snapshot = dict[str, Any]
@@ -96,7 +99,7 @@ RUBY_STEPS = {
     K.STEP_PAR: 'BuySellParShares', K.STEP_TRACK: 'Track', K.STEP_TILE: 'Track', K.STEP_TOKEN: 'Token',
     K.STEP_DIVIDEND: 'Dividend', K.STEP_BUY_TRAIN: 'BuyTrain', K.STEP_TRAIN_PRICE: 'BuyTrain',
     K.STEP_DISCARD: 'DiscardTrain', K.STEP_BUY_PRIVATE: 'BuyCompany', K.STEP_ER_BONUS: 'SpecialTrack',
-    K.STEP_ROUTE: 'Route',  # automated: the engine rests there only at the development stop or from load_state
+    K.STEP_ROUTE: 'Route',  # automated: the engine is there from load_state, or replay's row before it
 }
 # The engine step each Ruby OR step loads as.
 OR_STEPS = {
@@ -333,6 +336,8 @@ def _compare_rounds(state, snap, ids, check) -> None:
               sorted(operating['ebuy_sold'], key=CORP.__getitem__))
         if operating['must_buy'] is not None and corp >= 0:
             check('operating.must_buy', A.must_buy_train_py(state, corp), operating['must_buy']['fresh'])
+        if operating['auto_router'] is not None and corp >= 0:
+            check('operating.auto_router.revenue', max_route_revenue(state, corp), operating['auto_router']['revenue'])
         _compare_network(state, operating, check)
 
 

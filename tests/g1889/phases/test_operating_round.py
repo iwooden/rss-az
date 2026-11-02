@@ -1,14 +1,14 @@
-"""The operating round as 6.5 builds it: OR_START, TURN_START, TRACK, TILE,
-TOKEN, ROUTE, DIVIDEND at zero revenue, BUY_TRAIN's pass and depot offers,
-TURN_END, and OR_END (1889/engine-design.md §5.2-5.4, §6.1; rules §8; Ruby's
-``round/operating.rb`` and the OR steps).
+"""The operating round as 6.5 and 6.6 build it: OR_START, TURN_START, TRACK,
+TILE, TOKEN, ROUTE, DIVIDEND at zero revenue, BUY_TRAIN's pass and depot
+offers, TURN_END, and OR_END (1889/engine-design.md §5.2-5.4, §6.1, §8; rules
+§8; Ruby's ``round/operating.rb`` and the OR steps).
 
 Covers the privates' revenue, home tokens, the OR order with its price and
 stack ties, an OR with no floated corp, turns and their presidents, the next
 OR of a set and the next SR, a lay's cost, tile, and reach, TILE's forced
-single candidate, a token's price, the withhold's move at the market's edges,
-must-buy against pass, and the driver's development stop wherever a later
-sub-step takes over. ``tests/g1889/replay/`` checks the same paths against
+single candidate, a token's price, ROUTE's revenue and its replay override,
+the withhold's move at the market's edges, must-buy against pass, and the
+driver's development stop wherever a later sub-step takes over. ``tests/g1889/replay/`` checks the same paths against
 Ruby on the fixtures; ``test_track_and_tokens.py`` pins the lay and token
 rules.
 
@@ -22,7 +22,7 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
-from g1889.driver import DRIVER, STATUS_INVALID
+from g1889.driver import DRIVER, STATUS_INVALID, STATUS_OK
 from g1889.entities.bank import BANK, BANK_ACCOUNT
 from g1889.entities.corp import CORPS
 from g1889.entities.graph import GRAPH
@@ -423,17 +423,66 @@ class TestBuyTrain:
 
 
 class TestRoute:
-    def test_a_corp_with_trains_rests_at_route(self):
-        """TEMPORARY (6.9 removes the development stop): running trains lands with 6.6."""
+    """ROUTE runs the corp's trains for the most they earn (``routes/solver.pyx``;
+    ``tests/g1889/test_routes.py`` pins the route rules), and replay can pay a
+    human's routes instead (``DRIVER.override_route_revenue``)."""
+
+    @staticmethod
+    def with_a_train(track=True):
+        """KO with a 2-train at its first TRACK choice; ``track`` lays J3 from
+        Takamatsu (¥30) to Sakaide & Okayama (¥20 in phase 2)."""
         state = at_or(3)
         hold(state, KO, {0: 6})
         TRAINS.set_depot(state, D.TRAIN_2, D.TRAIN_COUNT[D.TRAIN_2] - 1)
         TRAINS.set_corp_trains(state, KO, D.TRAIN_2, 1)
+        if track:
+            lay(state, 'J3', '8', 3)
         enter_operating_round(state)
+        return state
+
+    def test_a_corp_runs_its_trains_for_the_most_they_earn(self):
+        """TEMPORARY (6.9 removes the development stop): it rests at DIVIDEND,
+        whose payout lands with 6.7."""
+        state = self.with_a_train()
         result = apply_and_verify(state, K.TRACK_PASS)
-        assert result.forced == [(K.DPHASE_TOKEN, K.TOKEN_PASS)] and result.steps == []
-        assert TURN.step(state) == K.STEP_ROUTE and at_development_stop(state)
-        assert DRIVER.apply_action(state, 0) == STATUS_INVALID
+        assert result.forced == [(K.DPHASE_TOKEN, K.TOKEN_PASS)] and result.steps == [K.STEP_ROUTE]
+        assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) == 50
+        assert at_development_stop(state)
+        with pytest.raises(NotImplementedError):
+            DRIVER.apply_action(state, K.DIVIDEND_PAYOUT)
+
+    def test_a_corp_without_a_route_earns_nothing_and_withholds(self):
+        state = self.with_a_train(track=False)
+        result = apply_and_verify(state, K.TRACK_PASS)
+        assert result.forced == [(K.DPHASE_TOKEN, K.TOKEN_PASS), (K.DPHASE_DIVIDEND, K.DIVIDEND_WITHHOLD)]
+        assert K.STEP_ROUTE in result.steps and TURN.step(state) == K.STEP_BUY_TRAIN
+
+    def test_replay_pays_a_human_revenue_with_no_upper_bound(self):
+        state = self.with_a_train()
+        apply_and_verify(state, K.TRACK_PASS)
+        history = []
+        assert DRIVER.override_route_revenue(state, 40, history) == STATUS_OK and history == []
+        assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) == 40
+        # Ruby pays logged revenue unchecked (314 action 367), so it may exceed the most the trains earn.
+        assert DRIVER.override_route_revenue(state, 90) == STATUS_OK and TURN.route_revenue(state) == 90
+
+    def test_a_zero_override_forces_the_withhold(self):
+        state = self.with_a_train()
+        apply_and_verify(state, K.TRACK_PASS)
+        col, history = MARKET.col(state, KO), []
+        assert DRIVER.override_route_revenue(state, 0, history) == STATUS_OK
+        assert [(phase, action_id) for _, phase, action_id in history if phase >= 0] == \
+            [(K.DPHASE_DIVIDEND, K.DIVIDEND_WITHHOLD)]
+        assert MARKET.col(state, KO) == col - 1 and TURN.step(state) == K.STEP_BUY_TRAIN
+
+    def test_an_override_needs_the_corp_dividend_and_a_multiple_of_ten(self):
+        state = self.with_a_train()
+        assert DRIVER.override_route_revenue(state, 40) == STATUS_INVALID  # at TRACK
+        apply_and_verify(state, K.TRACK_PASS)
+        row = state._array.copy()
+        for revenue in (-10, 45, 1 << 15):
+            assert DRIVER.override_route_revenue(state, revenue) == STATUS_INVALID
+        np.testing.assert_array_equal(state._array, row)
 
 
 class TestAdvance:

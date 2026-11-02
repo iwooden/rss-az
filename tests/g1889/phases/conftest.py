@@ -245,14 +245,15 @@ def _assert_map(state, msg):
 
 def _assert_operating(state, msg):
     """The OR order lists distinct floated corps, the operating corp is the one
-    at ``or_index`` and its president acts, TILE alone has a pending hex, and
-    every OR field is clear outside the OR."""
+    at ``or_index`` and its president acts, TILE alone has a pending hex, the
+    turn's revenue waits only at DIVIDEND, and every OR field is clear outside
+    the OR."""
     step, corp = TURN.step(state), TURN.operating_corp(state)
     order = [TURN.or_order(state, i) for i in range(D.NUM_CORPS)]
     corps = [c for c in order if c >= 0]
     assert order == corps + [-1] * (D.NUM_CORPS - len(corps)) and len(set(corps)) == len(corps), f'{msg}: {order}'
     assert (TURN.pending_hex(state) >= 0) == (step == K.STEP_TILE), f'{msg}: pending hex'
-    assert TURN.route_revenue(state) == 0, f'{msg}: route revenue'  # until 6.6
+    assert TURN.route_revenue(state) == 0 or step == K.STEP_DIVIDEND, f'{msg}: route revenue outside DIVIDEND'
     if TURN.round(state) != K.ROUND_OPERATING:
         assert corps == [] and corp == -1 and TURN.or_index(state) == 0, f'{msg}: OR fields outside the OR'
         return

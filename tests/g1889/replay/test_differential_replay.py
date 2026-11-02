@@ -9,12 +9,16 @@ by the same player, is consumed instead of applied; one that matches none
 means Ruby skipped the pending forced decisions, so they are dropped. States
 are compared whenever no forced decision is pending.
 
-One equivalence needs the harness (engine-design §10.2, "Track after the
-lay"): Ruby keeps Track open after a corp's lay while its president owns MF,
+Two equivalences need the harness. Track after the lay (engine-design
+§10.2): Ruby keeps Track open after a corp's lay while its president owns MF,
 for the port tile, and the engine moves on to TOKEN. That snapshot is
 compared with the engine at TOKEN (``snapshot.track_after_lay``), and Ruby's
 pass that then closes Track maps to no decision: the forced decisions the
-engine applied since the lay are what Ruby does on that pass.
+engine applied since the lay are what Ruby does on that pass. Route (§8):
+Ruby waits at its Route step for the president's routes, and the engine's
+ROUTE step runs by itself, on to DIVIDEND. A Route snapshot is compared with
+the engine's row before its last ROUTE step, and ``run_routes`` maps to no
+decision or to ``override_route_revenue``.
 
 Replay stops at the first unsupported action, engine NotImplementedError, or
 mismatch, and at the driver's development stop (an automated step from a later
@@ -39,7 +43,7 @@ from g1889.driver import DRIVER, STATUS_INVALID
 from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
 
-from tests.g1889.replay.action_map import Decision, ReplayEnd, UnsupportedAction, map_action
+from tests.g1889.replay.action_map import ROUTE_OVERRIDE, Decision, ReplayEnd, UnsupportedAction, map_action
 from tests.g1889.replay.extracts import Extract, FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import compare, load_state, track_after_lay
 
@@ -101,20 +105,28 @@ def consume(pending: list[Forced], decisions_in: Callable[[int], list[Decision]]
 
 def _apply(state: GameState, decisions: list[Decision], pending: list[Forced], log: list) -> str | None:
     """Apply decisions through the driver, queueing the forced ones it adds and
-    adding its history to ``log``; an error message on failure."""
+    adding its history to ``log``; an error message on failure. A
+    ``ROUTE_OVERRIDE`` pays a human's revenue (``override_route_revenue``),
+    which records no decision of its own."""
     for phase, action_id in decisions:
         if pending:  # forced inside one Ruby action: it must be the decision Ruby made
             if pending[0][:2] != (phase, action_id):
                 return f'engine forced {pending[0][:2]} where Ruby chose {(phase, action_id)}'
             pending.pop(0)
             continue
-        engine_phase = get_decision_phase_py(state)
-        if engine_phase != phase:
-            return f'engine is at {_phase_name(engine_phase)}, Ruby acts in {_phase_name(phase)}'
         history: list = []
-        if DRIVER.apply_action(state, action_id, history) == STATUS_INVALID:
-            return f'{_phase_name(phase)} id {action_id} is illegal in the engine'
-        pending.extend((p, a, int(row[ACTIVE_PLAYER_SLOT])) for row, p, a in history[1:] if p >= 0)
+        if phase == ROUTE_OVERRIDE:
+            if DRIVER.override_route_revenue(state, action_id, history) == STATUS_INVALID:
+                return f'the route override to {action_id} is illegal at {K.Step(TURN.step(state)).name}'
+            forced = history
+        else:
+            engine_phase = get_decision_phase_py(state)
+            if engine_phase != phase:
+                return f'engine is at {_phase_name(engine_phase)}, Ruby acts in {_phase_name(phase)}'
+            if DRIVER.apply_action(state, action_id, history) == STATUS_INVALID:
+                return f'{_phase_name(phase)} id {action_id} is illegal in the engine'
+            forced = history[1:]
+        pending.extend((p, a, int(row[ACTIVE_PLAYER_SLOT])) for row, p, a in forced if p >= 0)
         log += history
     return None
 
@@ -144,8 +156,14 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
     pending: list[Forced] = []     # forced decisions applied since the last sync
     deferred = None                # the record whose snapshot waits for them
     track_open = False             # Ruby kept Track open after the lay; the engine is past it
+    route_row = None               # the engine's row at its last ROUTE step, not yet compared
 
-    def matches(record, at: GameState = state) -> bool:
+    def matches(record, at: GameState | None = None) -> bool:
+        nonlocal route_row
+        if at is None:
+            at = state
+            if record['state']['game']['step'] == 'Route' and route_row is not None:  # EQUIVALENT: before ROUTE
+                at, route_row = GameState.from_array(route_row, len(ids), state.max_players), None
         if diffs := compare(at, record['state']):
             progress.stop, progress.detail = 'mismatch', f"record {record['index']}: " + '; '.join(diffs)
             return False
@@ -194,6 +212,7 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
         except ReplayEnd:
             progress.detail = f'{where}: Ruby ended the game by hand'
             return progress
+        route_row = next((row for row, phase, step in log if phase < 0 and step == K.STEP_ROUTE), route_row)
         if track_after_lay(record['state']):  # compare at TOKEN: the row before a forced TOKEN, or the rest
             at_token = next((row for row, phase, _ in log if phase == K.DPHASE_TOKEN), None)
             at = state if at_token is None else GameState.from_array(at_token, len(ids), state.max_players)
@@ -275,10 +294,13 @@ def _lays_and_tokens(records, first: int, last: int) -> list[int]:
 
 # Per fixture: ORs, turns, the corps' lays and tokens, how many of them replay,
 # and the turns that stop at an action of a later sub-step before their last
-# lay or token (962 record 33: MF's port tile, ahead of TR's lay and token).
+# lay or token (962 record 33: MF's port tile, ahead of TR's lay and token);
+# then the turns' Route steps, how many replay (the turn rests at DIVIDEND
+# after its run_routes, 6.7), and how many of those pay a human's revenue
+# (override_route_revenue).
 OR_TURN_COVERAGE = {
-    '314': (10, 43, 46, 46, 0), '962': (10, 56, 59, 57, 1),
-    'hs_jmmljkbw_17502': (1, 1, 0, 0, 0), 'hs_lhglbbiz_17502': (1, 1, 0, 0, 0),
+    '314': (10, 43, 46, 46, 0, 32, 32, 5), '962': (10, 56, 59, 57, 1, 48, 48, 1),
+    'hs_jmmljkbw_17502': (1, 1, 0, 0, 0, 0, 0, 0), 'hs_lhglbbiz_17502': (1, 1, 0, 0, 0, 0, 0, 0),
 }
 
 
@@ -286,15 +308,16 @@ OR_TURN_COVERAGE = {
 def test_every_or_turn_replays_from_its_first_snapshot(fixture):
     """Each corp's turn in each OR, from ``load_state`` of the snapshot where
     it opens (each OR's first turn opens the OR): the lays, tokens, passes,
-    and zero-revenue withholds of real games. A turn replays until the
-    engine rests where a later sub-step takes over (ROUTE for a corp with
-    trains, a train purchase) or an action of a later sub-step; it never
-    mismatches, and it gets through its lays and tokens."""
+    routes, and zero-revenue withholds of real games. A turn replays until the
+    engine rests where a later sub-step takes over (DIVIDEND on revenue, a
+    train purchase) or an action of a later sub-step; it never mismatches,
+    and it gets through its lays, tokens, and routes."""
     extract = load_fixture_extract(fixture)
     records = extract['records']
     turns = _or_turns(extract)
     replayed = cut_short = 0
     total = []
+    routes, routes_replayed, overrides = [], 0, 0
     for first, last, _ in turns:
         progress = replay_extract(fixture, extract, start=first, end=last)
         assert progress.stop != 'mismatch', str(progress)
@@ -304,7 +327,13 @@ def test_every_or_turn_replays_from_its_first_snapshot(fixture):
         if lays_and_tokens and progress.matched < lays_and_tokens[-1]:
             assert progress.stop == 'unsupported', str(progress)
             cut_short += 1
-    coverage = (sum(opens for *_, opens in turns), len(turns), len(total), replayed, cut_short)
+        run = [i for i in range(first + 1, last + 1) if records[i]['action']['type'] == 'run_routes']
+        routes += run
+        routes_replayed += sum(i <= progress.matched for i in run)
+        overrides += sum(records[i]['pre']['revenue'] != records[i - 1]['state']['operating']['auto_router']['revenue']
+                         for i in run if i <= progress.matched)
+    coverage = (sum(opens for *_, opens in turns), len(turns), len(total), replayed, cut_short,
+                len(routes), routes_replayed, overrides)
     assert coverage == OR_TURN_COVERAGE[fixture]
 
 

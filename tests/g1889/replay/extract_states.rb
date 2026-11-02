@@ -27,7 +27,7 @@ require 'logger'
 
 module G1889Extract
   ROOT = File.expand_path('../../..', __dir__)
-  SCHEMA_VERSION = 4
+  SCHEMA_VERSION = 5
   TITLE = '1889'
 
   module_function
@@ -331,6 +331,7 @@ module G1889Extract
         'ebuy_sold' => buy_train.instance_variable_get(:@corporations_sold)&.map(&:name) || [],
         'ebuy_last_share_price' => buy_train.last_share_sold_price,
         'must_buy' => must_buy_info(round),
+        'auto_router' => round.active_step.is_a?(Engine::Step::Route) ? auto_router_info(round.current_operator) : nil,
       }.merge(network_snapshot(round))
     end
 
@@ -581,12 +582,11 @@ module G1889Extract
     # revenue is what Ruby pays. RunRoutes hands a route's logged revenue, if
     # any, to Route.new, which caches it, so Ruby checks and computes only
     # routes logged without one. recomputed_revenue rebuilds the routes
-    # without logged revenues; max_revenue is AutoRouter's search, ported below.
+    # without logged revenues. AutoRouter's best is in the Route snapshot
+    # before (operating.auto_router).
     def run_routes_info(action)
-      corp = action.entity
       info = { 'revenue' => @game.routes_revenue(action.routes), 'trains' => action.routes.map { |r| r.train.id } }
-      info.merge!(recompute_routes(action))
-      info.merge(max_revenue(corp))
+      info.merge(recompute_routes(action))
     end
 
     def recompute_routes(action)
@@ -604,17 +604,39 @@ module G1889Extract
       { 'recomputed_revenue' => nil, 'recomputed_error' => e.message }
     end
 
-    # Engine::AutoRouter#compute without the browser: its path walk is Ruby,
-    # but its route combination (Autorouter#find_best_combo) is JavaScript run
-    # through Opal. This ports that search: trains are tried last first, a
-    # route may not share a hexside bit with an earlier choice, a prefix is cut
-    # when its estimate plus the best single routes of the remaining trains
-    # cannot beat the best total, and a full combination is scored by
-    # real_revenue. 1889 has no autoroute groups, so there is one bitfield.
-    def max_revenue(corp)
-      router = Engine::AutoRouter.new(@game)
-      trains = @game.route_trains(corp).sort_by(&:price)
-      train_routes, timed_out = router.path(trains, corp)
+    # Engine::AutoRouter#compute for the operator at a Route step, without
+    # the browser: its path walk is Ruby, but its route combination
+    # (Autorouter#find_best_combo) is JavaScript run through Opal. This ports
+    # that search: trains are tried last first, a route may not share a
+    # hexside bit with an earlier choice, a prefix is cut when its estimate
+    # plus the best single routes of the remaining trains cannot beat the best
+    # total, and a full combination is scored by real_revenue. 1889 has no
+    # autoroute groups, so there is one bitfield. It runs on a fresh Graph, as
+    # the network oracles do, with AutoRouter's own limits: route_limit keeps
+    # each train's 10,000 best routes (candidates counts them), and the path
+    # walk stops after 30 s (timed_out).
+    def auto_router_info(corp)
+      log_size = @game.log.size
+      with_graph(Engine::Graph.new(@game)) do
+        router = Engine::AutoRouter.new(@game)
+        trains = @game.route_trains(corp).sort_by(&:price)
+        train_routes, timed_out = router.path(trains, corp)
+        best = best_combination(router, train_routes)
+        {
+          'revenue' => best[:revenue],
+          'routes' => best[:routes].map do |r|
+            { 'train' => r.train.id, 'revenue' => r.revenue, 'hexes' => r.hexes.map(&:id),
+              'ordered_hexes' => r.ordered_hexes.map(&:id) }
+          end,
+          'timed_out' => timed_out,
+          'candidates' => train_routes.to_h { |train, routes| [train.id, routes.size] },
+        }
+      end
+    ensure
+      @game.log.slice!(log_size..) if log_size
+    end
+
+    def best_combination(router, train_routes)
       lists = train_routes.values.reverse.map { |routes| routes.map { |r| [r, r.revenue] } + [nil] }
       rest = Array.new(lists.size + 1, 0)
       (lists.size - 1).downto(0) { |i| rest[i] = rest[i + 1] + lists[i].first[1] }
@@ -636,11 +658,7 @@ module G1889Extract
           if i == lists.size - 1
             if next_estimate > best[:revenue]
               real = router.real_revenue(combo)
-              if real > best[:revenue]
-                best = { revenue: real, routes: combo.map do |r|
-                  { 'train' => r.train.id, 'revenue' => r.revenue, 'hexes' => r.hexes.map(&:id) }
-                end }
-              end
+              best = { revenue: real, routes: combo.map(&:clone) } if real > best[:revenue]
             end
           elsif next_estimate + rest[i + 1] > best[:revenue]
             search.call(i + 1, next_estimate, next_bits)
@@ -649,7 +667,8 @@ module G1889Extract
         end
       end
       search.call(0, 0, []) unless lists.empty?
-      { 'max_revenue' => best[:revenue], 'max_routes' => best[:routes], 'max_timed_out' => timed_out }
+      best[:routes].each { |r| r.routes = best[:routes] }
+      best
     end
 
     def conflicts?(a, b)
@@ -748,7 +767,10 @@ module G1889Extract
   # places the corporation's next token free. Records graph_info for every
   # corporation with a token, and for each lay in the spec's probe
   # ({corporation: [[hex, tile, rotation], ...]}) whether
-  # check_track_restrictions! accepts it.
+  # check_track_restrictions! accepts it. An optional phase (its name) is
+  # entered with Phase#next!, and trains ({corporation: [train name, ...]})
+  # are new Train objects the corporation owns; routes then holds
+  # auto_router_info for each corporation with trains.
   def extract_graphs(path)
     # Step::Tracker's checks outside a round; the engine loads after this file.
     checker_class = Class.new do
@@ -777,10 +799,22 @@ module G1889Extract
           corps |= [corp]
         end
       end
+      game.phase.next! while spec['phase'] && game.phase.name != spec['phase']
+      (spec['trains'] || {}).each do |sym, names|
+        corp = game.corporation_by_id(sym)
+        names.each do |name|
+          train = Engine::Train.new(**game.class::TRAINS.find { |t| t[:name] == name })
+          train.owner = corp
+          corp.trains << train
+        end
+      end
       reader = Reader.new(game, player_ids(game))
       graph = Engine::Graph.new(game)
       checker = checker_class.new(game)
       {
+        'routes' => (spec['trains'] || {}).to_h do |sym, _|
+          [sym, reader.auto_router_info(game.corporation_by_id(sym))]
+        end,
         'graph' => corps.to_h { |c| [c.name, reader.graph_info(graph, c)] },
         'restrictions' => (spec['probe'] || {}).to_h do |sym, lays|
           corp = game.corporation_by_id(sym)

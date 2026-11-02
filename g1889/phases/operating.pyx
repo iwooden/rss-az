@@ -29,10 +29,10 @@ Fields:
 
 The step implies the turn's lay and token use (engine-design.md §3). Later
 sub-steps own the rest, and the driver's development stop rests where they
-take over. ROUTE for a corp with trains (6.6), a train purchase (6.7), and
-the game's end after a broken bank's last OR (6.8) raise NotImplementedError
-before changing anything; in phases 3-4 BUY_TRAIN's pass opens the
-BUY_PRIVATE window, whose decision phase lands with 6.8.
+take over. DIVIDEND on revenue (whose legal set raises), a train purchase
+(6.7), and the game's end after a broken bank's last OR (6.8) raise
+NotImplementedError before changing anything; in phases 3-4 BUY_TRAIN's
+pass opens the BUY_PRIVATE window, whose decision phase lands with 6.8.
 """
 
 from g1889.actions cimport (
@@ -50,9 +50,9 @@ from g1889.entities.hexmap cimport HexMap, hex_tokens
 from g1889.entities.market cimport Market, market_sort_by_price
 from g1889.entities.phase cimport game_phase
 from g1889.entities.private cimport pay_revenue
-from g1889.entities.trains cimport corp_train_total
 from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_pending_hex, turn_route_revenue
 from g1889.phases.stock cimport start_stock_round
+from g1889.routes.solver cimport route_max
 from g1889.state cimport GameState
 
 from g1889.entities import corp as _corp, hexmap as _hexmap, market as _market, turn as _turn
@@ -175,11 +175,11 @@ cdef void apply_token(GameState state, const ActionInfo* info) except *:
 # =============================================================================
 
 cdef void run_route(GameState state) except *:
-    """Ruby's Route step: a corp without trains runs nothing, so the turn's
-    revenue is 0. A corp with trains needs the route solver (6.6)."""
-    if corp_train_total(state, turn_operating_corp(state)):
-        raise NotImplementedError("1889 ROUTE: running trains is not implemented yet (engine-design.md §11, 6.6)")
-    TURN.set_route_revenue(state, 0)
+    """Ruby's Route step: the corp runs its trains for the most they can earn
+    (``routes/solver.pyx``, cached in ``route_cache``), the turn's revenue;
+    a corp without trains or a route earns 0. Replay sets a human's revenue
+    with ``DRIVER.override_route_revenue`` at DIVIDEND."""
+    TURN.set_route_revenue(state, route_max(state, turn_operating_corp(state)))
     TURN.set_step(state, STEP_DIVIDEND)
 
 

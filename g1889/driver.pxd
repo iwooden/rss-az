@@ -11,7 +11,8 @@ each decision and ``(row copy, -1, step)`` before each automated step. Until
 6.9 the auto-chain rests where a later sub-step takes over (the development
 stop): a handler, step, or enumerator that raises NotImplementedError has
 changed nothing and recorded no history. ``advance`` runs the auto-chain on
-a state set up by hand.
+a state set up by hand. ``override_route_revenue`` lets replay pay a human's
+routes instead of the solver's maximum.
 """
 
 from g1889.state cimport GameState
@@ -30,3 +31,4 @@ cdef class GameDriver:
 
     cpdef int apply_action(self, GameState state, int action_id, object history=*) except -1
     cpdef int advance(self, GameState state, object history=*) except -1
+    cpdef int override_route_revenue(self, GameState state, int revenue, object history=*) except -1

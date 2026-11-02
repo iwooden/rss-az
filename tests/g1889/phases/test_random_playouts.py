@@ -8,7 +8,8 @@ decisions and automated steps included: money totals ¥7,000, each corp's ten
 shares are accounted for, each private has one owner, the supply is never
 negative, every charter token is left or placed, the OR fields agree with the
 step, and every returned decision is a choice. Here every state is also
-checked for caches that are clean but stale (GRAPH recomputed from scratch),
+checked for caches that are clean but stale (GRAPH and the route solver
+recomputed from scratch),
 and every returned decision for its legal and policy sets on a rebound copy
 of the row.
 
@@ -29,6 +30,7 @@ from g1889.entities.graph import GRAPH
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
 from g1889.entities.turn import TURN
+from g1889.routes.solver import max_route_revenue
 from g1889.state import GameState, get_corp_fields, get_global_fields, get_layout
 
 from tests.g1889.phases.conftest import (
@@ -58,13 +60,18 @@ def _choose(state, rng, flags):
 
 
 def _assert_fresh_caches(state, msg):
-    """Every connectivity cache marked clean equals a recomputation."""
+    """Every connectivity and route cache marked clean equals a recomputation."""
     layout = get_layout(state.max_players)
     row = state._array
     fresh = GameState.from_array(row, TURN.num_players(state), max_players=state.max_players)
-    fresh._array[layout.global_offset + GLOBALS.conn_dirty] = ALL_CORPS  # test setup: drop every cache
+    for field in (GLOBALS.conn_dirty, GLOBALS.route_dirty):  # test setup: drop every cache
+        fresh._array[layout.global_offset + field] = ALL_CORPS
     dirty = int(row[layout.global_offset + GLOBALS.conn_dirty])
+    route_dirty = int(row[layout.global_offset + GLOBALS.route_dirty])
     for c in range(D.NUM_CORPS):
+        if not route_dirty >> c & 1:
+            cache = layout.corps_offset + c * CORP_FIELDS.size + CORP_FIELDS.route_cache
+            assert row[cache] == max_route_revenue(fresh, c), f'{msg}: corp {c} route cache is stale'
         if dirty >> c & 1:
             continue
         GRAPH.refresh(fresh, c)

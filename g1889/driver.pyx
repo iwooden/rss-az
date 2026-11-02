@@ -18,10 +18,11 @@ from g1889.actions cimport (
 )
 from g1889.constants cimport (
     DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_TRAIN, DPHASE_DIVIDEND, DPHASE_PAR, DPHASE_RAISE, DPHASE_STOCK,
-    DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK, NUM_STEPS, ROUND_GAME_OVER, STEP_GAME_OVER, STEP_OR_END,
-    STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END, STEP_TURN_START,
+    DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK, NUM_STEPS, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND,
+    STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END,
+    STEP_TURN_START,
 )
-from g1889.entities.turn cimport turn_round, turn_step
+from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_round, turn_step
 from g1889.phases.auction cimport apply_auction, apply_bid, apply_raise
 from g1889.phases.operating cimport (
     apply_buy_train, apply_dividend, apply_tile, apply_token, apply_track, run_or_end, run_or_start, run_route,
@@ -32,6 +33,9 @@ from g1889.state cimport GameState
 
 from g1889.actions import decode_action_py
 from g1889.constants import DecisionPhase, Step
+from g1889.entities import turn as _turn
+
+cdef TurnState TURN = _turn.TURN
 
 # Reaching it means a step that never advances or an endless forced chain.
 cdef enum:
@@ -162,6 +166,21 @@ cdef class GameDriver:
         ``apply_action`` does after its action: for a state set up by hand at
         an automated step (tests, ``setup_operating_round_py``). Returns
         STATUS_OK or STATUS_GAME_OVER."""
+        return self._auto_chain(state, history)
+
+    cpdef int override_route_revenue(self, GameState state, int revenue, object history=None) except -1:
+        """Replay only: make ``revenue`` the operating corp's revenue this turn,
+        as Ruby pays a human's logged routes, then auto-chain, since zero
+        revenue forces the withhold. Legal at the corp's DIVIDEND decision for
+        any multiple of ¥10 from 0 up, with no upper bound: Ruby pays logged
+        revenue unchecked, and 314 action 367 pays ¥400 where the most IR's
+        trains can earn is ¥370 (engine-design.md §8). History gets the
+        auto-chain, not the override. The pipeline never calls it. Returns
+        STATUS_INVALID elsewhere, else as ``apply_action``."""
+        if (turn_round(state) != ROUND_OPERATING or turn_step(state) != STEP_DIVIDEND
+                or turn_operating_corp(state) < 0 or not 0 <= revenue < 1 << 15 or revenue % 10):
+            return STATUS_INVALID
+        TURN.set_route_revenue(state, revenue)
         return self._auto_chain(state, history)
 
     def forced_action_py(self, GameState state):

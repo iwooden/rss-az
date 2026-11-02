@@ -14,9 +14,9 @@ import pytest
 
 from g1889.data import load_tables
 from tests.g1889.replay.extracts import (
-    AUCTION_KEYS, CORPORATION_KEYS, FIXTURES, GAME_KEYS, HEX_KEYS, OPERATING_KEYS, PLAYER_KEYS, PRE_EXTRA_KEYS,
-    PRE_KEYS, PRE_OPTIONAL_KEYS, PRIVATE_KEYS, STATE_KEYS, STOCK_KEYS, Extract, load_fixture, load_fixture_extract,
-    load_new_game_extract,
+    AUCTION_KEYS, AUTO_ROUTE_KEYS, AUTO_ROUTER_KEYS, CORPORATION_KEYS, FIXTURES, GAME_KEYS, HEX_KEYS, OPERATING_KEYS,
+    PLAYER_KEYS, PRE_EXTRA_KEYS, PRE_KEYS, PRE_OPTIONAL_KEYS, PRIVATE_KEYS, STATE_KEYS, STOCK_KEYS, Extract,
+    load_fixture, load_fixture_extract, load_new_game_extract,
 )
 
 T = load_tables()
@@ -28,6 +28,7 @@ TILE_NAMES = {t['name'] for t in T['tiles']}
 SUPPLY_TILES = {t['name']: t['count'] for t in T['tiles'] if t['hex'] < 0}
 TRAIN_COUNTS = {t['name']: t['count'] for t in T['trains']}
 ROUND_DETAIL = {'ISR': 'auction', 'SR': 'stock', 'OR': 'operating'}
+AUTO_ROUTER_ROUTE_LIMIT = 10_000  # AutoRouter#path keeps each train's best route_limit routes
 
 State = dict[str, Any]
 
@@ -82,6 +83,12 @@ def check_state(state: State, num_players: int) -> None:
             assert state[key].keys() == keys
         else:
             assert state[key] is None
+    if detail == 'operating' and (router := state['operating']['auto_router']) is not None:
+        assert game['step'] == 'Route' and router.keys() == AUTO_ROUTER_KEYS
+        assert all(route.keys() == AUTO_ROUTE_KEYS for route in router['routes'])
+        assert router['revenue'] == sum(route['revenue'] for route in router['routes'])
+    elif detail == 'operating':
+        assert game['step'] != 'Route' or game['finished']
 
     assert (game['result'] is not None) == game['finished']
 
@@ -192,7 +199,10 @@ def test_annotations_agree_with_the_states(case):
                     assert pre['revenue'] == pre['recomputed_revenue'] == sum(pre['recomputed_routes'])
                 assert pre['trains'] == [r['train'] for r in action['routes']]
                 assert new['operating']['routes_revenue'] == pre['revenue']
-                assert pre['max_revenue'] % 10 == 0 and not pre['max_timed_out']
+                # AutoRouter searched every route: no timeout, no list cut at route_limit.
+                router = old['operating']['auto_router']
+                assert router['revenue'] % 10 == 0 and not router['timed_out']
+                assert max(router['candidates'].values()) < AUTO_ROUTER_ROUTE_LIMIT
             case 'dividend':
                 assert pre['revenue'] == old['operating']['routes_revenue']
 
@@ -246,14 +256,30 @@ def test_network_oracles_admit_each_logged_move(case):
     assert (lays, tokens) == {'314': (40, 6), '962': (51, 8)}.get(case[0], (0, 0))
 
 
+def _logged_and_best_revenues(name: str) -> dict[int, tuple[int, int]]:
+    """``{run_routes action id: (logged revenue, AutoRouter's best)}``."""
+    records = load_fixture_extract(name)['records']
+    return {r['action']['id']: (r['pre']['revenue'], before['state']['operating']['auto_router']['revenue'])
+            for before, r in zip(records, records[1:]) if r['action']['type'] == 'run_routes'}
+
+
+def test_every_route_step_is_followed_by_its_run_routes(case):
+    records = case[2]['records']
+    routes = [i for i, r in enumerate(records) if r['state']['game']['step'] == 'Route']
+    assert all(records[i + 1]['action']['type'] == 'run_routes' for i in routes)
+    assert len(routes) == sum(r['action']['type'] == 'run_routes' for r in records[1:])
+
+
 def test_logged_revenue_exceeds_ruby_max_only_where_known():
     # Ruby pays logged route revenue unchecked. 314's 367 logs ¥400 for IR, whose
     # 3-train route I4-I2-J3-K4 passes through I2, which SR and AR fill; the
     # legal maximum is ¥370. 962 logs no revenues, so Ruby checks its routes.
-    over = {(name, r['action']['id']): (r['pre']['revenue'], r['pre']['max_revenue'])
-            for name in FIXTURES for r in load_fixture_extract(name)['records'][1:]
-            if r['action']['type'] == 'run_routes' and r['pre']['revenue'] > r['pre']['max_revenue']}
+    over = {(name, action_id): revenues for name in FIXTURES
+            for action_id, revenues in _logged_and_best_revenues(name).items() if revenues[0] > revenues[1]}
     assert over == {('314', 367): (400, 370)}
+    under = {(name, action_id) for name in FIXTURES
+             for action_id, (logged, best) in _logged_and_best_revenues(name).items() if logged < best}
+    assert under == {('314', 250), ('314', 361), ('314', 435), ('314', 446), ('962', 356)}
 
 
 @pytest.mark.parametrize('num_players', range(2, 7))

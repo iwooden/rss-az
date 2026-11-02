@@ -193,7 +193,7 @@ cert counts, and crowding are cheap enough to compute on demand.
 | Cache | Dirty bit | Invalidated by | Refresh |
 |---|---|---|---|
 | connectivity, `route_available` | `conn_dirty` | `MAP.lay` and `MAP.place_token`, for all corps | search from the corp's token nodes |
-| `route_cache` | `route_dirty` | the same, plus the corp's train changes, rusting, and phase changes | the route solver (Section 8) |
+| `route_cache` | `route_dirty` | the same, plus `TRAINS.set_corp_trains` for that corp (buys, discards, rusting) and `PHASE.set_current` for all | `route_max`, the route solver (Section 8) |
 
 **Connectivity** is `Graph#compute` (`graph.rb:193`), replayed step for step
 (`entities/graph.pyx`). A tokened hex reaches all its open sides. Each token
@@ -389,7 +389,8 @@ every bid lands on the grid.
 dispatches, and auto-chains (`:297-338`); history records `(row copy, decision
 phase, id)` before each mutation and `(row, −1, step)` for automated steps
 (`:147`, `:197`); a guard stops at 1,000 iterations (`:90`); status codes are
-0/1/2 (`core/driver.pxd:35-41`), with no step mode.
+0/1/2 (`core/driver.pxd:35-41`), with no step mode. Replay's one other entry
+point is `override_route_revenue` (Section 8).
 
 **Development stop (until 6.9).** A handler, automated step, or enumerator
 whose case a later sub-step owns raises NotImplementedError before it
@@ -424,7 +425,7 @@ forced: only self-play sets flags, and it never plays exact amounts.
 | `SR_END` | automated | Priority goes to the player after the last passer. Sold-out corps move up in price order (`round/stock.rb:70`). `or_count` is fixed |
 | `OR_START`, `TURN_START` | automated | OR_START pays private revenue (`game/base.rb:1649`; the bank only pays out, so Ruby's payment order cannot matter), places every floated corp's free home token (`HOME_TOKEN_TIMING = :operating_round`), and fixes the order: the floated corps in stock price order (`game/base.rb:986`). With none, OR_END follows. TURN_START gives the turn to the next corp's president |
 | `TRACK`, `TILE`, `TOKEN` | decisions | One lay and one token per turn: TILE moves on to TOKEN, and TOKEN to ROUTE |
-| `ROUTE` | automated | Section 8. A corp without trains runs for ¥0 |
+| `ROUTE` | automated | The operating corp's maximum revenue (Section 8), ¥0 without trains or a route. Ruby's Route step waits for the president's routes instead; replay pays a human's revenue with `override_route_revenue` |
 | `DIVIDEND`, `BUY_TRAIN`, `TRAIN_PRICE`, `DISCARD`, `BUY_PRIVATE`, `PRIVATE_PRICE`, `ER_BONUS` | decisions | Open Market shares pay their dividend to the corp (`step/dividend.rb:151-181`). At zero revenue only the withhold is legal, which Ruby applies by skipping the step; it moves the price left (down at column 0, `TwoDimensionalMovement`). BUY_TRAIN's pass ends the turn, or in phases 3-4 opens BUY_PRIVATE (Ruby's blocking BuyCompany) |
 | `TURN_END`, `OR_END` | automated | Emergency sales re-sort the corps yet to run (`round/operating.rb:97`). After a set's last OR: game over if the bank has broken, otherwise an SR, with the SR number up and `or_num` back to 1; Ruby reorders the players only after an SR, so the priority holder opens it. A corp floated mid-OR by DR runs from the next OR |
 | `GAME_OVER` | terminal | |
@@ -510,55 +511,149 @@ policy-restricted. Search roots copied from it turn them on, as in self-play.
   `TrainingConfig` "1889 engine options" block, read by `games/g1889.py` and
   rejected unless `game == "1889"` (pipeline-refactor §3.4).
 
-## 8. Route solver boundary
+## 8. Route solver
 
 ```cython
 # g1889/routes/solver.pxd
 cdef struct RouteSet:
     int revenue
-    int num_routes                 # at most 4, the largest train limit
+    int num_routes                 # at most MAX_ROUTES (4, the largest train limit): one per train that earns
     int train_type[4]
     int route_revenue[4]
     int num_hexes[4]
-    int8_t hexes[4][MAX_ROUTE_HEXES]  # route order (18xx "connections"); 2 × 52, since
-                                      # a route can cross a hex twice on a crossing tile
+    int8_t hexes[4][104]           # MAX_ROUTE_HEXES: each route's hexes in order, each stop once (Ruby's
+                                   # Route#ordered_hexes); a crossing tile's hex can appear twice
 cdef int solve_routes(GameState state, int corp, RouteSet* out) noexcept nogil  # out may be NULL
-cpdef int max_route_revenue(GameState state, int corp)   # cached in route_cache
-cpdef list best_routes_py(GameState state, int corp)      # tests, analysis, live play later
+cdef int route_max(GameState state, int corp) noexcept nogil   # cached in route_cache behind route_dirty
+cpdef int max_route_revenue(GameState state, int corp)         # route_max for Python
+cpdef list best_routes_py(GameState state, int corp)           # tests, analysis, live play later
 ```
 
-**Rules** (rules §8.6; `route.rb`, `game/base.rb:1481-1525`). A route has 2
-stops up to the train's distance (D unlimited), counts every revenue center
-on it, includes a city with one of the corp's tokens, visits each revenue
-center at most once, and may end at but never pass through an offboard or a
-city blocked for the corp. Across all of a corp's routes, each (hex, side) endpoint is used at most
-once (`:1481`), so trains share no track but may share stops. Cities and
-towns pay their tile value; an empty printed city pays ¥0. Offboards pay by
-phase, and D trains score the D value in phase D.
+**Rules,** as `Route#revenue` checks them (`route.rb`, `game/base.rb:1434-1625`;
+rules §8.6). A route:
 
-**Placement.** The automated `ROUTE` step solves the operating corp, stores
-`route_revenue` (0 when the corp has no trains or no route), and caches the
-result in `route_cache` behind `route_dirty`. Extraction may solve other
-corps in its nogil prologue.
+- has 2 stops up to the train's distance (D's 999 is no limit). Every
+  revenue center costs 1 (`visit_cost`), towns included;
+- counts every center it visits (`compute_stops` keeps every visit for a
+  numeric distance), each once (`check_cycles!`);
+- includes a city with one of the corp's tokens, anywhere on it;
+- may end at, but not pass, an offboard or a city whose slots hold only
+  other corps' tokens (`check_connected`, `Node#blocks?`). A home
+  reservation blocks nothing;
+- crosses no hex side twice. `check_overlap` keys every path end by (hex,
+  side), within the route and across the corp's routes, so trains share no
+  track but may share stops. Its other keys (a town off center, two nodes on
+  one tile) never bind in 1889: a town path's key comes with a side key, and
+  no tile joins two nodes.
+
+Cities and towns pay their tile value, offboards pay by phase (yellow to
+phase 4, brown from 5), and a D train scores an offboard's diesel value
+(`route_base_revenue` gives it in any phase; D trains exist only in phase D).
+An empty printed city pays ¥0, but it has no track, so no route reaches it.
+
+**AutoRouter** (`auto_router.rb`) is exact in 1889 within its limits. Its
+path walk (`Node#walk`, backtracking) lists every route that starts at one
+of the graph's `connected_nodes`, its hexside bitfield is `check_overlap`'s
+key, and its combination search (JavaScript, which the extractor ports) is
+an exhaustive branch and bound. The limits are those start nodes, each
+train's 10,000 best routes (`route_limit`), and timeouts (30 s for the path
+walk, 10 s for the search). None bound at a fixture Route step, where a
+train has at most 144 routes. On random maps denser than the tests use, one
+train's list reached 10,000 without changing the best.
+
+**Placement.** The automated `ROUTE` step stores `route_max` for the
+operating corp in `route_revenue` (¥0 without trains or a route) and moves
+on to DIVIDEND. Extraction may call `solve_routes(state, corp, NULL)` for
+any corp in its nogil prologue. `route_cache` goes stale through `MAP`'s
+writes (lays and tokens: every corp), `TRAINS.set_corp_trains` (that corp;
+6.7's buys, discards, trade-ins, and rusting must use it), and
+`PHASE.set_current` (every corp).
 
 **Replay.** `DRIVER.override_route_revenue(state, revenue)` is legal only at
 the operating corp's DIVIDEND decision, for any multiple of ¥10 from 0 up.
-It re-runs the auto-chain, since zero revenue forces the dividend. The
-pipeline never calls it. It exists for human routes, which are usually
-below the maximum (314 actions 250, 361, 435, 446; 962 action 356), but not
-always: Ruby pays logged revenue unchecked, and 314 action 367 pays ¥400
-where the legal maximum is ¥370 (IR's route passes through I2, which SR and
-AR fill). So there is no upper bound.
+It re-runs the auto-chain, since zero revenue forces the dividend; history
+gets the auto-chain only. The pipeline never calls it. It exists for human
+routes, which are usually below the maximum (314 actions 250, 361, 435,
+446; 962 action 356), but not always: Ruby pays logged revenue unchecked,
+and 314 action 367 pays ¥400 where the legal maximum is ¥370 (IR's route
+passes through I2, which SR and AR fill). So there is no upper bound.
 
-**Algorithm** (its own sub-step), suggested shape: search from the token
-nodes over precomputed node-to-node segments, giving each train's candidate
-routes as 312-bit half-edge sets; then branch and bound over trains in
-descending distance, keeping the sets disjoint.
+**Algorithm** (`routes/solver.pyx`):
 
-**Test:** the solver is exact against brute force and against Ruby's
-`AutoRouter` (`auto_router.rb`) at every fixture Route step. Profile it
-early, because step 7's candidate features depend on its cost (blueprint
-§4.3).
+1. **Segments.** Every path of a hex with a revenue center ends at the
+   center, and no other hex has one (`tests/g1889/test_routes.py`). So a
+   route is a sequence of centers joined by segments: track between two
+   centers through hexes without one. A walk from each center takes the
+   paths of the hex across a side at that side only (no reversal at a
+   junction) and crosses no side twice. Each segment keeps its half-edges
+   (hex × 6 + side, 312 bits) and its hexes. A map has tens of them.
+2. **Routes.** Each route is generated once, from the lowest-numbered token
+   city on it (the anchor; lower token cities are off limits): a right ray
+   from the anchor, then a left ray, sharing no center or half-edge, with
+   the left ray's first segment numbered above the right's, which picks one
+   orientation. A ray may end at a blocking center but not pass it. Up to
+   the longest train's distance, the routes form a forest in pre-order: a
+   route's subtree holds the routes that extend it, which keep its track
+   and add stops, so revenue never falls down a subtree. Each node keeps its
+   subtree's best revenue to each train within the train's distance.
+3. **Trains,** longest first. What trains k on earn with some track taken is
+   the better of train k running nothing and train k running a route r: r's
+   revenue plus what trains k + 1 on earn with r's track taken too. The
+   search walks train k's forest, the best subtree first. What the later
+   trains earn at r bounds r's whole subtree, since every extension keeps
+   r's track: a subtree is cut when its best revenue plus that bound cannot
+   beat the best total, and the later trains' routes at r are still their
+   best at a child whose new segment they miss, with no search. A call needs
+   the exact value only above a floor and returns early below it. Identical
+   trains are interchangeable, so the next one takes a route only from the
+   first one's tree (the subtree of its first segment) on; each pair is
+   still tried.
+
+It is exact: steps 1-2 list each route Ruby accepts once, the bounds are
+admissible, and nothing else is cut. The suggested shape, per-train route
+lists as half-edge sets and branch and bound bounded by the sum of each
+train's best single route, was built first. On dense maps, where one long
+route fences off the token cities, that bound is loose and the search tries
+nearly every pair: two D trains took 30 ms and three trains 0.43 s on one
+map, which the forest's bound brings to 0.16 ms and 1.8 ms.
+
+**Measured (6.6).** The maximum equals AutoRouter's at all 80 fixture Route
+steps (32 in 314, 48 in 962), and the routes are AutoRouter's own at 67; at
+the other 13, other routes tie, and brute force confirms them legal. It
+equals AutoRouter's for 296 corps on 60 random phase-D maps (D, 5, and 6
+trains, one or two each, with D + D), and brute force for every corp with
+trains at every fixture OR snapshot (840 in 314, 1,331 in 962) and for 187
+corps on 40 denser random maps with one to three trains of any type. The
+maximum is at least every human revenue but 314 action 367's.
+
+Time per `solve_routes` (one core, run from Python; a dense map is
+`random_map` with 30-119 lays in phase D colors, denser in junctions than a
+real game):
+
+| States | n | Median | p99 | Max |
+|---|---|---|---|---|
+| Fixture Route steps, the operating corp | 80 | 1.5 µs | 2.8 µs | 2.9 µs |
+| Fixture OR snapshots, every corp with trains | 2,171 | 1.4 µs | 3.5 µs | 6.4 µs |
+| 1,000 dense maps, every corp with a token: one D | 4,482 | 3.9 µs | 103 µs | 435 µs |
+| The same: D and a 5, 6, or D | 4,482 | 5.9 µs | 223 µs | 1.8 ms |
+| The same: D and two of 3-6 (not reachable: phase D's limit is 2) | 4,482 | 14 µs | 1.6 ms | 18 ms |
+
+**Flag for step 7.** States like the fixtures' cost a few microseconds,
+so solving all seven corps in an extraction prologue is cheap. Dense maps
+have a tail: one D train in 0.43 ms at most (listing up to about 10,000
+routes), and two trains above a millisecond in 3 of 4,482 states, up to 1.8
+ms, all two D trains splitting a dense network. Self-play may build such
+maps early in training. Extraction should read `route_max`, whose cache
+rides in the row through MCTS copies, rather than solve each time, and a
+profile of self-play states at 6.9 should decide whether the tail matters.
+
+**For 6.7.** Ruby runs only `runnable_trains`, which skips a train that ran
+this OR (`train.operated`, set by Dividend and cleared at OR start): a train
+bought from a corp that operated earlier in the OR cannot run for its buyer
+until the next OR. The engine counts trains by type and does not track this
+yet. No fixture Route step has such a train (the maxima agree), but 6.7's
+corp-to-corp sales must model it, for example with a per-corp count of
+trains that ran this OR, which `solve_routes` would leave out.
 
 ## 9. Final scores and terminal detection
 
@@ -593,9 +688,14 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
      cost and the semi-restrictive verdict for every corp with a token, at
      every OR snapshot (lays at Track snapshots only), on a fresh `Graph`.
      Schema 4 (6.5) adds `must_buy` at BuyTrain snapshots, on a fresh graph
-     and from the game's own cached route (Section 4).
-     `extract_states.rb --graphs` answers the same graph queries, and the
-     semi-restrictive verdicts, for hand-built maps.
+     and from the game's own cached route (Section 4). Schema 5 (6.6) moves
+     AutoRouter's best (`auto_router`: revenue, routes with their hexes,
+     each train's route count, the timeout) from the `run_routes`
+     annotation to every Route snapshot, the state before it, on a fresh
+     graph. `extract_states.rb --graphs` answers the same graph queries, the
+     semi-restrictive verdicts, and AutoRouter, for hand-built maps given a
+     phase and trains. Cold extraction is unchanged by schema 5 (3.2 s for
+     314, 8.8 s for 962); the random-map route extract takes about 8 s.
    - **`snapshot.py`** provides `compare(state, snap)` and
      `load_state(snap)`. `load_state` builds the state through entity APIs,
      so oracle tests don't depend on replaying up to that point.
@@ -604,7 +704,10 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
      pass for a forced TOKEN pass.
    - **Sync rule.** A Ruby action that matches a forced action in the driver
      history since the last sync is consumed rather than applied. States are
-     compared whenever no auto-applied history is pending.
+     compared whenever no auto-applied history is pending. Ruby waits at its
+     Route step for the president's routes, and the engine's ROUTE runs by
+     itself, so a Route snapshot is compared with the engine's row before
+     its ROUTE step (6.6).
    - **Fixture findings** from the extractor (6.2), for the sub-steps that
      reach them:
      - **Discard order (6.7).** Ruby accepts a discard from any crowded
@@ -643,7 +746,9 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    sub-step takes over (ROUTE for a corp with trains, a train purchase) or a
    later sub-step's action, and they cover every corp lay and token of 314
    (46) and 57 of 962's 59; the two left follow MF's port tile (962 record
-   33, 6.8).
+   33, 6.8). **As of 6.6:** those turns also run their routes: all 80 fixture
+   Route steps (32 in 314, 48 in 962), 6 of them paying the human's revenue
+   through `override_route_revenue`, and then rest at DIVIDEND (6.7).
 
    **Test:** can Ruby's `check_track_restrictions!` (`step/tracker.rb:326`,
    skipped while loading) run cheaply per candidate on a cloned game? **Answer
@@ -665,7 +770,8 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    limits after discards; a legal action in every non-terminal state; an end
    within the step cap. Also check that every returned decision has two or
    more policy actions, that the policy set is non-empty whenever the engine
-   set is, that recomputed caches equal the stored ones, and that a rebound
+   set is, that recomputed caches (GRAPH and the route cache) equal the
+   stored ones, and that a rebound
    row copy gives the same legal and policy sets. **As of 6.5:** 20 seeds at
    each of 2-6 players, flags on and off, play from new games to the
    development stop. All 200 stop where a corp must buy its first train,
@@ -677,7 +783,11 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    driver. A `conftest.py` provides `game_state`, `apply_and_verify`, and
    `find_legal_action`, as in `tests/phases/conftest.py:165` and `:263`. Each
    phase has a `setup_<phase>_py` entry point, as in `phases/ipo.pyx:148`.
-6. **Route solver:** brute force and `AutoRouter` (Section 8).
+6. **Route solver** (Section 8): `test_routes.py` pins each rule and the
+   cache through entity APIs; `replay/test_route_oracles.py` compares the
+   solver with AutoRouter (fixture Route snapshots and random phase-D maps)
+   and with a brute-force path walk (`route_brute.py`) at every fixture OR
+   snapshot and on denser random maps.
 
 ## 11. Sub-steps
 

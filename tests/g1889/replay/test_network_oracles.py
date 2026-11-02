@@ -141,11 +141,12 @@ def test_must_buy_matches_ruby_at_every_buy_train_snapshot(fixture):
     assert (snapshots, must_buys) == MUST_BUY_COVERAGE[fixture]
 
 
-def random_map(rng: random.Random) -> tuple[GameState, dict]:
-    """A new game grown into a random network: a few tokens, then lays the
-    engine finds legal for random corps (any color, ample cash), with more
-    tokens on the way. Also its ops for ``load_graph_extract``, and a probe of
-    every upgrade over track that each corp's semi-restrictive rule decides."""
+def random_map(rng: random.Random, num_lays: tuple[int, int] = (30, 120)) -> tuple[GameState, dict]:
+    """A new game grown into a random network: a few tokens, then a number of
+    lays in the range ``num_lays`` that the engine finds legal for random
+    corps (any color, ample cash), with more tokens on the way. Also its ops
+    for ``load_graph_extract``, and a probe of every upgrade over track that
+    each corp's semi-restrictive rule decides."""
     state = GameState(4)
     state.initialize_game(4, priority_player=0)
     PHASE.set_current(state, D.GAME_PHASE_D)
@@ -161,7 +162,7 @@ def random_map(rng: random.Random) -> tuple[GameState, dict]:
     for c in corps:
         BANK.transfer(state, BANK_ACCOUNT, K.OWNER_CORP + c, 900)
         token(c, [h for h in range(D.NUM_HEXES) if MAP.has_slot_for(state, h, c)])
-    for _ in range(rng.randrange(30, 120)):
+    for _ in range(rng.randrange(*num_lays)):
         c = rng.choice(corps)
         lays = [(h, tile, rotation) for h in range(D.NUM_HEXES) for tile, rotation in A.lay_candidates_py(state, h, c)]
         if lays:
