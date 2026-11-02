@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+from time import perf_counter
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -56,6 +58,32 @@ class SyncValueModel(torch.nn.Module):
         logits = logits.masked_fill(~legal, -1e9)
         values = self.values.to(legal.device).expand(legal.shape[0], -1)
         return logits, values
+
+
+class StartupFailureModel(SyncValueModel):
+    """Fails when the server process moves it to its device."""
+
+    def to(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("model failed to load")
+
+
+def _cpu_server(model: torch.nn.Module) -> tuple[EvaluationServer, SharedEvalBuffers]:
+    """An unstarted one-worker CPU eval server."""
+    ctx = mp.get_context("spawn")
+    shared_bufs = SharedEvalBuffers(
+        num_workers=1,
+        batch_size=1,
+        num_players=NUM_PLAYERS,
+    )
+    shared_bufs.init_bitmap([(0, 1)], ctx)
+    server = EvaluationServer(
+        model,
+        torch.device("cpu"),
+        shared_bufs,
+        mp_context=ctx,
+        no_compile=True,
+    )
+    return server, shared_bufs
 
 
 def test_next_power_of_two_rounds_up() -> None:
@@ -216,6 +244,20 @@ def test_evaluation_server_sync_weights_updates_remote_eval_outputs() -> None:
             values,
             np.array([[0.25, -0.5, 0.75]], dtype=np.float32),
         )
+    finally:
+        server.stop()
+
+
+def test_wait_ready_returns_when_server_dies_during_startup() -> None:
+    server, _shared_bufs = _cpu_server(StartupFailureModel())
+    try:
+        server.start()
+        started = perf_counter()
+        assert not server.wait_ready(timeout=600.0)
+        assert perf_counter() - started < 60.0
+        assert not server.is_alive()
+        with pytest.raises(RuntimeError, match="exited with code 1"):
+            server.check_alive()
     finally:
         server.stop()
 

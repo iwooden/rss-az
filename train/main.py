@@ -1100,11 +1100,14 @@ def main() -> None:
             f"Waiting for {n_servers} eval server{'s' if n_servers > 1 else ''} "
             f"to compile..."
         )
+        ready_timeout = 2400.0
         for server in eval_servers:
-            if not server.wait_ready(timeout=2400.0):
+            if not server.wait_ready(timeout=ready_timeout):
+                server.check_alive()
                 raise RuntimeError(
-                    "Eval server did not become ready within 300s — "
-                    "compilation may have failed (check stderr)"
+                    f"Eval server did not become ready within "
+                    f"{ready_timeout:g}s — compilation may be stuck "
+                    "(check stderr)"
                 )
         print(f"  {n_servers} eval server{'s' if n_servers > 1 else ''} ready.")
         print(

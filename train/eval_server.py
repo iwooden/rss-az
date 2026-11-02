@@ -127,6 +127,9 @@ from train.profile_stats import EvalClientStats, EvalServerStats
 
 TOKEN_DIM=int(TokenDataSize.TOKEN_DIM)
 
+# Seconds between server liveness checks while the parent waits on a server.
+_LIVENESS_POLL_SECS = 1.0
+
 
 @dataclass(frozen=True)
 class RequestBatchGroup:
@@ -502,6 +505,8 @@ def _eval_server_main(
     except Exception:
         import traceback
         traceback.print_exc()
+        # A nonzero exit code tells the parent the server failed.
+        raise SystemExit(1)
 
 
 def _eval_server_serve(
@@ -1226,9 +1231,31 @@ class EvaluationServer:
     def wait_ready(self, timeout: float = 120.0) -> bool:
         """Block until the server has finished compilation and warmup.
 
-        Returns True if the server signaled ready, False on timeout.
+        Returns True if the server signaled ready. Returns False on timeout,
+        or as soon as the server process exits without signaling;
+        ``check_alive`` then reports the exit code.
         """
-        return self._ready_event.wait(timeout=timeout)
+        deadline = perf_counter() + timeout
+        while True:
+            remaining = deadline - perf_counter()
+            if self._ready_event.wait(
+                timeout=max(0.0, min(_LIVENESS_POLL_SECS, remaining))
+            ):
+                return True
+            if remaining <= 0 or not self.is_alive():
+                return self._ready_event.is_set()
+
+    def is_alive(self) -> bool:
+        """Whether the server process has started and not exited."""
+        return self._process is not None and self._process.is_alive()
+
+    def check_alive(self) -> None:
+        """Raise RuntimeError if the started server process has exited."""
+        if self._process is not None and not self._process.is_alive():
+            raise RuntimeError(
+                f"eval server {self._server_id} exited with code "
+                f"{self._process.exitcode} (check stderr)"
+            )
 
     def stop(self) -> None:
         """Signal the server to stop and wait for it."""

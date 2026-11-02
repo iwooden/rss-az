@@ -619,7 +619,8 @@ def _start_eval_stack(
     print(f"Waiting for {n_servers} eval server{'s' if n_servers != 1 else ''}...")
     for server in eval_servers:
         if not server.wait_ready(timeout=2400.0):
-            raise RuntimeError("eval server did not become ready")
+            server.check_alive()
+            raise RuntimeError("eval server did not become ready within 2400s")
     print("  eval servers ready")
 
     workers: list[Any] = []
