@@ -677,3 +677,20 @@ block 1889 only at step 7, so the two tracks can alternate.
 - **Test:** Replay rebuilds tokens and relations every time a row is sampled.
   Once 1889 extraction includes build distance and candidate features, check
   that the trainer keeps up (step 7).
+- **Open:** What 1889 live play still needs (recorded 2026-11-02; no step
+  owns it yet):
+  - an engine-to-18xx.games action translator. Replay maps only Ruby's
+    actions to the engine. Routes go out as `run_routes` with explicit
+    routes (`train`, `connections`, `hexes`, `revenue`, `nodes`;
+    `lib/engine/action/run_routes.rb`), because the site's "auto" button
+    computes the route in the browser and submits it. The engine's
+    `RouteSet` keeps each route's ordered hexes;
+  - DR's exchange and MF's port tile out of their owner's turn
+    (`DRIVER.apply_out_of_turn`, engine-design §12 item 4), and MF's port
+    tile at Track after the corp's lay (engine-design §10.2). Replay fails
+    loudly on all three today;
+  - 1889 has no live-play integration in `utils_18xx/`;
+  - 18xx.games may change its 1889 implementation after the submodule's
+    pinned commit, so live play should detect a desync. The same-president
+    flags are policy-only, so the engine tracks a human's cross-president
+    private or train sale correctly, but self-play never produces one.
