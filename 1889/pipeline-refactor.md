@@ -329,12 +329,42 @@ what a toy test game would. 1889 then becomes the second real implementation.
 
   Rerun after each step on the same machine; mechanical steps must match
   exactly. Chained search amplifies float differences across hosts, so this
-  is a scratchpad before/after check, not a committed fixture.
+  is a scratchpad before/after check, not a committed fixture. The script and
+  per-commit baselines are in `scratchpad/fingerprint/` on the dev host.
 - The existing tests:
   - pipeline: `tests/test_mcts.py`, `tests/test_self_play*.py`,
     `tests/test_eval_server_batching.py`, `tests/test_replay_buffer_mixed.py`,
     and the trainer tests;
   - RSS tooling: `tests/test_18xx_*` and `tests/test_tournament_config.py`.
+
+### 7.1 Divergences from `main`
+
+Every intended behavior or API difference from `main`, with the commit that
+introduced it. Add to this list whenever a step changes RSS behavior.
+
+- **Root priors at capped ACQ price decisions** (6713d2b). Fresh searches
+  (tournament, `analyze_game.py`, the self-play trace) take root priors from a
+  softmax over the capped mask instead of a renormalized slice of the full
+  softmax. They differ by float rounding (at most 2e-8 in the fingerprint),
+  which can flip a near-tied search. Self-play games are unchanged: their
+  roots are reused, and expansion already used the capped set.
+- **Evaluator and search API** (6713d2b). `evaluate` and `evaluate_batch`,
+  in-process and remote, return the capped action set when the state carries
+  a cap. `MCTSConfig` no longer takes `max_acq_price_actions`; set it on the
+  root state.
+- **Tournament** (6713d2b). A seat whose cap differs from the game state's
+  searches a copy of the state. Speed only.
+
+Known `main` bugs, kept for parity until fixed on `main`:
+
+- **Live play ignores the ACQ price cap.** `_mcts_config_for`
+  (`utils_18xx/live.py`) rebuilds `MCTSConfig` from eight fields of
+  `to_mcts_config()` and drops `max_acq_price_actions`, so the live v3 bot
+  searches every legal price, including the middle prices its checkpoint was
+  never trained on. The branch keeps this: `prepare_live_decision_state` sets
+  the state's cap to 0, and a test pins it. The fix is to set it from the
+  checkpoint config there, preferably on `main` first so the branch stays
+  aligned.
 
 ## 8. Steps
 
