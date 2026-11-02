@@ -24,7 +24,7 @@ import logging
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -77,7 +77,7 @@ from train.analyze_game import (
     _load_18xx_game_data,
 )
 from train.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
-from train.config import MCTSConfig
+from train.config import MCTSConfig, _validate_max_acq_price_actions
 from train.debug_trace import PHASE_NAMES, format_action, format_phase_context
 from train.profile_stats import SearchStats
 
@@ -152,6 +152,13 @@ def prepare_live_decision_state(state, *, acq_same_president: bool) -> None:
 def _resolve_live_search_batch_size(config, override: int | None) -> int:
     """Return CLI override or checkpoint search batch size."""
     return int(override) if override is not None else int(config.search_batch_size)
+
+
+def _resolve_live_max_acq_price_actions(config, override: int | None) -> int:
+    """Return CLI override or checkpoint ACQ price action cap."""
+    cap = int(override) if override is not None else int(config.max_acq_price_actions)
+    _validate_max_acq_price_actions(cap)
+    return cap
 
 
 def _resolve_live_eval_dtype(config, override: str | None) -> str | None:
@@ -1986,6 +1993,7 @@ class ModelRegistry:
         eval_dtype: str | None = None,
         allow_cross_president_offers: bool = False,
         determinization_count: int = 0,
+        max_acq_price_actions: int | None = None,
     ):
         self._config = models_config
         self._device = device
@@ -1997,6 +2005,7 @@ class ModelRegistry:
         self._eval_dtype = eval_dtype
         self._allow_cross_president_offers = allow_cross_president_offers
         self._determinization_count = determinization_count
+        self._max_acq_price_actions = max_acq_price_actions
         self._engines: dict[Path, _SearchEngine] = {}
 
     def get_engine(self, num_players: int) -> _SearchEngine:
@@ -2015,6 +2024,7 @@ class ModelRegistry:
                 eval_dtype=self._eval_dtype,
                 allow_cross_president_offers=self._allow_cross_president_offers,
                 determinization_count=self._determinization_count,
+                max_acq_price_actions=self._max_acq_price_actions,
             )
             self._engines[cp_path] = engine
         engine.validate_player_count(num_players)
@@ -2078,6 +2088,7 @@ class _SearchEngine:
         eval_dtype: str | None = None,
         allow_cross_president_offers: bool = False,
         determinization_count: int = 0,
+        max_acq_price_actions: int | None = None,
     ):
         self.device = device
         self.num_simulations = num_simulations
@@ -2101,6 +2112,10 @@ class _SearchEngine:
             search_batch_size,
         )
         self.eval_dtype = _resolve_live_eval_dtype(self.config, eval_dtype)
+        self.max_acq_price_actions = _resolve_live_max_acq_price_actions(
+            self.config,
+            max_acq_price_actions,
+        )
         model.eval()
         if compile_model and device.type == "cuda":
             from train.gpu import detect_gpu
@@ -2157,6 +2172,7 @@ class _SearchEngine:
             f"{num_simulations} sims/move, "
             f"search batch={self.search_batch_size}, "
             f"eval dtype={self.eval_dtype or 'float32'}, "
+            f"ACQ price cap={self.max_acq_price_actions or 'none'}, "
             f"v3 behavior={self.config.v3_behavior}, "
             f"acquisition offers={acquisition_scope}, "
             f"answers cross-president offers={self.allow_cross_president_offers}, "
@@ -2182,19 +2198,14 @@ class _SearchEngine:
         return session
 
     def _mcts_config_for(self, num_players: int) -> MCTSConfig:
-        base = self.config.to_mcts_config(
-            num_simulations_override=self.num_simulations,
-            num_players=num_players,
-        )
-        return MCTSConfig(
-            num_simulations=base.num_simulations,
-            c_puct=base.c_puct,
-            dirichlet_alpha=base.dirichlet_alpha,
-            dirichlet_epsilon=base.dirichlet_epsilon,
-            dirichlet_dynamic=base.dirichlet_dynamic,
-            dirichlet_alpha_numerator=base.dirichlet_alpha_numerator,
-            num_players=num_players,
+        # The checkpoint's search settings, with the live CLI overrides.
+        return replace(
+            self.config.to_mcts_config(
+                num_simulations_override=self.num_simulations,
+                num_players=num_players,
+            ),
             search_batch_size=self.search_batch_size,
+            max_acq_price_actions=self.max_acq_price_actions,
         )
 
     def _live_evaluator_for(self, num_players: int):
@@ -3947,6 +3958,15 @@ def main():
         default=None,
         help="Eval inference dtype override (default: checkpoint config)",
     )
+    parser.add_argument(
+        "--max-acq-price-actions",
+        type=int,
+        default=None,
+        help=(
+            "ACQ_SELECT_PRICE cap override: search only equal low/high price "
+            "edges, 0 searches every price (default: checkpoint config)"
+        ),
+    )
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument(
@@ -4023,6 +4043,7 @@ def main():
         eval_dtype=args.eval_dtype,
         allow_cross_president_offers=args.allow_cross_president_offers,
         determinization_count=args.determinization_count,
+        max_acq_price_actions=args.max_acq_price_actions,
     )
 
     api_min_interval = (

@@ -272,7 +272,8 @@ browser uses), recomputes whose turn it is locally, and only re-downloads when
 the update stream has a gap. Followed games are saved under
 `runtime/game_feeds/` so restarts resume following them without downloading.
 
-Live decisions use the checkpoint's `v3_behavior` and acquisition scope.
+Live decisions use the checkpoint's `v3_behavior`, acquisition scope, and ACQ
+price cap (`max_acq_price_actions`; `--max-acq-price-actions` overrides it).
 Checkpoints trained with `"acq_same_president": false` make cross-president
 offers, stop planning after posting one, and answer offers made to them with
 their own priors. While any acquisition offer is open, bots answer offers made
