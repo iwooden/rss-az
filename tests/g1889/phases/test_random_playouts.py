@@ -6,7 +6,9 @@ decision cap.
 
 ``apply_and_verify`` checks every state the driver passes through, forced
 decisions and automated steps included: money totals ¥7,000, each corp's ten
-shares are accounted for, each private has one owner, the supply is never
+shares are accounted for, each private has one owner, TR and ER block their
+hexes exactly while a player owns them, no corp's private goes back to a
+player, the privates close at phase 5 but a player's UTF, the supply is never
 negative, every charter token is left or placed, every train is in the
 depot, the pool, or a floated corp until its rank rusts, no corp is over the
 limit outside DISCARD, the OR fields agree with the step, and every returned
@@ -17,12 +19,16 @@ the row.
 
 The players pass in an SR half the time they may, so rounds end, and a corp
 that can buy from the depot buys its newest offer (a D by trade-in included),
-which moves the phases on; every other choice is uniform. Uniform BUY_TRAIN
-choices let corps spend their treasuries on each other's trains, and the
-rusting then strands them in emergencies: only 4 of these 200 games reach
-phase D that way, against about a fifth with the bias. The games run until a
-corp must buy a train its treasury cannot fund (emergency money) or the bank
-breaks and its OR set ends, both 6.8's.
+which moves the phases on. A decision that offers a private's slot (a
+private's purchase, BUY_PRIVATE's included, DR's exchange, or MF's port
+tile) besides other choices takes one a tenth of the time, as uniform
+purchases at up to twice face value drain the treasuries (only 13 of the
+flags-on games reach phase D that way); every other choice is uniform.
+Uniform BUY_TRAIN choices let corps spend their treasuries on each other's
+trains, and the rusting then strands them in emergencies: only 4 of these
+200 games reach phase D that way, against about a fifth with the bias. The
+games run until a corp must buy a train its treasury cannot fund (emergency
+money) or the bank breaks and its OR set ends, both 6.8b's.
 """
 
 from collections import Counter
@@ -50,9 +56,11 @@ from tests.g1889.phases.conftest import (
 
 SEEDS = range(20)
 MAX_DECISIONS = 3000
-EXACT_SHARE = 0.25                 # of BID, RAISE, and TRAIN_PRICE decisions, with the flags off
+EXACT_SHARE = 0.25                 # of BID, RAISE, TRAIN_PRICE, and PRIVATE_PRICE decisions, with the flags off
 UNCAPPED_PAYOUTS = 3               # payout rounds before the flags-off player turns the cap on
 STOCK_PASS_SHARE = 0.5
+PRIVATE_SHARE = 0.1                # of decisions offering a private's slot and more: take a slot
+PRIVATE_SLOTS = (A.ACTION_BUY_PRIVATE, A.ACTION_DR_EXCHANGE, A.ACTION_MF_PORT)
 
 GLOBALS, CORP_FIELDS = get_global_fields(), get_corp_fields()
 ALL_CORPS = (1 << D.NUM_CORPS) - 1
@@ -63,6 +71,9 @@ def _choose(state, rng, flags):
     if not flags and A.has_exact_amounts(phase) and rng.random() < EXACT_SHARE:
         if phase == K.DPHASE_TRAIN_PRICE:
             low, high = 1, CORPS[TURN.operating_corp(state)].cash(state)
+        elif phase == K.DPHASE_PRIVATE_PRICE:
+            face = D.PRIVATE_VALUE[TURN.pending_private(state)]
+            low, high = -(-face // 2), min(2 * face, CORPS[TURN.operating_corp(state)].cash(state))
         else:
             p = TURN.pending_private(state) if phase == K.DPHASE_BID else TURN.auction_private(state)
             low, high = PRIVATES[p].min_bid(state), PLAYERS[TURN.active_player(state)].available(state, p)
@@ -72,6 +83,11 @@ def _choose(state, rng, flags):
         return depot[-1]
     if ids[0] == 0 and phase == K.DPHASE_STOCK and rng.random() < STOCK_PASS_SHARE:
         return 0
+    slots = [i for i in ids if A.decode_action_py(phase, i).type in PRIVATE_SLOTS]
+    if slots and len(slots) < len(ids):
+        if rng.random() < PRIVATE_SHARE:
+            return slots[int(rng.integers(len(slots)))]
+        ids = [i for i in ids if i not in slots]
     return ids[int(rng.integers(len(ids)))]
 
 
@@ -137,8 +153,8 @@ def _stop(state):
 
 
 # Of each setting's 100 games, at least this many reach phases 4 and D. As
-# measured (6.7): phases 4, 5, 6, and D in 99, 73, 46, and 20 games with the
-# flags off, and 100, 83, 35, and 22 with them on; 25 and 48 games end at a
+# measured (6.8a): phases 4, 5, 6, and D in 99, 70, 39, and 22 games with the
+# flags off, and 99, 80, 33, and 18 with them on; 27 and 49 games end at a
 # broken bank, the rest in emergencies.
 MIN_REACH = {D.GAME_PHASE_4: 90, D.GAME_PHASE_D: 15}
 
@@ -146,10 +162,13 @@ MIN_REACH = {D.GAME_PHASE_4: 90, D.GAME_PHASE_D: 15}
 @pytest.mark.parametrize('flags', [False, True], ids=['flags_off', 'flags_on'])
 def test_random_games_run_to_the_development_stop(flags):
     """Every game gets into the ORs, buys trains through the phases, and stops
-    at an emergency or a broken bank's game end (6.8); about a fifth reach
+    at an emergency or a broken bank's game end (6.8b); about a fifth reach
     phase D. Between them, the games lay track, place tokens, pay out and
     withhold, buy from the depot, the pool, and each other at grid and exact
-    prices, trade in for Ds, and discard."""
+    prices, trade in for Ds, and discard; corps buy privates at every
+    top-level OR decision, at grid and exact prices; ER's sellers lay on C4
+    and pass; DR's owners exchange in SRs and ORs, and MF's lay the port tile
+    from STOCK and TRACK."""
     seen, phases = Counter(), Counter()
     for num_players in range(D.MIN_PLAYERS, D.MAX_PLAYERS + 1):
         for seed in SEEDS:
@@ -170,3 +189,11 @@ def test_random_games_run_to_the_development_stop(flags):
     assert seen[(K.DPHASE_TRAIN_PRICE, A.ACTION_PRICE_POINT)] and seen[(K.DPHASE_DISCARD, A.ACTION_DISCARD)]
     assert seen[(K.DPHASE_BUY_PRIVATE, A.ACTION_PASS)]
     assert bool(seen[(K.DPHASE_TRAIN_PRICE, A.ACTION_EXACT_PRICE)]) != flags
+    for phase in (K.DPHASE_TRACK, K.DPHASE_TOKEN, K.DPHASE_DIVIDEND, K.DPHASE_BUY_TRAIN, K.DPHASE_BUY_PRIVATE):
+        assert seen[(phase, A.ACTION_BUY_PRIVATE)], phase
+    assert seen[(K.DPHASE_PRIVATE_PRICE, A.ACTION_PRICE_POINT)]
+    assert bool(seen[(K.DPHASE_PRIVATE_PRICE, A.ACTION_EXACT_PRICE)]) != flags
+    assert seen[(K.DPHASE_ER_BONUS, A.ACTION_PASS)] and seen[(K.DPHASE_ER_BONUS, A.ACTION_LAY_CANDIDATE)]
+    assert seen[(K.DPHASE_STOCK, A.ACTION_DR_EXCHANGE)] and seen[(K.DPHASE_TRACK, A.ACTION_DR_EXCHANGE)]
+    assert seen[(K.DPHASE_STOCK, A.ACTION_MF_PORT)] and seen[(K.DPHASE_TRACK, A.ACTION_MF_PORT)]
+    assert seen[(K.DPHASE_PORT, A.ACTION_PORT_LAY)]

@@ -28,10 +28,13 @@ between are not compared.
 Replay stops at the first unsupported action, engine NotImplementedError, or
 mismatch, and at the driver's development stop (an automated step from a later
 sub-step, where the engine rests). When it stops at an action while forced
-decisions are pending, Ruby may be waiting at one of them (BuyCompany, whose
-purchases land with 6.8, when the engine forces its "done"), so the record
-before is compared with the engine where Ruby rests (``_ruby_rests``); so is
-a record whose forced decisions are pending when the replay runs out.
+decisions are pending, Ruby may be waiting at one of them (a Track step whose
+only choice is the pass, which Ruby asks), so the record before is compared
+with the engine where Ruby rests (``_ruby_rests``); so is a record whose
+forced decisions are pending when the replay runs out. Ruby acting at a Track
+step it keeps open after the lay (MF's port tile, a private's purchase, DR's
+exchange) is unsupported: the engine has left TRACK, and offers MF's port
+tile before the lay only (engine-design §10.2).
 ``REPLAY_FLOOR`` holds the last record index each fixture must match; each
 sub-step raises it, so progress ratchets. ``replay_extract(..., start=i)``
 starts from ``load_state`` of record i, so later rounds replay before the
@@ -61,10 +64,10 @@ from tests.g1889.replay.action_map import (
 from tests.g1889.replay.extracts import Extract, FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import compare, load_state, track_after_lay
 
-# Sub-step 6.7: the hs_* fixtures to their end_game; 314 to the record before
-# its first private purchase (81, buy_company), 962 to the record before MF's
-# port tile (33, 6.8), which comes before its first private purchase.
-REPLAY_FLOOR = {'314': 80, '962': 32, 'hs_jmmljkbw_17502': 49, 'hs_lhglbbiz_17502': 46}
+# Sub-step 6.8a: the hs_* fixtures to their end_game; 314 to the record before
+# TR's must-buy that needs emergency money (350, 6.8b), and 962 to the record
+# before the dividend that ends the game after the bank broke (446, 6.8b).
+REPLAY_FLOOR = {'314': 349, '962': 445, 'hs_jmmljkbw_17502': 49, 'hs_lhglbbiz_17502': 46}
 END_TO_END = ('hs_jmmljkbw_17502', 'hs_lhglbbiz_17502')
 
 # A forced decision the driver applied: (decision phase, id, the player it was
@@ -197,6 +200,14 @@ def _closes_track(record) -> bool:
     return host['type'] == 'pass' and record['pre']['step'] == 'Track' and not host.get('auto_actions')
 
 
+def _acts_at_open_track(record) -> bool:
+    """A private's purchase, DR's exchange, or MF's port tile at a Track step
+    Ruby keeps open after the lay, which the engine has left."""
+    host = record['action']
+    by_private = host['type'] in ('lay_tile', 'buy_shares') and host['entity_type'] == 'company'
+    return record['pre']['step'] == 'Track' and (host['type'] == 'buy_company' or by_private)
+
+
 def replay(fixture: str) -> Progress:
     return replay_extract(fixture, load_fixture_extract(fixture))
 
@@ -229,8 +240,8 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
     def rests(record) -> bool:
         """Compare a record whose forced decisions are pending, with no next
         Ruby action to tell whether Ruby took them: it matches if Ruby rests
-        at the engine's state or before one of them (BuyCompany, whose
-        purchases land with 6.8, when the engine forced its "done")."""
+        at the engine's state or before one of them (a Track step whose
+        only choice is the pass, which Ruby asks)."""
         at = next((at for at in _ruby_rests(state, pending) if not compare(at, record['state'])), state)
         return matches(record, at)
 
@@ -251,6 +262,9 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
         log: list = []
         if track_open and _closes_track(record):  # EQUIVALENT: Track after the lay; no decision of its own
             singles = []
+        elif track_open and _acts_at_open_track(record):
+            return stop('unsupported', f'{where}: Ruby acts at its Track step kept open after the lay, '
+                                       f'which the engine has left (engine-design §10.2)')
         track_open = False
         if _at_development_stop(state):  # loaded at an automated step a later sub-step owns
             progress.stop, progress.detail = 'engine', f'{where}: the engine rests at its development stop, ' \
@@ -365,27 +379,33 @@ def _lays_and_tokens(records, first: int, last: int) -> list[int]:
         records[i]['action']['type'] == 'lay_tile' and records[i]['action']['entity_type'] == 'corporation')]
 
 
+def _private_moves(records, first: int, last: int) -> list[int]:
+    """The records of the privates' own moves: MF's port tile, and ER's bonus lay or pass."""
+    return [i for i in range(first + 1, last + 1) if records[i]['action']['entity_type'] == 'company']
+
+
 # Per fixture: ORs and turns; the turns that stop at an action of a later
-# sub-step before their last lay or token (962 record 33: MF's port tile,
-# ahead of TR's lay and token); the replayed routes that pay a human's revenue
-# (override_route_revenue); the turns' stops by kind: emergency money (314's
-# must-buys short of cash), a private purchase or MF's port tile (6.8), and
-# the game's end after the bank breaks (962's last turn); and per kind of
-# turn action, how many the turns hold and how many of them replay. The
-# buys left are 314's emergency purchases (350, 444, 453) and 962's after the
-# port tile (36-38) and a private purchase (274).
+# sub-step before their last lay or token (none since 6.8a); the replayed
+# routes that pay a human's revenue (override_route_revenue); the turns' stops
+# by kind: emergency money (314's must-buys short of cash) and the game's end
+# after the bank breaks (962's last turn), both 6.8b's; and per kind of turn
+# action, how many the turns hold and how many of them replay. The privates'
+# moves are MF's port tile (962 record 33) and ER's bonus (314 record 90
+# passes, 962 record 42 lays). The buys left are 314's emergency purchases
+# (350, 444, 453).
 OR_TURN_COVERAGE = {
-    '314': dict(ors=10, turns=43, cut_short=0, overrides=5, stops={'engine': 4, 'unsupported': 3},
-                lays_and_tokens=(46, 46), run_routes=(32, 32), dividend=(32, 32), buy_train=(30, 27),
-                discard_train=(2, 2)),
-    '962': dict(ors=10, turns=56, cut_short=1, overrides=1, stops={'engine': 1, 'unsupported': 4},
-                lays_and_tokens=(59, 57), run_routes=(48, 48), dividend=(48, 47), buy_train=(21, 17),
-                discard_train=(0, 0)),
+    '314': dict(ors=10, turns=43, cut_short=0, overrides=5, stops={'engine': 4}, lays_and_tokens=(46, 46),
+                private_moves=(1, 1), run_routes=(32, 32), dividend=(32, 32), buy_train=(30, 27),
+                discard_train=(2, 2), buy_company=(6, 6)),
+    '962': dict(ors=10, turns=56, cut_short=0, overrides=1, stops={'engine': 1}, lays_and_tokens=(59, 59),
+                private_moves=(2, 2), run_routes=(48, 48), dividend=(48, 47), buy_train=(21, 21),
+                discard_train=(0, 0), buy_company=(7, 7)),
     **{fixture: dict(ors=1, turns=1, cut_short=0, overrides=0, stops={}, lays_and_tokens=(0, 0),
-                     run_routes=(0, 0), dividend=(0, 0), buy_train=(0, 0), discard_train=(0, 0))
+                     private_moves=(0, 0), run_routes=(0, 0), dividend=(0, 0), buy_train=(0, 0),
+                     discard_train=(0, 0), buy_company=(0, 0))
        for fixture in END_TO_END},
 }
-TURN_ACTIONS = ('run_routes', 'dividend', 'buy_train', 'discard_train')
+TURN_ACTIONS = ('run_routes', 'dividend', 'buy_train', 'discard_train', 'buy_company')
 
 
 @pytest.mark.parametrize('fixture', FIXTURES)
@@ -400,7 +420,7 @@ def test_every_or_turn_replays_from_its_first_snapshot(fixture):
     extract = load_fixture_extract(fixture)
     records = extract['records']
     turns = _or_turns(extract)
-    counts = {kind: [0, 0] for kind in ('lays_and_tokens', *TURN_ACTIONS)}
+    counts = {kind: [0, 0] for kind in ('lays_and_tokens', 'private_moves', *TURN_ACTIONS)}
     cut_short = overrides = 0
     stops: dict[str, int] = {}
     for first, last, _ in turns:
@@ -408,7 +428,8 @@ def test_every_or_turn_replays_from_its_first_snapshot(fixture):
         assert progress.stop != 'mismatch', str(progress)
         if progress.stop:
             stops[progress.stop] = stops.get(progress.stop, 0) + 1
-        found = {'lays_and_tokens': _lays_and_tokens(records, first, last)}
+        found = {'lays_and_tokens': _lays_and_tokens(records, first, last),
+                 'private_moves': _private_moves(records, first, last)}
         found.update({kind: [i for i in range(first + 1, last + 1) if records[i]['action']['type'] == kind]
                       for kind in TURN_ACTIONS})
         if found['lays_and_tokens'] and progress.matched < found['lays_and_tokens'][-1]:
@@ -428,18 +449,18 @@ def test_every_or_turn_replays_from_its_first_snapshot(fixture):
 # before them. The buys left need emergency money (314 records 350, 444, 453);
 # the dividend left ends the game after the bank breaks (962 record 446).
 ONE_ACTION_COVERAGE = {
-    '314': {'dividend': (32, 32), 'buy_train': (30, 27), 'discard_train': (2, 2)},
-    '962': {'dividend': (48, 47), 'buy_train': (21, 21), 'discard_train': (0, 0)},
+    '314': {'dividend': (32, 32), 'buy_train': (30, 27), 'discard_train': (2, 2), 'buy_company': (6, 6)},
+    '962': {'dividend': (48, 47), 'buy_train': (21, 21), 'discard_train': (0, 0), 'buy_company': (7, 7)},
 }
 
 
 @pytest.mark.parametrize('fixture', ('314', '962'))
 def test_every_dividend_train_purchase_and_discard_replays_from_the_snapshot_before_it(fixture):
-    """Each one alone, from ``load_state``, including those the turn replays
-    stop short of (after MF's port tile or a private purchase): its payments,
-    price move, phase change, rusting, and privates' closing (962 record 274:
-    KU's first 5 closes the UTF it owns). A run of discards replays whole,
-    since Ruby takes them in any order (314 records 339-340)."""
+    """Each one alone, from ``load_state``: its payments, price move, phase
+    change, rusting, and privates' closing (962 record 274: KU's first 5
+    closes the UTF it owns), and each private purchase, ER's up to its
+    seller's ER_BONUS. A run of discards replays whole, since Ruby takes them
+    in any order (314 records 339-340)."""
     extract = load_fixture_extract(fixture)
     records = extract['records']
     coverage = {kind: [0, 0] for kind in ONE_ACTION_COVERAGE[fixture]}

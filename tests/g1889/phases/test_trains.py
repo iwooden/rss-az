@@ -62,6 +62,11 @@ def trade(t):
     return K.BUY_TRAIN_TRADE_IN + D.TRADE_IN_TYPE.index(t)
 
 
+def private_buys(state):
+    """BUY_TRAIN's buy-private slots: in phases 3-4 the corp may buy privates too."""
+    return [K.BUY_TRAIN_BUY_PRIVATE + p for p in A.purchasable_privates_py(state)]
+
+
 def trains_of(state, corp):
     return {D.TRAIN_NAMES[t]: n for t in range(D.NUM_TRAIN_TYPES) if (n := TRAINS.corp_trains(state, corp, t))}
 
@@ -122,7 +127,7 @@ class TestDividend:
 
     def test_a_payout_the_bank_cannot_cover_breaks_it(self):
         """The bank pays in full and breaks (``bank.rb``); the game then ends
-        after the OR set, which 6.8 handles."""
+        after the OR set, which 6.8b handles."""
         state = with_revenue()
         BANK.transfer(state, BANK_ACCOUNT, K.OWNER_PLAYER + 2, BANK.cash(state) - 20)
         players = [PLAYERS[i].cash(state) for i in range(3)]
@@ -246,12 +251,12 @@ class TestBuyTrain:
         enter_operating_round(state)
         to_buy_train(state)
         assert TURN.operating_corp(state) == KO and A.must_buy_train_py(state)
-        assert legal_ids(state) == [depot(T3), pool(T2), pool(T3), from_corp(IR, T2)]
+        assert legal_ids(state) == [depot(T3), pool(T2), pool(T3), from_corp(IR, T2), *private_buys(state)]
         set_cash(state, KO, 100)  # the pool's 2 alone is in reach, and IR's train
-        assert legal_ids(state) == [pool(T2), from_corp(IR, T2)]
+        assert legal_ids(state) == [pool(T2), from_corp(IR, T2), *private_buys(state)]
 
     def test_a_must_buy_the_treasury_cannot_fund_needs_emergency_money(self):
-        """TEMPORARY (6.8): short of every depot and pool train, the president's
+        """TEMPORARY (6.8b): short of every depot and pool train, the president's
         cash and the buys from other corps that go with it are emergency money."""
         state = at_or(3)
         lay(state, 'J3', '8', 3)
@@ -384,8 +389,8 @@ class TestPhases:
         apply_and_verify(state, depot(T3))
         assert PHASE.current(state) == PHASE_3 and TRAINS.limit(state) == 4 and trains_of(state, KO) == {'2': 1, '3': 1}
         assert TURN.or_count(state) == 1  # the set's length changes when the next SR ends
-        result = apply_and_verify(state, K.BUY_TRAIN_PASS)
-        assert result.forced[0] == (K.DPHASE_BUY_PRIVATE, K.BUY_PRIVATE_DONE)
+        apply_and_verify(state, K.BUY_TRAIN_PASS)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE and K.BUY_PRIVATE_PRIVATE + D.PRIVATE_SIR in legal_ids(state)
 
     def test_the_first_4_rusts_every_2_in_the_pool_too(self):
         state = at_or(3)

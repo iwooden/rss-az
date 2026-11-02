@@ -15,6 +15,10 @@
 - ``assert_invariants`` also checks the trains: every train is in the depot,
   the pool, or a floated corp until its rank rusts, and then none is left;
   no corp is over the limit outside DISCARD, which is for the first one that is.
+  And the privates: TR and ER block their hexes exactly while a player owns
+  them, none is open after phase 4 but a player's UTF, and MF's port tile is
+  on a port hex once used. ``apply_and_verify`` checks that no corp's private
+  ever goes back to a player.
 - ``enter_auction(state, turn_player, sold, bids)``: hand-built auction
   positions through ``setup_auction_py``.
 - ``hold(state, corp, ...)`` and ``enter_stock_round(state, first, turn)``:
@@ -50,9 +54,12 @@ from g1889.state import GameState
 POOL_LIMIT = D.MARKET_SHARE_LIMIT // 10
 HEX = {hex_id: h for h, hex_id in enumerate(D.HEX_IDS)}
 TILE = {name: t for t, name in enumerate(D.TILE_NAMES)}
-# The steps of a corp's turn, from TURN_START to TURN_END, as 6.7 builds them.
+# The steps of a corp's turn, from TURN_START to TURN_END.
 TURN_STEPS = (K.STEP_TRACK, K.STEP_TILE, K.STEP_TOKEN, K.STEP_ROUTE, K.STEP_DIVIDEND, K.STEP_BUY_TRAIN,
-              K.STEP_TRAIN_PRICE, K.STEP_DISCARD, K.STEP_BUY_PRIVATE)
+              K.STEP_TRAIN_PRICE, K.STEP_DISCARD, K.STEP_BUY_PRIVATE, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS,
+              K.STEP_PORT)
+# The sub-phases that return to the step they interject in (``return_step``).
+RETURNING_STEPS = (K.STEP_DISCARD, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS, K.STEP_PORT)
 OR_STEPS = (K.STEP_OR_START, K.STEP_TURN_START, *TURN_STEPS, K.STEP_TURN_END, K.STEP_OR_END)
 
 
@@ -90,8 +97,9 @@ def enter_auction(state, turn_player, sold=(), bids=()):
 
 def end_auction(state, owners=()):
     """Give the privates in play to ``owners`` (a player per private, cycling;
-    seat 0 by default) for free, leaving the auction behind."""
-    owners = list(owners) or [0]
+    the last seat by default, so DR and MF are not the usual president's) for
+    free, leaving the auction behind."""
+    owners = list(owners) or [TURN.num_players(state) - 1]
     in_play = [p for p in range(D.NUM_PRIVATES) if PRIVATES[p].owner(state) == K.OWNER_UNSOLD]
     for i, p in enumerate(in_play):
         PRIVATES[p].sell_to_player(state, owners[i % len(owners)], 0)
@@ -125,8 +133,9 @@ def enter_stock_round(state, first, turn=2):
 
 
 def at_or(num_players=3, owners=()):
-    """A game past the auction, the privates in play free to ``owners`` (seat 0
-    by default); holdings, the map, and ``enter_operating_round`` follow."""
+    """A game past the auction, the privates in play free to ``owners`` (the
+    last seat by default); holdings, the map, and ``enter_operating_round``
+    follow."""
     state = new_game(num_players)
     end_auction(state, owners)
     return state
@@ -264,13 +273,18 @@ def assert_invariants(state, msg=''):
                 assert player.bid(state, p) >= D.PRIVATE_VALUE[p] + D.MIN_BID_INCREMENT, f'{msg}: low bid'
     _assert_map(state, msg)
     _assert_trains(state, msg)
+    _assert_privates(state, msg)
 
     step, top, active = TURN.step(state), topmost(state), TURN.active_player(state)
     if TURN.round(state) != K.ROUND_AUCTION:
         assert top == -1 and all(PLAYERS[i].committed(state) == 0 for i in range(n)), f'{msg}: auction left open'
-        assert TURN.auction_private(state) == -1 and TURN.pending_private(state) == -1, msg
+        assert TURN.auction_private(state) == -1, msg
+        assert (TURN.pending_private(state) >= 0) == (step == K.STEP_PRIVATE_PRICE), f'{msg}: pending private'
+        assert (TURN.pending_seller(state) >= 0) == (step == K.STEP_ER_BONUS), f'{msg}: pending seller'
+        assert (TURN.return_step(state) >= 0) == (step in RETURNING_STEPS), f'{msg}: return step'
         if TURN.round(state) == K.ROUND_STOCK:
-            assert step in (K.STEP_STOCK, K.STEP_PAR, K.STEP_SR_END), f'{msg}: step {step} in the SR'
+            assert step in (K.STEP_STOCK, K.STEP_PAR, K.STEP_PORT, K.STEP_SR_END), f'{msg}: step {step} in the SR'
+            assert step != K.STEP_PORT or TURN.return_step(state) == K.STEP_STOCK, f'{msg}: PORT returns to STOCK'
             assert (TURN.pending_corp(state) >= 0) == (step == K.STEP_PAR), f'{msg}: pending corp'
             sold = TURN.sr_sold_mask(state)
             assert sold & ~PLAYERS[active].sold_mask(state) == 0, f'{msg}: turn sales outside the SR sales'
@@ -301,6 +315,31 @@ def _assert_map(state, msg):
         assert c.tokens_left(state) + placed == D.CORP_TOKENS[c.corp_id], f'{msg}: {c.sym} tokens'
 
 
+def _assert_privates(state, msg):
+    """TR blocks K4 and ER blocks C4 exactly while a player owns them; after
+    phase 4 every private has closed but a player's UTF; and a used MF has
+    laid the port tile on a port hex."""
+    for p, hex_id in ((D.PRIVATE_TR, 'K4'), (D.PRIVATE_ER, 'C4')):
+        owner = PRIVATES[p].owner(state)
+        assert PRIVATES[p].blocks_hex(state, HEX[hex_id]) == (K.OWNER_PLAYER <= owner < K.OWNER_CORP), \
+            f'{msg}: {PRIVATES[p].sym} block, owner {owner}'
+    if PHASE.current(state) >= D.CLOSE_PRIVATES_PHASE:
+        open_ = [p for p in range(D.NUM_PRIVATES) if PRIVATES[p].owner(state) >= K.OWNER_UNSOLD]
+        utf = PRIVATES[D.PRIVATE_UTF].owner(state)
+        assert open_ in ([], [D.PRIVATE_UTF]) and (not open_ or K.OWNER_PLAYER <= utf < K.OWNER_CORP), \
+            f'{msg}: privates {open_} open in phase {PHASE.current(state)}'
+    if PRIVATES[D.PRIVATE_MF].flags(state) & 1:
+        assert any(MAP.tile(state, h) == D.PORT_TILE for h in D.MF_PORT_HEX), f'{msg}: MF used, no port tile'
+
+
+def _assert_private_moves(before, after, msg):
+    """A corp's private stays the corp's until it closes (``company_sellable``)."""
+    for p in range(D.NUM_PRIVATES):
+        owner = PRIVATES[p].owner(before)
+        if owner >= K.OWNER_CORP:
+            assert PRIVATES[p].owner(after) in (owner, K.OWNER_CLOSED), f'{msg}: corp private {p} moved'
+
+
 def _assert_trains(state, msg):
     """Each finite rank's trains are in the depot, the pool, or floated corps
     until the rank rusts, and then none is left; the D is unlimited. No corp
@@ -326,8 +365,9 @@ def _assert_operating(state, msg):
     """The OR order lists distinct floated corps, the operating corp is the one
     at ``or_index`` and its president acts (in DISCARD, the crowded corp's),
     TILE alone has a pending hex and TRAIN_PRICE a pending train, which its
-    seller holds, DISCARD alone a return step, the turn's revenue waits only
-    at DIVIDEND, and every OR field is clear outside the OR."""
+    seller holds, the turn's revenue waits only at DIVIDEND (or a private's
+    sub-phase that returns there), and every OR field is clear outside the
+    OR. At ER_BONUS, ER's seller acts."""
     step, corp = TURN.step(state), TURN.operating_corp(state)
     order = [TURN.or_order(state, i) for i in range(D.NUM_CORPS)]
     corps = [c for c in order if c >= 0]
@@ -336,8 +376,8 @@ def _assert_operating(state, msg):
     source = TURN.pending_train_source(state)
     assert (source >= 0) == (step == K.STEP_TRAIN_PRICE), f'{msg}: pending train'
     assert source < 0 or TRAINS.corp_trains(state, *divmod(source, D.NUM_TRAIN_TYPES)), f'{msg}: unheld train'
-    assert (TURN.return_step(state) >= 0) == (step == K.STEP_DISCARD), f'{msg}: return step'
-    assert TURN.route_revenue(state) == 0 or step == K.STEP_DIVIDEND, f'{msg}: route revenue outside DIVIDEND'
+    assert TURN.route_revenue(state) == 0 or K.STEP_DIVIDEND in (step, TURN.return_step(state)), \
+        f'{msg}: route revenue outside DIVIDEND'
     if TURN.round(state) != K.ROUND_OPERATING:
         assert corps == [] and corp == -1 and TURN.or_index(state) == 0, f'{msg}: OR fields outside the OR'
         return
@@ -345,8 +385,12 @@ def _assert_operating(state, msg):
     assert all(CORPS[c].floated(state) for c in corps), f'{msg}: an unfloated corp in {corps}'
     if step in TURN_STEPS or step == K.STEP_TURN_END:
         assert corp == order[TURN.or_index(state)] >= 0, f'{msg}: operating corp {corp}, order {order}'
-        actor = TRAINS.first_crowded(state) if step == K.STEP_DISCARD else corp
-        assert TURN.active_player(state) == CORPS[actor].president(state), f'{msg}: the president acts'
+        if step == K.STEP_ER_BONUS:  # ER's seller lays
+            assert TURN.active_player(state) == TURN.pending_seller(state), f'{msg}: ER\'s seller acts'
+            assert PRIVATES[D.PRIVATE_ER].owner(state) == K.OWNER_CORP + corp, f'{msg}: ER_BONUS without a sale'
+        else:
+            actor = TRAINS.first_crowded(state) if step == K.STEP_DISCARD else corp
+            assert TURN.active_player(state) == CORPS[actor].president(state), f'{msg}: the president acts'
         assert MAP.tokens(state, D.CORP_HOME[corp]) >> corp & 1, f'{msg}: no home token'
     else:
         assert corp == -1, f'{msg}: operating corp {corp} between turns'
@@ -432,9 +476,11 @@ class ApplyResult:
 
 
 def _verify(result, msg):
+    states = [result.state_at(i) for i in range(len(result.history))] + [result.state]
     for i in range(len(result.history)):
-        before = result.state_at(i)
+        before = states[i]
         assert_invariants(before, f'{msg}: before entry {i} {result.history[i][1:]}')
+        _assert_private_moves(before, states[i + 1], f'{msg}: entry {i}')
         if result.history[i][1] >= 0:
             assert_action_sets(before, f'{msg}: before decision {i}')
     assert_invariants(result.state, f'{msg}: after')

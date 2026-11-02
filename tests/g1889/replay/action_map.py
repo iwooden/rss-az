@@ -27,6 +27,16 @@ the engine's phase, so the sync rule never takes a pass in one step for a
 forced pass in another. Ruby's Track pass after a lay, where it keeps Track
 open for MF's port tile, maps to no decision; the replay harness handles it
 (``test_differential_replay.py``, engine-design.md §10.2).
+
+The privates' actions map by Ruby's step too, as their non-blocking steps
+join the step Ruby stops at: a ``buy_company`` to that step's buy-private
+slot and then PRIVATE_PRICE (a grid point when the price lands on one, else
+the exact id); DR's exchange (``buy_shares`` by company DR) to the DR slot;
+MF's ``lay_tile`` to the MF slot and then PORT; and ER's ``lay_tile`` or
+``pass`` to ER_BONUS. The engine offers DR and MF only on their owner's own
+turns (engine-design §12 item 4), and the privates' slots not at Ruby's
+Route step, which the engine runs by itself, so an exchange or port tile out
+of turn, or anything at Route, raises ``UnsupportedAction``.
 """
 
 from __future__ import annotations
@@ -38,6 +48,7 @@ import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
 from g1889.entities.corp import CORPS
+from g1889.entities.private import PRIVATES
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState
@@ -49,9 +60,6 @@ Decision = tuple[int, int]
 # ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + type)`` a discard the harness holds for its corp's turn.
 ROUTE_OVERRIDE = -2
 HELD_DISCARD = -3
-# TEMPORARY until 6.8 makes the buy-private slots legal: until then the mapper
-# reports a fixture's buy_company as unsupported rather than as an illegal id.
-BUY_PRIVATE_LANDED = False
 
 
 class UnsupportedAction(Exception):
@@ -73,11 +81,14 @@ DR_SLOT = {
     K.DPHASE_DIVIDEND: K.DIVIDEND_DR, K.DPHASE_BUY_TRAIN: K.BUY_TRAIN_DR, K.DPHASE_BUY_PRIVATE: K.BUY_PRIVATE_DR,
 }
 SELL_BLOCK = {K.DPHASE_STOCK: K.STOCK_SELL, K.DPHASE_BUY_TRAIN: K.BUY_TRAIN_SELL}
+MF_SLOT = {K.DPHASE_STOCK: K.STOCK_MF, K.DPHASE_TRACK: K.TRACK_MF}
 # The decision phase of a pass in each Ruby OR step.
 OR_PASS_PHASE = {
     'Track': K.DPHASE_TRACK, 'Token': K.DPHASE_TOKEN, 'BuyTrain': K.DPHASE_BUY_TRAIN,
     'BuyCompany': K.DPHASE_BUY_PRIVATE,
 }
+# The decision phase each Ruby OR step's interjections join.
+OR_STEP_PHASE = {**OR_PASS_PHASE, 'Dividend': K.DPHASE_DIVIDEND}
 
 
 def _phase_name(phase: int) -> str:
@@ -129,9 +140,28 @@ def _par(action, pre, phase, state) -> list[Decision]:
             (K.DPHASE_PAR, D.PAR_PRICE.index(pre['par_price']))]
 
 
+def _interjection_phase(pre, what: str) -> int:
+    """The decision a private's action joins: STOCK in an SR, else the one
+    Ruby's OR step maps to."""
+    if pre['round'] == 'SR':
+        return K.DPHASE_STOCK
+    if pre['round'] != 'OR' or pre['step'] not in OR_STEP_PHASE:
+        raise UnsupportedAction(f"{what} in Ruby's {pre['round']} {pre['step']} step")
+    return OR_STEP_PHASE[pre['step']]
+
+
+def _own_turn(state, private: int, what: str) -> None:
+    """DR and MF act only on their owner's own turn (engine-design §12 item
+    4); replay fails loudly on Ruby's out-of-turn use."""
+    if PRIVATES[private].owner(state) != K.OWNER_PLAYER + TURN.active_player(state):
+        raise UnsupportedAction(f"{what} out of its owner's turn (engine-design §12 item 4)")
+
+
 def _buy_shares(action, pre, phase, state) -> list[Decision]:
     if action['entity_type'] == 'company':  # DR's exchange
-        return [(phase, _slot(DR_SLOT, phase, 'the DR exchange'))]
+        phase = _interjection_phase(pre, "DR's exchange")
+        _own_turn(state, D.PRIVATE_DR, "DR's exchange")
+        return [(phase, _slot(DR_SLOT, phase, "DR's exchange"))]
     if pre['percent'] != 10 or pre['source'] not in ('ipo', 'pool'):
         raise UnsupportedAction(f"buy_shares of {pre['percent']}% from {pre['source']}")
     first = K.STOCK_IPO if pre['source'] == 'ipo' else K.STOCK_POOL
@@ -145,12 +175,25 @@ def _sell_shares(action, pre, phase, state) -> list[Decision]:
 
 def _lay_tile(action, pre, phase, state) -> list[Decision]:
     """A corp's lay: TRACK at the hex, then TILE at the index of (tile,
-    canonical rotation) among the corp's candidates there."""
-    if action['entity_type'] != 'corporation':
-        raise UnsupportedAction(f"lay_tile by private {action['entity']} (6.8)")
+    canonical rotation) among the corp's candidates there. ER's: ER_BONUS at
+    the index among its candidates on C4. MF's: the MF slot, then PORT."""
     h, tile = HEX[pre['hex']], TILE[pre['tile']]
-    candidates = A.lay_candidates_py(state, h, CORP[action['entity']])
     lay = (tile, D.TILE_CANON_ROT[tile][pre['rotation']])
+    if action['entity'] == 'ER':
+        candidates = A.er_candidates_py(state)
+        if h != D.ER_HEX or lay not in candidates:
+            raise ValueError(f"ER's lay of {pre['tile']} on {pre['hex']} is not an engine candidate: {candidates}")
+        return [(K.DPHASE_ER_BONUS, K.ER_BONUS_CANDIDATE + candidates.index(lay))]
+    if action['entity'] == 'MF':
+        phase = _interjection_phase(pre, "MF's port tile")
+        _own_turn(state, D.PRIVATE_MF, "MF's port tile")
+        port = (h, lay[1])
+        if phase not in MF_SLOT or tile != D.PORT_TILE or port not in A.port_lays_py(state):
+            raise UnsupportedAction(f"MF's lay of {pre['tile']} on {pre['hex']} in {_phase_name(phase)}")
+        return [(phase, MF_SLOT[phase]), (K.DPHASE_PORT, K.PORT_LAY + D.NUM_SIDES * D.MF_PORT_HEX.index(h) + lay[1])]
+    if action['entity_type'] != 'corporation':
+        raise UnsupportedAction(f"lay_tile by private {action['entity']}")
+    candidates = A.lay_candidates_py(state, h, CORP[action['entity']])
     if lay not in candidates:
         raise ValueError(f"Ruby's lay of {pre['tile']} on {pre['hex']} at rotation {pre['rotation']} "
                          f'is not an engine candidate: {candidates}')
@@ -213,11 +256,25 @@ def _buy_train(action, pre, phase, state) -> list[Decision]:
     return [decision]
 
 
+def _private_price_id(state, corp: int, private: int, price: int) -> int:
+    """PRIVATE_PRICE's grid point for ``price`` (⌈face/2⌉, face, 1½·face, the
+    most the corp may pay, each kept only inside the legal range and before
+    an equal one) when it lands on one, else the exact id."""
+    face = D.PRIVATE_VALUE[private]
+    low, high = -(-face // 2), min(2 * face, CORPS[corp].cash(state))
+    points = [low, face, -(-3 * face // 2), high]
+    for k, point in enumerate(points):
+        if low <= point <= high and point not in points[:k] and point == price:
+            return k
+    return K.PRIVATE_PRICE_EXACT + price
+
+
 def _buy_company(action, pre, phase, state) -> list[Decision]:
-    if not BUY_PRIVATE_LANDED:
-        raise UnsupportedAction('buy_company: the buy-private slots arrive with 6.8')
-    first = _slot(BUY_PRIVATE_SLOT, phase, 'buy_company')
-    return [(phase, first + PRIVATE[pre['company']]), (K.DPHASE_PRIVATE_PRICE, K.PRIVATE_PRICE_EXACT + pre['price'])]
+    """The buy-private slot of the decision Ruby's step maps to, then the price."""
+    phase = _interjection_phase(pre, 'buy_company')
+    p = PRIVATE[pre['company']]
+    return [(phase, _slot(BUY_PRIVATE_SLOT, phase, 'buy_company') + p),
+            (K.DPHASE_PRIVATE_PRICE, _private_price_id(state, CORP[action['entity']], p, pre['price']))]
 
 
 def _bankrupt(action, pre, phase, state) -> list[Decision]:

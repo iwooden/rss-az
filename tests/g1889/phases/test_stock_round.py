@@ -71,7 +71,7 @@ def passed(state):
 
 def at_sr(num_players=3, owners=()):
     """A game past the auction: the privates in play went free to ``owners``
-    (seat 0 by default). Holdings and ``enter_stock_round`` follow."""
+    (the last seat by default). Holdings and ``enter_stock_round`` follow."""
     state = new_game(num_players)
     end_auction(state, owners)
     return state
@@ -203,10 +203,13 @@ class TestTurns:
             (-1, K.STEP_TURN_START)]
         assert TURN.step(state) == K.STEP_TRACK and TURN.priority_player(state) == 1
 
-    def test_abilities_wait_for_their_sub_step(self):
+    def test_dr_and_mf_join_their_owners_turn(self):
+        """``test_privates.py`` covers the exchange and the port tile."""
         state = at_sr(3, owners=[0])  # player 0 owns DR and MF
         hold(state, IR, {1: 2})
         enter_stock_round(state, 0)
+        assert K.STOCK_DR in legal_ids(state) and K.STOCK_MF in legal_ids(state)
+        apply_and_verify(state, PASS)
         assert K.STOCK_DR not in legal_ids(state) and K.STOCK_MF not in legal_ids(state)
 
 

@@ -13,22 +13,25 @@ they were.
 from libc.stdint cimport uint16_t
 
 from g1889.actions cimport (
-    ActionInfo, decode_action, enumerate_legal_actions, enumerate_policy_actions, get_decision_phase, has_exact,
-    is_legal_action, wide_amount_range,
+    ACTION_BUY_PRIVATE, ACTION_DR_EXCHANGE, ACTION_MF_PORT, ActionInfo, decode_action, enumerate_legal_actions,
+    enumerate_policy_actions, get_decision_phase, has_exact, is_legal_action, wide_amount_range,
 )
 from g1889.constants cimport (
-    DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND, DPHASE_PAR,
-    DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK, DPHASE_TRAIN_PRICE, NUM_STEPS,
-    ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND, STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE,
-    STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END, STEP_TURN_START,
+    DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND,
+    DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE, DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE,
+    DPHASE_TOKEN, DPHASE_TRACK, DPHASE_TRAIN_PRICE, NUM_STEPS, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND,
+    STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END,
+    STEP_TURN_START,
 )
 from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_round, turn_step
 from g1889.phases.auction cimport apply_auction, apply_bid, apply_raise
 from g1889.phases.buy_train cimport apply_buy_train, apply_discard, apply_train_price
 from g1889.phases.dividend cimport apply_dividend
 from g1889.phases.operating cimport (
-    apply_buy_private, apply_tile, apply_token, apply_track, run_or_end, run_or_start, run_route, run_turn_end,
-    run_turn_start,
+    apply_tile, apply_token, apply_track, run_or_end, run_or_start, run_route, run_turn_end, run_turn_start,
+)
+from g1889.phases.privates cimport (
+    apply_buy_private, apply_er_bonus, apply_interjection, apply_port, apply_private_price,
 )
 from g1889.phases.stock cimport apply_par, apply_stock, run_sr_end
 from g1889.state cimport GameState
@@ -68,11 +71,15 @@ cdef class GameDriver:
         return action_id
 
     cdef int _dispatch(self, GameState state, int phase, int action_id, object history) except -1:
-        """Apply one decision. A handler a later sub-step owns raises
-        NotImplementedError before touching the state or the history."""
+        """Apply one decision. The privates' slots interject in several phases
+        (§5.1), so they dispatch by action type. A handler a later sub-step
+        owns raises NotImplementedError before touching the state or the
+        history."""
         cdef object row = state._array.copy() if history is not None else None
         cdef ActionInfo info = decode_action(phase, action_id)
-        if phase == DPHASE_AUCTION:
+        if info.type == ACTION_BUY_PRIVATE or info.type == ACTION_DR_EXCHANGE or info.type == ACTION_MF_PORT:
+            apply_interjection(state, &info)
+        elif phase == DPHASE_AUCTION:
             apply_auction(state, &info)
         elif phase == DPHASE_BID:
             apply_bid(state, &info)
@@ -98,6 +105,12 @@ cdef class GameDriver:
             apply_discard(state, &info)
         elif phase == DPHASE_BUY_PRIVATE:
             apply_buy_private(state, &info)
+        elif phase == DPHASE_PRIVATE_PRICE:
+            apply_private_price(state, &info)
+        elif phase == DPHASE_ER_BONUS:
+            apply_er_bonus(state, &info)
+        elif phase == DPHASE_PORT:
+            apply_port(state, &info)
         else:
             raise NotImplementedError(
                 f"1889 {DecisionPhase(phase).name} handler not implemented yet: {decode_action_py(phase, action_id)}")

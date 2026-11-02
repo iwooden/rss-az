@@ -36,7 +36,7 @@ g1889/
   data/               tables.json, generated tables.pxd/.pyx, generate.py, dump_1889.rb
   entities/           bank, player, corp, private, market, trains, phase, hexmap, graph, turn
   phases/             auction, stock, operating, track, token, route, dividend,
-                      buy_train (with TRAIN_PRICE and DISCARD), buy_private, abilities
+                      buy_train (with TRAIN_PRICE and DISCARD), privates
   routes/             solver.pxd/.pyx
 ```
 
@@ -49,8 +49,10 @@ g1889/
   sub-steps that grow ROUTE, DIVIDEND, BUY_TRAIN, and the rest split them
   into the modules above as they do. 6.7 moves DIVIDEND to
   `phases/dividend.pyx` and BUY_TRAIN, TRAIN_PRICE, and DISCARD, which share
-  the purchase's phase change, to `phases/buy_train.pyx`; ROUTE and
-  BUY_PRIVATE's "done" stay in `operating.pyx`.
+  the purchase's phase change, to `phases/buy_train.pyx`; ROUTE stays in
+  `operating.pyx`. 6.8a puts BUY_PRIVATE, PRIVATE_PRICE, ER_BONUS, PORT,
+  and the privates' slots that interject in the top-level decisions in
+  `phases/privates.pyx`; the driver dispatches those slots by action type.
 - **The four root modules** play the role of RSS `core/`. At the package
   root they keep one `core` in the repo and short cimports
   (`from g1889.state cimport GameState`). The solver gets `routes/` because
@@ -178,8 +180,8 @@ handlers and tests (`entities/corp.pxd:31-56`).
 |---|---|---|
 | `BANK` | `bank_cash`, `bank_broken` | `transfer(state, src, dst, amount)` is the only code that changes cash. The bank breaks permanently when a payment would take it below zero (`bank.rb:26-39`) |
 | `PLAYERS[i]` | player block | `cash`, `shares(c)`, `cert_count` (privates count, zone shares don't), `can_gain(c)` (60% cap unless orange zone; cert limit), `net_worth`, `bid`, `committed`, `clear_bids`, `passed`, `sold_mask`, `bankrupt` |
-| `CORPS[c]` | corp block | `par`, `float_if_ready` (pays 10 × par at 5 IO shares left), `buy_share(player, source)`, `sell_shares(player, n)` with presidency recompute (as `entities/corp.pxd:178`), `token_price` (the next charter token's), cached `route_revenue`; `route_available` is GRAPH's |
-| `PRIVATES[p]` | private block | `owner`, `revenue` (UTF pays ¥50 from phase 5), `sell_to_corp`, `close`, `blocks_hex(h)` (TR blocks K4 and ER blocks C4 while a player owns them), `exchange_dr`, the MF flag |
+| `CORPS[c]` | corp block | `par`, `float_if_ready` (pays 10 × par at 5 IO shares left), `buy_share(player, source)`, `exchange_share(player)` (DR's free IPO share, parred or not), `sell_shares(player, n)` with presidency recompute (as `entities/corp.pxd:178`), `token_price` (the next charter token's), cached `route_revenue`; `route_available` is GRAPH's |
+| `PRIVATES[p]` | private block | `owner`, `revenue` (UTF pays ¥50 from phase 5), `sell_to_corp(c, price)` (paid to the seller), `close`, `blocks_hex(h)` (TR blocks K4 and ER blocks C4 while a player owns them), `exchange` (DR: the IR share, then DR closes), `flags` (`MF_PORT_USED`) |
 | `MARKET` | market fields | 2D moves with edge rules (rules §6.7), zone tests, `order_key`, `sort_by_price(mask)` |
 | `TRAINS` | trains block, corp `trains` | `depot_types` (the lowest rank, plus D from phase 6), `buy_from_depot`/`buy_from_pool` (list price, to the bank), `buy_from_corp` (a price, to the seller), `trade_in_for_d` (the old train to the pool, then ¥800 for a D), `discard` (to the pool), `rust` (corps', pool's, and depot's), `limit`, `crowded`, `first_crowded`, `cheapest_price` (depot or pool) |
 | `PHASE` | `game_phase` | `on_train_bought` (`Phase#buying_train!`: a train of the next phase's rank starts it), `advance` (Ruby's order: the phase, then rusting, then the first 5's private closing) |
@@ -251,6 +253,18 @@ change only. Every purchase calls `PHASE.on_train_bought`, as Ruby calls
 Closing a private changes no cache: blocks enter only lay legality. PHASE
 cimports TRAINS and PRIVATES, so TRAINS reads the phase slot raw.
 
+**Privates (6.8a).** A sale to a corp moves the owner code and pays the
+seller from the treasury (`BuyCompany#pay`); everything else follows the
+owner code: the seller's certificates (`num_certs` counts privates), TR's
+and ER's blocks (`owner_type: player`), SMR's discount (`MAP.lay_cost`),
+and UTF's revenue (¥30 to a corp; its ¥50 and its survival at phase 5 bind
+only for a player owner). No cache changes: blocks enter only lay legality.
+DR's exchange gives its owner an IR IPO share free and closes DR
+(`step/exchange.rb`); before IR is parred the share has no price and makes
+nobody president. MF's port tile and ER's bonus tile go down through
+`MAP.lay`, so GRAPH and the route caches go stale; both are free, as C4 and
+the port hexes have no terrain (`phases/privates.pyx` asserts it).
+
 ## 5. Decision phases and actions
 
 ### 5.1 Conventions
@@ -277,7 +291,20 @@ cimports TRAINS and PRIVATES, so TRAINS reads the phase slot raw.
   of them.
 - **Interjection slots.** "Buy private p" (in phases 3-4), the DR exchange,
   and the MF port tile appear only in the active player's top-level phases
-  (Section 12, item 4).
+  (Section 12, item 4), and there only at a decision Ruby asks (6.8a):
+  Ruby's BuyCompany, Exchange, and SpecialTrack steps are non-blocking, so
+  their actions join the step Ruby stops at (`Round::Base#actions_for`),
+  and Ruby skips a step with nothing to do (`skip_steps`). TRACK always asks
+  (its lay costs nothing, `can_lay_tile?`); any other decision asks when its
+  own actions hold one beyond slot 0 (`_asks` in `actions.pyx`). Otherwise
+  the engine would stop where Ruby does not: at a TOKEN with no token, a
+  zero-revenue DIVIDEND, a BUY_TRAIN with nothing to buy, a BUY_PRIVATE
+  with nothing to buy, or an SR turn with nothing to buy or sell. The
+  privates' slots are buy-private slots of the operating corp (a player's
+  private, for ⌈face/2⌉ within the treasury); the DR slot for the active
+  player while they own DR and IR's IPO has a share for them within 60%;
+  and the MF slot (STOCK and TRACK) while they own MF, unused, and PORT has a
+  lay.
 
 ### 5.2 Phases
 
@@ -330,6 +357,23 @@ a legal completion, so there are no dead ends or cancel loops. ER_BONUS always
 follows a sale of ER, with pass legal, because Ruby always asks
 (`step/track_lay_when_company_sold.rb:48`). Nesting is one level deep, so one
 `return_step` suffices.
+
+**As built (6.8a).** PRIVATE_PRICE pays the seller and clears
+`pending_private`; after ER, `pending_seller` holds the seller, who is the
+active player (1889's `active_players`) until ER_BONUS resumes the step with
+the corp's president. ER_BONUS's candidates are the upgrade table's targets
+of C4 among ER's green city tiles (`ER_TILE`), in supply, with exits on open
+sides, sorted like TILE's: Ruby's SpecialTrack checks no route
+(`reachable: false`) and no semi-restrictive rule (`check_track_restrictions!`
+returns for a non-operator), and its `upgrades_to?` skips the label and city
+checks for a private (`special`), which no ER tile needs. On the printed C4
+there are eight. PORT's ids are `NUM_SIDES·i + rotation` for each port hex
+whose tile the port tile upgrades (an empty port town) and each canonical
+rotation whose exits stay on open sides; the port tile itself `blocks_lay`,
+so no corp lays it. A DR exchange applies in place; a port tile or a
+purchase resumes `return_step`. Neither DR nor MF counts as an SR action
+(`step/exchange.rb:23`; SpecialTrack tracks none), so the turn and the
+passes go on as before.
 
 ### 5.4 Tile lays (blueprint §9 open questions)
 
@@ -389,20 +433,21 @@ states, 29 µs at most (late 962, with many plain-track upgrades to walk).
 | `bid` | the topmost private at its price: AUCTION 1. Another private: AUCTION 2+p, then BID. In a closed auction: RAISE. BID and RAISE take a grid point or an exact amount |
 | `pass` | slot 0 of the current phase; ER_BONUS 0 for entity ER |
 | `par` (`"70,4,3"`) | STOCK 15+c, then the PAR index for ¥70 |
-| `buy_shares` | STOCK 1+c or 8+c, chosen by the share's owner (extractor annotation). Entity DR maps to the DR slot |
+| `buy_shares` | STOCK 1+c or 8+c, chosen by the share's owner (extractor annotation). Entity DR maps to the DR slot of the decision Ruby's step maps to (STOCK in an SR), on its owner's turn only |
 | `sell_shares` | a STOCK or BUY_TRAIN sale of (c, percent/10); the engine performs any presidency swap |
-| `lay_tile` | by a corp: TRACK 1+h, then TILE (tile, canonical rotation), ignoring the copy suffix in names like `57-1`. By MF: the MF slot, then PORT. By ER: ER_BONUS 1+k |
+| `lay_tile` | by a corp: TRACK 1+h, then TILE (tile, canonical rotation), ignoring the copy suffix in names like `57-1`. By MF: the MF slot (STOCK, or TRACK at Ruby's Track step), then PORT, on its owner's turn only. By ER: ER_BONUS 1+k |
 | `place_token` | TOKEN 1+h; the extractor supplies the hex, and `slot` is ignored |
 | `run_routes` | nothing, or `DRIVER.override_route_revenue` if the revenue differs |
 | `dividend`, `discard_train`, `bankrupt` | DIVIDEND 0 or 1; DISCARD, reordered to the engine's corp order (Section 10.2); BUY_TRAIN 93 |
 | `buy_train` | BUY_TRAIN by source and type (`exchange` maps to 7+i) at the list price, or ¥800 for a trade-in; TRAIN_PRICE follows for a buy from a corp, at the grid point its price lands on, or else the exact id |
-| `buy_company` | the current phase's buy-private slot, then PRIVATE_PRICE |
+| `buy_company` | the buy-private slot of the decision Ruby's step maps to (Track, Token, Dividend, BuyTrain, or the blocking BuyCompany), then PRIVATE_PRICE at the grid point its price lands on, or else the exact id; Ruby's Route and DiscardTrain steps have no engine decision for it |
 | other actions | `undo`/`redo` are resolved by the extractor; `program_*` and `message` are skipped; `auto_actions` apply after their host action; `end_game` stops the replay |
 
 Some fixture prices need exact ids: of the corp-to-corp train prices, ¥1
 (three times), ¥2 (⌈2·cash/3⌉ at ¥2), and ¥360, ¥370, and ¥450 (the buyer's
 whole treasury) land on the grid, and ¥100 (twice), ¥150, and ¥165 are
-exact. Every private sale is at 2 × face, and every bid lands on the grid.
+exact. Every private sale (6 in 314, 7 in 962) is at 2 × face, the top
+grid point, and every bid lands on the grid.
 
 ## 6. Driver and auto-chaining
 
@@ -431,7 +476,9 @@ off-grid bid, a BID range narrower than ¥5 has one grid point, and forcing
 it would hide the exact amounts above it. So since 6.4, a decision with
 exact amounts whose one policy point is also its only engine-legal grid point
 is forced only when its legal range has one value (`wide_amount_range`;
-TRAIN_PRICE's range is ¥1 to the buyer's cash, one value at ¥1). When a
+TRAIN_PRICE's range is ¥1 to the buyer's cash, one value at ¥1, and
+PRIVATE_PRICE's ⌈face/2⌉ to the lesser of twice face and the treasury, one
+value when the treasury holds just ⌈face/2⌉). When a
 flag drops legal grid points (the auction pass cap), the one remaining
 policy point is still forced: only self-play sets flags, and it never plays
 exact amounts.
@@ -444,12 +491,12 @@ exact amounts.
 | Steps | Kind | Notes |
 |---|---|---|
 | `AUCTION`, `BID`, `RAISE` | decisions | See the auction notes below |
-| `STOCK`, `PAR`, `PORT` | decisions | A pass without acting sets `passed`; "done" after acting clears it (`step/buy_sell_par_shares.rb:202`). A must-sell turn offers only sales, and any legal sale counts, as in Ruby (`:106`). Buying and then selling the same corp in one turn is legal. Priority follows Ruby's `priority_deal_player`: the player after the last to buy or sell. A player with nothing to do gets only slot 0, which the forced rule applies, as Ruby skips them |
+| `STOCK`, `PAR`, `PORT` | decisions | A pass without acting sets `passed`; "done" after acting clears it (`step/buy_sell_par_shares.rb:202`). A must-sell turn offers only sales, and any legal sale counts, as in Ruby (`:106`). Buying and then selling the same corp in one turn is legal. Priority follows Ruby's `priority_deal_player`: the player after the last to buy or sell. A player with nothing to do gets only slot 0, which the forced rule applies, as Ruby skips them. A turn Ruby asks also offers the player's DR exchange and MF port tile (PORT returns to STOCK); neither counts as an action |
 | `SR_END` | automated | Priority goes to the player after the last passer. Sold-out corps move up in price order (`round/stock.rb:70`). `or_count` is fixed |
 | `OR_START`, `TURN_START` | automated | OR_START pays private revenue (`game/base.rb:1649`; the bank only pays out, so Ruby's payment order cannot matter), places every floated corp's free home token (`HOME_TOKEN_TIMING = :operating_round`), and fixes the order: the floated corps in stock price order (`game/base.rb:986`). With none, OR_END follows. TURN_START gives the turn to the next corp's president |
 | `TRACK`, `TILE`, `TOKEN` | decisions | One lay and one token per turn: TILE moves on to TOKEN, and TOKEN to ROUTE |
 | `ROUTE` | automated | The operating corp's maximum revenue (Section 8), ¥0 without trains or a route. Ruby's Route step waits for the president's routes instead; replay pays a human's revenue with `override_route_revenue` |
-| `DIVIDEND`, `BUY_TRAIN`, `TRAIN_PRICE`, `DISCARD`, `BUY_PRIVATE`, `PRIVATE_PRICE`, `ER_BONUS` | decisions | A payout pays each share a tenth of the revenue, rounded up (`dividends_for_entity`): players by their shares, the corp for its Open Market shares (`holder_for_corporation` is the share pool under full capitalization, `step/dividend.rb:151-181`), nobody for the IPO's; the price moves right (up at a row's end). A withhold pays the treasury and moves the price left (down at column 0, `TwoDimensionalMovement`). At zero revenue only the withhold is legal, which Ruby applies by skipping the step. BUY_TRAIN buys one train at a time until the pass, which ends the turn, or in phases 3-4 opens BUY_PRIVATE (Ruby's blocking BuyCompany); with nothing left to buy, the pass is forced, as Ruby passes the step (`pass_if_cannot_buy_train?`). Until 6.8, BUY_PRIVATE offers only "done", which the forced rule applies |
+| `DIVIDEND`, `BUY_TRAIN`, `TRAIN_PRICE`, `DISCARD`, `BUY_PRIVATE`, `PRIVATE_PRICE`, `ER_BONUS` | decisions | A payout pays each share a tenth of the revenue, rounded up (`dividends_for_entity`): players by their shares, the corp for its Open Market shares (`holder_for_corporation` is the share pool under full capitalization, `step/dividend.rb:151-181`), nobody for the IPO's; the price moves right (up at a row's end). A withhold pays the treasury and moves the price left (down at column 0, `TwoDimensionalMovement`). At zero revenue only the withhold is legal, which Ruby applies by skipping the step. BUY_TRAIN buys one train at a time until the pass, which ends the turn, or in phases 3-4 opens BUY_PRIVATE (Ruby's blocking BuyCompany); with nothing left to buy, the pass is forced, as Ruby passes the step (`pass_if_cannot_buy_train?`). BUY_PRIVATE offers each private the corp may buy and "done", which ends the turn; with nothing to buy, "done" is forced, as Ruby skips the step. PRIVATE_PRICE and ER_BONUS return to the step the purchase came from |
 | `TURN_END`, `OR_END` | automated | Emergency sales re-sort the corps yet to run (`round/operating.rb:97`). After a set's last OR: game over if the bank has broken, otherwise an SR, with the SR number up and `or_num` back to 1; Ruby reorders the players only after an SR, so the priority holder opens it. A corp floated mid-OR by DR runs from the next OR |
 | `GAME_OVER` | terminal | |
 
@@ -483,8 +530,9 @@ options are legal (`step/train.rb:156-185`, `EBUY_FROM_OTHERS = :never`):
 - **The cheapest depot or pool train,** with the president paying the
   shortfall. A depot buy still changes the phase.
 - **Another corp's train,** for ¥1 up to the corp's cash, while the corp has
-  cash and no shares have been sold (`:180`). Until 6.8 the BUY_TRAIN
-  enumerator raises in this case, so the driver rests there.
+  cash and no shares have been sold (`:180`). Until 6.8b the BUY_TRAIN
+  enumerator raises in this case, so the driver rests there. Ruby's
+  non-blocking BuyCompany still offers privates here, which 6.8b must keep.
 - **Sales of the president's shares** (`step/emergency_money.rb:16-50`): no
   presidency may change anywhere, the pool cap applies, each corp is sold at
   most once (`ebuy_sold_mask`), and a sale is legal only while the next
@@ -728,10 +776,17 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
      `room?`, `buyable_trains` by source and type with `spend_minmax`'s
      price range, and `discountable_trains_for`), and `crowded` at
      DiscardTrain snapshots (`crowded_corps`, recomputed without filling its
-     cache). `extract_states.rb --graphs` answers the same graph queries, the
+     cache). Schema 7 (6.8a) adds `companies` at every OR snapshot with an
+     operator (the non-blocking BuyCompany's action types, and
+     `purchasable_companies` that `company_sellable` admits, with
+     `min_price` and `max_price`), `er_bonus` while SpecialTrack blocks for
+     ER just sold (ER's lays as SpecialTrack offers them, and the step Ruby
+     resumes after it), and a top-level `abilities` with MF's port lays while
+     its ability is usable and `Exchange#can_exchange?` for DR, whoever's
+     turn it is. `extract_states.rb --graphs` answers the same graph queries, the
      semi-restrictive verdicts, and AutoRouter, for hand-built maps given a
-     phase and trains. Cold extraction is unchanged by schemas 5 and 6 (3.1
-     s for 314, 8.5 s for 962); the random-map route extract takes about 8 s.
+     phase and trains. Cold extraction is unchanged by schemas 5-7 (3.0 s
+     for 314, 7.8 s for 962); the random-map route extract takes about 8 s.
    - **`snapshot.py`** provides `compare(state, snap)` and
      `load_state(snap)`. `load_state` builds the state through entity APIs,
      so oracle tests don't depend on replaying up to that point.
@@ -747,8 +802,8 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
      with one affordable train), which the sync rule consumes. When the
      replay stops at an action, or runs out, while forced decisions are
      pending, the record before compares with the engine as it is or as it
-     was before one of them (6.7): Ruby waits at its BuyCompany step, whose
-     purchases land with 6.8, where the engine forces "done".
+     was before one of them (6.7): Ruby may wait at a Track step whose only
+     choice is the pass, which the engine forces.
    - **Fixture findings** from the extractor (6.2), for the sub-steps that
      reach them:
      - **Discard order (6.7).** Ruby accepts a discard from any crowded
@@ -766,16 +821,23 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
        opens only for a trade-in (`can_buy_train?`), and the UI then offers
        only that. The engine uses list prices and enforces the limit, and the
        mapper rejects another price; every fixture purchase is at its price.
-     - **Emergency buys from other corps (6.8).** 314 record 350: TR, which
+     - **Emergency buys from other corps (6.8b).** 314 record 350: TR, which
        must buy and holds ¥2, buys KO's 3 for ¥2, as Ruby allows before any
        share sale (Section 6.2).
-     - **Port tile (6.8).** 962 action 39 lays MF's port tile at the start
+     - **Port tile (6.8a).** 962 action 39 lays MF's port tile at the start
        of TR's turn, whose president owns MF, and TR then lays its own tile.
-       The PORT lay doesn't use up the corp's lay.
-     - **Bankruptcy (6.8).** A bankrupt player keeps shares that can't be
+       The PORT lay doesn't use up the corp's lay; it replays as TRACK 61,
+       PORT, then TR's own TRACK and TILE.
+     - **Private purchases (6.8a).** The 13 fixture sales are at Ruby's
+       blocking BuyCompany after BuyTrain (10) or during BuyTrain (962
+       records 83, 272, 273), all at twice face; ER's sellers pass (314
+       record 90) or lay tile 14 on C4 (962 record 42). Ruby's BuyCompany
+       also offers a purchase during an emergency, and its check ignores the
+       must-buy (`can_buy_company?`), which 6.8b's BUY_TRAIN must keep.
+     - **Bankruptcy (6.8b).** A bankrupt player keeps shares that can't be
        sold: in 314 player 639 ends with KO 40%, TR 20%, and KU 20% as
        president, at ¥0 cash.
-     - **Track after the lay (6.5b, 6.8).** Ruby keeps the Track step open
+     - **Track after the lay (6.5b, 6.8a).** Ruby keeps the Track step open
        after the corp's lay while its president owns MF
        (`tile_lay_abilities_should_block?`), for the port tile; 314 records
        22, 47, and 93 rest there. The corp cannot lay again, and the engine
@@ -785,6 +847,18 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
        replay compares it with the engine at TOKEN (before a forced token
        pass, if any), and maps Ruby's pass that closes Track to no decision:
        the decisions the engine forced since the lay are what that pass does.
+     - **Divergences (6.8a).** Ruby lets MF's owner lay the port tile at
+       that open Track after the corp's lay (`owning_player_track` reads
+       only the step), and BuyCompany and Exchange act there too; the
+       engine offers MF at TRACK before the lay only, so replay stops there
+       as unsupported. So it does for DR or MF out of their owner's turn
+       (Section 12, item 4), including an SR turn Ruby skipped for having
+       nothing to buy or sell, and for a purchase at Ruby's Route or
+       DiscardTrain step, which the engine runs by itself or has no slot at.
+       No fixture does any of these. Ruby also ends an SR turn without a
+       pass when an exchange or port tile leaves BuySellParShares nothing
+       to offer (`Round::Stock#after_process`), where the engine forces the
+       pass, which sets the player's `passed` flag; no fixture reaches it.
      - **Programmed actions.** In the `hs_*` fixtures, programmed buys ride
        as `auto_actions` on another player's pass, alongside
        `program_disable` and `program_share_pass` entries that the mapper
@@ -801,16 +875,16 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    sub-step takes over (ROUTE for a corp with trains, a train purchase) or a
    later sub-step's action, and they cover every corp lay and token of 314
    (46) and 57 of 962's 59; the two left follow MF's port tile (962 record
-   33, 6.8). **As of 6.6:** those turns also run their routes: all 80 fixture
+   33, 6.8a). **As of 6.6:** those turns also run their routes: all 80 fixture
    Route steps (32 in 314, 48 in 962), 6 of them paying the human's revenue
    through `override_route_revenue`, and then rest at DIVIDEND (6.7).
    **As of 6.7:** 314 replays to the record before its first private
    purchase (80; record 81 is UR's `buy_company`), and 962 to the record
-   before MF's port tile (32; record 33, 6.8), which comes before its first
+   before MF's port tile (32; record 33, 6.8a), which comes before its first
    private purchase (40). The OR turns replay every dividend of 314 (32) and
    47 of 962's 48, 27 of 314's 30 train purchases and 17 of 962's 21, and
    314's 2 discards. Seven turns stop at a private purchase or MF's port tile
-   (6.8), four of 314's at emergency money (records 350, 444, 449, 456), and
+   (6.8a), four of 314's at emergency money (records 350, 444, 449, 456), and
    962's last at the game's end after the bank breaks. Replayed alone from
    the snapshot before it, every dividend, purchase, and discard replays but
    314's three emergency purchases and 962's game-ending dividend; among
@@ -821,6 +895,27 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    443, KO at 448-452, TR at 455-456); at both DiscardTrain snapshots (314)
    the crowded corps and DISCARD's choices do too
    (`replay/test_train_oracles.py`).
+   **As of 6.8a:** 314 replays to the record before its first emergency
+   purchase (349; record 350 is TR's must-buy short of cash, 6.8b), and 962
+   to the record before its last (445; record 446's dividend ends the OR set
+   after the bank broke, and OR_END's game end is 6.8b's). The OR turns now
+   replay every corp lay and token (46 and 59), every private purchase (6
+   of 314's, 7 of 962's), MF's port tile and both ER bonuses, every
+   dividend of 314 (32) and 47 of 962's 48, 27 of 314's 30 train purchases
+   and all 21 of 962's, and 314's 2 discards; no turn stops at an
+   unsupported action, four of 314's at emergency money and 962's last at
+   the game's end. Replayed alone, every private purchase replays too, ER's
+   up to its seller's ER_BONUS. `replay/test_private_oracles.py` checks the
+   schema-7 oracles at every SR and OR snapshot: the privates the operator
+   may buy (197 snapshots in 314, 243 in 962), the buy-private slots at
+   every top-level decision Ruby stops at (404 and 389, of which 16 and 96
+   offer a purchase), ER's lays at both ER bonuses, MF's port lays wherever
+   Ruby's ability is usable (63 and 19) and the MF slot at its owner's
+   decisions, and DR's exchange (76 and 264 snapshots; Ruby refuses 43 of
+   962's) and the DR slot. Two scripted games add what no fixture does: an
+   SR turn that exchanges DR for an unparred IR share and lays the port
+   tile, and an exchange at the operating corp's Track that floats IR
+   mid-OR, which then waits for the next OR.
 
    **Test:** can Ruby's `check_track_restrictions!` (`step/tracker.rb:326`,
    skipped while loading) run cheaply per candidate on a cloned game? **Answer
@@ -860,7 +955,20 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    must-buy the treasury cannot fund, both 6.8's. They play 11,127 corp
    turns, each with its dividend (4,124 payouts), and 3,488 depot buys, 167
    pool buys, 1,418 buys from other corps, 46 trade-ins, and 417 discards.
-   The test takes 19 s.
+   The test takes 19 s. **As of 6.8a:** the games also check that TR and ER
+   block their hexes exactly while a player owns them, that no corp's
+   private goes back to a player, and that every private but a player's
+   UTF has closed after phase 4. A decision that offers a private's slot
+   besides other choices takes one a tenth of the time; uniform choices
+   there drain the treasuries into privates at up to twice face (13 of the
+   flags-on games reach phase D). The 200 games reach phase 4 in 198,
+   phase 5 in 150, 6 in 72, and D in 40 (22 flags off, 18 on), and end 76
+   times at a broken bank and 124 in emergencies. Over 10,558 corp turns
+   they buy 686 privates (224 at TRACK, 23 at TOKEN, 127 at DIVIDEND, 90 at
+   BUY_TRAIN, 222 at BUY_PRIVATE; 107 at exact prices, flags off), and ER's
+   sellers lay 120 times on C4 and pass 15; DR's owners exchange 173 times
+   (155 in SRs, 18 in ORs) and MF's lay the port tile 173 times (166 from
+   STOCK, 7 from TRACK). The test still takes 19 s.
 5. **Per-phase unit tests** (`tests/g1889/phases/`), in the style of
    `tests/phases/` and `.claude/commands/phase-test.md`, run through the
    driver. A `conftest.py` provides `game_state`, `apply_and_verify`, and
@@ -888,7 +996,8 @@ up to X; the harness reports the first unsupported action.
 | 6.5 | OR flow; TRACK and TILE (terrain, SMR, blockers, colors, supply, the semi-restrictive rule); TOKEN; `GRAPH`; zero-revenue DIVIDEND; BUY_TRAIN's pass and its depot offers, with must-buy (a purchase rests at the development stop until 6.7) | `hs_*` fully green; the replay harness's temporary OR_START workaround (`_before_or_start`) removed; lay and token sets equal the Ruby oracles at every Track and Token snapshot of `314` and `962`; connectivity matches, or the gap is measured; unit tests |
 | 6.6 | Route solver, the route cache, `ROUTE`, `override_route_revenue` | matches `AutoRouter` at every Route snapshot; at least every human revenue; agrees with brute force; profile recorded |
 | 6.7 | Dividends; BUY_TRAIN from the depot, the pool, and other corps, plus the D trade-in; TRAIN_PRICE; train limits; must-buy funded from the treasury; `PHASE`; DISCARD | `314` and `962` green through the first private buy or emergency; random playouts reach phase D |
-| 6.8 | Buy-private windows, PRIVATE_PRICE, ER_BONUS, PORT, and the DR exchange (until then the OR decisions lack the buy-private, DR, and MF slots, and BUY_PRIVATE offers only "done", which the driver applies); emergency money; bankruptcy; game end; `final_scores` | all four fixtures green end to end, including the final results |
+| 6.8a | Privates: the buy-private slots at the top-level OR decisions Ruby asks in phases 3-4, PRIVATE_PRICE, ER_BONUS, PORT, and the DR exchange, in their owners' turns; `private_sale_same_president`; extractor schema 7 | `314` and `962` green up to the first record that needs 6.8b (314 to 349, before TR's emergency; 962 to 445, before the game's end); per-turn replays no longer stop at a private's action; the schema-7 oracles equal Ruby at every snapshot; random playouts use every new action kind |
+| 6.8b | Emergency money, including Ruby's emergency buys from other corps and any private purchase in an emergency; bankruptcy; game end; `final_scores` | all four fixtures green end to end, including the final results |
 | 6.9 | Full random playouts; flags; profiling; the engine half of `games/g1889.py`; remove the driver's development stop (6.3) | seeds terminate within the cap with the invariants intact; the driver no longer catches `NotImplementedError`; adapter conformance passes the engine checks for 1889; the profile is recorded here |
 
 **The `Game` adapter.** `games/g1889.py` is first wired in at 6.9, once a
@@ -916,11 +1025,16 @@ The user accepted every recommendation below (2026-11-01).
    the port tile at any moment of an SR, or at the start of any corp's turn
    (`game/base.rb:3389`). No fixture does either. *Adopted:* support
    in-turn use only, make replay fail loudly on out-of-turn use, and add
-   `DRIVER.apply_out_of_turn` along with live play.
+   `DRIVER.apply_out_of_turn` along with live play. *Built (6.8a):* DR at
+   its owner's STOCK turn and at every top-level OR decision of a corp
+   they are president of; MF at their STOCK turn and at such a corp's
+   TRACK before its lay (Section 5.1).
 5. **Decided:** a forced-decision rule based on the policy set (Section 6).
    *Adopted:* adopt it.
 6. **Decided:** buy-private slots at every top-level OR phase in phases 3-4.
-   *Adopted:* keep them all, since the engine needs them anyway.
+   *Adopted:* keep them all, since the engine needs them anyway. *Built
+   (6.8a):* at TRACK, TOKEN, DIVIDEND, BUY_TRAIN, and BUY_PRIVATE, at the
+   decisions Ruby asks (Section 5.1).
    Restrict them to the turn's start and end only if search breadth suffers.
 
 Settled by following 18xx.games, and recorded in `1889-rules.md` §13-14:

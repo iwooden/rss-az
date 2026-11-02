@@ -11,10 +11,6 @@ from g1889.entities.turn import TURN
 from g1889.state import GameState
 
 EXACT_PHASES = (K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_TRAIN_PRICE, K.DPHASE_PRIVATE_PRICE)
-# Phases whose enumerators have landed; tests/g1889/phases/ and test_track_and_tokens.py cover them.
-IMPLEMENTED_PHASES = (K.DPHASE_AUCTION, K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_STOCK, K.DPHASE_PAR,
-                      K.DPHASE_TRACK, K.DPHASE_TILE, K.DPHASE_TOKEN, K.DPHASE_DIVIDEND, K.DPHASE_DISCARD,
-                      K.DPHASE_BUY_TRAIN, K.DPHASE_TRAIN_PRICE, K.DPHASE_BUY_PRIVATE)
 SAMPLED_AMOUNTS = (0, 1, 5, 65, 100, 150, 165, 360, 370, 450, 1100, 4000)
 
 
@@ -134,21 +130,12 @@ def test_decision_phase_follows_the_step(state, step):
         assert A.enumerate_policy_actions_py(state, ids) == 0
         assert not A.is_legal_action_py(state, 0)
         return
-    if phase in IMPLEMENTED_PHASES:
-        return
-    # Each phase's enumerator lands with its sub-step; until then the call fails loudly.
-    name = K.DecisionPhase(phase).name.removeprefix('DPHASE_')
-    for call in (A.enumerate_legal_actions_py, A.enumerate_policy_actions_py):
-        with pytest.raises(NotImplementedError, match=name):
-            call(state, ids)
-    with pytest.raises(NotImplementedError):
-        A.is_legal_action_py(state, 0)
-    size = K.PHASE_ACTION_SIZES[phase]
-    if A.has_exact_amounts(phase):
-        with pytest.raises(NotImplementedError, match='exact amounts'):
-            A.is_legal_action_py(state, size + 100)
-    else:
-        assert not A.is_legal_action_py(state, size)  # beyond the phase: illegal without enumerating
+    # Every enumerator runs, whatever the step's context (tests/g1889/phases/ covers each phase).
+    count = A.enumerate_legal_actions_py(state, ids)
+    assert all(A.is_legal_action_py(state, int(i)) for i in ids[:count])
+    assert A.enumerate_policy_actions_py(state, ids) <= count
+    if not A.has_exact_amounts(phase):
+        assert not A.is_legal_action_py(state, K.PHASE_ACTION_SIZES[phase])  # beyond the phase: illegal
     assert not A.is_legal_action_py(state, -1)
 
 

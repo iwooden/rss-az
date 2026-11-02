@@ -27,7 +27,7 @@ require 'logger'
 
 module G1889Extract
   ROOT = File.expand_path('../../..', __dir__)
-  SCHEMA_VERSION = 6
+  SCHEMA_VERSION = 7
   TITLE = '1889'
 
   module_function
@@ -156,6 +156,7 @@ module G1889Extract
         'auction' => auction_snapshot,
         'stock' => stock_snapshot,
         'operating' => operating_snapshot,
+        'abilities' => abilities_snapshot,
         'round_state' => round_state_snapshot,
       }
     end
@@ -334,7 +335,90 @@ module G1889Extract
         'trains' => train_info(round),
         'crowded' => round.active_step.is_a?(Engine::Step::DiscardTrain) ? crowded_names : nil,
         'auto_router' => round.active_step.is_a?(Engine::Step::Route) ? auto_router_info(round.current_operator) : nil,
+        'companies' => companies_info(round),
+        'er_bonus' => er_bonus_info(round),
       }.merge(network_snapshot(round))
+    end
+
+    # ------------------------------------------------------------- privates
+
+    # What BuyCompany offers the operator, whatever step Ruby stops at: the
+    # non-blocking step's action types (can_buy_company?: phases 3-4, a
+    # purchasable company, the cheapest minimum within the treasury), and
+    # each company purchasable_companies and company_sellable admit, as
+    # [company, min_price, max_price]. Ruby checks the price against the
+    # treasury only when the corporation pays (spend), so the consumer does.
+    def companies_info(round)
+      corp = round.current_operator
+      step = round.steps.find { |s| s.is_a?(Engine::Step::BuyCompany) }
+      return nil unless corp && step
+
+      companies = @game.purchasable_companies(corp).select { |c| @game.company_sellable(c) }
+      { 'actions' => step.actions(corp), 'companies' => companies.map { |c| [c.sym, c.min_price, c.max_price(corp)] } }
+    end
+
+    # While SpecialTrack blocks for ER just sold to a corporation
+    # (TrackLayWhenCompanySold), the step Ruby resumes after it (the first
+    # other blocking step) and ER's legal lays.
+    def er_bonus_info(round)
+      step = round.active_step
+      return nil unless step.is_a?(Engine::Step::SpecialTrack) && (company = step.company)
+
+      log_size = @game.log.size
+      resume = round.steps.find { |s| s != step && s.active? && s.blocking? }
+      { 'resume' => step_name(resume), 'lays' => special_lays(step, company, round.company_sellers[company]) }
+    ensure
+      @game.log.slice!(log_size..) if log_size
+    end
+
+    # What the players' abilities offer now, whoever's turn it is (schema 7):
+    # MF's port lays while SpecialTrack would take its lay_tile (its time
+    # windows: the SR, the Track step of a corporation its owner is
+    # president of, before a corporation's turn has acted), and whether DR's
+    # owner may exchange it (Exchange#can_exchange?). Each is nil when the
+    # private is closed, has no player owner, or the round has no such step.
+    def abilities_snapshot
+      round = @game.round
+      { 'port' => port_info(round), 'exchange' => exchange_info(round) }
+    end
+
+    def port_info(round)
+      mf = @game.company_by_id('MF')
+      step = round.steps.find { |s| s.is_a?(Engine::Step::SpecialTrack) }
+      return nil unless step && mf && !mf.closed? && mf.owner&.player? && !step.company && step.abilities(mf)
+
+      log_size = @game.log.size
+      special_lays(step, mf, mf.owner)
+    ensure
+      @game.log.slice!(log_size..) if log_size
+    end
+
+    def exchange_info(round)
+      dr = @game.company_by_id('DR')
+      step = round.steps.find { |s| s.is_a?(Engine::Step::Exchange) }
+      return nil unless step && dr && !dr.closed? && dr.owner&.player? && @game.abilities(dr, :exchange)
+
+      # can_gain? reads the owner's holdings through a default-proc hash; drop the keys it adds.
+      held = dr.owner.shares_by_corporation
+      keys = held.keys
+      ok = step.can_exchange?(dr)
+      (held.keys - keys).each { |k| held.delete(k) if held[k].empty? }
+      ok
+    end
+
+    # Every lay SpecialTrack offers the company, as [hex, tile, rotation,
+    # cost]: the hexes available_hex accepts, and upgradeable_tiles there with
+    # each legal rotation as Ruby numbers it. cost is upgrade_cost, which the
+    # spender pays.
+    def special_lays(step, company, spender)
+      @game.hexes.flat_map do |hex|
+        next [] unless step.available_hex(company, hex)
+
+        cost = @game.upgrade_cost(hex.tile, hex, company, spender)
+        step.upgradeable_tiles(company, hex).flat_map do |tile|
+          tile.legal_rotations.map { |rotation| [hex.id, tile.name, rotation, cost] }
+        end
+      end
     end
 
     # At a BuyTrain snapshot, what the operator's BuyTrain step offers it,

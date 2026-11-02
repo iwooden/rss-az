@@ -39,11 +39,20 @@ PASS = None
 def _game(label: str, num_players: int, moves: list[tuple]) -> dict:
     """A 1889 game JSON. ``moves`` are ``(actor, PASS)`` for a player seat or a
     corp symbol, ``(seat, private, price)`` bids, ``(seat, 'par', corp, price)``,
-    ``(seat, 'buy', share id)``, and ``(seat, 'sell', share ids, percent)``."""
+    ``(seat, 'buy', share id)``, ``(seat, 'sell', share ids, percent)``, and
+    for a private, ``('DR', 'exchange', share id)`` and ``('MF', 'lay', hex,
+    tile id, rotation)``."""
     ids = [101 + i for i in range(num_players)]
     actions = []
     for i, (actor, kind, *args) in enumerate(moves, 1):
-        if isinstance(actor, str):
+        if kind == 'exchange':
+            action = {'type': 'buy_shares', 'entity': actor, 'entity_type': 'company', 'shares': args,
+                      'percent': 10}
+        elif kind == 'lay':
+            hex_id, tile, rotation = args
+            action = {'type': 'lay_tile', 'entity': actor, 'entity_type': 'company', 'hex': hex_id, 'tile': tile,
+                      'rotation': rotation}
+        elif isinstance(actor, str):
             action = {'type': 'pass', 'entity': actor, 'entity_type': 'corporation'}
         else:
             action = {'entity': ids[actor], 'entity_type': 'player'}

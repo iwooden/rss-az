@@ -7,7 +7,8 @@ and each corp with a token is checked against the extract's
 ``check_track_restrictions!`` run per candidate. The oracles ignore whose turn
 it is, so every corp is checked, not only the operating one; at Track and
 Token snapshots the operating corp's TRACK, TILE, and TOKEN ids are checked
-too, and at BuyTrain snapshots ``must_buy_train`` (``operating.must_buy``).
+too (but the privates' slots), and at BuyTrain snapshots ``must_buy_train``
+(``operating.must_buy``).
 They all agree exactly: the engine replays Ruby's walk step for step
 (``g1889/entities/graph.pyx``). Random maps, denser in junctions and loops
 than the fixtures, check GRAPH against Ruby's ``Graph`` as well.
@@ -54,8 +55,13 @@ def _graph_differences(state, c: int, ruby: dict) -> list[str]:
 
 
 def _ids(state) -> list[int]:
+    """The legal ids but the privates' interjection slots, which
+    ``test_private_oracles.py`` checks."""
     ids = np.zeros(K.MAX_ACTION_SIZE, dtype=np.uint16)
-    return [int(i) for i in ids[:A.enumerate_legal_actions_py(state, ids)]]
+    phase = A.get_decision_phase_py(state)
+    return [int(i) for i in ids[:A.enumerate_legal_actions_py(state, ids)]
+            if A.decode_action_py(phase, int(i)).type not in (A.ACTION_BUY_PRIVATE, A.ACTION_DR_EXCHANGE,
+                                                               A.ACTION_MF_PORT)]
 
 
 def _or_snapshots(fixture):

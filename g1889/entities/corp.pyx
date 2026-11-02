@@ -247,6 +247,26 @@ cdef class Corporation:
         self.set_president(state, corp_successor(state, corp))
         self.float_if_ready(state)
 
+    cpdef void exchange_share(self, GameState state, int player):
+        """``player`` takes a share from the IPO free, for a private (DR's
+        exchange: ``SharePool#buy_shares`` with ``exchange``). The corp need
+        not be parred, as Ruby's ``available_share`` takes any share but the
+        President's Certificate: an unparred corp's share has no price, and
+        nobody becomes president, as no holder has the certificate's two
+        shares. Once parred, a holder of more than the president takes the
+        presidency, and the corp floats once half its shares have left the IPO,
+        mid-OR too; the OR's order is fixed, so it operates from the next OR."""
+        cdef int corp = self.corp_id
+        cdef bint parred = corp_par_index(state, corp) >= 0
+        cdef Player holder = <Player>PLAYERS[player]
+        assert corp_ipo_shares(state, corp) > (0 if parred else <int>PRESIDENT_SHARES), \
+            f"no {self.sym} share in the IPO to exchange"
+        self.set_ipo_shares(state, corp_ipo_shares(state, corp) - 1)
+        holder.set_shares(state, corp, player_shares(state, player, corp) + 1)
+        if parred:
+            self.set_president(state, corp_successor(state, corp))
+            self.float_if_ready(state)
+
     cpdef void sell_shares(self, GameState state, int player, int count):
         """``player`` sells ``count`` shares to the pool at the market price, paid
         by the bank. The presidency passes if the sale leaves another player

@@ -60,6 +60,11 @@ cdef int turn_pending_train_source(GameState state) noexcept nogil:
     return _get(state, GLOBALS.pending_train_source)
 
 
+cdef int turn_pending_seller(GameState state) noexcept nogil:
+    """ER_BONUS's actor: the player who sold ER, or -1."""
+    return _get(state, GLOBALS.pending_seller)
+
+
 cdef int turn_return_step(GameState state) noexcept nogil:
     return _get(state, GLOBALS.return_step)
 
@@ -280,7 +285,7 @@ cdef class TurnState:
         _set(state, GLOBALS.pending_train_source, value)
 
     cpdef int pending_seller(self, GameState state):
-        return _get(state, GLOBALS.pending_seller)
+        return turn_pending_seller(state)
 
     cpdef void set_pending_seller(self, GameState state, int value):
         _check(value, -1, turn_num_players(state), 'pending_seller')

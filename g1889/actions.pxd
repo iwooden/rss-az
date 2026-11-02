@@ -11,11 +11,8 @@ There are three id sets:
   PRIVATE_PRICE: legal by range check, never enumerated, and at or above the
   phase size, so they have no unified policy slot.
 
-The enumerators and ``is_legal_action`` raise NotImplementedError for phases
-whose sub-step (§11) has not landed, and in states whose own moves need one
-(DIVIDEND on revenue; BUY_TRAIN with trains outside the depot, or a must-buy
-the treasury cannot fund). Until 6.8 the OR decisions lack only the
-buy-private, DR, and MF slots.
+The BUY_TRAIN enumerator raises NotImplementedError at a must-buy the
+treasury cannot fund, whose emergency money lands with 6.8b (§11).
 """
 
 cimport numpy as cnp
@@ -88,6 +85,13 @@ cdef bint can_lay(GameState state, int corp, int hex) noexcept nogil
 cdef bint can_token(GameState state, int corp, int hex) noexcept nogil
 cdef bint must_buy_train(GameState state, int corp) noexcept nogil
 
+# Privates (§5.1, §5.3): purchases by the operating corp, DR's exchange, MF's
+# port tile (PORT's ids), and ER's lays on C4 sorted like TILE's.
+cdef bint can_buy_private(GameState state, int corp, int private) noexcept nogil
+cdef bint can_exchange_dr(GameState state, int player) noexcept nogil
+cdef int port_lays(GameState state, uint16_t* ids) noexcept nogil
+cdef int er_candidates(GameState state, LayCandidate* buf) noexcept nogil
+
 cpdef bint has_exact_amounts(int phase)
 cpdef object decode_action_py(int phase, int action_id)
 cpdef int encode_action_py(object info) except -1
@@ -100,3 +104,7 @@ cpdef list lay_candidates_py(GameState state, int hex, int corp=*)
 cpdef list lay_hexes_py(GameState state, int corp=*)
 cpdef list token_hexes_py(GameState state, int corp=*)
 cpdef bint must_buy_train_py(GameState state, int corp=*)
+cpdef list purchasable_privates_py(GameState state, int corp=*)
+cpdef bint can_exchange_dr_py(GameState state, int player)
+cpdef list port_lays_py(GameState state)
+cpdef list er_candidates_py(GameState state)

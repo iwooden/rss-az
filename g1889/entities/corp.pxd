@@ -63,6 +63,7 @@ cdef class Corporation:
     cpdef int par_price(self, GameState state)
     cpdef void par(self, GameState state, int player, int par_index)
     cpdef void buy_share(self, GameState state, int player, bint from_pool)
+    cpdef void exchange_share(self, GameState state, int player)
     cpdef void sell_shares(self, GameState state, int player, int count)
     cpdef bint float_if_ready(self, GameState state)
     cpdef int max_sale(self, GameState state, int player)

@@ -13,7 +13,9 @@ certificate or 60% limit, so those are checked too.
 The first SR sells nothing, so a second one follows from the state at its
 end, opened by hand: sales, presidency changes, and must-sell turns. Uniform
 play would rarely see everyone pass in succession once sales refill cash, so
-it passes half the time it may.
+it passes half the time it may. Both SRs also exchange DR and lay MF's port
+tile on their owners' turns. At two players the auction leaves so little
+cash that few players hold a share they may sell, hence 80 seeds.
 """
 
 import numpy as np
@@ -31,7 +33,7 @@ from tests.g1889.phases.conftest import (
     apply_and_verify, enter_stock_round, exact_id, legal_ids, new_game, policy_ids,
 )
 
-SEEDS = range(40)
+SEEDS = range(80)
 MAX_DECISIONS = 3000
 EXACT_SHARE = 0.25                 # of BID and RAISE decisions, with the flags off
 UNCAPPED_PAYOUTS = 3               # payout rounds before the flags-off player turns the cap on
@@ -97,12 +99,12 @@ def _must_sell_offers_only_sales(state):
 @pytest.mark.parametrize('flags', [False, True], ids=['flags_off', 'flags_on'])
 @pytest.mark.parametrize('num_players', range(D.MIN_PLAYERS, D.MAX_PLAYERS + 1))
 def test_random_play_reaches_the_first_or(num_players, flags):
-    second_sr = []
+    first_sr, second_sr = [], []
     for seed in SEEDS:
         rng = np.random.default_rng(seed)
         state = new_game(num_players, max_players=D.MAX_PLAYERS if seed % 2 else 0, seed=seed, priority_player=-1,
                          auction_pass_payout_cap=1 if flags else 0, same_president=flags)
-        _play(state, rng, flags, f'seed {seed}', check=_first_sr_limits)
+        first_sr += _play(state, rng, flags, f'seed {seed}', check=_first_sr_limits)
         assert (TURN.round(state), TURN.step(state)) == (K.ROUND_OPERATING, K.STEP_OR_START)
         assert TURN.or_count(state) == D.PHASE_ORS[0]
         # A second SR from here, with sales.
@@ -110,3 +112,5 @@ def test_random_play_reaches_the_first_or(num_players, flags):
         second_sr += _play(state, rng, flags, f'seed {seed}, SR 2', SECOND_SR_PASS, check=_must_sell_offers_only_sales)
     kinds = {A.decode_action_py(phase, i).type for phase, i in second_sr if phase == K.DPHASE_STOCK}
     assert A.ACTION_SELL in kinds  # the second SRs did sell
+    kinds |= {A.decode_action_py(phase, i).type for phase, i in first_sr if phase == K.DPHASE_STOCK}
+    assert A.ACTION_DR_EXCHANGE in kinds and A.ACTION_MF_PORT in kinds

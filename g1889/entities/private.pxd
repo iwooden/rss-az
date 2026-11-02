@@ -1,9 +1,15 @@
-"""PRIVATES: the private blocks (owner code and flags), and the auction's
-queries over the players' bids on each private."""
+"""PRIVATES: the private blocks (owner code and flags), the auction's
+queries over the players' bids on each private, and the sales to corps and
+DR's exchange."""
 
 from g1889.state cimport GameState
 
+# Bits of a private's ``flags``.
+cpdef enum PrivateFlag:
+    MF_PORT_USED = 1                # MF's port tile is laid (its ability is used up)
+
 cdef int private_owner(GameState state, int private) noexcept nogil
+cdef int private_flags(GameState state, int private) noexcept nogil
 cdef int private_revenue(GameState state, int private) noexcept nogil
 cdef bint private_blocks_hex(GameState state, int hex) noexcept nogil
 
@@ -34,6 +40,10 @@ cdef class Private:
     cpdef int lowest_bidder(self, GameState state)
     cpdef int min_bid(self, GameState state)
     cpdef void sell_to_player(self, GameState state, int player, int price)
+
+    # Operating rounds (phases 3-4) and DR's exchange
+    cpdef void sell_to_corp(self, GameState state, int corp, int price)
+    cpdef void exchange(self, GameState state)
 
 
 cpdef int topmost(GameState state)

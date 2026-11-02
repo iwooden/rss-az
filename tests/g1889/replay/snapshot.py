@@ -47,18 +47,24 @@ and BUY_TRAIN's legal choices against Ruby's BuyTrain step
 crowded corps in Ruby's order (``operating.crowded``), the first of which is
 Ruby's current entity there; and at a Route snapshot the route solver's
 maximum against AutoRouter's (``operating.auto_router``;
-``test_route_oracles.py`` checks the routes).
+``test_route_oracles.py`` checks the routes). With an operator it checks the
+privates the corp may buy (``operating.companies``, ``ruby_private_buys``),
+and at ER's SpecialTrack step ER_BONUS's lays (``operating.er_bonus``). In
+an SR or OR it checks MF's port lays while Ruby's ability is usable
+(``abilities.port``) and whether DR's owner may exchange it
+(``abilities.exchange``), whoever's turn it is; ``test_private_oracles.py``
+checks which of them the turn's decisions offer.
 
 Not compared, because the engine does not model them (or not yet): player
-``value`` and the game ``result`` (``final_scores``, 6.8); a corporation's
+``value`` and the game ``result`` (``final_scores``, 6.8b); a corporation's
 ``train_ids``, ``operated``, ``last_dividend``, and ``closed`` (1889
-corporations never close); private abilities other than MF's port lay (6.8);
-the SR's ``bought_from_ipo`` (Ruby uses it only for multiple buys, which 1889
-lacks), ``last_to_act`` (the engine's ``priority_player`` follows it, and
-``game.priority`` is compared), and ``pass_order`` (only the ``passed`` flags
-matter: 1889 orders the next SR after the last to act);
-``ebuy_last_share_price`` (6.8); and ``round_state``, which is diagnostics
-only.
+corporations never close); private abilities other than MF's port lay (the
+others follow the owner and the phase); the SR's ``bought_from_ipo`` (Ruby
+uses it only for multiple buys, which 1889 lacks), ``last_to_act`` (the
+engine's ``priority_player`` follows it, and ``game.priority`` is compared),
+and ``pass_order`` (only the ``passed`` flags matter: 1889 orders the next SR
+after the last to act); ``ebuy_last_share_price`` (6.8b); and
+``round_state``, which is diagnostics only.
 """
 
 from __future__ import annotations
@@ -187,6 +193,7 @@ def compare(state: GameState, snap: Snapshot) -> list[str]:
     _compare_privates(state, snap, ids, check)
     _compare_map(state, snap, check)
     _compare_rounds(state, snap, ids, check)
+    _compare_abilities(state, snap['abilities'], check)
     return out
 
 
@@ -347,7 +354,53 @@ def _compare_rounds(state, snap, ids, check) -> None:
                   operating['crowded'])
         if operating['auto_router'] is not None and corp >= 0:
             check('operating.auto_router.revenue', max_route_revenue(state, corp), operating['auto_router']['revenue'])
+        if operating['companies'] is not None and corp >= 0:
+            check('operating.companies', engine_private_buys(state, corp),
+                  ruby_private_buys(operating['companies'], CORPS[corp].cash(state)))
+        if operating['er_bonus'] is not None and TURN.step(state) == K.STEP_ER_BONUS:
+            lays = operating['er_bonus']['lays']
+            check('operating.er_bonus.lays', engine_er_lays(state), ruby_special_lays(lays))
+            check('operating.er_bonus.cost', sorted({cost for *_, cost in lays}), [0] if lays else [])
         _compare_network(state, operating, check)
+
+
+def ruby_private_buys(companies: dict, cash: int) -> list[str]:
+    """The privates Ruby's BuyCompany lets the operator buy from its treasury:
+    none unless the step offers ``buy_company``, else each whose price range
+    holds a price within the cash."""
+    if 'buy_company' not in companies['actions']:
+        return []
+    return sorted((sym for sym, low, high in companies['companies'] if low <= min(high, cash)), key=PRIVATE.__getitem__)
+
+
+def engine_private_buys(state: GameState, corp: int) -> list[str]:
+    return [D.PRIVATE_SYMS[p] for p in A.purchasable_privates_py(state, corp)]
+
+
+def ruby_special_lays(lays: list) -> list[tuple[str, str, int]]:
+    """A private's lays as sorted unique (hex, tile, canonical rotation)."""
+    return sorted({(hex_id, tile, D.TILE_CANON_ROT[TILE[tile]][rotation]) for hex_id, tile, rotation, _ in lays})
+
+
+def engine_er_lays(state: GameState) -> list[tuple[str, str, int]]:
+    return sorted((D.HEX_IDS[D.ER_HEX], D.TILE_NAMES[tile], rotation) for tile, rotation in A.er_candidates_py(state))
+
+
+def engine_port_lays(state: GameState) -> list[tuple[str, str, int]]:
+    return sorted((D.HEX_IDS[h], D.TILE_NAMES[D.PORT_TILE], rotation) for h, rotation in A.port_lays_py(state))
+
+
+def _compare_abilities(state, abilities, check) -> None:
+    """MF's port lays and DR's exchange, whoever's turn it is, where Ruby's
+    ability is usable. The engine charges nothing for the port tile, as Ruby
+    charges the port hexes' terrain, which is nothing."""
+    if (port := abilities['port']) is not None:
+        check('abilities.port', engine_port_lays(state), ruby_special_lays(port))
+        check('abilities.port.cost', sorted({cost for *_, cost in port}), [0] if port else [])
+    if abilities['exchange'] is not None:
+        owner = PRIVATES[D.PRIVATE_DR].owner(state) - K.OWNER_PLAYER
+        if 0 <= owner < TURN.num_players(state):
+            check('abilities.exchange', A.can_exchange_dr_py(state, owner), abilities['exchange'])
 
 
 def _turn_purchases(current_actions: list[str]) -> tuple[bool, bool]:
@@ -395,7 +448,7 @@ def ruby_train_buys(trains: dict, cash: int) -> set[tuple[str, ...]] | None:
     type)``: the pass when offered; with ``room``, each depot or pool train at
     most the cash, and another corp's train when its range holds a price
     (``spend_minmax``: ¥1 to the cash); and each trade-in at most the cash,
-    room or not. None in an emergency, where emergency money (6.8) takes
+    room or not. None in an emergency, where emergency money (6.8b) takes
     over: the corp must buy (``sell_shares`` is offered, as the president may
     contribute) and its cash is short of every depot and pool train."""
     if 'sell_shares' in trains['actions'] and \
@@ -418,6 +471,8 @@ def engine_train_buys(state: GameState) -> set[tuple[str, ...]] | None:
     buys: set[tuple[str, ...]] = set()
     for action_id in ids[:count]:
         info = A.decode_action_py(K.DPHASE_BUY_TRAIN, int(action_id))
+        if info.type in (A.ACTION_BUY_PRIVATE, A.ACTION_DR_EXCHANGE):  # the interjection slots
+            continue
         name = D.TRAIN_NAMES[info.train_type] if info.train_type >= 0 else ''
         buys.add({A.ACTION_PASS: ('pass',), A.ACTION_BUY_DEPOT_TRAIN: ('depot', name),
                   A.ACTION_BUY_POOL_TRAIN: ('pool', name), A.ACTION_TRADE_IN: ('trade', name),
@@ -462,8 +517,9 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
     """A GameState equal to ``snap`` under ``compare``, built through the entity
     APIs. Cash starts in the bank and moves with ``BANK.transfer``; every cache
     is left dirty. ``auction_pass_payouts`` has no Ruby counterpart and loads
-    as 0. Auction, SR, OR, and finished snapshots load fully; another SR step
-    (MF's port lay) raises NotImplementedError.
+    as 0. Auction, SR, OR, and finished snapshots load fully; an SR step other
+    than BuySellParShares, which 1889 never blocks at, raises
+    NotImplementedError.
     """
     ids = [p['id'] for p in snap['players']]
     assert len(ids) == num_players, f'snapshot has {len(ids)} players, not {num_players}'
@@ -575,12 +631,17 @@ def _load_operating(state: GameState, snap: Snapshot, ids: list) -> None:
     which Ruby keeps open for MF's port tile (engine-design §10.2): it loads
     at TOKEN, where the engine stands then. A DiscardTrain snapshot returns
     to BUY_TRAIN, the only step whose purchases change the phase, and Ruby's
-    active player is the crowded corp's president."""
+    active player is the crowded corp's president. ER's SpecialTrack
+    snapshot loads at ER_BONUS, for its seller, Ruby's active player, and
+    returns to the step Ruby resumes (``operating.er_bonus.resume``)."""
     g, operating = snap['game'], snap['operating']
     TURN.set_round(state, K.ROUND_OPERATING)
     TURN.set_step(state, K.STEP_TOKEN if track_after_lay(snap) else OR_STEPS[g['step']])
     if g['step'] == 'DiscardTrain':
         TURN.set_return_step(state, K.STEP_BUY_TRAIN)
+    if g['step'] == 'SpecialTrack':
+        TURN.set_return_step(state, OR_STEPS[operating['er_bonus']['resume']])
+        TURN.set_pending_seller(state, ids.index(g['active_players'][0]))
     for i, sym in enumerate(g['round_entities']):
         TURN.set_or_order(state, i, CORP[sym])
     TURN.set_or_index(state, g['entity_index'])

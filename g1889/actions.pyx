@@ -17,21 +17,21 @@ from g1889.constants cimport (
     DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT,
     DPHASE_PRIVATE_PRICE, DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
     DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE, MAX_SALE_SHARES,
-    NUM_DECISION_PHASES, NUM_STEPS, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY, RAISE_DROP,
-    RAISE_POINT, RAISE_POINTS, STEP_TO_DECISION_PHASE, STOCK_DR, STOCK_IPO, STOCK_MF, STOCK_PAR,
-    STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR, TOKEN_HEX, TOKEN_PASS,
+    NUM_DECISION_PHASES, NUM_STEPS, OWNER_CORP, OWNER_PLAYER, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY,
+    PRIVATE_PRICE_POINTS, RAISE_DROP, RAISE_POINT, RAISE_POINTS, STEP_TO_DECISION_PHASE, STOCK_DR, STOCK_IPO,
+    STOCK_MF, STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR, TOKEN_HEX, TOKEN_PASS,
     TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS, TRAIN_PRICE_POINTS,
 )
 from g1889.data.tables cimport (
-    CERT_LIMIT, D_TRAIN, ENDPOINT_PAIRS, HEX_EXIT_MASK, HEX_NEIGHBOR, MAX_LAY_CANDIDATES, MAX_OWNERSHIP_PERCENT,
-    MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS, NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES,
-    NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE, PHASE_TILE_COLORS,
-    TILE_BLOCKS_LAY, TILE_COLOR, TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, TRAIN_PRICE, UPG_ROT,
-    UPG_START, UPG_TILE,
+    CERT_LIMIT, D_TRAIN, DR_EXCHANGE_CORP, ENDPOINT_PAIRS, ER_HEX, ER_TILE, HEX_EXIT_MASK, HEX_NEIGHBOR,
+    MAX_LAY_CANDIDATES, MAX_OWNERSHIP_PERCENT, MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS, NUM_ER_TILES,
+    NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE,
+    PHASE_CAN_BUY_PRIVATES, PHASE_TILE_COLORS, PORT_TILE, PRIVATE_DR, PRIVATE_MF, PRIVATE_VALUE, TILE_BLOCKS_LAY,
+    TILE_COLOR, TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, TRAIN_PRICE, UPG_ROT, UPG_START, UPG_TILE,
 )
 from g1889.entities.corp cimport (
-    corp_cash, corp_ipo_shares, corp_max_sale, corp_par_index, corp_par_price, corp_pool_shares, corp_president,
-    corp_token_price, corp_tokens_left,
+    PRESIDENT_SHARES, corp_cash, corp_ipo_shares, corp_max_sale, corp_par_index, corp_par_price, corp_pool_shares,
+    corp_president, corp_token_price, corp_tokens_left,
 )
 from g1889.entities.graph cimport graph_node, graph_route_available, graph_sides, graph_walks_new_track
 from g1889.entities.hexmap cimport hex_paths, hex_rotation, hex_tile, map_has_slot_for, map_lay_cost, supply_count
@@ -41,7 +41,8 @@ from g1889.entities.player cimport (
 )
 from g1889.entities.phase cimport game_phase
 from g1889.entities.private cimport (
-    private_blocks_hex, private_min_bid, private_owner, private_price, topmost_private,
+    MF_PORT_USED, private_blocks_hex, private_flags, private_min_bid, private_owner, private_price,
+    topmost_private,
 )
 from g1889.entities.trains cimport (
     corp_train_count, corp_train_total, pool_count, trade_in_price, trains_cheapest_price, trains_depot_types,
@@ -388,21 +389,27 @@ cdef inline int _bid_private(GameState state, int phase) noexcept nogil:
 
 
 cdef int price_amount(GameState state, const ActionInfo* info) noexcept nogil:
-    """The yen of a BID, RAISE, or TRAIN_PRICE decision: its exact amount, or
-    grid point ``count``."""
-    cdef int points[5]  # TRAIN_PRICE_POINTS
+    """The yen of a BID, RAISE, TRAIN_PRICE, or PRIVATE_PRICE decision: its
+    exact amount, or grid point ``count``."""
+    cdef int points[5]  # TRAIN_PRICE_POINTS; PRIVATE_PRICE_POINTS fits
     if info.type == ACTION_EXACT_PRICE:
         return info.amount
     if info.phase == DPHASE_TRAIN_PRICE:
         _train_price_points(state, points)
         return points[info.count]
+    if info.phase == DPHASE_PRIVATE_PRICE:
+        _private_price_points(state, points)
+        return points[info.count]
     return private_min_bid(state, _bid_private(state, info.phase)) + <int>MIN_BID_INCREMENT * info.count
 
 
 cdef inline bint _amount_in_range(GameState state, int phase, int amount) noexcept nogil:
-    cdef int p
+    cdef int p, low, high
     if phase == DPHASE_TRAIN_PRICE:
         return 1 <= amount <= _train_price_cash(state)
+    if phase == DPHASE_PRIVATE_PRICE:
+        _private_price_range(state, &low, &high)
+        return low <= amount <= high
     p = _bid_private(state, phase)
     return private_min_bid(state, p) <= amount <= player_available(state, turn_active_player(state), p)
 
@@ -506,7 +513,9 @@ cdef int _filter_bid(GameState state, int count) noexcept nogil:
 # over a limit with something to sell has a must-sell turn: sales only, no
 # pass. Slot 0 passes before acting and is "done" after; it is legal at every
 # other turn, so a player with nothing else to do passes through the forced
-# rule, as Ruby skips them. DR (STOCK_DR) and MF (STOCK_MF) arrive with 6.8.
+# rule, as Ruby skips them. A turn Ruby presents also offers the player's DR
+# exchange (STOCK_DR) and MF port tile (STOCK_MF), which section INTERJECTIONS
+# below has.
 
 cdef inline bint _can_buy(GameState state, int player, int corp, int price) noexcept nogil:
     """A 10% share at ``price`` (``can_buy?``): not sold this SR, affordable, and
@@ -573,6 +582,9 @@ cdef int _enumerate_stock(GameState state, uint16_t* ids) noexcept nogil:
         for n in range(_sale_limit(state, player, c)):
             ids[count] = <uint16_t>(STOCK_SELL + <int>MAX_SALE_SHARES * c + n)
             count += 1
+    if _asks(ids, count):
+        count = _append_dr(state, ids, count, STOCK_DR)
+        count = _append_mf(state, ids, count, STOCK_MF)
     return count
 
 
@@ -595,8 +607,8 @@ cdef int _enumerate_par(GameState state, uint16_t* ids) noexcept nogil:
 # Ruby's Track and Token steps (step/tracker.rb, step/tokener.rb). A lay is
 # factored (§5.4): TRACK picks a hex that has a candidate, and TILE an index
 # into the hex's candidates, the upgrade table's canonical targets that pass
-# Ruby's checks, sorted by (tile, rotation). Buying a private, DR, and MF
-# arrive with 6.8.
+# Ruby's checks, sorted by (tile, rotation). TRACK and TOKEN also take the
+# interjection slots (section INTERJECTIONS below).
 
 
 cdef uint32_t _enterable_paths(GameState state, int hex) noexcept nogil:
@@ -704,7 +716,8 @@ cdef bint can_token(GameState state, int corp, int hex) noexcept nogil:
 
 
 cdef int _enumerate_track(GameState state, uint16_t* ids) noexcept nogil:
-    """Pass, then each hex with a lay candidate."""
+    """Pass, then each hex with a lay candidate, then the interjection slots:
+    Ruby always asks at Track, whose lay costs nothing (``can_lay_tile?``)."""
     cdef int corp = turn_operating_corp(state)
     cdef int count = 1
     cdef int h
@@ -715,7 +728,9 @@ cdef int _enumerate_track(GameState state, uint16_t* ids) noexcept nogil:
         if can_lay(state, corp, h):
             ids[count] = <uint16_t>(TRACK_HEX + h)
             count += 1
-    return count
+    count = _append_private_buys(state, ids, count, TRACK_BUY_PRIVATE)
+    count = _append_dr(state, ids, count, TRACK_DR)
+    return _append_mf(state, ids, count, TRACK_MF)
 
 
 cdef int _enumerate_tile(GameState state, uint16_t* ids) noexcept nogil:
@@ -732,7 +747,8 @@ cdef int _enumerate_tile(GameState state, uint16_t* ids) noexcept nogil:
 
 
 cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
-    """Pass, then each city the corp may token."""
+    """Pass, then each city the corp may token; with one, Ruby asks, and the
+    interjection slots follow."""
     cdef int corp = turn_operating_corp(state)
     cdef int count = 1
     cdef int h
@@ -743,6 +759,9 @@ cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
         if can_token(state, corp, h):
             ids[count] = <uint16_t>(TOKEN_HEX + h)
             count += 1
+    if _asks(ids, count):
+        count = _append_private_buys(state, ids, count, TOKEN_BUY_PRIVATE)
+        count = _append_dr(state, ids, count, TOKEN_DR)
     return count
 
 
@@ -756,9 +775,9 @@ cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
 # so DIVIDEND then offers only that, and the driver applies it. BUY_TRAIN
 # buys one train at a time until the corp passes; a buy from another corp
 # names its price in TRAIN_PRICE. A must-buy the treasury cannot fund needs
-# emergency money (6.8), and BUY_TRAIN raises there rather than offer an
-# incomplete set. Buying a private, DR, and MF, which the OR decisions lack
-# until 6.8, are the exception: BUY_PRIVATE offers only "done".
+# emergency money (6.8b), and BUY_TRAIN raises there rather than offer an
+# incomplete set. Each of these decisions Ruby asks also takes the
+# interjection slots (section INTERJECTIONS below).
 
 
 cdef bint must_buy_train(GameState state, int corp) noexcept nogil:
@@ -771,12 +790,15 @@ cdef bint must_buy_train(GameState state, int corp) noexcept nogil:
 
 
 cdef int _enumerate_dividend(GameState state, uint16_t* ids) noexcept nogil:
-    """Withhold, then pay out when there is revenue (1889 has no half pay)."""
+    """Withhold, then pay out when there is revenue (1889 has no half pay),
+    where Ruby asks, and the interjection slots."""
+    cdef int count
     ids[0] = DIVIDEND_WITHHOLD
     if turn_route_revenue(state) == 0:
         return 1
     ids[1] = DIVIDEND_PAYOUT
-    return 2
+    count = _append_private_buys(state, ids, 2, DIVIDEND_BUY_PRIVATE)
+    return _append_dr(state, ids, count, DIVIDEND_DR)
 
 
 cdef int _enumerate_buy_train(GameState state, uint16_t* ids) except -1 nogil:
@@ -788,17 +810,28 @@ cdef int _enumerate_buy_train(GameState state, uint16_t* ids) except -1 nogil:
     priced in TRAIN_PRICE (``spend_minmax``: ¥1 to the treasury). Ruby's
     ``buy_train_action`` checks no room, but at the limit its BuyTrain step
     opens only for a trade-in (``can_buy_train?``), and the UI then offers
-    only that. A must-buy whose
-    treasury is short of the cheapest depot or pool train raises: the
+    only that. Where Ruby asks, the interjection slots follow. A must-buy
+    whose treasury is short of the cheapest depot or pool train raises: the
     president's money, share sales, and the buys from other corps that go
-    with them are emergency money (6.8)."""
+    with them are emergency money (6.8b), and Ruby's BuyCompany then still
+    offers privates."""
     cdef int corp = turn_operating_corp(state)
-    cdef int count = 0
-    cdef int cash, types, t, c, i
-    cdef bint room
+    cdef int count
     if corp < 0:
         ids[0] = BUY_TRAIN_PASS
         return 1
+    count = _buy_train_base(state, corp, ids)
+    if _asks(ids, count):
+        count = _append_private_buys(state, ids, count, BUY_TRAIN_BUY_PRIVATE)
+        count = _append_dr(state, ids, count, BUY_TRAIN_DR)
+    return count
+
+
+cdef int _buy_train_base(GameState state, int corp, uint16_t* ids) except -1 nogil:
+    """BUY_TRAIN's own choices: the pass and the trains (``_enumerate_buy_train``)."""
+    cdef int count = 0
+    cdef int cash, types, t, c, i
+    cdef bint room
     cash = corp_cash(state, corp)
     if not must_buy_train(state, corp):
         ids[count] = BUY_TRAIN_PASS
@@ -831,6 +864,23 @@ cdef int _enumerate_buy_train(GameState state, uint16_t* ids) except -1 nogil:
                     ids[count] = <uint16_t>(BUY_TRAIN_CORP + <int>NUM_TRAIN_TYPES * c + t)
                     count += 1
     return count
+
+
+cdef int _filter_private_buys(GameState state, uint16_t* ids, int count, int first) noexcept nogil:
+    """``private_sale_same_president`` (§7): the corp buys only privates its
+    own president owns (slots ``first`` + p)."""
+    cdef int owner, i, id_
+    cdef int kept = 0
+    if not state.private_sale_same_president:
+        return count
+    owner = <int>OWNER_PLAYER + corp_president(state, turn_operating_corp(state))
+    for i in range(count):
+        id_ = ids[i]
+        if first <= id_ < first + <int>NUM_PRIVATES and private_owner(state, id_ - first) != owner:
+            continue
+        ids[kept] = ids[i]
+        kept += 1
+    return kept
 
 
 cdef int _filter_buy_train(GameState state, uint16_t* ids, int count) noexcept nogil:
@@ -905,6 +955,232 @@ cdef int _enumerate_discard(GameState state, uint16_t* ids) noexcept nogil:
     return count
 
 
+# =============================================================================
+# INTERJECTIONS: BUY_PRIVATE, PRIVATE_PRICE, ER_BONUS, PORT, DR
+# =============================================================================
+#
+# Ruby's BuyCompany, Exchange, and SpecialTrack steps are non-blocking: their
+# actions join whatever step Ruby stops at (``Round::Base#actions_for``), and
+# Ruby skips a blocking step with nothing to do (``skip_steps``). So the
+# interjection slots (§5.1) join the top-level decisions Ruby asks: TRACK
+# always (its lay costs nothing, ``can_lay_tile?``), and any other whose own
+# actions hold one beyond slot 0 (``_asks``). A decision with nothing else is
+# Ruby's skipped step, which the forced rule applies, so the engine stops
+# wherever Ruby does and nowhere else.
+#
+# - Buy private p (phases 3-4, the operating corp's treasury): PRIVATE_PRICE
+#   names the price, then ER_BONUS follows a sale of ER, and the step resumes
+#   (``return_step``). BUY_PRIVATE is Ruby's blocking BuyCompany after
+#   BuyTrain: its own buys, and "done".
+# - DR: the active player exchanges DR for an IR share in place.
+# - MF: PORT lays the port tile, then the step resumes. Ruby allows it at the
+#   owner's SR turn and in an OR at the Track step of a corp the owner is
+#   president of, or before any corp's turn has acted; the engine offers the
+#   owner's own turns only (§12 item 4), at STOCK and at TRACK before the lay.
+#   Ruby keeps Track open after the lay for it (§10.2), which the engine
+#   does not offer.
+#
+# Every 1889 private and its abilities are open in phases 2-4 only, so none
+# of this reaches phase 5.
+
+
+cdef inline bint _asks(const uint16_t* ids, int count) noexcept nogil:
+    """Whether Ruby asks the player at this decision: its own actions hold one
+    beyond slot 0 (the pass, done, or withhold)."""
+    return count > 1 or (count == 1 and ids[0] != 0)
+
+
+cdef inline int _private_price_low(int private) noexcept nogil:
+    """``Company#min_price``: half the face value, rounded up."""
+    return (PRIVATE_VALUE[private] + 1) // 2
+
+
+cdef bint can_buy_private(GameState state, int corp, int private) noexcept nogil:
+    """Whether ``corp`` may buy ``private`` now (``BuyCompany#can_buy_company?``
+    and ``buy_company``): in phases 3-4 (``can_buy_companies``), from a player
+    (``purchasable_companies``; ``company_sellable`` keeps a corp's), for at
+    least ⌈face/2⌉ (``min_price``) from its treasury. 1889 has no ``no_buy``
+    private outside the beginner game, and Ruby checks no consent."""
+    cdef int owner = private_owner(state, private)
+    return (PHASE_CAN_BUY_PRIVATES[game_phase(state)] and <int>OWNER_PLAYER <= owner < <int>OWNER_CORP
+            and _private_price_low(private) <= corp_cash(state, corp))
+
+
+cdef int _append_private_buys(GameState state, uint16_t* ids, int count, int first) noexcept nogil:
+    """Append the operating corp's buy-private slots, ``first`` + p."""
+    cdef int corp = turn_operating_corp(state)
+    cdef int p
+    if corp < 0:
+        return count
+    for p in range(<int>NUM_PRIVATES):
+        if can_buy_private(state, corp, p):
+            ids[count] = <uint16_t>(first + p)
+            count += 1
+    return count
+
+
+cdef bint can_exchange_dr(GameState state, int player) noexcept nogil:
+    """Whether ``player`` may exchange DR for an IR share now
+    (``Exchange#can_exchange?``; the ability's ``when: any`` sets no time):
+    they own DR, IR's IPO holds a share besides the President's Certificate
+    (``available_share``; IR need not be parred), and the share keeps them
+    within 60% of IR outside the orange zone (``holding_ok?``). An exchange
+    skips the certificate limit (``can_gain?`` with ``exchange``): a
+    certificate goes for the one that comes."""
+    cdef int corp = <int>DR_EXCHANGE_CORP
+    if private_owner(state, <int>PRIVATE_DR) != <int>OWNER_PLAYER + player:
+        return False
+    if corp_ipo_shares(state, corp) <= (0 if corp_par_index(state, corp) >= 0 else <int>PRESIDENT_SHARES):
+        return False
+    return market_unlimited(state, corp) or 10 * (player_shares(state, player, corp) + 1) <= <int>MAX_OWNERSHIP_PERCENT
+
+
+cdef int _append_dr(GameState state, uint16_t* ids, int count, int dr_id) noexcept nogil:
+    if can_exchange_dr(state, turn_active_player(state)):
+        ids[count] = <uint16_t>dr_id
+        count += 1
+    return count
+
+
+cdef int port_lays(GameState state, uint16_t* ids) noexcept nogil:
+    """PORT's ids, ``NUM_SIDES·i + rotation``, or with ``ids`` NULL their count:
+    while a player owns MF and its one lay is unused, the port tile, in supply,
+    on each port hex it upgrades (only an empty port town: the tile is yellow)
+    at each canonical rotation whose exits stay on open sides (Ruby's
+    SpecialTrack: ``potential_tiles``, ``legal_tile_rotation?`` with every
+    neighbor reachable, as the ability needs no route; the port hexes cost
+    nothing, and ``check_track_restrictions!`` binds only operators)."""
+    cdef int owner = private_owner(state, <int>PRIVATE_MF)
+    cdef int count = 0
+    cdef int i, j, h, k, rotation
+    if (not (<int>OWNER_PLAYER <= owner < <int>OWNER_CORP) or private_flags(state, <int>PRIVATE_MF) & <int>MF_PORT_USED
+            or supply_count(state, <int>PORT_TILE) <= 0
+            or not (PHASE_TILE_COLORS[game_phase(state)] >> TILE_COLOR[<int>PORT_TILE] & 1)):
+        return 0
+    for i in range(<int>NUM_PORTS):
+        h = MF_PORT_HEX[i]
+        k = hex_tile(state, h) * <int>NUM_SIDES + hex_rotation(state, h)
+        for j in range(UPG_START[k], UPG_START[k + 1]):
+            rotation = UPG_ROT[j]
+            if UPG_TILE[j] != <int>PORT_TILE or TILE_EXITS[<int>PORT_TILE][rotation] & ~HEX_EXIT_MASK[h]:
+                continue
+            if ids != NULL:
+                ids[count] = <uint16_t>(PORT_LAY + <int>NUM_SIDES * i + rotation)
+            count += 1
+    return count
+
+
+cdef int _append_mf(GameState state, uint16_t* ids, int count, int mf_id) noexcept nogil:
+    """The MF slot, for MF's owner when PORT has a lay."""
+    if (private_owner(state, <int>PRIVATE_MF) == <int>OWNER_PLAYER + turn_active_player(state)
+            and port_lays(state, NULL)):
+        ids[count] = <uint16_t>mf_id
+        count += 1
+    return count
+
+
+cdef int er_candidates(GameState state, LayCandidate* buf) noexcept nogil:
+    """ER_BONUS's lays on C4, sorted like TILE's by (tile, rotation): the
+    upgrade table's targets of C4's tile among ER's green city tiles
+    (``ER_TILE``), in supply, of a phase color, with exits on open sides
+    (Ruby's SpecialTrack for ER's ``sold`` ability: ``potential_tiles``,
+    ``legal_tile_rotation?`` with every neighbor reachable, as the ability
+    needs no route). A private's lay skips ``upgrades_to?``'s label and city
+    checks, which no ER tile needs, and ``check_track_restrictions!``, which
+    binds only operators. C4 costs nothing to lay on."""
+    cdef int h = <int>ER_HEX
+    cdef int k = hex_tile(state, h) * <int>NUM_SIDES + hex_rotation(state, h)
+    cdef int colors = PHASE_TILE_COLORS[game_phase(state)]
+    cdef int count = 0
+    cdef int i, j, tile, rotation
+    cdef bint listed
+    for i in range(UPG_START[k], UPG_START[k + 1]):
+        tile = UPG_TILE[i]
+        rotation = UPG_ROT[i]
+        listed = False
+        for j in range(<int>NUM_ER_TILES):
+            listed = listed or ER_TILE[j] == tile
+        if (not listed or supply_count(state, tile) <= 0 or not (colors >> TILE_COLOR[tile] & 1)
+                or TILE_EXITS[tile][rotation] & ~HEX_EXIT_MASK[h]):
+            continue
+        if count == <int>MAX_LAY_CANDIDATES:
+            fprintf(stderr, b"er_candidates: more than MAX_LAY_CANDIDATES %d\n", <int>MAX_LAY_CANDIDATES)
+            abort()
+        buf[count].tile = tile
+        buf[count].rotation = rotation
+        count += 1
+    return count
+
+
+cdef int _enumerate_buy_private(GameState state, uint16_t* ids) noexcept nogil:
+    """Ruby's blocking BuyCompany: done, each private the corp may buy, and,
+    where Ruby asks, DR."""
+    cdef int count = _append_private_buys(state, ids, 1, BUY_PRIVATE_PRIVATE)
+    ids[0] = BUY_PRIVATE_DONE
+    if _asks(ids, count):
+        count = _append_dr(state, ids, count, BUY_PRIVATE_DR)
+    return count
+
+
+cdef void _private_price_range(GameState state, int* low, int* high) noexcept nogil:
+    """PRIVATE_PRICE's legal range for the pending private: ⌈face/2⌉ to
+    2·face (``Company#min_price``, ``max_price``) and the buyer's treasury
+    (``spend``); empty (``high`` < ``low``) without a pending private."""
+    cdef int p = turn_pending_private(state)
+    cdef int corp = turn_operating_corp(state)
+    if p < 0 or corp < 0:
+        low[0] = 1
+        high[0] = 0
+        return
+    low[0] = _private_price_low(p)
+    high[0] = min(2 * PRIVATE_VALUE[p], corp_cash(state, corp))
+
+
+cdef void _private_price_points(GameState state, int* points) noexcept nogil:
+    """PRIVATE_PRICE's grid (§5.2): ⌈face/2⌉, face, 1½·face, and the most
+    the corp may pay. A point outside the legal range, or equal to an earlier
+    one, is -1: not offered."""
+    cdef int p = turn_pending_private(state)
+    cdef int face = PRIVATE_VALUE[p] if p >= 0 else 0
+    cdef int low, high, k, j
+    _private_price_range(state, &low, &high)
+    points[0] = low
+    points[1] = face
+    points[2] = (3 * face + 1) // 2
+    points[3] = high
+    for k in range(<int>PRIVATE_PRICE_POINTS):
+        if not low <= points[k] <= high:
+            points[k] = -1
+        for j in range(k):
+            if points[j] == points[k]:
+                points[k] = -1
+
+
+cdef int _enumerate_private_price(GameState state, uint16_t* ids) noexcept nogil:
+    """The grid points offered."""
+    cdef int points[4]  # PRIVATE_PRICE_POINTS
+    cdef int count = 0
+    cdef int k
+    _private_price_points(state, points)
+    for k in range(<int>PRIVATE_PRICE_POINTS):
+        if points[k] > 0:
+            ids[count] = <uint16_t>k
+            count += 1
+    return count
+
+
+cdef int _enumerate_er_bonus(GameState state, uint16_t* ids) noexcept nogil:
+    """Pass, which Ruby always offers (``TrackLayWhenCompanySold``), then each
+    candidate on C4."""
+    cdef LayCandidate candidates[15]  # MAX_LAY_CANDIDATES
+    cdef int count = er_candidates(state, candidates)
+    cdef int k
+    ids[0] = ER_BONUS_PASS
+    for k in range(count):
+        ids[1 + k] = <uint16_t>(ER_BONUS_CANDIDATE + k)
+    return 1 + count
+
+
 cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -1 nogil:
     """Write the engine-legal ids of the current decision in a fixed order and
     return the count, 0 at an automated step. The buffer holds MAX_ACTION_SIZE."""
@@ -912,7 +1188,6 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
     cdef int count
     if phase < 0:
         return 0
-    # Each phase's _enumerate_<phase> joins this dispatch in its sub-step.
     if phase == DPHASE_AUCTION:
         count = _enumerate_auction(state, action_ids)
     elif phase == DPHASE_BID:
@@ -939,10 +1214,13 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
     elif phase == DPHASE_DISCARD:
         count = _enumerate_discard(state, action_ids)
     elif phase == DPHASE_BUY_PRIVATE:
-        action_ids[0] = BUY_PRIVATE_DONE
-        count = 1
-    else:
-        count = _unimplemented(phase, b"legal actions")
+        count = _enumerate_buy_private(state, action_ids)
+    elif phase == DPHASE_PRIVATE_PRICE:
+        count = _enumerate_private_price(state, action_ids)
+    elif phase == DPHASE_ER_BONUS:
+        count = _enumerate_er_bonus(state, action_ids)
+    else:  # DPHASE_PORT
+        count = port_lays(state, action_ids)
     if count > <int>MAX_ACTION_SIZE:
         fprintf(stderr, b"enumerate_legal_actions: %d ids exceed MAX_ACTION_SIZE %d\n",
                 count, <int>MAX_ACTION_SIZE)
@@ -956,19 +1234,23 @@ cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except 
     cdef int phase
     if count == 0:
         return 0
-    # Each phase's policy filter lands with its enumerator.
     phase = get_decision_phase(state)
     if phase == DPHASE_AUCTION:
         return _filter_auction(state, action_ids, count)
     if phase == DPHASE_BID:
         return _filter_bid(state, count)
+    if phase == DPHASE_TRACK:
+        return _filter_private_buys(state, action_ids, count, TRACK_BUY_PRIVATE)
+    if phase == DPHASE_TOKEN:
+        return _filter_private_buys(state, action_ids, count, TOKEN_BUY_PRIVATE)
+    if phase == DPHASE_DIVIDEND:
+        return _filter_private_buys(state, action_ids, count, DIVIDEND_BUY_PRIVATE)
     if phase == DPHASE_BUY_TRAIN:
-        return _filter_buy_train(state, action_ids, count)
-    if (phase == DPHASE_RAISE or phase == DPHASE_STOCK or phase == DPHASE_PAR or phase == DPHASE_TRACK
-            or phase == DPHASE_TILE or phase == DPHASE_TOKEN or phase == DPHASE_DIVIDEND
-            or phase == DPHASE_TRAIN_PRICE or phase == DPHASE_DISCARD or phase == DPHASE_BUY_PRIVATE):
-        return count  # no flag restricts these
-    return _unimplemented(phase, b"policy filter")
+        count = _filter_buy_train(state, action_ids, count)
+        return _filter_private_buys(state, action_ids, count, BUY_TRAIN_BUY_PRIVATE)
+    if phase == DPHASE_BUY_PRIVATE:
+        return _filter_private_buys(state, action_ids, count, BUY_PRIVATE_PRIVATE)
+    return count  # no flag restricts the others
 
 
 cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
@@ -982,10 +1264,7 @@ cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
     if action_id >= PHASE_ACTION_SIZE[phase]:
         if not _has_exact(phase) or action_id > MAX_ACTION_ID:
             return False
-        # Each amount phase's range check lands with its enumerator.
-        if phase == DPHASE_BID or phase == DPHASE_RAISE or phase == DPHASE_TRAIN_PRICE:
-            return _amount_in_range(state, phase, action_id - PHASE_ACTION_SIZE[phase])
-        return _unimplemented(phase, b"exact amounts")
+        return _amount_in_range(state, phase, action_id - PHASE_ACTION_SIZE[phase])
     count = enumerate_legal_actions(state, ids)
     for i in range(count):
         if ids[i] == action_id:
@@ -1000,12 +1279,15 @@ cdef bint has_exact(int phase) noexcept nogil:
 cdef bint wide_amount_range(GameState state, int phase) except -1 nogil:
     """Whether the current amount decision's legal range holds more than one
     amount, so exact amounts may lie beyond its grid points."""
-    cdef int p
+    cdef int p, low, high
     if phase == DPHASE_BID or phase == DPHASE_RAISE:
         p = _bid_private(state, phase)
         return player_available(state, turn_active_player(state), p) > private_min_bid(state, p)
     if phase == DPHASE_TRAIN_PRICE:
         return _train_price_cash(state) > 1
+    if phase == DPHASE_PRIVATE_PRICE:
+        _private_price_range(state, &low, &high)
+        return high > low
     return _unimplemented(phase, b"exact amounts")
 
 
@@ -1074,10 +1356,10 @@ cpdef bint is_legal_action_py(GameState state, int action_id) except -1:
 
 cpdef int price_amount_py(GameState state, int action_id) except -1:
     """The yen of ``action_id`` (a grid point or an exact amount) at the current
-    BID, RAISE, or TRAIN_PRICE decision."""
+    BID, RAISE, TRAIN_PRICE, or PRIVATE_PRICE decision."""
     cdef int phase = get_decision_phase(state)
-    assert phase == DPHASE_BID or phase == DPHASE_RAISE or phase == DPHASE_TRAIN_PRICE, \
-        f"not at a BID, RAISE, or TRAIN_PRICE decision (phase {phase})"
+    assert phase >= 0 and _has_exact(phase), \
+        f"not at a BID, RAISE, TRAIN_PRICE, or PRIVATE_PRICE decision (phase {phase})"
     _check_id(phase, action_id)
     cdef ActionInfo info = decode_action(phase, action_id)
     assert info.type != ACTION_PASS, "RAISE's drop has no amount"
@@ -1111,6 +1393,32 @@ cpdef bint must_buy_train_py(GameState state, int corp=-1):
     return must_buy_train(state, _corp_or_operating(state, corp))
 
 
+cpdef list purchasable_privates_py(GameState state, int corp=-1):
+    """The privates ``corp`` (the operating corp by default) may buy now."""
+    corp = _corp_or_operating(state, corp)
+    return [p for p in range(<int>NUM_PRIVATES) if can_buy_private(state, corp, p)]
+
+
+cpdef bint can_exchange_dr_py(GameState state, int player):
+    """Whether ``player`` may exchange DR for an IR share now, whoever's turn it is."""
+    assert 0 <= player < turn_num_players(state), f"player {player} out of range"
+    return can_exchange_dr(state, player)
+
+
+cpdef list port_lays_py(GameState state):
+    """``(hex, rotation)`` of each port tile lay MF's owner may make now, in PORT's order."""
+    cdef uint16_t ids[24]  # ACTION_SIZE_PORT
+    cdef int count = port_lays(state, ids)
+    return [(MF_PORT_HEX[ids[k] // <int>NUM_SIDES], ids[k] % <int>NUM_SIDES) for k in range(count)]
+
+
+cpdef list er_candidates_py(GameState state):
+    """``(tile, rotation)`` of each lay ER's seller may make on C4, in ER_BONUS's order."""
+    cdef LayCandidate buf[15]  # MAX_LAY_CANDIDATES
+    cdef int count = er_candidates(state, buf)
+    return [(buf[k].tile, buf[k].rotation) for k in range(count)]
+
+
 cpdef list token_hexes_py(GameState state, int corp=-1):
     """The hexes ``corp`` (the operating corp by default) may token: TOKEN's hexes."""
     corp = _corp_or_operating(state, corp)
@@ -1127,8 +1435,9 @@ del _name, _member
 # IMPORT-TIME CHECKS
 # =============================================================================
 
-# Local id and candidate buffers are sized with the literals 102 and 15.
+# Local id, candidate, and price buffers are sized with the literals 102, 15, 24, 5, and 4.
 assert <int>MAX_ACTION_SIZE == 102 and <int>MAX_LAY_CANDIDATES == 15
+assert <int>NUM_PORTS * <int>NUM_SIDES == 24 and <int>TRAIN_PRICE_POINTS == 5 and <int>PRIVATE_PRICE_POINTS == 4
 
 
 def _check_round_trip():

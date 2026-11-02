@@ -14,8 +14,9 @@ import pytest
 
 from g1889.data import load_tables
 from tests.g1889.replay.extracts import (
-    AUCTION_KEYS, AUTO_ROUTE_KEYS, AUTO_ROUTER_KEYS, CORPORATION_KEYS, FIXTURES, GAME_KEYS, HEX_KEYS, OPERATING_KEYS,
-    PLAYER_KEYS, PRE_EXTRA_KEYS, PRE_KEYS, PRE_OPTIONAL_KEYS, PRIVATE_KEYS, STATE_KEYS, STOCK_KEYS, TRAINS_KEYS,
+    ABILITY_KEYS, AUCTION_KEYS, AUTO_ROUTE_KEYS, AUTO_ROUTER_KEYS, COMPANIES_KEYS, CORPORATION_KEYS, ER_BONUS_KEYS,
+    FIXTURES, GAME_KEYS, HEX_KEYS, OPERATING_KEYS, PLAYER_KEYS, PRE_EXTRA_KEYS, PRE_KEYS, PRE_OPTIONAL_KEYS,
+    PRIVATE_KEYS, STATE_KEYS, STOCK_KEYS, TRAINS_KEYS,
     Extract, load_fixture, load_fixture_extract, load_new_game_extract,
 )
 
@@ -94,7 +95,21 @@ def check_state(state: State, num_players: int) -> None:
         assert all(source in ('depot', 'pool', *CORP_SYMS) and low <= high
                    for source, _, low, high in trains['buyable'])
     if detail == 'operating':
-        assert (state['operating']['crowded'] is not None) == (game['step'] == 'DiscardTrain')
+        operating = state['operating']
+        assert (operating['crowded'] is not None) == (game['step'] == 'DiscardTrain')
+        assert (operating['companies'] is not None) == (operating['operator'] is not None)
+        if operating['companies'] is not None:
+            assert operating['companies'].keys() == COMPANIES_KEYS
+            companies = operating['companies']['companies']
+            assert all(sym in PRIVATE_SYMS and 0 < low <= high for sym, low, high in companies)
+        assert (operating['er_bonus'] is not None) == (game['step'] == 'SpecialTrack')
+        if operating['er_bonus'] is not None:
+            assert operating['er_bonus'].keys() == ER_BONUS_KEYS
+            assert all(lay[0] == 'C4' for lay in operating['er_bonus']['lays'])
+    abilities = state['abilities']
+    assert abilities.keys() == ABILITY_KEYS
+    assert abilities['port'] is None or all(lay[1] == '437' for lay in abilities['port'])
+    assert abilities['exchange'] is None or game['round'] in ('SR', 'OR')
 
     assert (game['result'] is not None) == game['finished']
 

@@ -6,7 +6,7 @@ the extract's ``operating.trains`` (``extracts.py``): Ruby's own
 ``BuyTrain#buyable_trains``, ``spend_minmax``, ``room?``, and
 ``discountable_trains_for``, read through ``snapshot.ruby_train_buys``.
 Where Ruby's corp must buy and its treasury is short of every depot and
-pool train, the president's money and share sales take over (6.8), and the
+pool train, the president's money and share sales take over (6.8b), and the
 engine's enumerator raises there and nowhere else. At every DiscardTrain
 snapshot the crowded corps match ``operating.crowded``, and DISCARD offers
 the first one's train types.

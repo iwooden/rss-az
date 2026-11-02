@@ -230,6 +230,20 @@ Snapshot (``state``)
     None unless the active step is ``DiscardTrain``, else
     ``Game#crowded_corps`` in its order (corporation order), recomputed
     without filling its cache; Ruby's current entity there is the first.
+    ``companies`` (schema 7), None without an operator, else what
+    ``BuyCompany`` offers it, whatever step Ruby stops at: ``actions``, the
+    non-blocking step's action types (``['buy_company']`` when
+    ``can_buy_company?``: phases 3-4, and the cheapest minimum price within
+    the treasury), and ``companies``, ``[company, min_price, max_price]``
+    for each private ``purchasable_companies`` and ``company_sellable``
+    admit; Ruby checks the treasury only when the corporation pays
+    (``spend``), so the consumer does. ``er_bonus`` (schema 7), None unless
+    ``SpecialTrack`` blocks for ER just sold to a corporation
+    (``TrackLayWhenCompanySold``), else ``resume``, the step Ruby returns to
+    after it (the first other blocking step), and ``lays``, ER's legal lays
+    as ``[hex, tile, rotation, cost]`` (``available_hex``,
+    ``upgradeable_tiles`` with each legal rotation as Ruby numbers it, and
+    ``upgrade_cost``, which the seller pays).
     And three oracles (schema 3), keyed by every corporation with a placed
     token and computed on a fresh ``Graph`` so the game's own graph caches
     stay untouched:
@@ -260,6 +274,15 @@ Snapshot (``state``)
         semi-restrictive rule), which ``Game.load`` skips; the extractor runs
         it by laying the tile with ``Hex#lay`` on a fresh graph and taking it
         back up, and fails if the hex then differs.
+``abilities`` (``ABILITY_KEYS``, schema 7)
+    What the players' private abilities offer now, whoever's turn it is.
+    ``port``: MF's port lays as ``[hex, tile, rotation, cost]``, in the
+    ``lays`` form above, while ``SpecialTrack`` would take its ``lay_tile``
+    (MF open with a player owner and its ability usable: in an SR, at the
+    Track step of a corporation its owner is president of, or before a
+    corporation's turn has acted), else None. ``exchange``: whether DR's
+    owner may exchange it now (``Exchange#can_exchange?``), or None when DR
+    is closed or not a player's, or the round has no Exchange step (the ISR).
 ``round_state``
     Ruby's round state variables, converted generically. Diagnostics only:
     its keys vary with the round, so compare the fields above instead.
@@ -280,7 +303,7 @@ from typing import Any
 
 import pytest
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
@@ -293,7 +316,7 @@ TIMEOUT_SECONDS = 600
 
 STATE_KEYS = frozenset({
     'game', 'players', 'corporations', 'privates', 'hexes', 'tiles', 'depot', 'pool', 'auction', 'stock',
-    'operating', 'round_state',
+    'operating', 'abilities', 'round_state',
 })
 GAME_KEYS = frozenset({
     'phase', 'train_limit', 'tile_colors', 'round', 'round_num', 'turn', 'or_count', 'step', 'current_entity',
@@ -312,8 +335,11 @@ AUCTION_KEYS = frozenset({'companies', 'auctioning', 'min_bids'})
 STOCK_KEYS = frozenset({'sold', 'current_actions', 'bought_from_ipo', 'last_to_act', 'pass_order', 'legal'})
 OPERATING_KEYS = frozenset({
     'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'must_buy', 'trains', 'crowded',
-    'auto_router', 'graph', 'tokens', 'lays',
+    'auto_router', 'companies', 'er_bonus', 'graph', 'tokens', 'lays',
 })
+COMPANIES_KEYS = frozenset({'actions', 'companies'})
+ER_BONUS_KEYS = frozenset({'resume', 'lays'})
+ABILITY_KEYS = frozenset({'port', 'exchange'})
 TRAINS_KEYS = frozenset({'actions', 'room', 'buyable', 'exchanges'})
 AUTO_ROUTER_KEYS = frozenset({'revenue', 'routes', 'timed_out', 'candidates'})
 AUTO_ROUTE_KEYS = frozenset({'train', 'revenue', 'hexes', 'ordered_hexes'})

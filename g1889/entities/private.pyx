@@ -4,18 +4,20 @@ from libc.stdint cimport int16_t
 
 from g1889.constants cimport OWNER_CLOSED, OWNER_CORP, OWNER_NOT_IN_PLAY, OWNER_PLAYER, OWNER_UNSOLD
 from g1889.data.tables cimport (
-    HEX_BLOCKER, MIN_BID_INCREMENT, NUM_CORPS, NUM_PRIVATES, PRIVATE_REVENUE, PRIVATE_TR, PRIVATE_UTF,
-    PRIVATE_VALUE, UTF_LATE_PHASE, UTF_LATE_REVENUE,
+    DR_EXCHANGE_CORP, HEX_BLOCKER, MIN_BID_INCREMENT, NUM_CORPS, NUM_PRIVATES, PRIVATE_DR, PRIVATE_REVENUE,
+    PRIVATE_TR, PRIVATE_UTF, PRIVATE_VALUE, UTF_LATE_PHASE, UTF_LATE_REVENUE,
 )
 from g1889.entities.bank cimport BANK_ACCOUNT, Bank
+from g1889.entities.corp cimport Corporation
 from g1889.entities.player cimport Player, player_bid
 from g1889.entities.turn cimport turn_auction_discount, turn_auction_private, turn_num_players
 from g1889.state cimport GLOBALS, LAYOUT, PRIVATE_FIELDS, GameState
 
 from g1889.data.tables import PrivateId
-from g1889.entities import bank as _bank, player as _player
+from g1889.entities import bank as _bank, corp as _corp, player as _player
 
 cdef Bank BANK = _bank.BANK
+cdef list CORPS = _corp.CORPS
 cdef list PLAYERS = _player.PLAYERS
 
 
@@ -25,6 +27,10 @@ cdef inline int _slot(int private, int field) noexcept nogil:
 
 cdef int private_owner(GameState state, int private) noexcept nogil:
     return <int>state._data[_slot(private, PRIVATE_FIELDS.owner)]
+
+
+cdef int private_flags(GameState state, int private) noexcept nogil:
+    return <int>state._data[_slot(private, PRIVATE_FIELDS.flags)]
 
 
 cdef int private_revenue(GameState state, int private) noexcept nogil:
@@ -126,7 +132,7 @@ cdef class Private:
         state._data[_slot(self.private_id, PRIVATE_FIELDS.owner)] = <int16_t>owner
 
     cpdef int flags(self, GameState state):
-        return <int>state._data[_slot(self.private_id, PRIVATE_FIELDS.flags)]
+        return private_flags(state, self.private_id)
 
     cpdef void set_flags(self, GameState state, int flags):
         state._data[_slot(self.private_id, PRIVATE_FIELDS.flags)] = <int16_t>flags
@@ -171,6 +177,33 @@ cdef class Private:
         self.set_owner(state, <int>OWNER_PLAYER + player)
         for i in range(turn_num_players(state)):
             (<Player>PLAYERS[i]).set_bid(state, self.private_id, 0)
+
+
+    cpdef void sell_to_corp(self, GameState state, int corp, int price):
+        """The private's player owner sells it to ``corp`` for ``price``, paid
+        from the corp's treasury to the seller (``BuyCompany#buy_company``,
+        ``pay``). It counts no longer toward the seller's certificates
+        (``num_certs``), TR's and ER's blocks lift, since they bind only for a
+        player owner (``owner_type: player``), SMR's discount serves the corp
+        (``MAP.lay_cost``), and its revenue goes to the corp, UTF's ¥30 too:
+        UTF's ¥50 binds only for a player owner, and a corp's UTF closes at
+        phase 5 (``PHASE.advance``). A corp's private never returns to a
+        player (``company_sellable``)."""
+        cdef int owner = self.owner(state)
+        assert <int>OWNER_PLAYER <= owner < <int>OWNER_CORP, f"private {self.sym} has no player owner"
+        assert 0 <= corp < <int>NUM_CORPS and price > 0, f"sale of {self.sym} to corp {corp} for {price}"
+        BANK.transfer(state, <int>OWNER_CORP + corp, owner, price)
+        self.set_owner(state, <int>OWNER_CORP + corp)
+
+    cpdef void exchange(self, GameState state):
+        """DR's exchange (``Exchange#process_buy_shares``): its player owner
+        takes a 10% IR share from the IPO free (``Corporation.exchange_share``),
+        and DR closes. Legality (the share, the 60% limit) is the caller's."""
+        cdef int owner = self.owner(state)
+        assert self.private_id == <int>PRIVATE_DR, f"private {self.sym} has no exchange"
+        assert <int>OWNER_PLAYER <= owner < <int>OWNER_CORP, f"private {self.sym} has no player owner"
+        (<Corporation>CORPS[<int>DR_EXCHANGE_CORP]).exchange_share(state, owner - <int>OWNER_PLAYER)
+        self.close(state)
 
 
 cpdef int topmost(GameState state):

@@ -155,11 +155,11 @@ class TestTurns:
         state = at_or(3)
         hold(state, KO, {0: 6})
         enter_operating_round(state, or_count=2)
-        cash = PLAYERS[0].cash(state)
+        cash = PLAYERS[2].cash(state)  # the privates' owner
         results = pass_turn(state)
         assert steps(results)[-4:] == [K.STEP_TURN_END, K.STEP_OR_END, K.STEP_OR_START, K.STEP_TURN_START]
         assert (TURN.round(state), TURN.or_num(state), TURN.turn(state)) == (K.ROUND_OPERATING, 2, 1)
-        assert turn_of(state) == (KO, 0, 0, K.STEP_TRACK) and PLAYERS[0].cash(state) > cash  # paid again
+        assert turn_of(state) == (KO, 0, 0, K.STEP_TRACK) and PLAYERS[2].cash(state) > cash  # paid again
 
     def test_the_sets_last_or_opens_the_next_sr(self):
         """Ruby reorders the players only after an SR: priority stays, and its
@@ -177,7 +177,7 @@ class TestTurns:
 
     def test_a_broken_bank_rests_at_the_sets_end(self):
         """TEMPORARY (6.9 removes the development stop): the game ends after
-        the set's last OR (``:full_or``), which lands with 6.8."""
+        the set's last OR (``:full_or``), which lands with 6.8b."""
         state = at_or(3)
         hold(state, KO, {0: 6})
         BANK.set_broken(state)
@@ -365,8 +365,8 @@ class TestBuyTrain:
         assert TRAINS.depot_types(state) == 1 << D.TRAIN_D
 
     def test_in_phases_3_and_4_the_buy_private_window_follows(self):
-        """TEMPORARY (6.8 adds its purchases): BUY_PRIVATE offers only "done",
-        which the driver applies, so the turn ends."""
+        """BUY_PRIVATE offers each private the corp may buy, and "done" ends
+        the turn; ``test_privates.py`` covers the purchases."""
         state = at_or(3)
         PHASE.set_current(state, D.GAME_PHASE_3)
         TRAINS.set_depot(state, D.TRAIN_2, 0)  # sold out, rusted at phase 4: given away for the test
@@ -374,8 +374,10 @@ class TestBuyTrain:
         TRAINS.set_depot(state, D.TRAIN_3, D.TRAIN_COUNT[D.TRAIN_3] - 1)
         TRAINS.set_pool(state, D.TRAIN_3, 1)
         to_buy_train(state)
-        result = apply_and_verify(state, K.BUY_TRAIN_PASS)
-        assert result.forced[0] == (K.DPHASE_BUY_PRIVATE, K.BUY_PRIVATE_DONE)
+        apply_and_verify(state, K.BUY_TRAIN_PASS)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE and legal_ids(state) == [K.BUY_PRIVATE_DONE] + [
+            K.BUY_PRIVATE_PRIVATE + p for p in A.purchasable_privates_py(state)] and len(legal_ids(state)) > 1
+        result = apply_and_verify(state, K.BUY_PRIVATE_DONE)
         assert result.steps[0] == K.STEP_TURN_END and TURN.round(state) == K.ROUND_OPERATING
 
 

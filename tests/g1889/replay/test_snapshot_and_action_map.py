@@ -214,6 +214,10 @@ def _expected(kind, pre, decoded):
         return last.corp == CORP[pre['corporation']] and 10 * last.count == pre['percent']
     if kind == 'place_token':
         return last.hex == HEX[pre['hex']]
+    if kind == 'lay_tile' and decoded[0].phase == K.DPHASE_ER_BONUS:  # ER's seller, on C4
+        return pre['hex'] == 'C4' and len(decoded) == 1 and decoded[0].type == A.ACTION_LAY_CANDIDATE
+    if kind == 'lay_tile' and decoded[0].type == A.ACTION_MF_PORT:  # MF's port tile
+        return last.phase == K.DPHASE_PORT and last.hex == HEX[pre['hex']] and pre['tile'] == '437'
     if kind == 'lay_tile':
         return decoded[0].hex == HEX[pre['hex']] and last.phase == K.DPHASE_TILE
     if kind == 'discard_train':
@@ -224,16 +228,19 @@ def _expected(kind, pre, decoded):
         if decoded[0].type == A.ACTION_BUY_CORP_TRAIN:  # the price, a grid point or exact, is checked below
             return decoded[0].corp == CORP[pre['seller']] and decoded[0].train_type == TRAIN[pre['train_type']]
         return decoded[0].train_type == TRAIN[pre['train_type']]
-    if kind == 'buy_company':
-        return decoded[0].private == PRIVATE[pre['company']] and last.amount == pre['price']
+    if kind == 'buy_company':  # the price, a grid point or exact, is checked below
+        return decoded[0].private == PRIVATE[pre['company']] and last.phase == K.DPHASE_PRIVATE_PRICE
     return True
 
 
 def test_map_action_covers_the_fixtures():
     """A corp's lay maps against the state before it, where TILE's index
-    names Ruby's tile and canonical rotation among the engine's candidates."""
+    names Ruby's tile and canonical rotation among the engine's candidates;
+    so do ER's and MF's lays (ER_BONUS's candidates, PORT's hexes and
+    rotations) and a private's price (PRIVATE_PRICE's grid or exact id)."""
     scratch = GameState(3)
     mapped, unsupported, ended, grid, held = 0, {}, 0, {True: 0, False: 0}, 0
+    private_grid, privates = {True: 0, False: 0}, {'company': 0, 'corporation': 0}
     for fixture in FIXTURES:
         records = load_fixture_extract(fixture)['records']
         for before, record in zip(records, records[1:]):
@@ -244,8 +251,8 @@ def test_map_action_covers_the_fixtures():
                 state = scratch
                 if kind == 'run_routes':
                     TURN.set_route_revenue(scratch, pre['revenue'])
-                elif kind in ('lay_tile', 'buy_train', 'discard_train') and action['entity_type'] == 'corporation':
-                    state = load(before['state'])  # candidates, the buyer's cash, the discarding corp
+                elif kind in ('lay_tile', 'buy_train', 'discard_train', 'buy_company'):
+                    state = load(before['state'])  # candidates, the buyer's cash, the discarding corp, owners
                 try:
                     decisions = map_action(action, pre, _ruby_phase(pre, before['state']), state)
                 except UnsupportedAction:
@@ -264,23 +271,37 @@ def test_map_action_covers_the_fixtures():
                     continue
                 decoded = [A.decode_action_py(phase, action_id) for phase, action_id in decisions]
                 assert not decoded or _expected(kind, pre, decoded), (fixture, record['index'], kind, decoded)
-                if kind == 'lay_tile' and state is not scratch:
+                if kind == 'lay_tile':
                     tile = D.TILE_NAMES.index(pre['tile'])
                     lay = (tile, D.TILE_CANON_ROT[tile][pre['rotation']])
-                    assert A.lay_candidates_py(state, HEX[pre['hex']], CORP[action['entity']])[decoded[1].count] == lay
+                    if decoded[0].phase == K.DPHASE_ER_BONUS:
+                        assert A.er_candidates_py(state)[decoded[0].count] == lay
+                    elif decoded[0].type == A.ACTION_MF_PORT:
+                        assert (HEX[pre['hex']], lay[1]) in A.port_lays_py(state) and lay[0] == D.PORT_TILE
+                    else:
+                        candidates = A.lay_candidates_py(state, HEX[pre['hex']], CORP[action['entity']])
+                        assert candidates[decoded[1].count] == lay
+                    privates[action['entity_type']] += action['entity_type'] == 'company'
+                elif kind == 'buy_company':
+                    TURN.set_step(state, K.STEP_PRIVATE_PRICE)
+                    TURN.set_pending_private(state, decoded[0].private)
+                    assert A.price_amount_py(state, decisions[1][1]) == pre['price']
+                    private_grid[decoded[1].type == A.ACTION_PRICE_POINT] += 1
                 elif kind == 'buy_train' and decoded[0].type == A.ACTION_BUY_CORP_TRAIN:
                     TURN.set_step(state, K.STEP_TRAIN_PRICE)
                     TURN.set_pending_train_source(state, decisions[0][1] - K.BUY_TRAIN_CORP)
                     assert A.price_amount_py(state, decisions[1][1]) == pre['price']
                     grid[decoded[1].type == A.ACTION_PRICE_POINT] += 1
                 mapped += 1
-    # MF's port lay and ER's bonus lay, and the privates corps buy, are left for 6.8.
-    assert unsupported == {('lay_tile', 'company'): 2, ('buy_company', 'corporation'): 13}
-    assert (mapped, ended) == (992, 2)
+    assert unsupported == {}
+    assert (mapped, ended) == (1007, 2)
     # Corp train prices on the grid: ¥1 three times, the buyer's whole treasury
     # three times (¥360, ¥370, ¥450), and ⌈2·cash/3⌉ of ¥2 (314 record 350);
     # ¥100 twice, ¥150, and ¥165 are exact. 314 record 339's discard waits.
     assert (grid, held) == ({True: 7, False: 4}, 1)
+    # Every private sale is at twice the face value, the top grid point; MF's
+    # port tile and ER's bonus are the two lays by a private.
+    assert (private_grid, privates['company']) == ({True: 13, False: 0}, 2)
 
 
 def test_map_action_skips_and_rejects():
@@ -297,8 +318,16 @@ def test_map_action_skips_and_rejects():
         [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS)]
     with pytest.raises(UnsupportedAction, match='Dividend'):
         map_action(corp_pass, {'round': 'OR', 'step': 'Dividend'}, K.DPHASE_DIVIDEND, scratch)
-    with pytest.raises(UnsupportedAction, match='6.8'):
-        map_action({'type': 'buy_company', 'entity_type': 'corporation'}, {}, K.DPHASE_TRACK, scratch)
+    # The privates' slots join Ruby's step; the engine runs Route by itself.
+    with pytest.raises(UnsupportedAction, match='Route'):
+        map_action({'type': 'buy_company', 'entity_type': 'corporation', 'entity': 'KO'},
+                   {'round': 'OR', 'step': 'Route', 'company': 'SIR', 'price': 80}, K.DPHASE_DIVIDEND, scratch)
+    # DR and MF act only on their owner's turn (engine-design §12 item 4).
+    PRIVATES[D.PRIVATE_DR].set_owner(scratch, K.OWNER_PLAYER + 1)
+    TURN.set_active_player(scratch, 0)
+    with pytest.raises(UnsupportedAction, match='out of its owner'):
+        map_action({'type': 'buy_shares', 'entity_type': 'company', 'entity': 'DR'},
+                   {'round': 'SR', 'step': 'BuySellParShares'}, K.DPHASE_STOCK, scratch)
     # run_routes: nothing when Ruby pays the engine's revenue, else the override.
     TURN.set_route_revenue(scratch, 100)
     assert map_action({'type': 'run_routes'}, {'revenue': 100}, K.DPHASE_DIVIDEND, scratch) == []

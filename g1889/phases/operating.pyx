@@ -13,10 +13,11 @@ BuyTrain, then a blocking BuyCompany) are the oracle. An OR runs:
   president acting.
 - TRACK (with TILE for a chosen hex), TOKEN, the automated ROUTE, DIVIDEND
   (``dividend.pyx``), BUY_TRAIN with TRAIN_PRICE and DISCARD
-  (``buy_train.pyx``), and in phases 3-4 BUY_PRIVATE. Where Ruby skips a
-  step because there is nothing to choose, the engine offers one action,
-  which the driver's forced rule applies: a pass, or the withhold at zero
-  revenue.
+  (``buy_train.pyx``), and in phases 3-4 BUY_PRIVATE (``privates.pyx``,
+  with the slots that buy privates and use DR and MF at the turn's
+  decisions). Where Ruby skips a step because there is nothing to choose,
+  the engine offers one action, which the driver's forced rule applies: a
+  pass, or the withhold at zero revenue.
 - ``TURN_END`` (``next_entity!``): the next corp, or ``OR_END``.
 - ``OR_END`` (``next_round!``): the set's next OR, or else the next SR,
   with the SR number up and ``or_num`` back to 1.
@@ -29,11 +30,9 @@ Fields:
 - ``pending_hex`` is TILE's hex while TILE is open;
 - ``route_revenue`` is the turn's revenue, from ROUTE until DIVIDEND.
 
-The step implies the turn's lay and token use (engine-design.md §3). Later
-sub-steps own the rest, and the driver's development stop rests where they
-take over: BUY_PRIVATE offers only "done" until its purchases land with 6.8,
-and the game's end after a broken bank's last OR (6.8) raises
-NotImplementedError before changing anything.
+The step implies the turn's lay and token use (engine-design.md §3). The
+game's end after a broken bank's last OR (6.8b) raises NotImplementedError
+before changing anything, where the driver's development stop rests.
 """
 
 from g1889.actions cimport (
@@ -41,7 +40,7 @@ from g1889.actions cimport (
 )
 from g1889.constants cimport (
     ROUND_OPERATING, STEP_DIVIDEND, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_TILE, STEP_TOKEN, STEP_TRACK,
-    STEP_TURN_END, STEP_TURN_START,
+    STEP_TURN_START,
 )
 from g1889.data.tables cimport CORP_HOME, NUM_CORPS
 from g1889.entities.bank cimport bank_broken
@@ -115,11 +114,11 @@ cdef void run_turn_end(GameState state) except *:
 cdef void run_or_end(GameState state) except *:
     """``next_round!`` after an OR: the set's next OR, else the next SR, which
     the priority player opens (Ruby reorders the players only after an SR).
-    A broken bank ends the game after the set's last OR instead (6.8)."""
+    A broken bank ends the game after the set's last OR instead (6.8b)."""
     cdef int or_num = TURN.or_num(state)
     if or_num >= TURN.or_count(state) and bank_broken(state):
         raise NotImplementedError("1889 OR_END: the game end after the bank breaks is not implemented yet "
-                                  "(engine-design.md §11, 6.8)")
+                                  "(engine-design.md §11, 6.8b)")
     _clear_order(state)
     if or_num < TURN.or_count(state):
         TURN.set_or_num(state, or_num + 1)
@@ -168,7 +167,7 @@ cdef void apply_token(GameState state, const ActionInfo* info) except *:
 
 
 # =============================================================================
-# ROUTE, BUY_PRIVATE
+# ROUTE
 # =============================================================================
 
 cdef void run_route(GameState state) except *:
@@ -178,14 +177,6 @@ cdef void run_route(GameState state) except *:
     with ``DRIVER.override_route_revenue`` at DIVIDEND."""
     TURN.set_route_revenue(state, route_max(state, turn_operating_corp(state)))
     TURN.set_step(state, STEP_DIVIDEND)
-
-
-cdef void apply_buy_private(GameState state, const ActionInfo* info) except *:
-    """Done: the corp's turn ends. The window's purchases land with 6.8; until
-    then "done" is the one choice, which the driver applies, as Ruby skips
-    BuyCompany when the corp cannot buy."""
-    assert info.type == ACTION_PASS, f"apply_buy_private: action type {info.type}"
-    TURN.set_step(state, STEP_TURN_END)
 
 
 # =============================================================================
