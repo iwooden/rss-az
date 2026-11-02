@@ -92,6 +92,7 @@ class ReplayBuffer:
                 f"game.state_size({self._max_players}) "
                 f"({expected_state_size})"
             )
+        self._game_name = game.name
         self._unified_dim = game.policy.unified_dim
         self._num_tokens = game.num_tokens(self._max_players)
         self._num_relations = game.num_relations
@@ -433,7 +434,8 @@ class ReplayBuffer:
         """Save buffer contents to directory for later resume.
 
         Writes individual .npy files for each array (only the occupied portion)
-        plus metadata with size/index/capacity/player range/shape details.
+        plus metadata with the game and size/index/capacity/player range/shape
+        details.
         """
         if self._size == 0:
             return
@@ -459,6 +461,7 @@ class ReplayBuffer:
             np.save(directory / "priorities.npy", self._priorities)
         (directory / "metadata.json").write_text(
             json.dumps({
+                "game": self._game_name,
                 "size": self._size,
                 "index": self._index,
                 "capacity": self._capacity,
@@ -473,13 +476,20 @@ class ReplayBuffer:
     def load(self, directory: Path) -> int:
         """Load buffer contents from directory.
 
-        Returns the number of examples loaded (0 if directory missing or
-        shape mismatch).
+        Returns the number of examples loaded (0 if directory missing, another
+        game's, or shape mismatch). Metadata without a game is RSS's.
         """
         metadata_path = directory / "metadata.json"
         if not metadata_path.exists():
             return 0
         meta = json.loads(metadata_path.read_text())
+        saved_game: str = meta.get("game", "rss")
+        if saved_game != self._game_name:
+            print(
+                f"  Warning: replay buffer is from game {saved_game!r}, "
+                f"not {self._game_name!r}, skipping load"
+            )
+            return 0
         saved_capacity: int = meta["capacity"]
         saved_state_size: int = meta.get("state_size", -1)
         saved_num_players: int = meta.get("num_players", -1)

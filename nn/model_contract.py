@@ -23,6 +23,9 @@ class ModelInputSpec:
     model capacity. In mixed player-count training this is the config's
     effective maximum player count, not necessarily the actual players in a
     given state.
+
+    ``policy_dim``, ``num_tokens``, and ``token_dim`` are those of ``game``'s
+    adapter (``games.get_game``). A spec without ``game`` is RSS's.
     """
 
     model_type: str
@@ -31,9 +34,11 @@ class ModelInputSpec:
     value_dim: int
     num_tokens: int
     token_dim: int
-    # Versions 2 and 3 share token order and relation transport. V2 consumes
-    # only the original ten binary planes; v3 also uses the share-count planes.
+    # The game's token layout id. RSS versions 2 and 3 share token order and
+    # relation transport. V2 consumes only the original ten binary planes; v3
+    # also uses the share-count planes.
     layout_version: int = 2
+    game: str = "rss"
 
 
 def normalize_model_type(model_type: str) -> ModelKind:

@@ -1278,11 +1278,11 @@ would pass for a game without relations. The conformance test
 (pipeline-refactor §6.3) runs every engine check for 1889, with the
 self-play flags and with them off, and skips the extraction checks with the
 adapter's reason. Training, self-play, evaluation, and analysis reach the
-engine through the adapter since pipeline step 2, but their models are
-RSS's until step 4, so `nn.create_model` rejects a config whose game is not
-RSS: each of them builds its model there before it plays (training, with its
-self-play workers and eval servers; analysis; tournaments; live play;
-strategy data).
+engine through the adapter since pipeline step 2, and each builds its model
+with `nn.create_model` before it plays. Since pipeline step 4, a 1889 config
+needs a `model_path` module that defines `build_model(config, spec)`, which
+arrives in step 8, and building one's input spec raises the extraction's
+`NotImplementedError` until step 7.
 
 ## 12. Decisions
 

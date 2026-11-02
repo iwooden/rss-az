@@ -632,6 +632,32 @@ def _apply_overrides(
             setattr(config, field, val)
 
 
+def _resolve_config(args: argparse.Namespace, cp: Checkpoint | None) -> TrainingConfig:
+    """The run's config: the checkpoint's on resume, then the ``--config``
+    JSON, then CLI overrides. A resumed run keeps the checkpoint's game."""
+    if cp is not None:
+        config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
+        trained_game = config.game
+        if args.config:
+            changes = config.apply_json_overrides(Path(args.config).read_text())
+            for c in changes:
+                print(f"  Config override: {c}")
+        _apply_overrides(config, args, log_changes=True)
+        if config.game != trained_game:
+            raise ValueError(
+                f"the checkpoint plays game {trained_game!r}, but the run's config "
+                f"sets game {config.game!r}; a run resumes only its own game"
+            )
+    elif args.config:
+        config = TrainingConfig.from_json(Path(args.config).read_text())
+        _apply_overrides(config, args)
+    else:
+        config = TrainingConfig()
+        _apply_overrides(config, args)
+    config.validate()
+    return config
+
+
 def _latest_checkpoint_dir(args: argparse.Namespace) -> Path:
     """Directory searched by ``--resume latest``, with config precedence."""
     if args.checkpoint_dir:
@@ -843,23 +869,7 @@ def main() -> None:
             print(f"Loaded checkpoint: {cp_path}")
 
     # --- Config ---
-    if cp is not None:
-        # Resume: checkpoint config as base, then JSON overrides, then CLI overrides
-        config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
-        if args.config:
-            changes = config.apply_json_overrides(Path(args.config).read_text())
-            for c in changes:
-                print(f"  Config override: {c}")
-        _apply_overrides(config, args, log_changes=True)
-        config.validate()
-    elif args.config:
-        config = TrainingConfig.from_json(Path(args.config).read_text())
-        _apply_overrides(config, args)
-        config.validate()
-    else:
-        config = TrainingConfig()
-        _apply_overrides(config, args)
-        config.validate()
+    config = _resolve_config(args, cp)
 
     # --- Operational flags (not persisted in config JSON) ---
     if args.profile:

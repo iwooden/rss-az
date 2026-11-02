@@ -35,6 +35,7 @@ def _transformer_input_spec(
         num_tokens=game.num_tokens(num_players),
         token_dim=game.token_dim(layout_version),
         layout_version=layout_version,
+        game=game.name,
     )
 
 
@@ -69,6 +70,11 @@ def _validate_model_input_spec(
 ) -> ModelInputSpec:
     """Validate the model/evaluator boundary before scratch allocation."""
     normalize_model_type(input_spec.model_type)
+    if input_spec.game != game.name:
+        raise ValueError(
+            f"input_spec game ({input_spec.game!r}) does not match "
+            f"the evaluator's game ({game.name!r})"
+        )
     if int(input_spec.num_players) != num_players:
         raise ValueError(
             f"input_spec num_players ({input_spec.num_players}) does not match "
@@ -242,9 +248,9 @@ class NNEvaluator(BaseEvaluator):
         inferred_spec = _infer_model_input_spec(game, model, num_players)
         if input_spec is None:
             input_spec = inferred_spec
-        elif input_spec != inferred_spec:
-            raise ValueError("input_spec does not match the model input contract")
         self.input_spec = _validate_model_input_spec(game, input_spec, num_players)
+        if input_spec != inferred_spec:
+            raise ValueError("input_spec does not match the model input contract")
         self.token_dim = input_spec.token_dim
         self.layout_version = input_spec.layout_version
         self._unified_dim = game.policy.unified_dim

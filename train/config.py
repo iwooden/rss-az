@@ -20,8 +20,6 @@ _ENGINE_OPTIONS = {
 
 
 def _validate_max_acq_price_actions(value: int) -> None:
-    from games.rss import ACQ_SELECT_PRICE_ACTIONS
-
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(
             "max_acq_price_actions must be an integer, "
@@ -32,11 +30,15 @@ def _validate_max_acq_price_actions(value: int) -> None:
             "max_acq_price_actions must be >= 0, "
             f"got {value}"
         )
-    if value != 0 and value % 2 != 0:
+    if value == 0:
+        return  # The default; its bound check would import the RSS engine.
+    if value % 2 != 0:
         raise ValueError(
             "max_acq_price_actions must be divisible by 2, "
             f"got {value}"
         )
+    from games.rss import ACQ_SELECT_PRICE_ACTIONS
+
     if value > ACQ_SELECT_PRICE_ACTIONS:
         raise ValueError(
             "max_acq_price_actions must be <= "

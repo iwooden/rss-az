@@ -131,3 +131,24 @@ def test_replay_buffer_load_skips_old_single_count_metadata(tmp_path: Path) -> N
 
     assert buffer.load(tmp_path) == 0
     assert len(buffer) == 0
+
+
+def test_replay_buffer_load_skips_another_games_buffer(tmp_path: Path, capsys) -> None:
+    buffer = _mixed_buffer()
+    _add_state(buffer, num_players=3, seed=21)
+    buffer.save(tmp_path)
+    metadata_path = tmp_path / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    assert metadata["game"] == "rss"
+
+    # Buffers saved before the field are RSS's.
+    del metadata["game"]
+    metadata_path.write_text(json.dumps(metadata))
+    assert _mixed_buffer().load(tmp_path) == 1
+
+    metadata["game"] = "1889"
+    metadata_path.write_text(json.dumps(metadata))
+    other = _mixed_buffer()
+    assert other.load(tmp_path) == 0
+    assert len(other) == 0
+    assert "replay buffer is from game '1889', not 'rss', skipping load" in capsys.readouterr().out

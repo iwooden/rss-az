@@ -1,4 +1,12 @@
-"""Neural network model loading and contract helpers."""
+"""Neural network model loading and contract helpers.
+
+A config's ``model_path`` names its model module, a module name or a Python
+file, loaded on first use. A module that defines ``build_model(config, spec)``
+builds its model from the config and its ``ModelInputSpec``, for any game.
+Any other module is an RSS transformer (``RSSTransformerNet`` and
+``TransformerConfig``), the fallback, which runs only RSS. RSS configs default
+to ``transformer-v2.py``; other games have no default.
+"""
 
 from __future__ import annotations
 
@@ -86,7 +94,13 @@ def _require_symbol(module: ModuleType, name: str, model_path: str) -> Any:
 
 
 _ensure_model_path_finder()
-_default_model_module = _load_model_module(str(_DEFAULT_MODEL_PATH))
+
+
+def _default_model_module() -> ModuleType:
+    """``transformer-v2.py``, loaded on first use: it imports the RSS engine."""
+    return _load_model_module(str(_DEFAULT_MODEL_PATH))
+
+
 if TYPE_CHECKING:
     # The implementation filename is intentionally file-loadable rather than
     # importable as a Python module. Its source is still checked directly;
@@ -105,15 +119,11 @@ if TYPE_CHECKING:
         def __init__(self, cfg: TransformerConfig) -> None: ...
         def __getattr__(self, name: str) -> Any: ...
 else:
-    RSSTransformerNet = _require_symbol(
-        _default_model_module, "RSSTransformerNet", str(_DEFAULT_MODEL_PATH)
-    )
-    TransformerBlock = _require_symbol(
-        _default_model_module, "TransformerBlock", str(_DEFAULT_MODEL_PATH)
-    )
-    TransformerConfig = _require_symbol(
-        _default_model_module, "TransformerConfig", str(_DEFAULT_MODEL_PATH)
-    )
+    def __getattr__(name: str) -> Any:
+        # The default implementation's classes, loaded with it on first use.
+        if name in ("RSSTransformerNet", "TransformerBlock", "TransformerConfig"):
+            return _require_symbol(_default_model_module(), name, str(_DEFAULT_MODEL_PATH))
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
@@ -140,11 +150,21 @@ def _effective_max_players(config: object) -> int:
 
 
 def _model_module(config: object) -> tuple[ModuleType, str]:
+    """The config's model module. Another game's must define ``build_model``:
+    the RSS transformer fallback, and so the default, runs only RSS."""
+    game = _config_value(config, "game", "rss")
     model_path = _config_value(config, "model_path", None)
-    if model_path is None:
-        return _default_model_module, str(_DEFAULT_MODEL_PATH)
-    path = str(model_path)
-    return _load_model_module(path), path
+    path = str(_DEFAULT_MODEL_PATH if model_path is None else model_path)
+    if game == "rss":
+        return _load_model_module(path), path
+    if model_path is not None:
+        module = _load_model_module(path)
+        if hasattr(module, "build_model"):
+            return module, path
+    raise ValueError(
+        f"game {game!r} needs a model_path module that defines build_model(config, spec): "
+        f"the RSSTransformerNet fallback runs only RSS (model_path={model_path!r})"
+    )
 
 
 def _config_kwargs(config_cls: type[object], values: dict[str, Any]) -> dict[str, Any]:
@@ -179,6 +199,7 @@ def get_model_input_spec(config: object) -> ModelInputSpec:
         num_tokens=game.num_tokens(max_players),
         token_dim=game.token_dim(layout_version),
         layout_version=layout_version,
+        game=game.name,
     )
 
 
@@ -197,7 +218,12 @@ def create_model(
     price_slot_fourier_bands: int = 4,
     model_path: str | None = None,
 ) -> nn.Module:
-    """Instantiate the configured transformer implementation."""
+    """Instantiate the configured model.
+
+    With a config, a model module that defines ``build_model`` builds it from
+    the config and ``get_model_input_spec(config)``. Otherwise, and in the
+    keyword form, it is the RSS transformer fallback.
+    """
     if isinstance(config, int):
         if num_players is not None:
             raise TypeError("Pass num_players either positionally or by keyword, not both")
@@ -209,6 +235,11 @@ def create_model(
             raise TypeError("create_model requires a TrainingConfig or num_players")
         selected_path = model_path or str(_DEFAULT_MODEL_PATH)
         module = _load_model_module(selected_path)
+        if hasattr(module, "build_model"):
+            raise TypeError(
+                f"model_path {selected_path!r} defines build_model(config, spec); "
+                "pass a TrainingConfig"
+            )
         values: dict[str, Any] = {
             "num_players": num_players,
             "d_model": d_model,
@@ -222,20 +253,13 @@ def create_model(
             "price_slot_fourier_bands": price_slot_fourier_bands,
         }
     else:
-        game = _config_value(config, "game", "rss")
-        if game != "rss":
-            # Every pipeline consumer builds its model here before it plays:
-            # training (with its self-play workers and eval servers), analysis,
-            # tournaments, live play, and strategy data. The models are RSS's
-            # until pipeline step 4 (1889/pipeline-refactor.md §8).
-            raise ValueError(
-                f"game {game!r} cannot be trained, played, or analyzed yet: the models "
-                "run only RSS until pipeline-refactor step 4"
-            )
         normalize_model_type(
             str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
         )
         module, selected_path = _model_module(config)
+        build_model = getattr(module, "build_model", None)
+        if build_model is not None:
+            return build_model(config, get_model_input_spec(config))
         values = {
             "num_players": _effective_max_players(config),
             "d_model": int(_config_value(config, "d_model", 256)),

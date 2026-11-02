@@ -47,7 +47,7 @@ from core.attention_relations import (
     MAX_ATTENTION_RELATION_EDGES,
     NUM_ATTENTION_RELATIONS,
 )
-from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES, GameConstants, GamePhases
+from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES, DecisionPhase, GameConstants, GamePhases
 from core.driver import STATUS_GAME_OVER_PY, STATUS_INVALID_PY, STATUS_OK_PY
 from core.relations import (
     get_relation_coord_data,
@@ -456,19 +456,33 @@ def test_batch_extraction_matches_single_states(extraction_case: Case):
 
 
 def test_rss_policy_layout_matches_legacy_constants():
+    """RSS's layout is the engine's action table, and nn.policy_layout's legacy
+    names, which the v2 and v3 model files import, are that layout."""
     policy = get_game(TrainingConfig()).policy
     assert policy.phase_sizes == tuple(PHASE_ACTION_SIZES)
-    assert policy.num_phases == legacy_policy_layout.NUM_PHASES
-    assert policy.offsets == legacy_policy_layout.PHASE_OFFSETS
-    assert policy.unified_dim == legacy_policy_layout.UNIFIED_LOGIT_DIM
+    assert policy.num_phases == GameConstants.NUM_DECISION_PHASES
+    assert policy.offsets == (0, *np.cumsum(PHASE_ACTION_SIZES).tolist())
     assert policy.max_action_size == MAX_ACTION_SIZE
-    assert policy.phases_with_pass_slot == legacy_policy_layout.PHASES_WITH_PASS_SLOT
+    assert policy.phases_with_pass_slot == tuple(int(phase) for phase in (
+        DecisionPhase.DPHASE_INVEST, DecisionPhase.DPHASE_BID, DecisionPhase.DPHASE_ACQ_SELECT_CORP,
+        DecisionPhase.DPHASE_CLOSING, DecisionPhase.DPHASE_IPO,
+    ))
     # The TensorBoard spellings of per-phase training and self-play metrics.
     assert policy.phase_names == (
         "invest", "bid", "acq_corp", "acq_offer", "close", "div", "issue",
         "ipo", "par", "acq_co", "acq_price",
     )
-    assert torch.equal(policy.build_action_lut(), legacy_policy_layout.build_action_lut())
+    lut = policy.build_action_lut()
+    assert lut.shape == (GameConstants.NUM_DECISION_PHASES, MAX_ACTION_SIZE)
+    for phase, size in enumerate(PHASE_ACTION_SIZES):
+        assert lut[phase, :size].tolist() == list(range(policy.offsets[phase], policy.offsets[phase + 1]))
+        assert not lut[phase, size:].any()
+
+    assert legacy_policy_layout.NUM_PHASES == policy.num_phases
+    assert legacy_policy_layout.PHASE_OFFSETS == policy.offsets
+    assert legacy_policy_layout.UNIFIED_LOGIT_DIM == policy.unified_dim
+    assert legacy_policy_layout.PHASES_WITH_PASS_SLOT == policy.phases_with_pass_slot
+    assert torch.equal(legacy_policy_layout.build_action_lut(), lut)
 
 
 def test_rss_conventions_match_engine_constants(rss_case: Case):

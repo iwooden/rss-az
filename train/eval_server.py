@@ -236,8 +236,14 @@ class SharedEvalBuffers:
                 value_dim=num_players,
                 num_tokens=game.num_tokens(num_players),
                 token_dim=game.token_dim(ModelInputSpec.layout_version),
+                game=game.name,
             )
         model_kind = normalize_model_type(input_spec.model_type)
+        if input_spec.game != game.name:
+            raise ValueError(
+                f"input_spec game ({input_spec.game!r}) does not "
+                f"match the buffers' game ({game.name!r})"
+            )
         if int(input_spec.num_players) != num_players:
             raise ValueError(
                 f"input_spec num_players ({input_spec.num_players}) does not "

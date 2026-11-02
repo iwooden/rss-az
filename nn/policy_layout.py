@@ -3,15 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import torch
-
-from core.data import (
-    MAX_ACTION_SIZE,
-    PHASE_ACTION_SIZES,
-    DecisionPhase,
-    GameConstants,
-)
 
 
 @dataclass(frozen=True)
@@ -64,34 +58,28 @@ class PolicyLayout:
 
 # RSS's layout under its legacy names, for the v2 and v3 model files, which stay
 # untouched (1889/pipeline-refactor.md §5). The pipeline uses ``Game.policy``.
-NUM_PHASES = int(GameConstants.NUM_DECISION_PHASES)
+# They resolve from games.rss on first use: games.rss imports this module.
+_LEGACY_RSS_NAMES = {
+    "NUM_PHASES": "num_phases",
+    "PHASE_OFFSETS": "offsets",
+    "UNIFIED_LOGIT_DIM": "unified_dim",
+    "PHASES_WITH_PASS_SLOT": "phases_with_pass_slot",
+    "build_action_lut": "build_action_lut",
+}
 
-_phase_offsets = [0]
-for _size in PHASE_ACTION_SIZES:
-    _phase_offsets.append(_phase_offsets[-1] + int(_size))
-PHASE_OFFSETS = tuple(_phase_offsets)
-UNIFIED_LOGIT_DIM = PHASE_OFFSETS[-1]
+if TYPE_CHECKING:
+    NUM_PHASES: int
+    PHASE_OFFSETS: tuple[int, ...]
+    UNIFIED_LOGIT_DIM: int
+    PHASES_WITH_PASS_SLOT: tuple[int, ...]
 
-# Decision phases whose phase-local slot 0 is a pass/no-op followed by one or
-# more non-pass actions. The trainer uses these for logit-scale diagnostics.
-PHASES_WITH_PASS_SLOT = (
-    int(DecisionPhase.DPHASE_INVEST),
-    int(DecisionPhase.DPHASE_BID),
-    int(DecisionPhase.DPHASE_ACQ_SELECT_CORP),
-    int(DecisionPhase.DPHASE_CLOSING),
-    int(DecisionPhase.DPHASE_IPO),
-)
+    def build_action_lut() -> torch.Tensor: ...
+else:
+    def __getattr__(name: str) -> Any:
+        attr = _LEGACY_RSS_NAMES.get(name)
+        if attr is None:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        from games.rss import POLICY_LAYOUT
 
-
-def build_action_lut() -> torch.Tensor:
-    """Map phase-local action ids to slots in the dense policy tensor.
-
-    The returned tensor has shape ``(NUM_PHASES, MAX_ACTION_SIZE)``. Entries
-    beyond a phase's action count are zero sentinels and must never be marked
-    legal.
-    """
-    lut = torch.zeros(NUM_PHASES, int(MAX_ACTION_SIZE), dtype=torch.long)
-    for phase in range(NUM_PHASES):
-        size = int(PHASE_ACTION_SIZES[phase])
-        lut[phase, :size] = PHASE_OFFSETS[phase] + torch.arange(size)
-    return lut
+        value = globals()[name] = getattr(POLICY_LAYOUT, attr)
+        return value

@@ -7,7 +7,6 @@ import pytest
 import torch
 
 from games import get_game
-from nn import create_model
 from train.checkpoint import load_checkpoint
 from train.config import TrainingConfig
 from train.logging import _format_player_range
@@ -82,13 +81,6 @@ def test_engine_options_belong_to_their_game():
     for invalid in (-1, True, 1.0, "1"):
         with pytest.raises(ValueError, match="auction_pass_payout_cap must be an integer"):
             TrainingConfig(game="1889", auction_pass_payout_cap=invalid)  # type: ignore[arg-type]
-
-
-def test_rss_only_consumers_reject_1889_configs():
-    """Training, self-play, evaluation, and analysis build their model first,
-    and the models run only RSS until pipeline step 4."""
-    with pytest.raises(ValueError, match="game '1889' cannot be trained, played, or analyzed yet"):
-        create_model(TrainingConfig(game="1889"))
 
 
 def test_legacy_num_players_config_validates_with_effective_single_range() -> None:

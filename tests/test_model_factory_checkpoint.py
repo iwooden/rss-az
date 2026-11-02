@@ -1,16 +1,47 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 import multiprocessing as mp
 from multiprocessing.queues import Queue
+from pathlib import Path
+from typing import cast
 
+import pytest
 import torch
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.token_data import TokenDataSize, get_num_tokens
-from nn import RSSTransformerNet, create_model, get_model_input_spec
+from core.token_data import TokenDataSize, get_num_tokens, get_token_dim
+from games import get_game
+from games.g1889 import EXTRACTION_STEP
+from mcts.evaluator import NNEvaluator
+from nn import ModelInputSpec, RSSTransformerNet, _load_model_module, create_model, get_model_input_spec
 from nn.policy_layout import UNIFIED_LOGIT_DIM
-from train.checkpoint import load_model_from_checkpoint, save_checkpoint
+from train.checkpoint import Checkpoint, load_checkpoint, load_model_from_checkpoint, save_checkpoint
 from train.config import TrainingConfig
+from train.eval_server import SharedEvalBuffers
+from train.main import _build_parser, _resolve_config
+
+V2_PARITY_CHECKPOINT = Path(__file__).with_name("v2_parity") / "checkpoint.pt"
+
+# A model module with its own builder, as a non-RSS game's must be.
+DUMMY_MODEL_MODULE = """
+import torch
+
+INPUT_LAYOUT_VERSION = 3
+calls = []
+
+
+class DummyNet(torch.nn.Module):
+    def __init__(self, token_dim, policy_dim):
+        super().__init__()
+        self.readout = torch.nn.Linear(token_dim, policy_dim)
+
+
+def build_model(config, spec):
+    calls.append((config, spec))
+    return DummyNet(spec.token_dim, spec.policy_dim)
+"""
 
 
 def _put_model_class_name(model_cls: type[torch.nn.Module], queue: Queue) -> None:
@@ -268,10 +299,13 @@ def test_checkpoint_reload_uses_model_path(tmp_path) -> None:
     assert list(loaded.state_dict().keys()) == list(model.state_dict().keys())
 
 
-def test_model_path_class_pickles_across_spawn() -> None:
+# The default model loads on first use, like any model_path file, so spawned
+# eval servers and workers import it through nn's model-path finder.
+@pytest.mark.parametrize("model_path", [None, "nn/transformer-v2.py"])
+def test_model_path_class_pickles_across_spawn(model_path: str | None) -> None:
     config = TrainingConfig(
         model_type="transformer",
-        model_path="nn/transformer-v2.py",
+        model_path=model_path,
         phase_conditioning=False,
     )
     model = create_model(config)
@@ -290,3 +324,78 @@ def test_model_path_class_pickles_across_spawn() -> None:
 
     assert process.exitcode == 0
     assert queue.get(timeout=1) == "RSSTransformerNet"
+
+
+def test_model_module_with_build_model_builds_its_own_model(tmp_path) -> None:
+    path = tmp_path / "dummy_model.py"
+    path.write_text(DUMMY_MODEL_MODULE)
+    module = _load_model_module(str(path))
+    config = TrainingConfig(model_path=str(path))
+
+    model = create_model(config)
+    spec = get_model_input_spec(config)
+
+    assert isinstance(model, module.DummyNet)
+    assert module.calls == [(config, spec)]
+    assert (spec.game, spec.layout_version, spec.token_dim) == ("rss", 3, get_token_dim(3))
+    # The keyword form builds only the RSS fallback.
+    with pytest.raises(TypeError, match="defines build_model"):
+        create_model(num_players=3, model_path=str(path))
+    # Any game reaches the builder through its own adapter; 1889's has no
+    # input sizes until its extraction lands.
+    with pytest.raises(NotImplementedError, match=EXTRACTION_STEP):
+        create_model(TrainingConfig(game="1889", model_path=str(path)))
+    assert len(module.calls) == 1
+
+
+@pytest.mark.parametrize("model_path", [None, "nn/transformer-v3.py"])
+def test_rss_transformer_fallback_refuses_other_games(model_path: str | None) -> None:
+    config = TrainingConfig(game="1889", model_path=model_path)
+    message = "game '1889' needs a model_path module that defines build_model"
+    with pytest.raises(ValueError, match=message):
+        create_model(config)
+    with pytest.raises(ValueError, match=message):
+        get_model_input_spec(config)
+
+
+def test_spec_and_checkpoint_without_game_are_rss() -> None:
+    """A spec or checkpoint without ``game`` is RSS's, as a config is
+    (test_training_config_players.py)."""
+    spec = get_model_input_spec(TrainingConfig())
+    fields = {name: getattr(spec, name) for name in (
+        "model_type", "num_players", "policy_dim", "value_dim", "num_tokens", "token_dim",
+    )}
+    assert spec.game == "rss"
+    assert ModelInputSpec(**fields) == spec
+
+    # The v2 parity checkpoint predates the field.
+    cp = load_checkpoint(V2_PARITY_CHECKPOINT, torch.device("cpu"))
+    assert '"game"' not in cp["config_json"]
+    _model, config, _cp = load_model_from_checkpoint(V2_PARITY_CHECKPOINT, torch.device("cpu"))
+    assert config.game == "rss"
+    resume = _build_parser().parse_args(["--resume", str(V2_PARITY_CHECKPOINT)])
+    assert _resolve_config(resume, cp).game == "rss"
+
+
+def test_evaluators_refuse_another_games_spec() -> None:
+    config = TrainingConfig()
+    game = get_game(config)
+    spec = replace(get_model_input_spec(config), game="1889")
+    message = r"input_spec game \('1889'\) does not match"
+    with pytest.raises(ValueError, match=message):
+        NNEvaluator(game, create_model(config), torch.device("cpu"), 3, input_spec=spec)
+    with pytest.raises(ValueError, match=message):
+        SharedEvalBuffers(game, num_workers=1, batch_size=1, num_players=3, input_spec=spec)
+
+
+def test_resume_refuses_a_config_for_another_game(tmp_path) -> None:
+    cp = cast(Checkpoint, {"config_json": TrainingConfig().to_json()})
+    override = tmp_path / "1889.json"
+    override.write_text(json.dumps({"game": "1889"}))
+    args = _build_parser().parse_args(["--resume", "latest", "--config", str(override)])
+    with pytest.raises(
+        ValueError, match="the checkpoint plays game 'rss', but the run's config sets game '1889'",
+    ):
+        _resolve_config(args, cp)
+    # Without a checkpoint, the config's game stands.
+    assert _resolve_config(args, None).game == "1889"

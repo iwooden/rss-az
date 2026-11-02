@@ -3,8 +3,9 @@
 Status: steps 0, 1, and 5 and the ACQ cap commit done (2026-11-01);
 step 6, the 1889 engine with the engine half of `games/g1889.py`
 (2026-11-02, [`engine-design.md`](engine-design.md) §11); step 2, the
-consumers on the adapter (2026-11-02); and step 3, the game-specific
-behavior out of the pipeline (2026-11-02). The rest is plan.
+consumers on the adapter (2026-11-02); step 3, the game-specific
+behavior out of the pipeline (2026-11-02); and step 4, the game-aware model
+loader (2026-11-02). The rest is plan.
 This expands Section 11
 of the model blueprint, [`1889.md`](1889.md). The rules are in
 [`1889-rules.md`](1889-rules.md).
@@ -45,15 +46,16 @@ import-time constants (`UNIFIED_LOGIT_DIM`, `MAX_ACTION_SIZE`,
 RSS runtime flags `StatePool` used to copy. Step 3 moved the RSS-only
 features out: the cross-president prior adapter to `games/rss_live.py`
 (Section 4.2), and the self-play stats and strategy trace behind game hooks in
-`games/rss_selfplay.py` (Section 4.3). What remains, with the boundary test's
-allowlist (Section 6.4):
+`games/rss_selfplay.py` (Section 4.3). Step 4 made the model loader
+game-aware (Section 5), and the boundary test's allowlist is empty
+(Section 6.4). What remains is by design:
 
-| Module | RSS coupling | Removed in |
-|---|---|---|
-| `mcts/`, `train/eval_server.py`, `train/replay_buffer.py`, `train/trainer.py`, `train/policy_metrics.py`, `train/self_play.py`, `train/main.py` | None. | |
-| `train/config.py` | RSS engine flags and the ACQ cap. The cap's bound comes from `games/rss.py`. | |
-| `nn/policy_layout.py` | RSS's layout under its legacy module names (`NUM_PHASES`, `PHASE_OFFSETS`, `UNIFIED_LOGIT_DIM`, `PHASES_WITH_PASS_SLOT`, `build_action_lut`), from `core.data`, for the v2 and v3 model files. Resolving them through `games/rss.py` instead is an import cycle while `nn` loads v2 at import (`games.rss` → `nn.policy_layout` → `nn/__init__.py` → v2 → `games.rss`). | Step 4 |
-| `nn/__init__.py` | Loads `transformer-v2.py` at import. Requires `RSSTransformerNet`, `TransformerConfig`, and a fixed list of RSS keyword arguments. `get_model_input_spec` takes its dimensions from the config's `Game`. | Step 4 |
+| Module | RSS coupling |
+|---|---|
+| `mcts/`, `train/eval_server.py`, `train/replay_buffer.py`, `train/trainer.py`, `train/policy_metrics.py`, `train/self_play.py`, `train/main.py`, `nn/model_contract.py` | None. |
+| `train/config.py` | RSS engine flags and the ACQ cap. The cap's bound comes from `games/rss.py`, imported only to check a non-default cap. |
+| `nn/__init__.py` | The RSS transformer fallback and RSS's default model, `transformer-v2.py`, loaded on first use and only for RSS configs. |
+| `nn/policy_layout.py` | RSS's layout under its legacy module names (`NUM_PHASES`, `PHASE_OFFSETS`, `UNIFIED_LOGIT_DIM`, `PHASES_WITH_PASS_SLOT`, `build_action_lut`) for the v2 and v3 model files, resolved from `games.rss` on first use. |
 
 ## 3. The adapter
 
@@ -306,6 +308,48 @@ game hooks.
   (blueprint 6.4). Sparse records use `uint8` token indices, which works below
   256 tokens.
 
+As built (step 4):
+
+- Loading. Importing `nn` loads no engine and no model file. A config's
+  module is its `model_path` (a module name or a file), or `transformer-v2.py`
+  for an RSS config without one, loaded on first use. `nn.RSSTransformerNet`,
+  `TransformerBlock`, and `TransformerConfig` are v2's, resolved on first
+  access through a module `__getattr__` for tests and RSS tooling.
+- Resolution. `create_model(config)` calls the module's
+  `build_model(config, spec)` if it defines one, with the `TrainingConfig` and
+  `get_model_input_spec(config)`. Otherwise it builds the RSS fallback,
+  `RSSTransformerNet(TransformerConfig(...))`, as before. The fallback, and
+  so the default, is RSS-only: for another game, `create_model` and
+  `get_model_input_spec` raise `ValueError` unless `model_path` names a
+  module that defines `build_model`. Other games have no default model. The
+  keyword form, `create_model(num_players=...)`, builds only the fallback and
+  raises `TypeError` for a module that defines `build_model`.
+- `layout_version` is still the module's `INPUT_LAYOUT_VERSION`, default 2
+  (RSS's v2), so a non-RSS model module sets its own.
+- `ModelInputSpec.game` is the registry name, last among the fields with
+  default `"rss"`, so a spec built without it is RSS's.
+  `get_model_input_spec`, `NNEvaluator`'s inferred spec, and
+  `SharedEvalBuffers`' default spec take it, and their sizes, from the
+  `Game`. `NNEvaluator` and `SharedEvalBuffers` reject a spec for another
+  game, so tournament seats from two games fail there.
+- Checkpoints store the game in `config_json`; a config without it is RSS's
+  (Section 3.4). The v2 parity fixture and the live v3 checkpoint have none.
+  Resuming a run (`train.main._resolve_config`) raises `ValueError` when the
+  `--config` JSON or a CLI override changes the checkpoint's game. The other
+  loaders (`load_model_from_checkpoint` for analysis, tournaments, and live
+  play, and strategy data) take their config from the checkpoint, so their
+  game always matches.
+- Replay `metadata.json` records `game`. Resume skips another game's buffer
+  with a warning, as it skips one with mismatched shapes; metadata without
+  the field is RSS's.
+- `nn/policy_layout.py` resolves its legacy names from
+  `games.rss.POLICY_LAYOUT` on first access and caches them, so it imports no
+  engine. `build_action_lut` is the layout's bound method. With `nn` no
+  longer loading v2 at import, `games.rss` → `nn.policy_layout` → `nn` ends
+  there, and the step-2 cycle is gone in either import order.
+- `train/config.py` imports `games.rss` only to check a non-default ACQ cap,
+  so validating a 1889 config loads no RSS engine.
+
 ## 6. 1889 engine
 
 ### 6.1 What the adapter needs from it
@@ -393,9 +437,10 @@ As built (step 2): `tests/test_pipeline_boundary.py`. The training core is
 every `train/` module except the four RSS tools of Section 1, and every
 import counts, including function-level and type-checking ones. Its allowlist
 names each remaining import by module and imported names, with the step that
-removes it. Since step 3 the only entry is `nn/policy_layout.py`'s
-`core.data` (step 4, Section 2). The test also fails on an allowlisted import
-that is gone, so entries leave with their imports.
+removes it. Since step 4 it is empty. The test also fails on an allowlisted
+import that is gone, so entries leave with their imports. A second test
+imports every generic pipeline module in a fresh process, validates an RSS and
+a 1889 config, and checks that no engine module and no model file loaded.
 
 ## 7. Guarding RSS behavior
 
@@ -498,6 +543,31 @@ introduced it. Add to this list whenever a step changes RSS behavior.
   - `train/strategy_data.py` reads final shares and companies from each
     record's final state; its shards are unchanged.
 
+- **The model loader is game-aware** (step 4, Section 5).
+  - `nn` no longer loads `transformer-v2.py` at import.
+    `nn.RSSTransformerNet`, `TransformerBlock`, and `TransformerConfig`
+    resolve on first access.
+  - A model module may define `build_model(config, spec)`. `create_model`'s
+    "cannot be trained, played, or analyzed yet" guard gives way to "game ...
+    needs a model_path module that defines build_model(config, spec)", which
+    `get_model_input_spec` raises too. The keyword form of `create_model`
+    raises `TypeError` for a module that defines `build_model`.
+  - `nn.policy_layout`'s legacy names resolve from `games.rss.POLICY_LAYOUT`
+    with unchanged values. The module no longer re-exports `core.data`'s
+    `MAX_ACTION_SIZE`, `PHASE_ACTION_SIZES`, `DecisionPhase`, and
+    `GameConstants`, which nothing imported from it.
+- **`ModelInputSpec.game`** (step 4), default `"rss"`. `NNEvaluator` and
+  `SharedEvalBuffers` reject a spec for another game. `NNEvaluator` now
+  validates a passed spec against its game before comparing it with the
+  model's inferred spec, so a spec that fails both reports the specific
+  field instead of "does not match the model input contract".
+- **Resume keeps the checkpoint's game** (step 4). `train/main.py`'s config
+  resolution moved into `_resolve_config(args, cp)`, which raises when an
+  override changes the game. Its output is otherwise unchanged.
+- **Replay metadata records the game** (step 4). `ReplayBuffer.save` writes
+  `"game"`, and `load` skips another game's buffer with a warning. Buffers
+  saved on `main` load as RSS, and `main` ignores the new key.
+
 Known `main` bugs, kept for parity until fixed on `main`:
 
 - **Live play ignores the ACQ price cap.** `_mcts_config_for`
@@ -533,7 +603,8 @@ Pipeline track. Each step is a behavior-preserving commit or a short series:
    training core import no engine code; only step 4's `nn/policy_layout.py`
    entry remains on the boundary test's allowlist.
 4. Model loader: `build_model`, `ModelInputSpec.game`, and the checkpoint
-   default.
+   default. Done 2026-11-02 (Section 5, As built), with replay metadata's
+   game (Section 9); the boundary test's allowlist is empty.
 
 Engine track, independent of the pipeline track:
 
@@ -569,8 +640,9 @@ block 1889 only at step 7, so the two tracks can alternate.
   Variants that change consequences, such as v3's price floors and
   trade-history lifetime, still need state flags. Neither replaces the prior
   override (Section 4.2).
-- **Open:** Replay metadata records the game. Resume should skip a buffer from
-  another game, as it already skips one with mismatched shapes.
+- **Settled (step 4):** Replay metadata records the game. Resume skips
+  another game's buffer with a warning, as it skips one with mismatched
+  shapes, and metadata without the field is RSS's.
 - **Test:** Replay rebuilds tokens and relations every time a row is sampled.
   Once 1889 extraction includes build distance and candidate features, check
   that the trainer keeps up (step 7).

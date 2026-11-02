@@ -5,12 +5,15 @@ pipeline-refactor.md §6.4: ``mcts/``, the training core in ``train/``,
 import nothing from the RSS engine (``core``, ``entities``, ``phases``) or
 ``g1889``; only ``games/`` does. RSS tooling and the model files are exempt.
 Every import, including function-level and type-checking ones, counts.
+At run time, games and model files load on first use, not at import.
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+import subprocess
+import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENGINE_PACKAGES = frozenset({"core", "entities", "phases", "g1889"})
@@ -18,16 +21,9 @@ RSS_TOOLING = frozenset({
     "train/analyze_game.py", "train/debug_trace.py",
     "train/strategy_data.py", "train/tournament.py",
 })
-# (module, imported module) -> (imported names, why it may stay).
-ALLOWED: dict[tuple[str, str], tuple[frozenset[str], str]] = {
-    ("nn/policy_layout.py", "core.data"): (frozenset({
-        "MAX_ACTION_SIZE", "PHASE_ACTION_SIZES", "DecisionPhase", "GameConstants",
-    }), (
-        "step 4: RSS's legacy layout names for the untouched v2 and v3 model files. "
-        "They can resolve through games.rss once nn stops loading v2 at import; "
-        "until then games.rss -> nn -> v2 -> games.rss is an import cycle"
-    )),
-}
+# (module, imported module) -> (imported names, why it may stay). Empty since
+# step 4; a temporary entry names the step that removes it.
+ALLOWED: dict[tuple[str, str], tuple[frozenset[str], str]] = {}
 
 
 def _pipeline_modules() -> list[str]:
@@ -74,3 +70,25 @@ def test_generic_pipeline_imports_no_engine():
     # Keep the allowlist exact, so entries go when their imports do.
     stale = {key: sorted(ALLOWED[key][0] - found.get(key, frozenset())) for key in ALLOWED}
     assert not any(stale.values()), f"allowlisted imports no longer used: {stale}"
+
+
+def test_importing_the_pipeline_loads_no_game_or_model():
+    """Engines load with their game (``games.get_game``) and model files with
+    their config (``nn.create_model``). So a 1889 process never loads RSS's
+    engine, and ``games.rss`` -> ``nn.policy_layout`` -> ``nn`` is no cycle."""
+    modules = [
+        module.removesuffix(".py").removesuffix("/__init__").replace("/", ".")
+        for module in _pipeline_modules() if not module.endswith("__main__.py")
+    ]
+    code = "\n".join((
+        "import importlib, sys",
+        f"for name in {modules!r}: importlib.import_module(name)",
+        "from train.config import TrainingConfig",
+        "TrainingConfig(), TrainingConfig(game='1889')",
+        "print(sorted(name for name in sys.modules if name.split('.')[0] in "
+        f"{sorted(ENGINE_PACKAGES)!r} or name.startswith(('games.', '_rss_model_impl_'))))",
+    ))
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    )
+    assert result.stdout.splitlines()[-1] == "[]"
