@@ -16,13 +16,15 @@ Conventions every game follows:
 - Scores and values are per player, in canonical order.
 - Sparse relation records are ``uint8`` rows of ``RELATION_RECORD_WIDTH``:
   ``(relation, query token, key token, value)``. Rows past the count are zero.
+- Self-play diagnostics are a game hook (``SelfPlayStats``); a game without
+  any uses ``EmptySelfPlayStats``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import import_module
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 if TYPE_CHECKING:
     import numpy as np
@@ -39,6 +41,54 @@ RELATION_RECORD_WIDTH = 4
 
 _GAME_MODULES = {"rss": "games.rss", "1889": "games.g1889"}
 GAME_NAMES = tuple(_GAME_MODULES)
+
+
+class SelfPlayStats(Protocol):
+    """One self-play game's diagnostics (``Game.new_selfplay_stats``).
+
+    ``finish`` returns ``{name: (numerator, denominator)}``. train/main.py sums
+    both over each reporting group's games (all games, and each player count)
+    and logs ``self_play_<group>/<name>`` as numerator / max(denominator, 1).
+    A denominator of 1 per game makes a mean over the games that report the
+    name; event counts make a rate over the group's events.
+    """
+
+    def observe(
+        self,
+        state: Any,
+        legal_actions: np.ndarray,
+        chosen_idx: int,
+        priors: np.ndarray,
+        visit_counts: np.ndarray,
+    ) -> None:
+        """Record a played decision before it is applied. ``priors`` (the
+        unnoised root priors) and ``visit_counts`` align with ``legal_actions``,
+        the policy action set."""
+        ...
+
+    def finish(self, state: Any) -> dict[str, tuple[float, float]]:
+        """This game's totals, from its terminal state."""
+        ...
+
+
+class EmptySelfPlayStats:
+    """A collector with nothing to report."""
+
+    def __init__(self, num_players: int) -> None:
+        pass
+
+    def observe(
+        self,
+        state: Any,
+        legal_actions: np.ndarray,
+        chosen_idx: int,
+        priors: np.ndarray,
+        visit_counts: np.ndarray,
+    ) -> None:
+        pass
+
+    def finish(self, state: Any) -> dict[str, tuple[float, float]]:
+        return {}
 
 
 @dataclass(frozen=True)
@@ -90,6 +140,14 @@ class Game:
     # records, *, max_players); the single-state form returns the count
     fill_relations_sparse: Callable[..., int]
     fill_relations_sparse_batch: Callable[..., None]
+
+    # Self-play diagnostics: num_players -> one game's collector
+    new_selfplay_stats: Callable[[int], SelfPlayStats]
+
+    # --- RSS-only; None for other games ---
+    # num_players -> strategy-trace builder, for
+    # play_game(collect_strategy_trace=True) (train/strategy_data.py)
+    new_strategy_trace: Callable[[int], Any] | None = None
 
 
 def get_game(config: TrainingConfig) -> Game:

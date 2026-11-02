@@ -18,44 +18,8 @@ RSS_TOOLING = frozenset({
     "train/analyze_game.py", "train/debug_trace.py",
     "train/strategy_data.py", "train/tournament.py",
 })
-_CROSS_PRESIDENT = "step 3: the cross-president prior adapter moves to an RSS module"
-_SELF_PLAY_STATS = (
-    "step 3: AcquisitionStats, the strategy trace, and the end-of-game stats "
-    "move behind the self-play stats hook"
-)
-
 # (module, imported module) -> (imported names, why it may stay).
 ALLOWED: dict[tuple[str, str], tuple[frozenset[str], str]] = {
-    ("mcts/evaluator.py", "core.actions"): (frozenset({
-        "ACTION_ACQ_OFFER_ACCEPT_PY", "ACTION_PASS_PY", "decode_action_py",
-        "enumerate_legal_actions_py",
-    }), _CROSS_PRESIDENT),
-    ("mcts/evaluator.py", "core.data"): (frozenset({
-        "MAX_ACTION_SIZE", "DecisionPhase", "GameConstants", "GamePhases",
-    }), _CROSS_PRESIDENT),
-    ("mcts/evaluator.py", "core.state"): (frozenset({"GameState"}), _CROSS_PRESIDENT),
-    ("mcts/evaluator.py", "entities.company"): (
-        frozenset({"COMPANIES", "CompanyLocation"}), _CROSS_PRESIDENT,
-    ),
-    ("mcts/evaluator.py", "entities.corp"): (frozenset({"CORPS"}), _CROSS_PRESIDENT),
-    ("mcts/evaluator.py", "entities.player"): (frozenset({"PLAYERS"}), _CROSS_PRESIDENT),
-    ("mcts/evaluator.py", "entities.turn"): (frozenset({"TURN"}), _CROSS_PRESIDENT),
-    ("train/self_play.py", "core.actions"): (frozenset({
-        "ACTION_ACQ_OFFER_ACCEPT_PY", "ACTION_ACQ_PRICE_PY",
-        "ACTION_ACQ_SELECT_COMPANY_PY", "ACTION_BUY_SHARE_PY", "ACTION_CLOSE_PY",
-        "ACTION_DIVIDEND_PY", "ACTION_ISSUE_PY", "ACTION_PAR_PY", "ACTION_RAISE_PY",
-        "ACTION_SELL_SHARE_PY", "decode_action_py",
-    }), _SELF_PLAY_STATS),
-    ("train/self_play.py", "core.data"): (frozenset({
-        "ALL_PAR_PRICES", "CorpIndices", "GameConstants", "GamePhases",
-    }), _SELF_PLAY_STATS),
-    ("train/self_play.py", "core.state"): (frozenset({"GameState"}), _SELF_PLAY_STATS),
-    ("train/self_play.py", "entities.company"): (
-        frozenset({"COMPANIES", "CompanyLocation"}), _SELF_PLAY_STATS,
-    ),
-    ("train/self_play.py", "entities.corp"): (frozenset({"CORPS"}), _SELF_PLAY_STATS),
-    ("train/self_play.py", "entities.player"): (frozenset({"PLAYERS"}), _SELF_PLAY_STATS),
-    ("train/self_play.py", "entities.turn"): (frozenset({"TURN"}), _SELF_PLAY_STATS),
     ("nn/policy_layout.py", "core.data"): (frozenset({
         "MAX_ACTION_SIZE", "PHASE_ACTION_SIZES", "DecisionPhase", "GameConstants",
     }), (

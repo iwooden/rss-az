@@ -35,7 +35,6 @@ from train.replay_buffer import ReplayBuffer
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from train.self_play import (
-    AcquisitionStats,
     build_epoch_player_count_schedule,
     play_game,
     self_play_worker,
@@ -423,40 +422,21 @@ class _SelfPlayMetricBucket:
         self.sample_entropy = 0.0
         self.sample_top1 = 0.0
         self.total_net_worth = 0.0
-        self.invest_roundtrip_cap_hits = 0
-        self.total_shares = 0.0
-        self.total_companies = 0.0
-        self.avg_active_corp_price = 0.0
-        self.corps_in_receivership = 0.0
-        self.games_with_max_price_corp = 0
-        self.acquisition = AcquisitionStats()
         self.policy_metrics = PolicyMetrics()
+        # The game's diagnostics: name -> [numerator, denominator] totals.
+        self.game_stats: dict[str, list[float]] = {}
 
         self.rank_counts: list[int] = []
         self.rank_net_worths: list[float] = []
-        self.rank_invest_roundtrip_cap_hits: list[float] = []
         self.rank_net_worth_mins: list[float] = []
         self.rank_net_worth_maxs: list[float] = []
-        self.rank_shares: list[float] = []
-        self.rank_companies: list[float] = []
-        self.rank_pres_share_values: list[float] = []
-        self.rank_nw_cash_pct: list[float] = []
-        self.rank_nw_companies_pct: list[float] = []
-        self.rank_nw_shares_pct: list[float] = []
 
     def _ensure_rank_capacity(self, num_ranks: int) -> None:
         while len(self.rank_counts) < num_ranks:
             self.rank_counts.append(0)
             self.rank_net_worths.append(0.0)
-            self.rank_invest_roundtrip_cap_hits.append(0.0)
             self.rank_net_worth_mins.append(float("inf"))
             self.rank_net_worth_maxs.append(float("-inf"))
-            self.rank_shares.append(0.0)
-            self.rank_companies.append(0.0)
-            self.rank_pres_share_values.append(0.0)
-            self.rank_nw_cash_pct.append(0.0)
-            self.rank_nw_companies_pct.append(0.0)
-            self.rank_nw_shares_pct.append(0.0)
 
     def add_record(self, record: Any) -> None:
         num_players = int(record.num_players)
@@ -466,20 +446,16 @@ class _SelfPlayMetricBucket:
         self.examples += int(record.num_examples)
         self.moves += int(record.total_moves)
         self.duration += float(record.duration_secs)
-        self.acquisition.add(record.acquisition)
         self.policy_metrics.add(record.policy_metrics)
+        for name, (numerator, denominator) in record.game_stats.items():
+            totals = self.game_stats.setdefault(name, [0.0, 0.0])
+            totals[0] += numerator
+            totals[1] += denominator
         self.target_entropy += float(record.policy_target_entropy_mean)
         self.target_top1 += float(record.policy_target_top1_fraction)
         self.sample_entropy += float(record.sample_policy_entropy_mean)
         self.sample_top1 += float(record.sample_top1_action_fraction)
         self.total_net_worth += float(sum(record.net_worths[:num_players]))
-        self.invest_roundtrip_cap_hits += sum(record.invest_roundtrip_cap_hits[:num_players])
-        self.total_shares += float(sum(record.shares_per_player[:num_players]))
-        self.total_companies += float(sum(record.companies_per_player[:num_players]))
-        self.avg_active_corp_price += float(record.avg_active_corp_price)
-        self.corps_in_receivership += float(record.corps_in_receivership)
-        if record.has_max_price_corp:
-            self.games_with_max_price_corp += 1
 
         ranked = sorted(
             range(num_players),
@@ -490,30 +466,19 @@ class _SelfPlayMetricBucket:
             net_worth = float(record.net_worths[player_id])
             self.rank_counts[rank] += 1
             self.rank_net_worths[rank] += net_worth
-            self.rank_invest_roundtrip_cap_hits[rank] += record.invest_roundtrip_cap_hits[player_id]
             self.rank_net_worth_mins[rank] = min(
                 self.rank_net_worth_mins[rank], net_worth,
             )
             self.rank_net_worth_maxs[rank] = max(
                 self.rank_net_worth_maxs[rank], net_worth,
             )
-            self.rank_shares[rank] += float(record.shares_per_player[player_id])
-            self.rank_companies[rank] += float(record.companies_per_player[player_id])
-            self.rank_pres_share_values[rank] += float(
-                record.pres_share_values[player_id]
-            )
-            self.rank_nw_cash_pct[rank] += float(record.nw_cash_pct[player_id])
-            self.rank_nw_companies_pct[rank] += float(
-                record.nw_companies_pct[player_id]
-            )
-            self.rank_nw_shares_pct[rank] += float(record.nw_shares_pct[player_id])
 
     def snapshot(self) -> dict[str, Any]:
         games = self.games
         if games == 0:
             return {
                 "games": 0.0,
-                "acquisition": self.acquisition.scalars(),
+                "game_stats": {},
                 "examples": 0.0,
                 "avg_moves": 0.0,
                 "avg_duration": 0.0,
@@ -527,19 +492,6 @@ class _SelfPlayMetricBucket:
                 "sample_policy_entropy": 0.0,
                 "sample_top1_frac": 0.0,
                 "total_net_worth": 0.0,
-                "invest_roundtrip_cap_hits_per_game": 0.0,
-                "rank_invest_roundtrip_cap_hits": [],
-                "avg_shares_per_player": [],
-                "avg_companies_per_player": [],
-                "avg_pres_share_values": [],
-                "avg_nw_cash_pct": [],
-                "avg_nw_companies_pct": [],
-                "avg_nw_shares_pct": [],
-                "total_shares": 0.0,
-                "total_companies": 0.0,
-                "avg_active_corp_price": 0.0,
-                "corps_in_receivership": 0.0,
-                "pct_games_max_price_corp": 0.0,
             }
 
         def rank_avg(values: list[float]) -> list[float]:
@@ -551,7 +503,10 @@ class _SelfPlayMetricBucket:
         return {
             "games": float(games),
             "policy_metrics": self.policy_metrics.scalars(),
-            "acquisition": self.acquisition.scalars(),
+            "game_stats": {
+                name: numerator / max(denominator, 1)
+                for name, (numerator, denominator) in self.game_stats.items()
+            },
             "examples": float(self.examples),
             "avg_moves": self.moves / games,
             "avg_duration": self.duration / games,
@@ -575,19 +530,6 @@ class _SelfPlayMetricBucket:
             "sample_policy_entropy": self.sample_entropy / games,
             "sample_top1_frac": self.sample_top1 / games,
             "total_net_worth": self.total_net_worth / games,
-            "invest_roundtrip_cap_hits_per_game": self.invest_roundtrip_cap_hits / games,
-            "rank_invest_roundtrip_cap_hits": rank_avg(self.rank_invest_roundtrip_cap_hits),
-            "avg_shares_per_player": rank_avg(self.rank_shares),
-            "avg_companies_per_player": rank_avg(self.rank_companies),
-            "avg_pres_share_values": rank_avg(self.rank_pres_share_values),
-            "avg_nw_cash_pct": rank_avg(self.rank_nw_cash_pct),
-            "avg_nw_companies_pct": rank_avg(self.rank_nw_companies_pct),
-            "avg_nw_shares_pct": rank_avg(self.rank_nw_shares_pct),
-            "total_shares": self.total_shares / games,
-            "total_companies": self.total_companies / games,
-            "avg_active_corp_price": self.avg_active_corp_price / games,
-            "corps_in_receivership": self.corps_in_receivership / games,
-            "pct_games_max_price_corp": self.games_with_max_price_corp / games,
         }
 
 
@@ -643,35 +585,13 @@ def _build_self_play_scalars(
             stats.get("sample_top1_frac", 0.0),
         ),
         f"{prefix}/total_net_worth": float(stats.get("total_net_worth", 0.0)),
-        f"{prefix}/invest_roundtrip_cap_hits_per_game": float(
-            stats.get("invest_roundtrip_cap_hits_per_game", 0.0),
-        ),
-        f"{prefix}/total_shares": float(stats.get("total_shares", 0.0)),
-        f"{prefix}/total_companies": float(stats.get("total_companies", 0.0)),
-        f"{prefix}/avg_active_corp_price": float(
-            stats.get("avg_active_corp_price", 0.0),
-        ),
-        f"{prefix}/corps_in_receivership": float(
-            stats.get("corps_in_receivership", 0.0),
-        ),
-        f"{prefix}/pct_games_max_price_corp": float(
-            stats.get("pct_games_max_price_corp", 0.0),
-        ),
     }
 
     rank_net_worths = list(stats.get("rank_net_worths", []))
-    for rank, hits in enumerate(stats.get("rank_invest_roundtrip_cap_hits", [])):
-        scalars[f"{prefix}/invest_roundtrip_cap_hits_{_RANK_LABELS[rank]}"] = float(hits)
-    scalars.update({f"{prefix}/{name}": value for name, value in stats.get("acquisition", {}).items()})
+    scalars.update({f"{prefix}/{name}": value for name, value in stats.get("game_stats", {}).items()})
     scalars.update({f"{prefix}/{name}": value for name, value in stats.get("policy_metrics", {}).items()})
     rank_mins = list(stats.get("rank_net_worths_min", []))
     rank_maxs = list(stats.get("rank_net_worths_max", []))
-    avg_shares = list(stats.get("avg_shares_per_player", []))
-    avg_companies = list(stats.get("avg_companies_per_player", []))
-    avg_pres_share_values = list(stats.get("avg_pres_share_values", []))
-    avg_nw_cash_pct = list(stats.get("avg_nw_cash_pct", []))
-    avg_nw_companies_pct = list(stats.get("avg_nw_companies_pct", []))
-    avg_nw_shares_pct = list(stats.get("avg_nw_shares_pct", []))
 
     for rank, avg in enumerate(rank_net_worths):
         label = _RANK_LABELS[rank]
@@ -680,25 +600,6 @@ def _build_self_play_scalars(
             scalars[f"{prefix}/net_worth_{label}_min"] = float(rank_mins[rank])
         if rank < len(rank_maxs):
             scalars[f"{prefix}/net_worth_{label}_max"] = float(rank_maxs[rank])
-    for rank, shares in enumerate(avg_shares):
-        label = _RANK_LABELS[rank]
-        scalars[f"{prefix}/shares_{label}"] = float(shares)
-        if rank < len(avg_companies):
-            scalars[f"{prefix}/companies_{label}"] = float(avg_companies[rank])
-        if rank < len(avg_pres_share_values):
-            scalars[f"{prefix}/pres_share_value_{label}"] = float(
-                avg_pres_share_values[rank]
-            )
-        if rank < len(avg_nw_cash_pct):
-            scalars[f"{prefix}/nw_cash_pct_{label}"] = float(avg_nw_cash_pct[rank])
-        if rank < len(avg_nw_companies_pct):
-            scalars[f"{prefix}/nw_companies_pct_{label}"] = float(
-                avg_nw_companies_pct[rank]
-            )
-        if rank < len(avg_nw_shares_pct):
-            scalars[f"{prefix}/nw_shares_pct_{label}"] = float(
-                avg_nw_shares_pct[rank]
-            )
 
     return scalars
 

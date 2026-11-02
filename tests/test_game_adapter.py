@@ -1,15 +1,18 @@
 """Adapter conformance: every registered game meets the ``Game`` contract.
 
-The generic tests talk only to the adapter. The engine checks run for every
-game; the extraction checks skip a game whose extraction has not landed (1889
-until pipeline step 7), whose adapter raises NotImplementedError for it. The
-RSS migration tests pin the RSS adapter to the direct engine calls that
-consumers made before pipeline-refactor.md step 2 moved them onto the
-adapter. The 1889 tests pin its adapter to the g1889 engine.
+The generic tests talk only to the adapter. The engine and self-play stats
+checks run for every game; the extraction checks skip a game whose extraction
+has not landed (1889 until pipeline step 7), whose adapter raises
+NotImplementedError for it. The RSS migration tests pin the RSS adapter to the
+direct engine calls that consumers made before pipeline-refactor.md step 2
+moved them onto the adapter, and its self-play stats to the scalars
+train/main.py logged before step 3 moved them behind the hook. The 1889 tests
+pin its adapter to the g1889 engine.
 """
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -31,6 +34,7 @@ from games import (
     get_game,
 )
 from train.config import TrainingConfig
+from train.self_play import play_game
 
 # RSS migration and 1889 checks only.
 from core.actions import (
@@ -43,7 +47,7 @@ from core.attention_relations import (
     MAX_ATTENTION_RELATION_EDGES,
     NUM_ATTENTION_RELATIONS,
 )
-from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES, GamePhases
+from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES, GameConstants, GamePhases
 from core.driver import STATUS_GAME_OVER_PY, STATUS_INVALID_PY, STATUS_OK_PY
 from core.relations import (
     get_relation_coord_data,
@@ -73,6 +77,7 @@ from g1889.driver import (
 )
 from g1889.state import GameState as G1889State, get_layout as g1889_layout
 from games.g1889 import NO_SIZE
+from games.rss_selfplay import StrategyTraceBuilder
 from mcts.evaluator import BaseEvaluator, compute_terminal_values
 from nn import policy_layout as legacy_policy_layout
 from tests.test_actions_width import _state_acq_select_price
@@ -136,6 +141,9 @@ class Playout:
     actions: list[np.ndarray] = field(default_factory=list)
     active_players: list[int] = field(default_factory=list)
     samples: list[Sample] = field(default_factory=list)
+    # The self-play stats collector's report, observing every decision as
+    # search's top choice under uniform priors.
+    game_stats: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -176,10 +184,12 @@ def _play(
 ) -> Playout:
     state = game.new_game(num_players, max_players, seed)
     playout = Playout(num_players, max_players, state)
+    stats = game.new_selfplay_stats(num_players)
     rng = np.random.default_rng(seed)
     buf = np.empty(game.policy.max_action_size, dtype=np.uint16)
     for decision in range(MAX_DECISIONS):
         if game.is_terminal(state):
+            playout.game_stats = stats.finish(state)
             return playout
         n = game.enumerate_policy_actions(state, buf)
         assert n > 0, f"seed {seed}: no policy actions at decision {decision}"
@@ -193,7 +203,11 @@ def _play(
             records = _record_buffer(game)
             count = game.fill_relations_sparse(state, records, max_players=max_players)
             playout.samples.append(Sample(decision, tokens, records, count))
-        status = game.apply_action(state, int(buf[rng.integers(n)]))
+        chosen = int(rng.integers(n))
+        counts = np.ones(n, dtype=np.float32)
+        counts[chosen] = 2.0
+        stats.observe(state, buf[:n].copy(), chosen, np.full(n, 1.0 / n, dtype=np.float32), counts)
+        status = game.apply_action(state, int(buf[chosen]))
         assert status in (STATUS_OK, STATUS_GAME_OVER), f"seed {seed}: status {status}"
         assert (status == STATUS_GAME_OVER) == game.is_terminal(state)
     pytest.fail(f"seed {seed}: no terminal state within {MAX_DECISIONS} decisions")
@@ -331,6 +345,15 @@ def test_every_policy_action_applies_on_a_rebound_scratch_state(case: Case):
                 status = game.apply_action(scratch, int(action))
                 assert status in (STATUS_OK, STATUS_GAME_OVER)
                 assert (status == STATUS_GAME_OVER) == game.is_terminal(scratch)
+
+
+def test_selfplay_stats_report_numerator_denominator_pairs(case: Case):
+    # train/main.py logs each name as sum(numerators) / max(sum(denominators), 1).
+    for playout in case.playouts:
+        for name, (numerator, denominator) in playout.game_stats.items():
+            assert isinstance(name, str) and name
+            assert math.isfinite(numerator) and math.isfinite(denominator)
+            assert denominator >= 0
 
 
 def _scratch_states(game: Game, playout: Playout, decisions) -> Iterator[tuple[int, Any]]:
@@ -509,6 +532,65 @@ def test_rss_final_scores_are_the_net_worths_evaluate_terminal_reads(rss_case: C
         )
 
 
+# The self-play scalars train/main.py logged per reporting group before step 3
+# moved them behind the stats hook, without their self_play_<group>/ prefix.
+RSS_GAME_STATS = (
+    "acq_decisions_per_phase", "acq_offers_per_phase", "acq_offer_acceptance_rate",
+    "acq_cap_hits_per_phase", "acq_offer_accept_prior_mean",
+    "acq_rejections_expected_fraction", "acq_rejections_surprise_fraction",
+    "acq_offers_top_choice_fraction", "acq_top_choice_acceptance_rate",
+    "invest_roundtrip_cap_hits_per_game", "total_shares", "total_companies",
+    "avg_active_corp_price", "corps_in_receivership", "pct_games_max_price_corp",
+)
+# Logged by finishing rank, as <name>_1st, <name>_2nd, ...
+RSS_RANK_STATS = (
+    "invest_roundtrip_cap_hits", "shares", "companies", "pres_share_value",
+    "nw_cash_pct", "nw_companies_pct", "nw_shares_pct",
+)
+RANK_LABELS = ("1st", "2nd", "3rd", "4th", "5th")
+NUM_CORPS = int(GameConstants.NUM_CORPS)
+
+
+def test_rss_selfplay_stats_report_the_scalars_main_logged(rss_case: Case):
+    for playout in rss_case.playouts:
+        n, state, stats = playout.num_players, playout.final, playout.game_stats
+        ranked = sorted(range(n), key=lambda p: PLAYERS[p].get_net_worth(state), reverse=True)
+        labels = RANK_LABELS[:n]
+        assert set(stats) == set(RSS_GAME_STATS) | {
+            f"{name}_{label}" for name in RSS_RANK_STATS for label in labels
+        }
+        # Everything but the acquisition rates is a per-game mean.
+        assert all(den == 1 for name, (_, den) in stats.items() if not name.startswith("acq_"))
+        decisions, phases = stats["acq_decisions_per_phase"]
+        assert decisions >= phases
+        # Each rank reports its player, the one with that finishing net worth.
+        for label, player in zip(labels, ranked):
+            assert stats[f"invest_roundtrip_cap_hits_{label}"][0] == (
+                PLAYERS[player].get_invest_roundtrip_cap_hits(state)
+            )
+            assert stats[f"shares_{label}"][0] == sum(
+                PLAYERS[player].get_shares(state, corp) for corp in range(NUM_CORPS)
+            )
+            if PLAYERS[player].get_net_worth(state) > 0:
+                assert sum(
+                    stats[f"nw_{part}_pct_{label}"][0] for part in ("cash", "companies", "shares")
+                ) == pytest.approx(1.0)
+        for total, per_rank in (
+            ("invest_roundtrip_cap_hits_per_game", "invest_roundtrip_cap_hits"),
+            ("total_shares", "shares"),
+            ("total_companies", "companies"),
+        ):
+            assert stats[total][0] == sum(stats[f"{per_rank}_{label}"][0] for label in labels)
+
+
+def test_rss_strategy_trace_is_the_rss_builder(rss_case: Case):
+    new_trace = rss_case.game.new_strategy_trace
+    assert new_trace is not None
+    builder = new_trace(4)
+    assert isinstance(builder, StrategyTraceBuilder)
+    assert (builder.num_players, builder.unified_dim) == (4, rss_case.game.policy.unified_dim)
+
+
 def _assert_same_fill(adapter_fill, direct_fill, source, buf: np.ndarray, **kwargs) -> None:
     expected = buf.copy()
     assert adapter_fill(source, buf, **kwargs) == direct_fill(source, expected, **kwargs)
@@ -635,6 +717,13 @@ def test_g1889_policy_actions_are_engine_legal(g1889_case: Case):
         for row, actions in zip(playout.rows, playout.actions, strict=True):
             n = g1889_legal(game.scratch_state(playout.final, row.copy()), buf)
             assert set(actions.tolist()) <= set(buf[:n].tolist())
+
+
+def test_g1889_has_no_selfplay_stats_or_strategy_trace(g1889_case: Case):
+    assert all(playout.game_stats == {} for playout in g1889_case.playouts)
+    assert g1889_case.game.new_strategy_trace is None
+    with pytest.raises(ValueError, match="'1889' has no strategy trace"):
+        play_game(None, g1889_case.config, 0, np.random.default_rng(0), collect_strategy_trace=True)
 
 
 def test_g1889_extraction_raises_until_step_7(g1889_case: Case):

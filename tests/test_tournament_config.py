@@ -13,7 +13,8 @@ from core.data import MAX_ACTION_SIZE, GameConstants, GamePhases
 from core.state import GameState
 from entities.player import PLAYERS
 from entities.turn import TURN
-from mcts.evaluator import NNEvaluator, is_cross_president_acq_offer_state
+from games.rss_live import is_cross_president_acq_offer_state
+from mcts.evaluator import NNEvaluator
 from train import tournament
 from train.config import MCTSConfig, TrainingConfig
 from train.tournament import (

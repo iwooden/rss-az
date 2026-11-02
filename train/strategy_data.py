@@ -27,10 +27,11 @@ from core.data import (
     CORP_NAMES,
     PHASE_ACTION_SIZES,
 )
-from core.state import get_layout
+from core.state import GameState, get_layout, get_storage_player_capacity
 from entities.company import COMPANIES
 from entities.corp import CORPS
 from games import get_game
+from games.rss_selfplay import player_holdings
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from nn import create_model, get_model_input_spec
@@ -282,6 +283,16 @@ def _strategy_data_worker(
         pass
 
 
+def _final_holdings(record: GameRecord) -> tuple[list[int], list[int]]:
+    """Shares and companies each player holds at the end of ``record``'s game."""
+    row = record.final_state
+    assert row is not None
+    state = GameState.from_array(
+        row, record.num_players, max_players=get_storage_player_capacity(row.shape[0]),
+    )
+    return player_holdings(state, record.num_players)
+
+
 def _event_with_game_id(records: list[GameRecord], attr: str, width: int) -> np.ndarray:
     chunks: list[np.ndarray] = []
     for record in records:
@@ -351,6 +362,7 @@ class _StrategyShardWriter:
                 raise ValueError("strategy shard received a record without a final state")
             final_states.append(record.final_state)
 
+        holdings = [_final_holdings(r) for r in records]
         game_lengths = np.asarray([r.num_examples for r in records], dtype=np.int32)
         starts = np.zeros(len(records), dtype=np.int64)
         if len(records) > 1:
@@ -400,10 +412,10 @@ class _StrategyShardWriter:
                 [np.asarray(r.net_worths, dtype=np.int16) for r in records]
             ),
             "final_shares_per_player": np.stack(
-                [np.asarray(r.shares_per_player, dtype=np.int16) for r in records]
+                [np.asarray(shares, dtype=np.int16) for shares, _ in holdings]
             ),
             "final_companies_per_player": np.stack(
-                [np.asarray(r.companies_per_player, dtype=np.int16) for r in records]
+                [np.asarray(companies, dtype=np.int16) for _, companies in holdings]
             ),
             "selected_action_ids": concat_trace("selected_action_ids"),
             "selected_unified_slots": concat_trace("selected_unified_slots"),

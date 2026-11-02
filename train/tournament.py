@@ -54,7 +54,8 @@ from core.state import GameState
 from entities.player import PLAYERS
 from entities.turn import TURN
 from games import Game, get_game
-from mcts.evaluator import CrossPresidentOfferPriorEvaluator, NNEvaluator
+from games.rss_live import CrossPresidentOfferPriorEvaluator
+from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, run_search
 from nn import get_model_input_spec
 from train.checkpoint import load_model_from_checkpoint

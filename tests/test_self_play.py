@@ -102,15 +102,20 @@ def test_play_game_full_3p_game_produces_valid_record(evaluator, v3_behavior, mo
     assert record.total_moves > 0
     assert record.num_examples == record.total_moves
     assert len(record.net_worths) == NUM_PLAYERS
-    assert len(record.invest_roundtrip_cap_hits) == NUM_PLAYERS
-    assert all(hits >= 0 for hits in record.invest_roundtrip_cap_hits)
+    # RSS's stats report each player's final hits at their finishing rank.
+    ranked = sorted(range(NUM_PLAYERS), key=lambda p: record.net_worths[p], reverse=True)
+    final_hits = [0.0] * NUM_PLAYERS
+    for label, player in zip(("1st", "2nd", "3rd"), ranked):
+        final_hits[player] = record.game_stats[f"invest_roundtrip_cap_hits_{label}"][0]
+    assert all(hits >= 0 for hits in final_hits)
+    assert record.game_stats["invest_roundtrip_cap_hits_per_game"] == (sum(final_hits), 1)
     # Lifetime totals cannot drop below any saved position, including when
     # MCTS explores cap-reaching branches that are not selected for play.
     previous = [0] * NUM_PLAYERS
     for array in record.states:
         state = GameState.from_array(array, NUM_PLAYERS, v3_behavior=v3_behavior)
         hits = [PLAYERS[p].get_invest_roundtrip_cap_hits(state) for p in range(NUM_PLAYERS)]
-        assert all(a <= b <= c for a, b, c in zip(previous, hits, record.invest_roundtrip_cap_hits))
+        assert all(a <= b <= c for a, b, c in zip(previous, hits, final_hits))
         previous = hits
     # Game-over invariant: player net worth is non-negative (RULES.md).
     assert all(nw >= 0 for nw in record.net_worths)

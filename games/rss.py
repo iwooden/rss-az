@@ -34,6 +34,7 @@ from core.token_data import (
 from entities.player import PLAYERS
 from entities.turn import TURN
 from games import Game
+from games.rss_selfplay import RSSSelfPlayStats, StrategyTraceBuilder
 from nn.policy_layout import PolicyLayout
 
 if TYPE_CHECKING:
@@ -97,6 +98,10 @@ def _final_scores(state: GameState) -> list[int]:
     ]
 
 
+def _new_strategy_trace(num_players: int) -> StrategyTraceBuilder:
+    return StrategyTraceBuilder(num_players, POLICY_LAYOUT.unified_dim)
+
+
 def make_game(config: TrainingConfig) -> Game:
     """Build the RSS adapter for ``config``'s engine options."""
     v3_behavior = config.v3_behavior
@@ -136,4 +141,6 @@ def make_game(config: TrainingConfig) -> Game:
         fill_relations_dense_batch=get_relation_data_batch,
         fill_relations_sparse=get_relation_coord_data,
         fill_relations_sparse_batch=get_relation_coord_data_batch,
+        new_selfplay_stats=RSSSelfPlayStats,
+        new_strategy_trace=_new_strategy_trace,
     )

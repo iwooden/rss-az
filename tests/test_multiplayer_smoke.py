@@ -154,10 +154,10 @@ def test_local_mixed_mini_epoch_runs_one_game_per_count_and_trains() -> None:
         final_state = GameState.from_array(
             record.final_state, record.num_players, max_players=MAX_PLAYERS,
         )
-        assert record.invest_roundtrip_cap_hits == [
+        assert record.game_stats["invest_roundtrip_cap_hits_per_game"] == (sum(
             PLAYERS[p].get_invest_roundtrip_cap_hits(final_state)
             for p in range(record.num_players)
-        ]
+        ), 1)
         assert record.states.shape[1] == get_layout(MAX_PLAYERS).total_size
         assert record.value_targets.shape == (
             record.num_examples,
@@ -182,13 +182,12 @@ def test_local_mixed_mini_epoch_runs_one_game_per_count_and_trains() -> None:
     assert "self_play_3p/game_length_mean" in scalars
     assert "self_play_4p/game_length_mean" in scalars
     assert "self_play_5p/game_length_mean" in scalars
+    hits = [record.game_stats["invest_roundtrip_cap_hits_per_game"][0] for record in records]
     assert scalars["self_play_aggregate/invest_roundtrip_cap_hits_per_game"] == (
-        sum(sum(record.invest_roundtrip_cap_hits) for record in records) / len(records)
+        sum(hits) / len(records)
     )
-    for record in records:
-        assert scalars[f"self_play_{record.num_players}p/invest_roundtrip_cap_hits_per_game"] == sum(
-            record.invest_roundtrip_cap_hits,
-        )
+    for record, game_hits in zip(records, hits):
+        assert scalars[f"self_play_{record.num_players}p/invest_roundtrip_cap_hits_per_game"] == game_hits
 
     trainer = Trainer(model, config, device)
     losses: dict[str, list[float]] = {}

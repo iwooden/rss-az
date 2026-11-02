@@ -2,8 +2,9 @@
 
 Status: steps 0, 1, and 5 and the ACQ cap commit done (2026-11-01);
 step 6, the 1889 engine with the engine half of `games/g1889.py`
-(2026-11-02, [`engine-design.md`](engine-design.md) §11); and step 2, the
-consumers on the adapter (2026-11-02). The rest is plan.
+(2026-11-02, [`engine-design.md`](engine-design.md) §11); step 2, the
+consumers on the adapter (2026-11-02); and step 3, the game-specific
+behavior out of the pipeline (2026-11-02). The rest is plan.
 This expands Section 11
 of the model blueprint, [`1889.md`](1889.md). The rules are in
 [`1889-rules.md`](1889-rules.md).
@@ -41,15 +42,15 @@ Step 2 moved search, the evaluators, the eval server, replay, the trainer,
 import-time constants (`UNIFIED_LOGIT_DIM`, `MAX_ACTION_SIZE`,
 `NUM_ATTENTION_RELATIONS`, `TOKEN_DIM`, `build_action_lut`, `get_layout`,
 `get_num_tokens`, `PHASE_NAMES`, and module globals such as `U_DIM`), and the
-RSS runtime flags `StatePool` used to copy. What remains, with the boundary
-test's allowlist (Section 6.4):
+RSS runtime flags `StatePool` used to copy. Step 3 moved the RSS-only
+features out: the cross-president prior adapter to `games/rss_live.py`
+(Section 4.2), and the self-play stats and strategy trace behind game hooks in
+`games/rss_selfplay.py` (Section 4.3). What remains, with the boundary test's
+allowlist (Section 6.4):
 
 | Module | RSS coupling | Removed in |
 |---|---|---|
-| `mcts/mcts_core.pyx`, `mcts/node.py`, `mcts/search.py` | None. | |
-| `mcts/evaluator.py` | The cross-president prior adapter and its predicates, used only by tournament and live play. | Step 3 |
-| `train/eval_server.py`, `train/replay_buffer.py`, `train/trainer.py`, `train/policy_metrics.py`, `train/main.py` | None. `main.py` logs the RSS self-play stats that `play_game` returns. | Step 3 |
-| `train/self_play.py` | The `play_game` loop is generic. RSS-only: `AcquisitionStats`, `_StrategyTraceBuilder`, and the end-of-game share and company stats. | Step 3 |
+| `mcts/`, `train/eval_server.py`, `train/replay_buffer.py`, `train/trainer.py`, `train/policy_metrics.py`, `train/self_play.py`, `train/main.py` | None. | |
 | `train/config.py` | RSS engine flags and the ACQ cap. The cap's bound comes from `games/rss.py`. | |
 | `nn/policy_layout.py` | RSS's layout under its legacy module names (`NUM_PHASES`, `PHASE_OFFSETS`, `UNIFIED_LOGIT_DIM`, `PHASES_WITH_PASS_SLOT`, `build_action_lut`), from `core.data`, for the v2 and v3 model files. Resolving them through `games/rss.py` instead is an import cycle while `nn` loads v2 at import (`games.rss` → `nn.policy_layout` → `nn/__init__.py` → v2 → `games.rss`). | Step 4 |
 | `nn/__init__.py` | Loads `transformer-v2.py` at import. Requires `RSSTransformerNet`, `TransformerConfig`, and a fixed list of RSS keyword arguments. `get_model_input_spec` takes its dimensions from the config's `Game`. | Step 4 |
@@ -107,8 +108,14 @@ class Game:
     new_selfplay_stats: Callable    # num_players -> collector
 
     # --- RSS-only; None for other games ---
-    # e.g. the strategy-trace builder used by train/strategy_data.py
+    new_strategy_trace: Callable | None = None  # num_players -> trace builder
 ```
+
+As built (step 3): the self-play hook is `new_selfplay_stats`, whose
+collectors follow the `games.SelfPlayStats` protocol; a game with nothing to
+report uses `games.EmptySelfPlayStats` (1889). The RSS-only block holds one
+field, `new_strategy_trace`, which defaults to `None`, so other games leave it
+out (Section 4.3).
 
 ### 3.2 Conventions every game follows
 
@@ -205,6 +212,16 @@ game hooks.
   `utils_18xx/live.py` do. Move the adapter and its predicates out of
   `mcts/evaluator.py` into an RSS module (e.g. `games/rss_live.py`); nothing
   else changes.
+- As built (step 3): `games/rss_live.py` holds
+  `CrossPresidentOfferPriorEvaluator`, `is_cross_president_acq_offer_state`,
+  `is_acq_offer_outside_v3_limits`, and their helpers, unchanged except that
+  the dense LUT comes from `games.rss.POLICY_LAYOUT` (equal to the legacy
+  `build_action_lut()`). It sits beside the RSS adapter rather than in
+  `utils_18xx/`: it wraps an evaluator over RSS engine state with no
+  18xx.games dependency, and its other user, `train/tournament.py`, has
+  nothing to do with 18xx.games. `games/` also holds the rest of the RSS code
+  the pipeline used to (Section 4.3). Tournament, live play, and their tests
+  import it from there.
 
 ### 4.3 Self-play stats → hook
 
@@ -216,12 +233,45 @@ game hooks.
   collector.
 - The strategy trace stays RSS-only: `collect_strategy_trace` raises for other
   games.
+- As built (step 3):
+  - `finish` returns `{name: (numerator, denominator)}`, not plain floats.
+    `train/main.py` sums both over each reporting group's games (all games
+    and each player count) and logs `self_play_<group>/<name>` as
+    numerator / max(denominator, 1). Plain floats can't reproduce RSS's
+    scalars: the acquisition rates are ratios of sums over a group's
+    decisions and offers, not means of per-game ratios, and the per-rank
+    stats average over the games that have that rank. With pairs, a mean is
+    a denominator of 1 per game, and RSS's scalar names and values are
+    unchanged.
+  - `GameRecord.game_stats` carries the report, replacing `acquisition` and
+    the ten RSS stat fields. `net_worths` stays as the generic final
+    scores (`game.final_scores`), which `main.py` ranks for its net worth
+    scalars and the console panel. `play_game` binds `observe` once and calls
+    it per played decision, before applying it, as it called
+    `AcquisitionStats.observe`.
+  - `games/rss_selfplay.py` holds RSS's collector (`RSSSelfPlayStats`:
+    `AcquisitionStats` plus the end-of-game share, company, and corp stats,
+    reported per game or by finishing rank), `StrategyTrace`, and its builder.
+    1889 uses `games.EmptySelfPlayStats`, whose `finish` returns `{}`.
+  - The trace builder is the RSS-only `Game.new_strategy_trace`, `None` for
+    1889; `play_game` raises `ValueError` when asked to trace a game without
+    one. The builder now decodes the chosen action and keeps the decision's
+    pre-search summary itself, and `play_game` passes it the greedy leaf
+    depth, so `games/` imports nothing from `mcts/`.
+  - `train/strategy_data.py` reads its `final_shares_per_player` and
+    `final_companies_per_player` from each game's final state
+    (`games.rss_selfplay.player_holdings`), since the record no longer
+    carries them.
 
 ### 4.4 The same pattern in 1889
 
-- Self-play restrictions are engine options that change legality, like
-  `acq_same_president`. Private sales across presidents are the first
-  candidate (blueprint 4.4 **Open:**).
+- Self-play restrictions are policy-only runtime flags, like the ACQ cap
+  (Section 4.1), not legality options like `acq_same_president`
+  ([`engine-design.md`](engine-design.md) §7). `private_sale_same_president`,
+  `train_sale_same_president`, and `auction_pass_payout_cap` filter only the
+  policy set that `enumerate_policy_actions` returns; the driver still
+  accepts every move, so replay and live play apply 18xx.games moves the
+  policy would never make.
 - Routes: self-play uses engine max-revenue routes, but replay must accept
   human routes (blueprint 4.3). The driver can accept an explicit route in
   replay and compute one otherwise. The pipeline never sees a route decision.
@@ -343,9 +393,9 @@ As built (step 2): `tests/test_pipeline_boundary.py`. The training core is
 every `train/` module except the four RSS tools of Section 1, and every
 import counts, including function-level and type-checking ones. Its allowlist
 names each remaining import by module and imported names, with the step that
-removes it: step 3's in `mcts/evaluator.py` and `train/self_play.py`, and
-`nn/policy_layout.py`'s `core.data` (step 4, Section 2). The test also fails
-on an allowlisted import that is gone, so entries leave with their imports.
+removes it. Since step 3 the only entry is `nn/policy_layout.py`'s
+`core.data` (step 4, Section 2). The test also fails on an allowlisted import
+that is gone, so entries leave with their imports.
 
 ## 7. Guarding RSS behavior
 
@@ -419,6 +469,35 @@ introduced it. Add to this list whenever a step changes RSS behavior.
   step 7) instead of getting RSS's sizes. `nn.create_model` still rejects it
   first (until step 4).
 
+- **Cross-president prior adapter moved** (step 3).
+  `CrossPresidentOfferPriorEvaluator`, `is_cross_president_acq_offer_state`,
+  and `is_acq_offer_outside_v3_limits` import from `games.rss_live`, not
+  `mcts.evaluator`. Behavior is unchanged.
+- **Self-play stats behind a game hook** (step 3). `Game` gains
+  `new_selfplay_stats` and the RSS-only `new_strategy_trace`.
+  - `GameRecord` drops `acquisition`, `invest_roundtrip_cap_hits`,
+    `shares_per_player`, `companies_per_player`, `pres_share_values`, the
+    three `nw_*_pct` lists, `avg_active_corp_price`,
+    `corps_in_receivership`, and `has_max_price_corp` for
+    `game_stats: {name: (numerator, denominator)}`. Per-player values are
+    reported by finishing rank, as `main.py` logged them. `strategy_trace`
+    is typed `Any`.
+  - `AcquisitionStats`, `StrategyTrace`, and the trace builder (now
+    `StrategyTraceBuilder`) move from `train.self_play` to
+    `games.rss_selfplay`. `AcquisitionStats.add` and `.scalars` give way to
+    `.ratios()`. The builder takes `unified_dim`, decodes the chosen action
+    itself, and takes the greedy leaf depth from `play_game`.
+  - `main.py`'s self-play snapshots replace their RSS keys (`acquisition`,
+    `invest_roundtrip_cap_hits_per_game`, `rank_invest_roundtrip_cap_hits`,
+    the `avg_*` per-rank lists, `total_shares`, `total_companies`,
+    `avg_active_corp_price`, `corps_in_receivership`, and
+    `pct_games_max_price_corp`) with one `game_stats` dict of finished
+    scalars. TensorBoard names and values are unchanged, bit for bit.
+  - `play_game(collect_strategy_trace=True)` raises `ValueError` for a game
+    without a strategy trace (1889).
+  - `train/strategy_data.py` reads final shares and companies from each
+    record's final state; its shards are unchanged.
+
 Known `main` bugs, kept for parity until fixed on `main`:
 
 - **Live play ignores the ACQ price cap.** `_mcts_config_for`
@@ -450,7 +529,9 @@ Pipeline track. Each step is a behavior-preserving commit or a short series:
    - the cross-president adapter, into an RSS module.
 
    The ACQ cap moved onto the state as its own commit between steps 1 and 2
-   (Section 4.1).
+   (Section 4.1). Done 2026-11-02 (Sections 4.2-4.3): `mcts/` and the
+   training core import no engine code; only step 4's `nn/policy_layout.py`
+   entry remains on the boundary test's allowlist.
 4. Model loader: `build_model`, `ModelInputSpec.game`, and the checkpoint
    default.
 
@@ -474,7 +555,8 @@ block 1889 only at step 7, so the two tracks can alternate.
 
 ## 9. Open questions
 
-- **Open:** Names and contents of the RSS-only adapter block.
+- **Open:** Names and contents of the RSS-only adapter block. As of step 3
+  it holds only `new_strategy_trace`.
 - **Open:** Human moves the bot's rules forbid, in live play. Two options:
   - a per-player bot/human flag in the `int16` row, so restrictions apply only
     to bot seats. It travels with pool rows, and search would model humans

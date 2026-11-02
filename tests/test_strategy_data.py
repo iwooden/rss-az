@@ -3,9 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from core.state import get_layout
+from core.state import GameState, get_layout
+from games.rss_selfplay import StrategyTrace
 from nn.policy_layout import UNIFIED_LOGIT_DIM
-from train.self_play import GameRecord, StrategyTrace
+from tests.phases.conftest import float_corp_for_test
+from tests.phases.helpers.ownership import give_company_to_player
+from train.self_play import GameRecord
 from train.strategy_data import _StrategyShardWriter
 
 
@@ -72,6 +75,15 @@ def _fake_trace(num_examples: int, num_players: int) -> StrategyTrace:
     )
 
 
+def _final_state(num_players: int) -> np.ndarray:
+    """Player 1 owns company 0 and presides over corp 0 (1 share) with company 1."""
+    state = GameState(num_players)
+    state.initialize_game(num_players, seed=0)
+    give_company_to_player(state, 0, 1)
+    float_corp_for_test(state, 0, company_id=1, player_id=1)
+    return state._array.copy()
+
+
 def _fake_record(game_id: int, num_examples: int = 2) -> GameRecord:
     num_players = 3
     state_size = get_layout(num_players).total_size
@@ -88,21 +100,11 @@ def _fake_record(game_id: int, num_examples: int = 2) -> GameRecord:
         num_examples=num_examples,
         total_moves=num_examples,
         net_worths=[10, 20, 30],
-        invest_roundtrip_cap_hits=[0, 0, 0],
-        shares_per_player=[1, 2, 3],
-        companies_per_player=[0, 1, 2],
-        pres_share_values=[0.0, 0.0, 0.0],
-        nw_cash_pct=[0.0, 0.0, 0.0],
-        nw_companies_pct=[0.0, 0.0, 0.0],
-        nw_shares_pct=[0.0, 0.0, 0.0],
-        avg_active_corp_price=0.0,
-        corps_in_receivership=0,
-        has_max_price_corp=False,
         duration_secs=0.1,
         game_id=game_id,
         game_seed=100 + game_id,
         rng_seed=200 + game_id,
-        final_state=np.zeros(state_size, dtype=np.int16),
+        final_state=_final_state(num_players),
         strategy_trace=_fake_trace(num_examples, num_players),
     )
 
@@ -122,6 +124,9 @@ def test_strategy_shard_writer_emits_analysis_arrays(tmp_path, compress) -> None
         assert data["mcts_policy_pct"].shape == (5, U_DIM)
         assert data["auction_events"].shape == (2, 10)
         assert data["auction_events"][:, 0].tolist() == [10, 11]
+        # Read from each game's final state.
+        assert data["final_shares_per_player"].tolist() == [[0, 1, 0]] * 2
+        assert data["final_companies_per_player"].tolist() == [[0, 1, 0]] * 2
 
 
 def test_strategy_shard_writer_rejects_missing_final_state(tmp_path) -> None:

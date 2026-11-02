@@ -23,7 +23,7 @@ from entities.corp import CORPS
 from entities.market import MARKET
 from entities.player import PLAYERS
 from entities.turn import TURN
-from mcts.evaluator import (
+from games.rss_live import (
     CrossPresidentOfferPriorEvaluator,
     is_acq_offer_outside_v3_limits,
 )

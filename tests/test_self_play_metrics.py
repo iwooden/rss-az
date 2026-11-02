@@ -10,8 +10,8 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 
+from games.rss_selfplay import AcquisitionStats
 from train.logging import TrainingLogger
-from train.self_play import AcquisitionStats
 from train.policy_metrics import PolicyMetrics
 from train.main import (
     _SelfPlayMetricAccumulator,
@@ -30,28 +30,16 @@ def _fake_record(
     target_top1: float = 0.6,
     sample_entropy: float = 1.0,
     sample_top1: float = 0.4,
-    avg_active_corp_price: float = 20.0,
-    corps_in_receivership: int = 1,
-    has_max_price_corp: bool = False,
+    game_stats: dict[str, tuple[float, float]] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         num_players=num_players,
-        acquisition=AcquisitionStats(),
+        game_stats={"corps_in_receivership": (1, 1)} if game_stats is None else game_stats,
         policy_metrics=PolicyMetrics(),
         num_examples=examples,
         total_moves=moves,
         duration_secs=duration,
         net_worths=net_worths,
-        invest_roundtrip_cap_hits=[0] * num_players,
-        shares_per_player=[player + 1 for player in range(num_players)],
-        companies_per_player=[player + 2 for player in range(num_players)],
-        pres_share_values=[float((player + 1) * 10) for player in range(num_players)],
-        nw_cash_pct=[0.2 for _ in range(num_players)],
-        nw_companies_pct=[0.3 for _ in range(num_players)],
-        nw_shares_pct=[0.5 for _ in range(num_players)],
-        avg_active_corp_price=avg_active_corp_price,
-        corps_in_receivership=corps_in_receivership,
-        has_max_price_corp=has_max_price_corp,
         policy_target_entropy_mean=target_entropy,
         policy_target_top1_fraction=target_top1,
         sample_policy_entropy_mean=sample_entropy,
@@ -80,26 +68,32 @@ def test_self_play_metric_accumulator_handles_missing_player_count() -> None:
     assert len(aggregate["rank_net_worths"]) == 5
 
 
-def test_invest_cap_hits_average_games_by_count_and_finishing_rank() -> None:
+def test_game_stats_log_totals_over_the_games_that_report_them() -> None:
     metrics = _SelfPlayMetricAccumulator()
-    assert metrics.aggregate_snapshot()["invest_roundtrip_cap_hits_per_game"] == 0
+    assert metrics.aggregate_snapshot()["game_stats"] == {}
     assert not _build_epoch_self_play_scalars(metrics)
-    for n, worths, hits in (
-        (3, [100, 300, 200], [1, 2, 0]),
-        (3, [100, 300, 200], [0, 0, 0]),
-        (4, [100, 200, 300, 400], [1, 2, 0, 5]),
-        (5, [100, 200, 300, 400, 500], [1, 2, 3, 4, 5]),
+    # A per-game mean (denominator 1), one reported only by 4p+ games, as
+    # RSS's 4th-place stats are, and a rate over events.
+    for n, per_game, fourth, rate in (
+        (3, 3, None, (0, 0)),
+        (3, 0, None, (1, 2)),
+        (4, 8, 5, (0, 0)),
+        (5, 15, 1, (3, 3)),
     ):
-        record = _fake_record(n, worths)
-        record.invest_roundtrip_cap_hits = hits
-        metrics.add_record(record)
+        stats: dict[str, tuple[float, float]] = {"per_game": (per_game, 1), "rate": rate}
+        if fourth is not None:
+            stats["fourth"] = (fourth, 1)
+        metrics.add_record(_fake_record(n, list(range(n)), game_stats=stats))
     scalars = _build_epoch_self_play_scalars(metrics)
     for group, expected in (("aggregate", 6.5), ("3p", 1.5), ("4p", 8), ("5p", 15)):
-        assert scalars[f"self_play_{group}/invest_roundtrip_cap_hits_per_game"] == expected
-    assert scalars["self_play_aggregate/invest_roundtrip_cap_hits_1st"] == 3
-    assert scalars["self_play_aggregate/invest_roundtrip_cap_hits_5th"] == 1
-    assert scalars["self_play_3p/invest_roundtrip_cap_hits_1st"] == 1
-    assert "self_play_3p/invest_roundtrip_cap_hits_4th" not in scalars
+        assert scalars[f"self_play_{group}/per_game"] == expected
+    assert scalars["self_play_aggregate/fourth"] == 3
+    assert scalars["self_play_5p/fourth"] == 1
+    assert "self_play_3p/fourth" not in scalars
+    # Rates sum events across games; a group with none logs 0.
+    assert scalars["self_play_aggregate/rate"] == 4 / 5
+    assert scalars["self_play_3p/rate"] == 1 / 2
+    assert scalars["self_play_4p/rate"] == 0
 
 
 def _observe(stats, state, action, *, accept_prior=0.5, top_choice=True):
@@ -142,13 +136,11 @@ def test_acquisition_metrics_count_actual_responses_and_aggregate_by_phase():
     assert (stats.expected_rejections, stats.surprise_rejections) == (1, 1)
     assert (stats.top_choice_offers, stats.top_choice_rejections) == (2, 1)
 
-    first = _fake_record(3, [100, 200, 300])
-    first.acquisition = stats
-    second = _fake_record(5, [100, 200, 300, 400, 500])
-    second.acquisition = AcquisitionStats(
+    first = _fake_record(3, [100, 200, 300], game_stats=stats.ratios())
+    second = _fake_record(5, [100, 200, 300, 400, 500], game_stats=AcquisitionStats(
         phases=3, decisions=8, offers=1, rejections=0,
         accept_prior_sum=0.7, top_choice_offers=1,
-    )
+    ).ratios())
     metrics = _SelfPlayMetricAccumulator()
     metrics.add_record(first)
     metrics.add_record(second)

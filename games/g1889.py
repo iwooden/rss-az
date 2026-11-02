@@ -26,7 +26,7 @@ from g1889.state import (
     get_layout,
     get_storage_player_capacity,
 )
-from games import Game
+from games import EmptySelfPlayStats, Game
 from nn.policy_layout import PolicyLayout
 
 if TYPE_CHECKING:
@@ -115,4 +115,5 @@ def make_game(config: TrainingConfig) -> Game:
         fill_relations_dense_batch=_no_extraction,
         fill_relations_sparse=_no_extraction,
         fill_relations_sparse_batch=_no_extraction,
+        new_selfplay_stats=EmptySelfPlayStats,
     )

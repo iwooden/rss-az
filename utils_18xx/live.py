@@ -56,12 +56,12 @@ from entities.deck import DECK
 from entities.market import MARKET
 from entities.turn import TURN
 from games import get_game
-from mcts.evaluator import (
+from games.rss_live import (
     CrossPresidentOfferPriorEvaluator,
-    NNEvaluator,
     is_acq_offer_outside_v3_limits,
     is_cross_president_acq_offer_state,
 )
+from mcts.evaluator import NNEvaluator
 from mcts.node import MCTSNode
 from mcts.search import (
     StatePool,
