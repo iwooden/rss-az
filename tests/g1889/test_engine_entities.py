@@ -468,8 +468,8 @@ def test_turn_fields_round_trip(state):
         'auction_turn': 2, 'auction_private': D.PRIVATE_SMR, 'auction_discount': 10,
         'auction_pass_payouts': 1, 'sr_bought': 1, 'sr_sold_mask': 0b110, 'sr_sold_then_bought': 1,
         'operating_corp': D.CORP_UR, 'or_index': 4, 'route_revenue': 230, 'pending_hex': 51,
-        'pending_corp': D.CORP_KU, 'pending_private': D.PRIVATE_ER, 'pending_train_source': 17,
-        'pending_seller': 3, 'ebuy_sold_mask': 0b1, 'ebuy_sold_any': 1,
+        'pending_corp': D.CORP_KU, 'pending_private': D.PRIVATE_ER, 'pending_train_source': K.TRAIN_SOURCE_CORP + 6,
+        'pending_train_type': D.TRAIN_D, 'pending_seller': 3, 'ebuy_sold_mask': 0b1, 'ebuy_sold_any': 1,
     }
     for name, value in values.items():
         getattr(TURN, f'set_{name}')(state, value)
@@ -484,6 +484,7 @@ def test_turn_fields_round_trip(state):
     ('auction_private', D.NUM_PRIVATES), ('auction_discount', -5), ('auction_discount', 25),
     ('auction_pass_payouts', -1), ('sr_bought', 2), ('sr_sold_mask', 1 << D.NUM_CORPS), ('sr_sold_then_bought', -1),
     ('operating_corp', D.NUM_CORPS), ('pending_hex', D.NUM_HEXES), ('pending_seller', 4),
+    ('pending_train_source', K.NUM_TRAIN_SOURCES), ('pending_train_type', D.NUM_TRAIN_TYPES),
 ])
 def test_turn_setters_check_ranges(state, name, value):
     with pytest.raises(AssertionError):

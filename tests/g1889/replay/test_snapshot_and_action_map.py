@@ -62,7 +62,9 @@ def test_load_state_rebuilds_every_auction_snapshot():
 
 
 def test_load_state_rebuilds_every_stock_round_snapshot():
-    count = turns = 0
+    """With Ruby's legal STOCK set, whose sales ``compare`` composes from
+    STOCK's corps and the blocks SELL_AMOUNT then offers."""
+    count = turns = sold = blocks = 0
     for fixture in FIXTURES:
         for record in load_fixture_extract(fixture)['records']:
             snap = record['state']
@@ -71,7 +73,11 @@ def test_load_state_rebuilds_every_stock_round_snapshot():
                 assert compare(state, snap) == [], (fixture, record['index'])
                 count += 1
                 turns += bool(snap['stock']['current_actions'])
+                if snap['stock']['legal'] is not None and TURN.step(state) == K.STEP_STOCK:
+                    sold += len(snap['stock']['legal']['sell'])
+                    blocks += sum(map(len, snap['stock']['legal']['sell'].values()))
     assert (count, turns) == (522, 179)  # 179 mid-turn: after a purchase or a sale
+    assert (sold, blocks) == (1143, 2551)  # SELL_AMOUNT's sub-phases and their blocks
 
 
 def test_load_state_rebuilds_every_operating_round_snapshot():
@@ -215,7 +221,7 @@ RUBY_STEP_PHASE = {
 
 def _ruby_phase(pre, before):
     if pre['step'] == 'WaterfallAuction':
-        return K.DPHASE_RAISE if before['auction']['auctioning'] else K.DPHASE_AUCTION
+        return K.DPHASE_BID if before['auction']['auctioning'] else K.DPHASE_AUCTION
     return RUBY_STEP_PHASE[pre['step']]
 
 
@@ -233,8 +239,8 @@ def _expected(kind, pre, decoded):
         return decoded[0].corp == CORP[pre['corporation']] and last.amount == pre['par_price']
     if kind == 'buy_shares':
         return last.corp == CORP[pre['corporation']]
-    if kind == 'sell_shares':
-        return last.corp == CORP[pre['corporation']] and 10 * last.count == pre['percent']
+    if kind == 'sell_shares':  # the corp, then the block
+        return decoded[0].corp == CORP[pre['corporation']] and 10 * last.count == pre['percent']
     if kind == 'place_token':
         return last.hex == HEX[pre['hex']]
     if kind == 'lay_tile' and decoded[0].phase == K.DPHASE_ER_BONUS:  # ER's seller, on C4
@@ -245,12 +251,14 @@ def _expected(kind, pre, decoded):
         return decoded[0].hex == HEX[pre['hex']] and last.phase == K.DPHASE_TILE
     if kind == 'discard_train':
         return decoded[0].train_type == TRAIN[pre['train_type']]
-    if kind == 'buy_train':
-        if decoded[0].type == A.ACTION_TRADE_IN:
-            return decoded[0].train_type == TRAIN[pre['exchange_type']]
-        if decoded[0].type == A.ACTION_BUY_CORP_TRAIN:  # the price, a grid point or exact, is checked below
-            return decoded[0].corp == CORP[pre['seller']] and decoded[0].train_type == TRAIN[pre['train_type']]
-        return decoded[0].train_type == TRAIN[pre['train_type']]
+    if kind == 'buy_train':  # the source, then the train
+        source, train = decoded[0], decoded[1]
+        if train.type == A.ACTION_TRADE_IN:
+            return source.type == A.ACTION_BUY_DEPOT_TRAIN and train.train_type == TRAIN[pre['exchange_type']]
+        if source.type == A.ACTION_BUY_CORP_TRAIN:  # the price, a grid point or exact, is checked below
+            return source.corp == CORP[pre['seller']] and train.train_type == TRAIN[pre['train_type']]
+        return (source.type == {'depot': A.ACTION_BUY_DEPOT_TRAIN, 'pool': A.ACTION_BUY_POOL_TRAIN}[pre['source']]
+                and train.train_type == TRAIN[pre['train_type']])
     if kind == 'buy_company':  # the price, a grid point or exact, is checked below
         return decoded[0].private == PRIVATE[pre['company']] and last.phase == K.DPHASE_PRIVATE_PRICE
     return True
@@ -312,9 +320,10 @@ def test_map_action_covers_the_fixtures():
                     private_grid[decoded[1].type == A.ACTION_PRICE_POINT] += 1
                 elif kind == 'buy_train' and decoded[0].type == A.ACTION_BUY_CORP_TRAIN:
                     TURN.set_step(state, K.STEP_TRAIN_PRICE)
-                    TURN.set_pending_train_source(state, decisions[0][1] - K.BUY_TRAIN_CORP)
-                    assert A.price_amount_py(state, decisions[1][1]) == pre['price']
-                    grid[decoded[1].type == A.ACTION_PRICE_POINT] += 1
+                    TURN.set_pending_train_source(state, K.TRAIN_SOURCE_CORP + decoded[0].corp)
+                    TURN.set_pending_train_type(state, decoded[1].train_type)
+                    assert A.price_amount_py(state, decisions[2][1]) == pre['price']
+                    grid[decoded[2].type == A.ACTION_PRICE_POINT] += 1
                 mapped += 1
     assert unsupported == {}
     assert (mapped, ended) == (1007, 2)

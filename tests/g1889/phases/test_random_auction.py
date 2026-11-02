@@ -1,7 +1,7 @@
 """Random auctions (1889/engine-design.md §10.4): random play from a fresh game
 reaches the stock round within a step cap at 2-6 players, with the policy
 flags on (policy ids only, as in self-play) and off (every legal id, and exact
-amounts in BID and RAISE). ``apply_and_verify`` checks money and the auction
+amounts in BID). ``apply_and_verify`` checks money and the auction
 invariants on every state the driver passes through, forced decisions
 included, and that every returned decision is a choice.
 
@@ -25,14 +25,14 @@ from tests.g1889.phases.conftest import apply_and_verify, exact_id, legal_ids, n
 
 SEEDS = range(100)
 MAX_DECISIONS = 2000
-EXACT_SHARE = 0.25                 # of BID and RAISE decisions, with the flags off
+EXACT_SHARE = 0.25                 # of BID decisions, with the flags off
 UNCAPPED_PAYOUTS = 3               # payout rounds before the flags-off player turns the cap on
 
 
 def _choose(state, rng, flags):
     phase = A.get_decision_phase_py(state)
-    if not flags and phase in (K.DPHASE_BID, K.DPHASE_RAISE) and rng.random() < EXACT_SHARE:
-        p = TURN.pending_private(state) if phase == K.DPHASE_BID else TURN.auction_private(state)
+    if not flags and phase == K.DPHASE_BID and rng.random() < EXACT_SHARE:
+        p = TURN.auction_private(state) if TURN.auction_private(state) >= 0 else TURN.pending_private(state)
         low, high = PRIVATES[p].min_bid(state), PLAYERS[TURN.active_player(state)].available(state, p)
         return exact_id(state, int(rng.integers(low, high + 1)))
     ids = policy_ids(state) if state.auction_pass_payout_cap else legal_ids(state)

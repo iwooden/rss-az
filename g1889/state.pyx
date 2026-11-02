@@ -78,6 +78,7 @@ cdef GlobalOffsets compute_global_offsets() noexcept nogil:
     g.pending_corp = _take(&o, 1)
     g.pending_private = _take(&o, 1)
     g.pending_train_source = _take(&o, 1)
+    g.pending_train_type = _take(&o, 1)
     g.pending_seller = _take(&o, 1)
     g.ebuy_sold_mask = _take(&o, 1)
     g.ebuy_sold_any = _take(&o, 1)
@@ -257,6 +258,7 @@ cdef void _seed_zeroed_storage(GameState state, int num_players) noexcept:
     g[GLOBALS.pending_corp] = -1
     g[GLOBALS.pending_private] = -1
     g[GLOBALS.pending_train_source] = -1
+    g[GLOBALS.pending_train_type] = -1
     g[GLOBALS.pending_seller] = -1
     for i in range(<int>NUM_CORPS):
         g[GLOBALS.or_order + i] = -1

@@ -1,9 +1,10 @@
 """Operating round: the automated OR_START, TURN_START, ROUTE, TURN_END, and
 OR_END steps, and the TRACK, TILE, and TOKEN handlers (1889/engine-design.md
 §5.2-5.3, §6.1); ``dividend.pyx`` and ``buy_train.pyx`` handle the turn's
-DIVIDEND, BUY_TRAIN, TRAIN_PRICE, and DISCARD, and ``privates.pyx``
-BUY_PRIVATE and the privates' slots and sub-phases. They assume legal
-actions and change the state only through entity handles."""
+DIVIDEND, BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE, EMERGENCY_SELL_AMOUNT, and
+DISCARD, and ``privates.pyx`` BUY_PRIVATE and the privates' slots and
+sub-phases. They assume legal actions and change the state only through
+entity handles."""
 
 from g1889.actions cimport ActionInfo
 from g1889.state cimport GameState

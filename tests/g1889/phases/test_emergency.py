@@ -8,9 +8,10 @@ Covers a must-buy whose treasury is short of the cheapest depot or pool
 train: the president's contribution toward that train only (the pool's when
 the depot does not sell its type, the depot's on a tie), a depot buy that
 changes the phase, other corps' trains for ¥1 to the treasury until a share
-is sold, the president's sales (no presidency changes, the pool's room, each
-corp once, never more than needed, the operating corp's own shares, the
-price drops, the corps yet to run re-sorted), privates still for sale, and
+is sold, the president's sales (BUY_TRAIN's corp, then EMERGENCY_SELL_AMOUNT's
+block: no presidency changes, the pool's room, each corp once, never more
+than needed, the operating corp's own shares, the price drops, the corps yet
+to run re-sorted), privates still for sale, and
 bankruptcy (when it is legal, the shares it sells, the cash to the bank, the
 priority deal, the game's end); and the scores. ``test_operating_round.py``
 covers the game's end after a broken bank's set, and ``tests/g1889/replay/``
@@ -39,29 +40,14 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    apply_and_verify, at_or, enter_operating_round, enter_phase, give_train, hold, lay, legal_ids, set_cash,
+    apply_and_verify, at_or, choose_train, depot, enter_operating_round, enter_phase, from_corp, give_train, hold,
+    lay, legal_ids, pool, sale, set_cash, train_choices, train_decisions,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
 PAR_65, PAR_70, PAR_75, PAR_80, PAR_100 = 0, 1, 2, 3, 5
 T2, T3, T4 = D.TRAIN_2, D.TRAIN_3, D.TRAIN_4
 PHASE_3, PHASE_4 = D.GAME_PHASE_3, D.GAME_PHASE_4
-
-
-def depot(t):
-    return K.BUY_TRAIN_DEPOT + t
-
-
-def pool(t):
-    return K.BUY_TRAIN_POOL + t
-
-
-def from_corp(c, t):
-    return K.BUY_TRAIN_CORP + D.NUM_TRAIN_TYPES * c + t
-
-
-def sell(c, n):
-    return K.BUY_TRAIN_SELL + K.MAX_SALE_SHARES * c + n - 1
 
 
 def private_buys(state):
@@ -117,9 +103,9 @@ class TestTrains:
         ends BUY_TRAIN is forced."""
         state = emergency(50, 420, setup=ir_with_a_train())
         to_buy_train(state)
-        assert legal_ids(state) == [depot(T2), from_corp(IR, T2)]
+        assert train_choices(state) == [depot(T2), from_corp(IR, T2)]
         bank = BANK.cash(state)
-        result = apply_and_verify(state, depot(T2))
+        result = choose_train(state, depot(T2))
         assert result.forced == [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS)] and TURN.operating_corp(state) == IR
         assert TRAINS.corp_trains(state, KO, T2) == 1 and CORPS[KO].cash(state) == 0
         assert PLAYERS[0].cash(state) == 390 and BANK.cash(state) == bank + 80
@@ -127,7 +113,7 @@ class TestTrains:
     def test_a_single_choice_is_forced(self):
         state = emergency(79, 420)
         result = apply_and_verify(state, K.TRACK_PASS)
-        assert (K.DPHASE_BUY_TRAIN, depot(T2)) in result.forced and PLAYERS[0].cash(state) == 419
+        assert result.forced[-3:-1] == train_decisions(depot(T2)) and PLAYERS[0].cash(state) == 419
 
     def test_only_the_cheapest_train_the_pools_when_the_depot_does_not_sell_its_type(self):
         """Phase 3: the depot sells 3s and the pool holds 2s and a 3. Only the
@@ -136,8 +122,8 @@ class TestTrains:
         state = emergency(50, 420, phase=PHASE_3, setup=ir_with_a_train())
         to_buy_train(state)
         assert TRAINS.cheapest_type(state) == T2 and TRAINS.cheapest_in_pool(state)
-        assert private_buys(state) and legal_ids(state) == [pool(T2), from_corp(IR, T2), *private_buys(state)]
-        apply_and_verify(state, pool(T2))
+        assert private_buys(state) and train_choices(state) == [pool(T2), from_corp(IR, T2), *private_buys(state)]
+        choose_train(state, pool(T2))
         assert TRAINS.corp_trains(state, KO, T2) == 1 and PLAYERS[0].cash(state) == 390
 
     def test_on_a_tie_the_depots_train(self):
@@ -152,7 +138,7 @@ class TestTrains:
         to_buy_train(state)
         assert TRAINS.pool(state, T4) == 1 and TRAINS.cheapest_type(state) == T4
         assert not TRAINS.cheapest_in_pool(state)
-        assert legal_ids(state) == [depot(T4), from_corp(IR, T3), from_corp(SR, T3), *private_buys(state)]
+        assert train_choices(state) == [depot(T4), from_corp(IR, T3), from_corp(SR, T3), *private_buys(state)]
 
     def test_a_depot_buy_still_changes_the_phase(self):
         """Every 2 is held, so the cheapest train is the depot's first 3, which
@@ -164,8 +150,8 @@ class TestTrains:
             give_train(state, SR, T2, 2)
         state = emergency(100, 420, setup=setup)
         to_buy_train(state)
-        assert legal_ids(state) == [depot(T3), from_corp(IR, T2), from_corp(SR, T2)]
-        apply_and_verify(state, depot(T3))
+        assert train_choices(state) == [depot(T3), from_corp(IR, T2), from_corp(SR, T2)]
+        choose_train(state, depot(T3))
         assert PHASE.current(state) == PHASE_3 and TRAINS.corp_trains(state, KO, T3) == 1
         assert PLAYERS[0].cash(state) == 340 and CORPS[KO].cash(state) == 0
 
@@ -174,8 +160,8 @@ class TestTrains:
         treasury; TRAIN_PRICE's grid drops the ¥80 list price)."""
         state = emergency(30, 20, setup=ir_with_a_train())
         to_buy_train(state)
-        assert legal_ids(state) == [from_corp(IR, T2), sell(KO, 1)]
-        apply_and_verify(state, from_corp(IR, T2))
+        assert train_choices(state) == [from_corp(IR, T2), sale(KO, 1)]
+        choose_train(state, from_corp(IR, T2))
         assert TURN.step(state) == K.STEP_TRAIN_PRICE and legal_ids(state) == [0, 2, 3, 4]
         ir = CORPS[IR].cash(state)
         apply_and_verify(state, 4)
@@ -194,13 +180,14 @@ class TestTrains:
         state = emergency(10, 0, phase=PHASE_4, ko_holdings={0: 4, 2: 4}, setup=setup)
         to_buy_train(state)
         assert TRAINS.cheapest_price(state) == 180  # the pool's 3s: the need is ¥170
-        assert legal_ids(state) == [from_corp(IR, T3), sell(AR, 1), sell(AR, 2), sell(AR, 3), sell(SR, 1),
+        assert train_choices(state) == [from_corp(IR, T3), sale(AR, 1), sale(AR, 2), sale(AR, 3), sale(SR, 1),
                                     *private_buys(state)]
-        apply_and_verify(state, sell(SR, 1))
+        choose_train(state, sale(SR, 1))
         assert TURN.ebuy_sold_any(state) and TURN.ebuy_sold_mask(state) == 1 << SR
-        assert legal_ids(state) == [sell(AR, 1), sell(AR, 2), *private_buys(state)]  # ¥105 short: not 3
-        apply_and_verify(state, sell(AR, 1))
-        assert PLAYERS[0].shares(state, AR) == 2 and legal_ids(state) == [K.BUY_TRAIN_BANKRUPT, *private_buys(state)]
+        assert train_choices(state) == [sale(AR, 1), sale(AR, 2), *private_buys(state)]  # ¥105 short: not 3
+        choose_train(state, sale(AR, 1))
+        assert PLAYERS[0].shares(state, AR) == 2
+        assert train_choices(state) == [K.BUY_TRAIN_BANKRUPT, *private_buys(state)]
 
 
 # =============================================================================
@@ -223,22 +210,27 @@ class TestSales:
 
     def test_never_more_than_needed(self):
         """¥70 short with three AR shares at ¥65: one or two sell, as the next
-        smaller block would still fall short; two drop AR two rows."""
+        smaller block would still fall short; two drop AR two rows. AR is
+        BUY_TRAIN's one choice, so the driver picks it, and
+        EMERGENCY_SELL_AMOUNT waits for the block."""
         def setup(state):
             hold(state, AR, {1: 4, 0: 3}, par=PAR_65)
         state = emergency(0, 10, ko_holdings={0: 4, 2: 4}, setup=setup)
-        to_buy_train(state)
-        assert legal_ids(state) == [sell(AR, 1), sell(AR, 2)]
-        result = apply_and_verify(state, sell(AR, 2))
-        assert result.forced[0] == (K.DPHASE_BUY_TRAIN, depot(T2))  # the one choice left
+        result = apply_and_verify(state, K.TRACK_PASS)
+        assert result.forced[-1] == (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_SELL + AR)
+        assert TURN.step(state) == K.STEP_EMERGENCY_SELL_AMOUNT and TURN.pending_corp(state) == AR
+        assert legal_ids(state) == [0, 1]  # one or two shares
+        result = apply_and_verify(state, 1)
+        assert result.forced[:2] == train_decisions(depot(T2))  # the one choice left
+        assert TURN.pending_corp(state) == -1
         assert CORPS[AR].pool_shares(state) == 2 and MARKET.price(state, AR) == 55
         assert PLAYERS[0].cash(state) == 10 + 130 - 80 and TRAINS.corp_trains(state, KO, T2) == 1
 
     def test_the_operating_corps_own_shares(self):
         state = emergency(5, 10, ko_holdings={0: 6, 1: 2}, setup=ir_with_a_train())
         to_buy_train(state)
-        assert CORPS[KO].emergency_sale(state, 0) == 4 and legal_ids(state) == [from_corp(IR, T2), sell(KO, 1)]
-        apply_and_verify(state, sell(KO, 1))
+        assert CORPS[KO].emergency_sale(state, 0) == 4 and train_choices(state) == [from_corp(IR, T2), sale(KO, 1)]
+        choose_train(state, sale(KO, 1))
         assert CORPS[KO].president(state) == 0 and TRAINS.corp_trains(state, KO, T2) == 1
         assert MARKET.price(state, KO) == 80
 
@@ -252,8 +244,8 @@ class TestSales:
         state = emergency(0, 0, ko_holdings={0: 4, 2: 4}, setup=setup)
         assert [TURN.or_order(state, i) for i in range(4)] == [KO, IR, SR, AR]
         to_buy_train(state)
-        assert legal_ids(state) == [sell(AR, 1), sell(IR, 1)]
-        apply_and_verify(state, sell(IR, 1))
+        assert train_choices(state) == [sale(AR, 1), sale(IR, 1)]
+        choose_train(state, sale(IR, 1))
         assert [TURN.or_order(state, i) for i in range(4)] == [KO, SR, IR, AR] and TURN.operating_corp(state) == SR
         assert TURN.ebuy_sold_mask(state) == 0 and not TURN.ebuy_sold_any(state)
         assert PLAYERS[0].cash(state) == 0 and TRAINS.corp_trains(state, KO, T2) == 1
@@ -279,10 +271,10 @@ class TestBankruptcy:
         treasury buys no train of another corp. ¥65 short, the sale covers it."""
         state = emergency(0, 10, ko_holdings={0: 4, 2: 4}, setup=bankrupt_setup)
         to_buy_train(state)
-        assert A.can_go_bankrupt_py(state) and legal_ids(state) == [sell(AR, 1), K.BUY_TRAIN_BANKRUPT]
+        assert A.can_go_bankrupt_py(state) and train_choices(state) == [sale(AR, 1), K.BUY_TRAIN_BANKRUPT]
         state = emergency(5, 10, ko_holdings={0: 4, 2: 4}, setup=bankrupt_setup)
         to_buy_train(state)
-        assert not A.can_go_bankrupt_py(state) and legal_ids(state) == [from_corp(AR, T2), sell(AR, 1)]
+        assert not A.can_go_bankrupt_py(state) and train_choices(state) == [from_corp(AR, T2), sale(AR, 1)]
 
     def test_bankruptcy_sells_what_it_can_and_ends_the_game(self):
         """``process_bankrupt``: AR's share is sold, the cash goes to the
@@ -307,7 +299,7 @@ class TestBankruptcy:
         president's bankruptcy is forced."""
         state = emergency(0, 10, ko_holdings={0: 4, 2: 4}, setup=bankrupt_setup)
         to_buy_train(state)
-        result = apply_and_verify(state, sell(AR, 1), expected_status=STATUS_GAME_OVER)
+        result = choose_train(state, sale(AR, 1), expected_status=STATUS_GAME_OVER)
         assert result.forced == [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_BANKRUPT)]
         assert TURN.ebuy_sold_mask(state) == 1 << AR and TURN.ebuy_sold_any(state)
         assert PLAYERS[0].bankrupt(state) and PLAYERS[0].shares(state, AR) == 0

@@ -2,7 +2,7 @@
 
 from libc.stdint cimport INT16_MAX, int16_t
 
-from g1889.constants cimport NUM_END_REASONS, NUM_ROUNDS, NUM_STEPS
+from g1889.constants cimport NUM_END_REASONS, NUM_ROUNDS, NUM_STEPS, NUM_TRAIN_SOURCES
 from g1889.data.tables cimport NUM_CORPS, NUM_HEXES, NUM_PRIVATES, NUM_TRAIN_TYPES, PRIVATE_TR, PRIVATE_VALUE
 from g1889.state cimport GameState, GLOBALS, LAYOUT
 
@@ -56,8 +56,13 @@ cdef int turn_pending_hex(GameState state) noexcept nogil:
 
 
 cdef int turn_pending_train_source(GameState state) noexcept nogil:
-    """TRAIN_PRICE's train, ``NUM_TRAIN_TYPES * seller + type``, or -1."""
+    """SELECT_TRAIN's and TRAIN_PRICE's source, a TrainSource, or -1."""
     return _get(state, GLOBALS.pending_train_source)
+
+
+cdef int turn_pending_train_type(GameState state) noexcept nogil:
+    """TRAIN_PRICE's train type, or -1."""
+    return _get(state, GLOBALS.pending_train_type)
 
 
 cdef int turn_pending_seller(GameState state) noexcept nogil:
@@ -291,8 +296,15 @@ cdef class TurnState:
         return turn_pending_train_source(state)
 
     cpdef void set_pending_train_source(self, GameState state, int value):
-        _check(value, -1, <int>NUM_CORPS * <int>NUM_TRAIN_TYPES, 'pending_train_source')
+        _check(value, -1, <int>NUM_TRAIN_SOURCES, 'pending_train_source')
         _set(state, GLOBALS.pending_train_source, value)
+
+    cpdef int pending_train_type(self, GameState state):
+        return turn_pending_train_type(state)
+
+    cpdef void set_pending_train_type(self, GameState state, int value):
+        _check(value, -1, <int>NUM_TRAIN_TYPES, 'pending_train_type')
+        _set(state, GLOBALS.pending_train_type, value)
 
     cpdef int pending_seller(self, GameState state):
         return turn_pending_seller(state)

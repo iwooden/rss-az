@@ -1,7 +1,9 @@
-"""The stock round: STOCK, PAR, and SR_END (1889/engine-design.md §5.2, §6.1;
-rules §6; Ruby's ``step/buy_sell_par_shares.rb`` and ``round/stock.rb``).
+"""The stock round: STOCK, PAR, SELL_AMOUNT, and SR_END (1889/engine-design.md
+§5.2-5.3, §6.1; rules §6; Ruby's ``step/buy_sell_par_shares.rb`` and
+``round/stock.rb``).
 
-Covers the turn (pass and done, one purchase, sell/buy order, blocks), the
+Covers the turn (pass and done, one purchase, sell/buy order, blocks: STOCK
+picks the corp and SELL_AMOUNT the block, forced when it is the only one), the
 first SR's ban on sales, no buying back, the pool cap, the President's
 Certificate, presidency changes both ways, floats, the certificate limit at
 every player count, the 60% limit, the yellow and orange zones, must-sell
@@ -26,8 +28,8 @@ from g1889.entities.private import PRIVATES
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    apply_and_verify, end_auction, enter_auction, enter_stock_round, exact_id, hold, legal_ids, new_game,
-    policy_ids,
+    apply_and_verify, apply_factored, end_auction, enter_auction, enter_stock_round, exact_id, hold, legal_ids,
+    new_game, opened, policy_ids,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -47,13 +49,16 @@ def par(c):
     return K.STOCK_PAR + c
 
 
-def sell(c, n):
-    return K.STOCK_SELL + K.MAX_SALE_SHARES * c + n - 1
+def sell(state, c, n):
+    """Sell ``n`` shares of ``c``: STOCK's corp, then SELL_AMOUNT's block."""
+    return apply_factored(state, K.STOCK_SELL + c, K.DPHASE_SELL_AMOUNT, n - 1, f'sell {n} of corp {c}')
 
 
 def sales(state, c):
-    """The block sizes of ``c`` the turn player may sell."""
-    return [i - sell(c, 1) + 1 for i in legal_ids(state) if sell(c, 1) <= i <= sell(c, K.MAX_SALE_SHARES)]
+    """The block sizes of ``c`` the turn player may sell: SELL_AMOUNT's, if STOCK offers ``c``."""
+    if K.STOCK_SELL + c not in legal_ids(state):
+        return []
+    return [n + 1 for n in legal_ids(opened(state, K.STOCK_SELL + c))]
 
 
 def shares(state, c, n=None):
@@ -136,14 +141,14 @@ class TestTurns:
         assert {ipo(IR), ipo(KO), par(AR)} <= set(legal_ids(state))
         apply_and_verify(state, ipo(KO))
         # Sales stay open, but IR's president cannot sell: nobody else holds two shares.
-        assert legal_ids(state) == [PASS, sell(KO, 1)]
+        assert legal_ids(state) == [PASS, K.STOCK_SELL + KO] and sales(state, KO) == [1]
 
     def test_selling_then_buying_ends_the_turns_sales(self):
         state = at_sr(3)
         hold(state, IR, {0: 4, 1: 2})
         hold(state, KO, {0: 3, 1: 2})
         enter_stock_round(state, 0)
-        apply_and_verify(state, sell(IR, 1))
+        sell(state, IR, 1)
         assert sales(state, IR) == [] and sales(state, KO) == [1, 2, 3]  # one block per corp per turn
         assert ipo(IR) not in legal_ids(state) and ipo(KO) in legal_ids(state)
         result = apply_and_verify(state, ipo(KO))
@@ -157,16 +162,16 @@ class TestTurns:
         enter_stock_round(state, 0)
         apply_and_verify(state, ipo(IR))
         assert sales(state, IR) == [1, 2, 3, 4, 5] and sales(state, KO) == [1, 2, 3]
-        apply_and_verify(state, sell(IR, 2))
+        sell(state, IR, 2)
         assert sales(state, KO) == [1, 2, 3] and not TURN.sr_sold_then_bought(state)
-        result = apply_and_verify(state, sell(KO, 1))  # buy, sell, sell: both corps are sold for the turn
+        result = sell(state, KO, 1)  # buy, sell, sell: both corps are sold for the turn
         assert result.forced == [(K.DPHASE_STOCK, PASS)] and TURN.active_player(state) == 1
 
     def test_sold_shares_are_not_bought_back_this_round(self):
         state = at_sr(3)
         hold(state, IR, {0: 4, 1: 2})
         enter_stock_round(state, 0)
-        apply_and_verify(state, sell(IR, 1))
+        sell(state, IR, 1)
         apply_and_verify(state, PASS)
         assert pool(IR) in legal_ids(state)  # player 1 may buy it
         apply_and_verify(state, PASS)
@@ -259,7 +264,7 @@ class TestSales:
         hold(state, KO, {0: 4, 1: 2}, par=PAR_70)  # ¥70 at (4, 3)
         enter_stock_round(state, 0)
         before = cash(state)
-        apply_and_verify(state, sell(KO, 2))
+        sell(state, KO, 2)
         assert cash(state)[0] - before[0] == 140 and CORPS[KO].pool_shares(state) == 2
         assert (MARKET.row(state, KO), MARKET.price(state, KO)) == (6, 60)
 
@@ -269,6 +274,17 @@ class TestSales:
         hold(state, KO, {0: 3, 2: 2}, pool=pool_shares)
         enter_stock_round(state, 0)
         assert sales(state, KO) == blocks
+
+    def test_a_sale_of_one_possible_block_is_forced(self):
+        """STOCK picks the corp and SELL_AMOUNT the block; with room for one
+        share in the pool, the driver sells it."""
+        state = at_sr(3)
+        hold(state, KO, {0: 3, 2: 2}, pool=4)
+        enter_stock_round(state, 0)
+        result = apply_and_verify(state, K.STOCK_SELL + KO)
+        assert result.decisions[:2] == [(K.DPHASE_STOCK, K.STOCK_SELL + KO), (K.DPHASE_SELL_AMOUNT, 0)]
+        assert CORPS[KO].pool_shares(state) == 5 and TURN.pending_corp(state) == -1
+        assert TURN.sr_sold_mask(state) == PLAYERS[0].sold_mask(state) == 1 << KO
 
     @pytest.mark.parametrize('other, blocks', [(1, [1]), (2, [1, 2, 3])])
     def test_the_presidents_certificate_needs_a_successor(self, other, blocks):
@@ -282,7 +298,7 @@ class TestSales:
         state = at_sr(3)
         hold(state, IR, {0: 4, 1: 3})
         enter_stock_round(state, 0)
-        apply_and_verify(state, sell(IR, count))  # one share leaves a tie, which keeps the presidency
+        sell(state, IR, count)  # one share leaves a tie, which keeps the presidency
         # Holdings stay as they are: Ruby swaps certificates, not shares.
         assert CORPS[IR].president(state) == president and shares(state, IR) == [4 - count, 3, 0]
 
@@ -290,7 +306,7 @@ class TestSales:
         state = at_sr(4)
         hold(state, IR, {1: 3, 0: 2, 3: 2}, president=1)
         enter_stock_round(state, 1)
-        apply_and_verify(state, sell(IR, 2))  # seats 3 and 0 tie at two: seat 3 is nearer clockwise from 1
+        sell(state, IR, 2)  # seats 3 and 0 tie at two: seat 3 is nearer clockwise from 1
         assert CORPS[IR].president(state) == 3 and shares(state, IR) == [2, 1, 0, 2]
         assert CORPS[IR].pool_shares(state) == 2
 
@@ -298,7 +314,7 @@ class TestSales:
         state = at_sr(3)
         hold(state, IR, {0: 2, 2: 2})
         enter_stock_round(state, 0)
-        apply_and_verify(state, sell(IR, 2))
+        sell(state, IR, 2)
         assert CORPS[IR].president(state) == 2 and shares(state, IR) == [0, 0, 2]
 
 
@@ -387,7 +403,7 @@ class TestCertificateLimit:
         enter_stock_round(state, 0)
         legal = legal_ids(state)
         assert legal and PASS not in legal and all(i >= K.STOCK_SELL for i in legal)
-        apply_and_verify(state, sell(AR, 1))  # back to the limit: the turn opens up
+        sell(state, AR, 1)  # back to the limit: the turn opens up
         legal = legal_ids(state)
         assert legal[0] == PASS and sales(state, AR) == [] and sales(state, KU) == [1, 2, 3]
         assert ipo(KU) in legal and ipo(UR) not in legal  # only uncounted shares may be bought
@@ -414,8 +430,8 @@ class TestZones:
         state = at_sr(3)
         hold(state, UR, {0: 7, 1: 2}, cell=(7, 1))
         enter_stock_round(state, 0)
-        assert legal_ids(state) == [sell(UR, n) for n in range(1, 6)]
-        apply_and_verify(state, sell(UR, 1))
+        assert legal_ids(state) == [K.STOCK_SELL + UR] and sales(state, UR) == [1, 2, 3, 4, 5]
+        sell(state, UR, 1)
         assert legal_ids(state)[0] == PASS
 
     def test_must_sell_needs_a_sale_of_the_corp_over_sixty_percent(self):
@@ -426,7 +442,7 @@ class TestZones:
         hold(state, KO, {0: 3, 1: 2})
         enter_stock_round(state, 0)
         assert PASS not in legal_ids(state)
-        apply_and_verify(state, sell(UR, 1))
+        sell(state, UR, 1)
         assert PLAYERS[0].shares(state, UR) == 7 and legal_ids(state)[0] == PASS
         assert sales(state, KO) == [1, 2, 3]
 
@@ -437,7 +453,7 @@ class TestZones:
         hold(state, KO, {0: 4, 1: 1}, cell=(7, 3))  # ¥55; (8, 3) is yellow
         enter_stock_round(state, 0)
         assert PLAYERS[0].cert_count(state) == D.CERT_LIMIT[3] + 3 and PASS not in legal_ids(state)
-        apply_and_verify(state, sell(KO, 1))
+        sell(state, KO, 1)
         assert MARKET.type(state, KO) == D.MARKET_NO_CERT_LIMIT
         assert PLAYERS[0].cert_count(state) == D.CERT_LIMIT[3] and legal_ids(state)[0] == PASS
 
@@ -491,7 +507,7 @@ class TestRoundEnd:
         enter_stock_round(state, 1)
         apply_and_verify(state, PASS)  # 1
         apply_and_verify(state, PASS)  # 2
-        apply_and_verify(state, sell(IR, 1))  # 0 sells, then is done
+        sell(state, IR, 1)  # 0 sells, then is done
         apply_and_verify(state, PASS)
         apply_and_verify(state, PASS)  # 1
         apply_and_verify(state, PASS)  # 2

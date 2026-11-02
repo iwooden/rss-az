@@ -7,7 +7,7 @@ There are three id sets:
 - policy ids, from ``enumerate_policy_actions``: the legal ids minus the
   state's runtime-flag restrictions and the permanent policy filters (§5.1,
   §7). Search expands only these;
-- exact amounts, ``*_EXACT + amount`` in BID, RAISE, TRAIN_PRICE, and
+- exact amounts, ``*_EXACT + amount`` in BID, TRAIN_PRICE, and
   PRIVATE_PRICE: legal by range check, never enumerated, and at or above the
   phase size, so they have no unified policy slot.
 
@@ -24,28 +24,30 @@ cpdef enum ActionType:
     ACTION_PASS = 0                 # each phase's pass, done, or drop slot
     ACTION_BUY_TOPMOST = 1          # AUCTION: the topmost private at its price
     ACTION_SELECT_BID = 2           # AUCTION: bid on ``private`` (BID follows)
-    ACTION_PRICE_POINT = 3          # BID, RAISE, TRAIN_PRICE, PRIVATE_PRICE: grid point ``count``
+    ACTION_PRICE_POINT = 3          # BID, TRAIN_PRICE, PRIVATE_PRICE: grid point ``count``
     ACTION_EXACT_PRICE = 4          # the same phases: ``amount`` yen
     ACTION_BUY_IPO = 5              # STOCK: a share of ``corp`` from the IPO
     ACTION_BUY_POOL = 6             # STOCK: a share of ``corp`` from the pool
     ACTION_SELECT_PAR = 7           # STOCK: par ``corp`` (PAR follows)
-    ACTION_SELL = 8                 # STOCK, BUY_TRAIN: ``count`` shares of ``corp``
-    ACTION_DR_EXCHANGE = 9          # DR for an IR share
-    ACTION_MF_PORT = 10             # use MF (PORT follows)
-    ACTION_PAR = 11                 # PAR: par index ``count`` at ``amount`` yen
-    ACTION_SELECT_HEX = 12          # TRACK: lay on ``hex`` (TILE follows)
-    ACTION_LAY_CANDIDATE = 13       # TILE, ER_BONUS: lay candidate ``count``
-    ACTION_PLACE_TOKEN = 14         # TOKEN: token ``hex``
-    ACTION_BUY_PRIVATE = 15         # buy ``private`` (PRIVATE_PRICE follows)
-    ACTION_WITHHOLD = 16            # DIVIDEND
-    ACTION_PAYOUT = 17              # DIVIDEND
-    ACTION_DISCARD = 18             # DISCARD: a ``train_type``
-    ACTION_BUY_DEPOT_TRAIN = 19     # BUY_TRAIN: ``train_type`` from the depot
-    ACTION_TRADE_IN = 20            # BUY_TRAIN: trade ``train_type`` (4, 5, or 6) for a D
-    ACTION_BUY_POOL_TRAIN = 21      # BUY_TRAIN: ``train_type`` from the pool
-    ACTION_BUY_CORP_TRAIN = 22      # BUY_TRAIN: ``train_type`` from ``corp`` (TRAIN_PRICE follows)
-    ACTION_BANKRUPT = 23            # BUY_TRAIN
-    ACTION_PORT_LAY = 24            # PORT: the port tile on ``hex`` at rotation ``count``
+    ACTION_SELECT_SALE = 8          # STOCK, BUY_TRAIN: sell ``corp``'s shares (SELL_AMOUNT, EMERGENCY_SELL_AMOUNT)
+    ACTION_SELL = 9                 # SELL_AMOUNT, EMERGENCY_SELL_AMOUNT: ``count`` shares of the pending corp
+    ACTION_DR_EXCHANGE = 10         # DR for an IR share
+    ACTION_MF_PORT = 11             # use MF (PORT follows)
+    ACTION_PAR = 12                 # PAR: par index ``count`` at ``amount`` yen
+    ACTION_SELECT_HEX = 13          # TRACK: lay on ``hex`` (TILE follows)
+    ACTION_LAY_CANDIDATE = 14       # TILE, ER_BONUS: lay candidate ``count``
+    ACTION_PLACE_TOKEN = 15         # TOKEN: token ``hex``
+    ACTION_BUY_PRIVATE = 16         # buy ``private`` (PRIVATE_PRICE follows)
+    ACTION_WITHHOLD = 17            # DIVIDEND
+    ACTION_PAYOUT = 18              # DIVIDEND
+    ACTION_DISCARD = 19             # DISCARD: a ``train_type``
+    ACTION_BUY_DEPOT_TRAIN = 20     # BUY_TRAIN: a train from the depot (SELECT_TRAIN follows)
+    ACTION_BUY_POOL_TRAIN = 21      # BUY_TRAIN: a train from the pool (SELECT_TRAIN follows)
+    ACTION_BUY_CORP_TRAIN = 22      # BUY_TRAIN: a train from ``corp`` (SELECT_TRAIN, then TRAIN_PRICE)
+    ACTION_TRAIN_TYPE = 23          # SELECT_TRAIN: a ``train_type`` from the pending source
+    ACTION_TRADE_IN = 24            # SELECT_TRAIN: trade ``train_type`` (4, 5, or 6) and ¥800 for a D
+    ACTION_BANKRUPT = 25            # BUY_TRAIN
+    ACTION_PORT_LAY = 26            # PORT: the port tile on ``hex`` at rotation ``count``
 
 
 # A tile lay at the chosen hex: a supply tile at a canonical rotation.

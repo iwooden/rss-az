@@ -12,8 +12,9 @@ BuyTrain, then a blocking BuyCompany) are the oracle. An OR runs:
 - ``TURN_START`` (``start_operating``): the next corp operates, its
   president acting.
 - TRACK (with TILE for a chosen hex), TOKEN, the automated ROUTE, DIVIDEND
-  (``dividend.pyx``), BUY_TRAIN with TRAIN_PRICE and DISCARD
-  (``buy_train.pyx``), and in phases 3-4 BUY_PRIVATE (``privates.pyx``,
+  (``dividend.pyx``), BUY_TRAIN with SELECT_TRAIN, TRAIN_PRICE,
+  EMERGENCY_SELL_AMOUNT, and DISCARD (``buy_train.pyx``), and in phases
+  3-4 BUY_PRIVATE (``privates.pyx``,
   with the slots that buy privates and use DR and MF at the turn's
   decisions). Where Ruby skips a step because there is nothing to choose,
   the engine offers one action, which the driver's forced rule applies: a

@@ -5,17 +5,18 @@ On a normal turn the turn player passes, buys the topmost private at its
 price, or selects a private to bid on and then names the amount in BID; a bid
 on the topmost private is a purchase at the bid. After each sale the new
 topmost private resolves in place (``resolve_bids``): without bids normal
-turns resume; one bid wins it; two or more open a closed auction (RAISE), in
-which the lowest bidder raises or drops out until one bid is left. Chains of
-sales end at a private without bids, or with the auction.
+turns resume; one bid wins it; two or more open a closed auction, in which the
+lowest bidder raises in BID or drops out (BID's slot 0) until one bid is
+left. Chains of sales end at a private without bids, or with the auction.
 
 Fields:
 
 - ``auction_turn`` is the normal turn (Ruby's ``entity_index``). It advances
   after every normal turn, and a closed auction leaves it alone;
-- ``active_player`` is the actor: the turn player, or the lowest bidder in RAISE;
+- ``active_player`` is the actor: the turn player, or the lowest bidder in a
+  closed auction;
 - ``auction_private`` is the private in a closed auction, else -1;
-- ``pending_private`` is BID's private while BID is open;
+- ``pending_private`` is BID's private outside a closed auction;
 - ``priority_player`` is Ruby's ``priority_deal_player``: the auction's first
   player until a turn player buys the topmost, then the player after the last
   such buyer.
@@ -24,7 +25,7 @@ Fields:
 """
 
 from g1889.actions cimport ACTION_BUY_TOPMOST, ACTION_PASS, ACTION_SELECT_BID, ActionInfo, price_amount
-from g1889.constants cimport AUCTION_DISCOUNT_STEP, OWNER_UNSOLD, ROUND_AUCTION, STEP_AUCTION, STEP_BID, STEP_RAISE
+from g1889.constants cimport AUCTION_DISCOUNT_STEP, OWNER_UNSOLD, ROUND_AUCTION, STEP_AUCTION, STEP_BID
 from g1889.data.tables cimport PRIVATE_TR
 from g1889.entities.player cimport Player, all_passed, clear_passed, player_bid
 from g1889.entities.private cimport (
@@ -84,7 +85,7 @@ cdef void _resolve(GameState state) except *:
         TURN.set_active_player(state, TURN.auction_turn(state))
     else:
         TURN.set_auction_private(state, p)
-        TURN.set_step(state, STEP_RAISE)
+        TURN.set_step(state, STEP_BID)
         TURN.set_active_player(state, private_lowest_bidder(state, p))
 
 
@@ -140,10 +141,19 @@ cdef void apply_auction(GameState state, const ActionInfo* info) except *:
 
 
 cdef void apply_bid(GameState state, const ActionInfo* info) except *:
-    """Bid the amount on the selected private; on the topmost, buy it at the bid."""
+    """In a closed auction the lowest bidder drops out, losing the bid
+    (``pass_auction``), or raises. Otherwise bid the amount on the selected
+    private; on the topmost, buy it at the bid."""
     cdef int player = turn_active_player(state)
-    cdef int p = turn_pending_private(state)
-    cdef int amount = price_amount(state, info)
+    cdef int p = turn_auction_private(state)
+    cdef int amount = 0 if info.type == ACTION_PASS else price_amount(state, info)
+    if p >= 0:
+        if info.type != ACTION_PASS:
+            _player_at(player).set_passed(state, False)
+        _player_at(player).set_bid(state, p, amount)  # 0 drops out
+        _resolve(state)
+        return
+    p = turn_pending_private(state)
     TURN.set_pending_private(state, -1)
     if p == topmost_private(state):
         _buy(state, player, p, amount)
@@ -151,18 +161,6 @@ cdef void apply_bid(GameState state, const ActionInfo* info) except *:
     _player_at(player).set_passed(state, False)
     _player_at(player).set_bid(state, p, amount)
     _end_turn(state)
-
-
-cdef void apply_raise(GameState state, const ActionInfo* info) except *:
-    """The lowest bidder drops out, losing the bid (``pass_auction``), or raises."""
-    cdef int player = turn_active_player(state)
-    cdef int p = turn_auction_private(state)
-    if info.type == ACTION_PASS:
-        _player_at(player).set_bid(state, p, 0)
-    else:
-        _player_at(player).set_passed(state, False)
-        _player_at(player).set_bid(state, p, price_amount(state, info))
-    _resolve(state)
 
 
 # =============================================================================

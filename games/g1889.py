@@ -37,8 +37,9 @@ POLICY_LAYOUT = PolicyLayout(
     phase_sizes=tuple(K.PHASE_ACTION_SIZES),
     # DecisionPhase order; engine-design.md §5.2 names the metrics.
     phase_names=(
-        "auction", "bid", "raise", "stock", "par", "track", "tile", "token", "div",
-        "discard", "train", "train_price", "private", "private_price", "er_bonus", "port",
+        "auction", "bid", "stock", "par", "sell_amount", "track", "tile", "token", "div",
+        "discard", "train", "select_train", "train_price", "emergency_sell_amount",
+        "private", "private_price", "er_bonus", "port",
     ),
     # Slot 0 passes before the phase's other choices, as RSS's pass slots do;
     # DIVIDEND's withhold is a choice, not a pass, like RSS's zero dividend.

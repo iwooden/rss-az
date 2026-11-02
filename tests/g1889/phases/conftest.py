@@ -7,6 +7,14 @@
   ``(id, info)`` lists of the engine-legal and policy ids.
 - ``find_legal_action(state, **fields)``: the first legal id whose decoded
   fields (``type``, ``private``, ``count``, ...) match.
+- ``opened(state, action_id)``: a copy at the sub-phase a legal id opens
+  (SELL_AMOUNT, SELECT_TRAIN, ...), before any choice the driver forces;
+  ``apply_factored`` applies a choice and its sub-phase's.
+- Composed BUY_TRAIN choices (engine-design §5.3): ``depot(t)``,
+  ``pool(t)``, ``trade(t)`` (a D for a traded t), ``from_corp(c, t)``, and
+  ``sale(c, n)``; ``train_choices(state)`` lists BUY_TRAIN's legal ids with
+  each source and sale composed with its sub-phase's choices, and
+  ``choose_train`` and ``train_decisions`` make and spell one.
 - ``apply_and_verify(state, action_id)``: apply through the driver with
   history, checking ``assert_invariants`` on every intermediate state and the
   result, and that a returned decision is a choice: two or more policy
@@ -19,14 +27,17 @@
   on a port hex once used. ``apply_and_verify`` checks that no corp's private
   ever goes back to a player. And the actor, the player ``active_player``
   names, at every decision: the turn player in the auction (the lowest
-  bidder in RAISE); in an SR, the priority holder first, and the turn passes
-  to the next seat only at STOCK's slot 0; MF's owner at PORT; the operating
-  corp's president in an OR, the crowded corp's at DISCARD, and ER's seller
-  at ER_BONUS. And the game's end and the emergencies: the
-  game is over exactly at GAME_OVER with an ``end_reason``, which a
-  bankruptcy's matches its one bankrupt player at ¥0 and a broken bank's
-  the bank; the turn's emergency sales stand from BUY_TRAIN to the turn's
-  end, and ``ebuy_sold_any`` from a sale to the purchase; and
+  bidder in a closed auction's BID); in an SR, the priority holder first, and
+  the turn passes to the next seat only at STOCK's slot 0; MF's owner at
+  PORT; the operating corp's president in an OR, the crowded corp's at
+  DISCARD, and ER's seller at ER_BONUS. And the pending fields: a corp at
+  PAR, SELL_AMOUNT, and EMERGENCY_SELL_AMOUNT, a source at SELECT_TRAIN and
+  TRAIN_PRICE, and a train at TRAIN_PRICE. And the game's end and the
+  emergencies: the game is over exactly at GAME_OVER with an
+  ``end_reason``, which a bankruptcy's matches its one bankrupt player at ¥0
+  and a broken bank's the bank; the turn's emergency sales stand from
+  BUY_TRAIN to the turn's end, and ``ebuy_sold_any`` from a sale to the
+  purchase; and
   ``final_scores_py`` equals Ruby's ``Player#value`` recomputed, and its
   sum the players' cash, the corps' shares outside the IPO and the pool at
   market, and the players' privates at face.
@@ -46,7 +57,7 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
-from g1889.driver import DRIVER, STATUS_GAME_OVER, STATUS_OK
+from g1889.driver import DRIVER, STATUS_GAME_OVER, STATUS_INVALID, STATUS_OK
 from g1889.entities.bank import BANK
 from g1889.entities.corp import CORPS, PRESIDENT_SHARES, SHARES_PER_CORP
 from g1889.entities.hexmap import MAP
@@ -66,15 +77,15 @@ POOL_LIMIT = D.MARKET_SHARE_LIMIT // 10
 HEX = {hex_id: h for h, hex_id in enumerate(D.HEX_IDS)}
 TILE = {name: t for t, name in enumerate(D.TILE_NAMES)}
 # The steps of a corp's turn, from TURN_START to TURN_END.
-TURN_STEPS = (K.STEP_TRACK, K.STEP_TILE, K.STEP_TOKEN, K.STEP_ROUTE, K.STEP_DIVIDEND, K.STEP_BUY_TRAIN,
-              K.STEP_TRAIN_PRICE, K.STEP_DISCARD, K.STEP_BUY_PRIVATE, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS,
-              K.STEP_PORT)
+BUY_TRAIN_STEPS = (K.STEP_BUY_TRAIN, K.STEP_SELECT_TRAIN, K.STEP_TRAIN_PRICE, K.STEP_EMERGENCY_SELL_AMOUNT)
+TURN_STEPS = (K.STEP_TRACK, K.STEP_TILE, K.STEP_TOKEN, K.STEP_ROUTE, K.STEP_DIVIDEND, *BUY_TRAIN_STEPS,
+              K.STEP_DISCARD, K.STEP_BUY_PRIVATE, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS, K.STEP_PORT)
 # The sub-phases that return to the step they interject in (``return_step``).
 RETURNING_STEPS = (K.STEP_DISCARD, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS, K.STEP_PORT)
 OR_STEPS = (K.STEP_OR_START, K.STEP_TURN_START, *TURN_STEPS, K.STEP_TURN_END, K.STEP_OR_END)
 # Where a turn's emergency sales may stand: from BUY_TRAIN to the turn's end, or a bankruptcy's game end.
-EBUY_STEPS = (K.STEP_BUY_TRAIN, K.STEP_TRAIN_PRICE, K.STEP_DISCARD, K.STEP_BUY_PRIVATE, K.STEP_PRIVATE_PRICE,
-              K.STEP_ER_BONUS, K.STEP_TURN_END, K.STEP_GAME_OVER)
+EBUY_STEPS = (*BUY_TRAIN_STEPS, K.STEP_DISCARD, K.STEP_BUY_PRIVATE, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS,
+              K.STEP_TURN_END, K.STEP_GAME_OVER)
 
 
 # =============================================================================
@@ -243,8 +254,89 @@ def find_legal_action(state, **fields):
     raise AssertionError(f'no legal action with {fields}; legal: {[info for _, info in actions]}')
 
 
+def opened(state, action_id):
+    """A copy of ``state`` at the sub-phase the legal ``action_id`` opens, as
+    the driver opens it: before any choice it then forces there."""
+    n = TURN.num_players(state)
+    after = GameState.from_array(state._array, n, max_players=state.max_players)
+    history = []
+    assert DRIVER.apply_action(after, action_id, history) != STATUS_INVALID, action_id
+    return after if len(history) == 1 else GameState.from_array(history[1][0], n, max_players=state.max_players)
+
+
+def apply_factored(state, first, phase, second, msg='', expected_status=STATUS_OK):
+    """Apply ``first``, then ``second`` at the sub-phase ``phase`` it opens,
+    which the driver applies itself when it is the only choice there. The
+    result's ``forced`` are the decisions the driver forced after ``second``."""
+    result = apply_and_verify(state, first, msg, expected_status=None)
+    if not result.forced:
+        assert A.get_decision_phase_py(state) == phase, f'{msg}: {first} opened {A.get_decision_phase_py(state)}'
+        return apply_and_verify(state, second, msg, expected_status)
+    assert result.forced[0] == (phase, second), f'{msg}: forced {result.forced}'
+    assert expected_status is None or result.status == expected_status, f'{msg}: status {result.status}'
+    return ApplyResult(state, result.history[1:], result.status)
+
+
+def depot(t):
+    return 'depot', t
+
+
+def pool(t):
+    return 'pool', t
+
+
+def trade(t):
+    return 'trade', t
+
+
+def from_corp(c, t):
+    return c, t
+
+
+def sale(c, n):
+    return 'sell', c, n
+
+
+TRAIN_SOURCES = {A.ACTION_BUY_DEPOT_TRAIN: 'depot', A.ACTION_BUY_POOL_TRAIN: 'pool', A.ACTION_BUY_CORP_TRAIN: None}
+
+
+def train_choices(state):
+    """BUY_TRAIN's legal ids, each source composed with the trains SELECT_TRAIN
+    then offers and each emergency sale with EMERGENCY_SELL_AMOUNT's blocks."""
+    choices = []
+    for action_id, info in get_legal_actions(state):
+        if info.type == A.ACTION_SELECT_SALE:
+            choices += [sale(info.corp, sub.count) for _, sub in get_legal_actions(opened(state, action_id))]
+        elif info.type in TRAIN_SOURCES:
+            source = TRAIN_SOURCES[info.type] or info.corp
+            choices += [('trade' if sub.type == A.ACTION_TRADE_IN else source, sub.train_type)
+                        for _, sub in get_legal_actions(opened(state, action_id))]
+        else:
+            choices.append(action_id)
+    return choices
+
+
+def train_decisions(choice):
+    """The two decisions of a composed BUY_TRAIN choice."""
+    if choice[0] == 'sell':
+        _, c, n = choice
+        return [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_SELL + c), (K.DPHASE_EMERGENCY_SELL_AMOUNT, n - 1)]
+    source, t = choice
+    if source == 'trade':
+        return [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_DEPOT),
+                (K.DPHASE_SELECT_TRAIN, K.SELECT_TRAIN_TRADE_IN + D.TRADE_IN_TYPE.index(t))]
+    slot = {'depot': K.BUY_TRAIN_DEPOT, 'pool': K.BUY_TRAIN_POOL}.get(source) or K.BUY_TRAIN_CORP + source
+    return [(K.DPHASE_BUY_TRAIN, slot), (K.DPHASE_SELECT_TRAIN, K.SELECT_TRAIN_TYPE + t)]
+
+
+def choose_train(state, choice, msg='', expected_status=STATUS_OK):
+    """Make a composed BUY_TRAIN choice through ``apply_factored``."""
+    (_, first), (phase, second) = train_decisions(choice)
+    return apply_factored(state, first, phase, second, msg or str(choice), expected_status)
+
+
 def exact_id(state, amount):
-    """The exact-amount id of ``amount`` in the current BID, RAISE, or TRAIN_PRICE."""
+    """The exact-amount id of ``amount`` in the current BID, TRAIN_PRICE, or PRIVATE_PRICE."""
     return K.PHASE_ACTION_SIZES[A.get_decision_phase_py(state)] + amount
 
 
@@ -301,9 +393,12 @@ def assert_invariants(state, msg=''):
             mf = PRIVATES[D.PRIVATE_MF]
             assert mf.owner(state) == K.OWNER_PLAYER + active and not mf.flags(state) & 1, f'{msg}: PORT for MF'
         if TURN.round(state) == K.ROUND_STOCK:
-            assert step in (K.STEP_STOCK, K.STEP_PAR, K.STEP_PORT, K.STEP_SR_END), f'{msg}: step {step} in the SR'
+            assert step in (K.STEP_STOCK, K.STEP_PAR, K.STEP_SELL_AMOUNT, K.STEP_PORT, K.STEP_SR_END), \
+                f'{msg}: step {step} in the SR'
             assert step != K.STEP_PORT or TURN.return_step(state) == K.STEP_STOCK, f'{msg}: PORT returns to STOCK'
-            assert (TURN.pending_corp(state) >= 0) == (step == K.STEP_PAR), f'{msg}: pending corp'
+            corp = TURN.pending_corp(state)
+            assert (corp >= 0) == (step in (K.STEP_PAR, K.STEP_SELL_AMOUNT)), f'{msg}: pending corp'
+            assert step != K.STEP_SELL_AMOUNT or not TURN.sr_sold_mask(state) >> corp & 1, f'{msg}: sold twice'
             sold = TURN.sr_sold_mask(state)
             assert sold & ~PLAYERS[active].sold_mask(state) == 0, f'{msg}: turn sales outside the SR sales'
             assert not TURN.sr_sold_then_bought(state) or (sold and TURN.sr_bought(state)), msg
@@ -314,11 +409,12 @@ def assert_invariants(state, msg=''):
             assert all(PLAYERS[i].sold_mask(state) == 0 for i in range(n)), f'{msg}: SR sales left over'
         _assert_operating(state, msg)
         return
-    assert step in (K.STEP_AUCTION, K.STEP_BID, K.STEP_RAISE), f'{msg}: step {step} in the auction'
-    if step == K.STEP_RAISE:
+    assert step in (K.STEP_AUCTION, K.STEP_BID), f'{msg}: step {step} in the auction'
+    if TURN.auction_private(state) >= 0:  # a closed auction, at BID
         auctioned = PRIVATES[TURN.auction_private(state)]
+        assert step == K.STEP_BID and TURN.pending_private(state) == -1, f'{msg}: closed auction at {step}'
         assert TURN.auction_private(state) == top and auctioned.bid_count(state) >= 2, f'{msg}: closed auction'
-        assert active == auctioned.lowest_bidder(state), f'{msg}: the lowest bidder acts in RAISE'
+        assert active == auctioned.lowest_bidder(state), f'{msg}: the lowest bidder acts in a closed auction'
         return
     assert TURN.auction_private(state) == -1 and PRIVATES[top].bid_count(state) == 0, f'{msg}: topmost has bids'
     assert active == TURN.auction_turn(state), f'{msg}: the turn player acts'
@@ -426,18 +522,25 @@ def _assert_trains(state, msg):
 def _assert_operating(state, msg):
     """The OR order lists distinct floated corps, the operating corp is the one
     at ``or_index`` and its president acts (in DISCARD, the crowded corp's),
-    TILE alone has a pending hex and TRAIN_PRICE a pending train, which its
-    seller holds, the turn's revenue waits only at DIVIDEND (or a private's
-    sub-phase that returns there), and every OR field is clear outside the
-    OR. At ER_BONUS, ER's seller acts."""
+    TILE alone has a pending hex, SELECT_TRAIN and TRAIN_PRICE a pending
+    source (another corp's at TRAIN_PRICE, which holds the pending train),
+    and EMERGENCY_SELL_AMOUNT a pending corp in an emergency, the turn's
+    revenue waits only at DIVIDEND (or a private's sub-phase that returns
+    there), and every OR field is clear outside the OR. At ER_BONUS, ER's
+    seller acts."""
     step, corp = TURN.step(state), TURN.operating_corp(state)
     order = [TURN.or_order(state, i) for i in range(D.NUM_CORPS)]
     corps = [c for c in order if c >= 0]
     assert order == corps + [-1] * (D.NUM_CORPS - len(corps)) and len(set(corps)) == len(corps), f'{msg}: {order}'
     assert (TURN.pending_hex(state) >= 0) == (step == K.STEP_TILE), f'{msg}: pending hex'
-    source = TURN.pending_train_source(state)
-    assert (source >= 0) == (step == K.STEP_TRAIN_PRICE), f'{msg}: pending train'
-    assert source < 0 or TRAINS.corp_trains(state, *divmod(source, D.NUM_TRAIN_TYPES)), f'{msg}: unheld train'
+    source, train = TURN.pending_train_source(state), TURN.pending_train_type(state)
+    assert (source >= 0) == (step in (K.STEP_SELECT_TRAIN, K.STEP_TRAIN_PRICE)), f'{msg}: pending source'
+    assert (train >= 0) == (step == K.STEP_TRAIN_PRICE), f'{msg}: pending train'
+    seller = source - K.TRAIN_SOURCE_CORP
+    assert train < 0 or (seller >= 0 and TRAINS.corp_trains(state, seller, train)), f'{msg}: unheld train'
+    if TURN.round(state) == K.ROUND_OPERATING:
+        assert (TURN.pending_corp(state) >= 0) == (step == K.STEP_EMERGENCY_SELL_AMOUNT), f'{msg}: pending corp'
+        assert step != K.STEP_EMERGENCY_SELL_AMOUNT or A.in_emergency_py(state), f'{msg}: a sale outside an emergency'
     assert TURN.route_revenue(state) == 0 or K.STEP_DIVIDEND in (step, TURN.return_step(state)), \
         f'{msg}: route revenue outside DIVIDEND'
     sold, sold_any = TURN.ebuy_sold_mask(state), TURN.ebuy_sold_any(state)
@@ -487,8 +590,8 @@ def is_choice(state):
 
 
 def price_of(state, point):
-    """The amount of BID, RAISE, or TRAIN_PRICE grid point ``point``."""
-    first = K.RAISE_POINT if A.get_decision_phase_py(state) == K.DPHASE_RAISE else 0
+    """The amount of BID, TRAIN_PRICE, or PRIVATE_PRICE grid point ``point``."""
+    first = K.BID_POINT if A.get_decision_phase_py(state) == K.DPHASE_BID else 0
     return A.price_amount_py(state, first + point)
 
 

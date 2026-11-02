@@ -1,5 +1,5 @@
-"""The private auction: AUCTION, BID, and RAISE (1889/engine-design.md §5.2,
-§6.1; Ruby's ``step/waterfall_auction.rb``).
+"""The private auction: AUCTION and BID, a closed auction's included
+(1889/engine-design.md §5.2, §6.1; Ruby's ``step/waterfall_auction.rb``).
 
 Covers purchases of the topmost private, bids and their cash limits,
 resolution chains, closed auctions, rounds of passes (A's discount down to the
@@ -35,8 +35,8 @@ def buy(state):
 
 
 def pass_turn(state):
-    """Pass in AUCTION, or drop out in RAISE."""
-    assert TURN.step(state) in (K.STEP_AUCTION, K.STEP_RAISE)
+    """Pass in AUCTION, or drop out of a closed auction in BID."""
+    assert TURN.step(state) == K.STEP_AUCTION or TURN.auction_private(state) >= 0
     return apply_and_verify(state, 0, 'pass')
 
 
@@ -45,11 +45,11 @@ def passes(state, count):
         pass_turn(state)
 
 
-def _amount_id(state, amount, first_point, num_points):
-    """The grid point for ``amount`` when it is one, else its exact id."""
-    p = TURN.pending_private(state) if TURN.step(state) == K.STEP_BID else TURN.auction_private(state)
+def _amount_id(state, amount):
+    """BID's grid point for ``amount`` when it is one, else its exact id."""
+    p = TURN.auction_private(state) if TURN.auction_private(state) >= 0 else TURN.pending_private(state)
     k, off = divmod(amount - PRIVATES[p].min_bid(state), D.MIN_BID_INCREMENT)
-    return first_point + k if off == 0 and 0 <= k < num_points else exact_id(state, amount)
+    return K.BID_POINT + k if off == 0 and 0 <= k < K.BID_POINTS else exact_id(state, amount)
 
 
 def bid(state, private, amount):
@@ -58,13 +58,15 @@ def bid(state, private, amount):
     player = TURN.active_player(state)
     result = apply_and_verify(state, K.AUCTION_BID + private, f'select {private}')
     if not result.forced:
-        result = apply_and_verify(state, _amount_id(state, amount, K.BID_POINT, K.BID_POINTS), f'bid {amount}')
+        result = apply_and_verify(state, _amount_id(state, amount), f'bid {amount}')
     assert PLAYERS[player].bid(state, private) == amount
     return result
 
 
 def raise_to(state, amount):
-    return apply_and_verify(state, _amount_id(state, amount, K.RAISE_POINT, K.RAISE_POINTS), f'raise to {amount}')
+    """Raise in a closed auction."""
+    assert TURN.step(state) == K.STEP_BID and TURN.auction_private(state) >= 0
+    return apply_and_verify(state, _amount_id(state, amount), f'raise to {amount}')
 
 
 def cash(state):
@@ -259,11 +261,11 @@ def closed4():
 class TestClosedAuction:
     def test_several_bids_open_a_closed_auction_led_by_the_lowest_bidder(self, closed4):
         """Ruby: the lowest bidder acts (the rulebook goes clockwise from the high bidder)."""
-        assert (TURN.step(closed4), TURN.auction_private(closed4)) == (K.STEP_RAISE, MF)
+        assert (TURN.step(closed4), TURN.auction_private(closed4)) == (K.STEP_BID, MF)
         assert TURN.active_player(closed4) == 0
         assert TURN.auction_turn(closed4) == TURN.priority_player(closed4) == 0
         assert PRIVATES[MF].min_bid(closed4) == 50
-        assert legal_ids(closed4) == [K.RAISE_DROP] + [K.RAISE_POINT + k for k in range(K.RAISE_POINTS)]
+        assert legal_ids(closed4) == [K.BID_DROP] + [K.BID_POINT + k for k in range(K.BID_POINTS)]
         assert policy_ids(closed4) == legal_ids(closed4)
 
     def test_a_raise_hands_the_turn_to_the_new_lowest_bidder(self, closed4):
@@ -310,9 +312,9 @@ class TestClosedAuction:
         pass_turn(state)
         bid(state, MF, 40)
         buy(state)
-        assert (TURN.step(state), TURN.active_player(state)) == (K.STEP_RAISE, 1)
+        assert (TURN.step(state), TURN.active_player(state)) == (K.STEP_BID, 1)
         result = raise_to(state, 60)
-        assert result.forced == [(K.DPHASE_RAISE, K.RAISE_DROP)]
+        assert result.forced == [(K.DPHASE_BID, K.BID_DROP)]
         assert owner(state, MF) == K.OWNER_PLAYER + 1 and cash(state)[1] == 420 - 20 - 60
 
     def test_a_closed_auction_chains_into_the_next(self):
@@ -358,7 +360,7 @@ class TestAllPassed:
         bid(state, MF, 40)
         passes(state, 8)
         assert owner(state, TR) == K.OWNER_PLAYER  # the player after the last passer (1)
-        assert (TURN.step(state), TURN.auction_private(state), TURN.active_player(state)) == (K.STEP_RAISE, MF, 0)
+        assert (TURN.step(state), TURN.auction_private(state), TURN.active_player(state)) == (K.STEP_BID, MF, 0)
         assert TURN.auction_turn(state) == 1
 
     def test_a_free_a_whose_chain_sells_everything_ends_the_auction(self):
@@ -459,6 +461,16 @@ class TestPassCap:
         assert result.forced == [(K.DPHASE_AUCTION, K.AUCTION_PASS)] and TURN.active_player(state) == 1
         assert PLAYERS[0].passed(state)
 
+    def test_the_cap_leaves_a_closed_auction_alone(self):
+        """Its private is the topmost, on which any raise is a purchase, and
+        dropping out pays nobody: the policy keeps the drop and every raise."""
+        state = _after_payouts(1, 1)  # player 1's turn
+        bid(state, ER, 45)
+        bid(state, ER, 50)
+        buy(state)  # player 0 buys MF: ER's two bids close its auction
+        assert (TURN.step(state), TURN.auction_private(state), TURN.active_player(state)) == (K.STEP_BID, ER, 1)
+        assert policy_ids(state) == legal_ids(state) == [K.BID_DROP] + [K.BID_POINT + k for k in range(K.BID_POINTS)]
+
     @staticmethod
     def _capped_with_cash_on_sir():
         """Player 1 holds ¥350 on SIR, leaving ¥70 against MF's ¥30, after a payout."""
@@ -512,14 +524,14 @@ class TestPassCap:
 # =============================================================================
 
 class TestPolicyAgainstEngine:
-    def test_bid_and_raise_policies_are_the_grid(self, closed4):
+    def test_bid_policies_are_the_grid(self, closed4):
         assert policy_ids(closed4) == legal_ids(closed4)
         state = new_game(3)
         apply_and_verify(state, K.AUCTION_BID + ER)
         assert policy_ids(state) == legal_ids(state) == [K.BID_POINT + k for k in range(K.BID_POINTS)]
 
     def test_exact_amounts_are_legal_but_never_enumerated(self, closed4):
-        size = K.ACTION_SIZE_RAISE
+        size = K.ACTION_SIZE_BID
         assert all(i < size for i in legal_ids(closed4))
         assert A.is_legal_action_py(closed4, size + 51) and not A.is_legal_action_py(closed4, size + 49)
         assert A.is_legal_action_py(closed4, size + 420) and not A.is_legal_action_py(closed4, size + 421)

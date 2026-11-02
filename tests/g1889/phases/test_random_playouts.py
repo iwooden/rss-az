@@ -1,6 +1,6 @@
 """Random play from new games through the auction, SRs, and ORs
 (1889/engine-design.md §10.4): at 2-6 players, with the policy flags on
-(policy ids only) and off (every legal id, and exact amounts in BID, RAISE,
+(policy ids only) and off (every legal id, and exact amounts in BID,
 TRAIN_PRICE, and PRIVATE_PRICE), each game runs to its end or a decision cap.
 
 ``apply_and_verify`` checks every state the driver passes through, forced
@@ -20,8 +20,8 @@ route solver recomputed from scratch), and every returned decision for its
 legal and policy sets on a rebound copy of the row.
 
 The players pass in an SR half the time they may, so rounds end, and a corp
-that can buy from the depot buys its newest offer (a D by trade-in included),
-which moves the phases on. A decision that offers a private's slot (a
+that can buy from the depot does, its newest offer (a D by trade-in
+included), which moves the phases on. A decision that offers a private's slot (a
 private's purchase, BUY_PRIVATE's included, DR's exchange, or MF's port
 tile) besides other choices takes one a tenth of the time, as uniform
 purchases at up to twice face value drain the treasuries (only 13 of the
@@ -30,8 +30,10 @@ Uniform BUY_TRAIN choices let corps spend their treasuries on each other's
 trains, and the rusting then strands them in emergencies: only 4 of these
 200 games reached phase D that way (6.7), against about a fifth with the
 bias. Every other choice in an emergency is uniform too: the president's
-sales, bankruptcy, and other corps' trains. The games run until a president
-goes bankrupt or the bank breaks and its OR set ends.
+sales, bankruptcy, and other corps' trains. Uniform is per decision, so a
+factored choice (a sale's corp and block, a train's source and type) is
+uniform at each step. The games run until a president goes bankrupt or the
+bank breaks and its OR set ends.
 """
 
 from collections import Counter
@@ -56,7 +58,7 @@ from tests.g1889.phases.conftest import apply_and_verify, exact_id, legal_ids, n
 
 SEEDS = range(20)
 MAX_DECISIONS = 3000
-EXACT_SHARE = 0.25                 # of BID, RAISE, TRAIN_PRICE, and PRIVATE_PRICE decisions, with the flags off
+EXACT_SHARE = 0.25                 # of BID, TRAIN_PRICE, and PRIVATE_PRICE decisions, with the flags off
 UNCAPPED_PAYOUTS = 3               # payout rounds before the flags-off player turns the cap on
 STOCK_PASS_SHARE = 0.5
 PRIVATE_SHARE = 0.1                # of decisions offering a private's slot and more: take a slot
@@ -75,12 +77,14 @@ def _choose(state, rng, flags):
             face = D.PRIVATE_VALUE[TURN.pending_private(state)]
             low, high = -(-face // 2), min(2 * face, CORPS[TURN.operating_corp(state)].cash(state))
         else:
-            p = TURN.pending_private(state) if phase == K.DPHASE_BID else TURN.auction_private(state)
+            p = TURN.auction_private(state) if TURN.auction_private(state) >= 0 else TURN.pending_private(state)
             low, high = PRIVATES[p].min_bid(state), PLAYERS[TURN.active_player(state)].available(state, p)
         return exact_id(state, int(rng.integers(low, high + 1)))
     ids = policy_ids(state) if flags else legal_ids(state)
-    if phase == K.DPHASE_BUY_TRAIN and (depot := [i for i in ids if K.BUY_TRAIN_DEPOT <= i < K.BUY_TRAIN_POOL]):
-        return depot[-1]
+    if phase == K.DPHASE_BUY_TRAIN and K.BUY_TRAIN_DEPOT in ids:
+        return K.BUY_TRAIN_DEPOT
+    if phase == K.DPHASE_SELECT_TRAIN and TURN.pending_train_source(state) == K.TRAIN_SOURCE_DEPOT:
+        return ids[-1]
     if ids[0] == 0 and phase == K.DPHASE_STOCK and rng.random() < STOCK_PASS_SHARE:
         return 0
     slots = [i for i in ids if A.decode_action_py(phase, i).type in PRIVATE_SLOTS]
@@ -156,9 +160,11 @@ def _ending(state):
 
 
 # Of each setting's 100 games, at least this many reach phases 4 and D. As
-# measured (6.8b): phases 4, 5, 6, and D in 99, 92, 61, and 51 games with the
-# flags off, and 99, 92, 43, and 27 with them on; 63 and 43 games end in a
-# bankruptcy, the rest at a broken bank's OR set, within 1,126 decisions.
+# measured (6.10, uniform at each step of a factored choice): phases 4, 5, 6,
+# and D in 98, 90, 51, and 39 games with the flags off, and 99, 92, 36, and
+# 25 with them on; 53 and 38 games end in a bankruptcy, the rest at a broken
+# bank's OR set, within 998 decisions. (6.8b, before the factoring: 99, 92,
+# 61, and 51; 99, 92, 43, and 27; 63 and 43 bankruptcies; 1,126 decisions.)
 MIN_REACH = {D.GAME_PHASE_4: 90, D.GAME_PHASE_D: 15}
 
 
@@ -166,13 +172,14 @@ MIN_REACH = {D.GAME_PHASE_4: 90, D.GAME_PHASE_D: 15}
 def test_random_games_run_to_the_end(flags):
     """Every game gets into the ORs, buys trains through the phases, and
     ends, at a bankruptcy or a broken bank's OR set; a quarter to a half
-    reach phase D. Between them, the games lay track, place tokens, pay out and
-    withhold, buy from the depot, the pool, and each other at grid and exact
-    prices, trade in for Ds, and discard; in emergencies the presidents pay
-    toward trains, sell shares, and go bankrupt; corps buy privates at every
-    top-level OR decision, at grid and exact prices; ER's sellers lay on C4
-    and pass; DR's owners exchange in SRs and ORs, and MF's lay the port tile
-    from STOCK and TRACK."""
+    reach phase D. Between them, the games bid, raise, and drop out of closed
+    auctions, sell in SRs, lay track, place tokens, pay out and withhold, buy
+    from the depot, the pool, and each other at grid and exact prices, trade
+    in for Ds, and discard; in emergencies the presidents pay toward trains,
+    sell shares, and go bankrupt; corps buy privates at every top-level OR
+    decision, at grid and exact prices; ER's sellers lay on C4 and pass; DR's
+    owners exchange in SRs and ORs, and MF's lay the port tile from STOCK and
+    TRACK. Every decision phase occurs."""
     seen, phases, endings = Counter(), Counter(), Counter()
     for num_players in range(D.MIN_PLAYERS, D.MAX_PLAYERS + 1):
         for seed in SEEDS:
@@ -184,17 +191,23 @@ def test_random_games_run_to_the_end(flags):
             endings[_ending(state)] += 1
             phases.update(range(PHASE.current(state) + 1))
     print(f'flags {flags}: endings {dict(endings)}, phases {dict(sorted(phases.items()))}, '
-          f'emergency decisions {seen["emergency"]}, sales {seen[(K.DPHASE_BUY_TRAIN, A.ACTION_SELL)]}, '
+          f'emergency decisions {seen["emergency"]}, sales {seen[(K.DPHASE_EMERGENCY_SELL_AMOUNT, A.ACTION_SELL)]}, '
           f'turns {seen["STEP_TURN_START"]}')
     assert all(phases[phase] >= n for phase, n in MIN_REACH.items()), phases
+    assert {key[0] for key in seen if isinstance(key, tuple)} == set(range(K.NUM_DECISION_PHASES))
     assert endings['bank'] and endings['bankrupt'] and seen['STEP_OR_END'] and seen['STEP_TURN_END']
-    assert seen['emergency'] and seen[(K.DPHASE_BUY_TRAIN, A.ACTION_SELL)]
-    assert seen[(K.DPHASE_BUY_TRAIN, A.ACTION_BANKRUPT)]
+    for kind in (A.ACTION_PASS, A.ACTION_PRICE_POINT):  # a closed auction's drop, and grid bids
+        assert seen[(K.DPHASE_BID, kind)], kind
+    assert bool(seen[(K.DPHASE_BID, A.ACTION_EXACT_PRICE)]) != flags
+    assert seen[(K.DPHASE_STOCK, A.ACTION_SELECT_SALE)] and seen[(K.DPHASE_SELL_AMOUNT, A.ACTION_SELL)]
+    assert seen['emergency'] and seen[(K.DPHASE_BUY_TRAIN, A.ACTION_SELECT_SALE)]
+    assert seen[(K.DPHASE_EMERGENCY_SELL_AMOUNT, A.ACTION_SELL)] and seen[(K.DPHASE_BUY_TRAIN, A.ACTION_BANKRUPT)]
     assert seen[(K.DPHASE_TILE, A.ACTION_LAY_CANDIDATE)] and seen[(K.DPHASE_TOKEN, A.ACTION_PLACE_TOKEN)]
     for kind in (A.ACTION_WITHHOLD, A.ACTION_PAYOUT):
         assert seen[(K.DPHASE_DIVIDEND, kind)]
-    for kind in (A.ACTION_BUY_DEPOT_TRAIN, A.ACTION_BUY_POOL_TRAIN, A.ACTION_BUY_CORP_TRAIN, A.ACTION_TRADE_IN):
+    for kind in (A.ACTION_BUY_DEPOT_TRAIN, A.ACTION_BUY_POOL_TRAIN, A.ACTION_BUY_CORP_TRAIN):
         assert seen[(K.DPHASE_BUY_TRAIN, kind)], kind
+    assert seen[(K.DPHASE_SELECT_TRAIN, A.ACTION_TRAIN_TYPE)] and seen[(K.DPHASE_SELECT_TRAIN, A.ACTION_TRADE_IN)]
     assert seen[(K.DPHASE_TRAIN_PRICE, A.ACTION_PRICE_POINT)] and seen[(K.DPHASE_DISCARD, A.ACTION_DISCARD)]
     assert seen[(K.DPHASE_BUY_PRIVATE, A.ACTION_PASS)]
     assert bool(seen[(K.DPHASE_TRAIN_PRICE, A.ACTION_EXACT_PRICE)]) != flags

@@ -9,18 +9,18 @@ from libc.stdio cimport fprintf, stderr
 from libc.stdlib cimport abort
 
 from g1889.constants cimport (
-    ACTION_SIZE_RAISE, AUCTION_BID, AUCTION_BUY, AUCTION_PASS, BID_POINT, BID_POINTS,
-    BUY_PRIVATE_DONE, BUY_PRIVATE_DR, BUY_PRIVATE_PRIVATE, BUY_TRAIN_BANKRUPT,
-    BUY_TRAIN_BUY_PRIVATE, BUY_TRAIN_CORP, BUY_TRAIN_DEPOT, BUY_TRAIN_DR, BUY_TRAIN_PASS,
-    BUY_TRAIN_POOL, BUY_TRAIN_SELL, BUY_TRAIN_TRADE_IN, DIVIDEND_BUY_PRIVATE, DIVIDEND_DR,
-    DIVIDEND_PAYOUT, DIVIDEND_WITHHOLD, DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE,
-    DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT,
-    DPHASE_PRIVATE_PRICE, DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
-    DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE, MAX_SALE_SHARES,
-    NUM_DECISION_PHASES, NUM_STEPS, OWNER_CORP, OWNER_PLAYER, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY,
-    PRIVATE_PRICE_POINTS, RAISE_DROP, RAISE_POINT, RAISE_POINTS, ROUND_GAME_OVER, STEP_TO_DECISION_PHASE, STOCK_DR,
-    STOCK_IPO, STOCK_MF, STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR, TOKEN_HEX,
-    TOKEN_PASS, TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS, TRAIN_PRICE_POINTS,
+    AUCTION_BID, AUCTION_BUY, AUCTION_PASS, BID_DROP, BID_POINT, BID_POINTS, BUY_PRIVATE_DONE, BUY_PRIVATE_DR,
+    BUY_PRIVATE_PRIVATE, BUY_TRAIN_BANKRUPT, BUY_TRAIN_BUY_PRIVATE, BUY_TRAIN_CORP, BUY_TRAIN_DEPOT, BUY_TRAIN_DR,
+    BUY_TRAIN_PASS, BUY_TRAIN_POOL, BUY_TRAIN_SELL, DIVIDEND_BUY_PRIVATE, DIVIDEND_DR, DIVIDEND_PAYOUT,
+    DIVIDEND_WITHHOLD, DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD,
+    DPHASE_DIVIDEND, DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE,
+    DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
+    DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE, MAX_SALE_SHARES, NUM_DECISION_PHASES,
+    NUM_STEPS, NUM_TRAIN_SOURCES, OWNER_CORP, OWNER_PLAYER, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY,
+    PRIVATE_PRICE_POINTS, ROUND_GAME_OVER, SELECT_TRAIN_TRADE_IN, SELECT_TRAIN_TYPE, STEP_TO_DECISION_PHASE,
+    STOCK_DR, STOCK_IPO, STOCK_MF, STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR,
+    TOKEN_HEX, TOKEN_PASS, TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS, TRAIN_PRICE_POINTS,
+    TRAIN_SOURCE_CORP, TRAIN_SOURCE_POOL,
 )
 from g1889.data.tables cimport (
     CERT_LIMIT, D_TRAIN, DR_EXCHANGE_CORP, ENDPOINT_PAIRS, ER_HEX, ER_TILE, HEX_EXIT_MASK, HEX_NEIGHBOR,
@@ -52,9 +52,9 @@ from g1889.entities.trains cimport (
 )
 from g1889.entities.turn cimport (
     turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_ebuy_sold_any, turn_ebuy_sold_mask,
-    turn_num_players, turn_operating_corp, turn_pending_hex, turn_pending_private, turn_pending_train_source,
-    turn_round, turn_route_revenue, turn_sr_bought, turn_sr_sold_mask, turn_sr_sold_then_bought, turn_step,
-    turn_turn,
+    turn_num_players, turn_operating_corp, turn_pending_corp, turn_pending_hex, turn_pending_private,
+    turn_pending_train_source, turn_pending_train_type, turn_round, turn_route_revenue, turn_sr_bought,
+    turn_sr_sold_mask, turn_sr_sold_then_bought, turn_step, turn_turn,
 )
 from g1889.state cimport GameState
 
@@ -87,10 +87,6 @@ cdef inline int _exact(int phase, int amount) except -1 nogil:
     return base + amount
 
 
-cdef inline int _sale(int first, int corp, int count) except -1 nogil:
-    return first + <int>MAX_SALE_SHARES * _index(corp, <int>NUM_CORPS) + _index(count - 1, <int>MAX_SALE_SHARES)
-
-
 cdef int _find(const int8_t* values, int count, int value) except -1 nogil:
     cdef int i
     for i in range(count):
@@ -111,16 +107,16 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
             return AUCTION_BUY
         if t == ACTION_SELECT_BID:
             return AUCTION_BID + _index(info.private, <int>NUM_PRIVATES)
-    elif phase == DPHASE_BID or phase == DPHASE_TRAIN_PRICE or phase == DPHASE_PRIVATE_PRICE:
+    elif phase == DPHASE_BID:
+        if t == ACTION_PASS:
+            return BID_DROP
         if t == ACTION_PRICE_POINT:
-            return _index(info.count, PHASE_ACTION_SIZE[phase])
+            return BID_POINT + _index(info.count, <int>BID_POINTS)
         if t == ACTION_EXACT_PRICE:
             return _exact(phase, info.amount)
-    elif phase == DPHASE_RAISE:
-        if t == ACTION_PASS:
-            return RAISE_DROP
+    elif phase == DPHASE_TRAIN_PRICE or phase == DPHASE_PRIVATE_PRICE:
         if t == ACTION_PRICE_POINT:
-            return RAISE_POINT + _index(info.count, <int>ACTION_SIZE_RAISE - <int>RAISE_POINT)
+            return _index(info.count, PHASE_ACTION_SIZE[phase])
         if t == ACTION_EXACT_PRICE:
             return _exact(phase, info.amount)
     elif phase == DPHASE_STOCK:
@@ -132,8 +128,8 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
             return STOCK_POOL + _index(info.corp, <int>NUM_CORPS)
         if t == ACTION_SELECT_PAR:
             return STOCK_PAR + _index(info.corp, <int>NUM_CORPS)
-        if t == ACTION_SELL:
-            return _sale(STOCK_SELL, info.corp, info.count)
+        if t == ACTION_SELECT_SALE:
+            return STOCK_SELL + _index(info.corp, <int>NUM_CORPS)
         if t == ACTION_DR_EXCHANGE:
             return STOCK_DR
         if t == ACTION_MF_PORT:
@@ -141,6 +137,9 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
     elif phase == DPHASE_PAR:
         if t == ACTION_PAR:
             return _index(info.count, PHASE_ACTION_SIZE[phase])
+    elif phase == DPHASE_SELL_AMOUNT or phase == DPHASE_EMERGENCY_SELL_AMOUNT:
+        if t == ACTION_SELL:
+            return _index(info.count - 1, <int>MAX_SALE_SHARES)
     elif phase == DPHASE_TRACK:
         if t == ACTION_PASS:
             return TRACK_PASS
@@ -180,22 +179,24 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
         if t == ACTION_PASS:
             return BUY_TRAIN_PASS
         if t == ACTION_BUY_DEPOT_TRAIN:
-            return BUY_TRAIN_DEPOT + _index(info.train_type, <int>NUM_TRAIN_TYPES)
-        if t == ACTION_TRADE_IN:
-            return BUY_TRAIN_TRADE_IN + _find(TRADE_IN_TYPE, <int>NUM_TRADE_IN_TYPES, info.train_type)
+            return BUY_TRAIN_DEPOT
         if t == ACTION_BUY_POOL_TRAIN:
-            return BUY_TRAIN_POOL + _index(info.train_type, <int>NUM_TRAIN_TYPES)
+            return BUY_TRAIN_POOL
         if t == ACTION_BUY_CORP_TRAIN:
-            return (BUY_TRAIN_CORP + <int>NUM_TRAIN_TYPES * _index(info.corp, <int>NUM_CORPS)
-                    + _index(info.train_type, <int>NUM_TRAIN_TYPES))
-        if t == ACTION_SELL:
-            return _sale(BUY_TRAIN_SELL, info.corp, info.count)
+            return BUY_TRAIN_CORP + _index(info.corp, <int>NUM_CORPS)
+        if t == ACTION_SELECT_SALE:
+            return BUY_TRAIN_SELL + _index(info.corp, <int>NUM_CORPS)
         if t == ACTION_BANKRUPT:
             return BUY_TRAIN_BANKRUPT
         if t == ACTION_BUY_PRIVATE:
             return BUY_TRAIN_BUY_PRIVATE + _index(info.private, <int>NUM_PRIVATES)
         if t == ACTION_DR_EXCHANGE:
             return BUY_TRAIN_DR
+    elif phase == DPHASE_SELECT_TRAIN:
+        if t == ACTION_TRAIN_TYPE:
+            return SELECT_TRAIN_TYPE + _index(info.train_type, <int>NUM_TRAIN_TYPES)
+        if t == ACTION_TRADE_IN:
+            return SELECT_TRAIN_TRADE_IN + _find(TRADE_IN_TYPE, <int>NUM_TRADE_IN_TYPES, info.train_type)
     elif phase == DPHASE_BUY_PRIVATE:
         if t == ACTION_PASS:
             return BUY_PRIVATE_DONE
@@ -225,17 +226,10 @@ cdef inline void _decode_price(ActionInfo* info, int action_id, int first_point,
         info.count = action_id - first_point
 
 
-cdef inline void _decode_sale(ActionInfo* info, int offset) noexcept nogil:
-    info.type = ACTION_SELL
-    info.corp = offset // <int>MAX_SALE_SHARES
-    info.count = offset % <int>MAX_SALE_SHARES + 1
-
-
 cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
     """Unpack a phase-local id; exact ids (at or above the phase size) decode to
     ACTION_EXACT_PRICE. The id must be valid for the phase."""
     cdef ActionInfo info
-    cdef int k
     info.phase = phase
     info.type = ACTION_PASS
     info.corp = info.private = info.hex = info.train_type = info.count = info.amount = -1
@@ -246,11 +240,11 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
         elif action_id >= AUCTION_BID:
             info.type = ACTION_SELECT_BID
             info.private = action_id - AUCTION_BID
-    elif phase == DPHASE_BID or phase == DPHASE_TRAIN_PRICE or phase == DPHASE_PRIVATE_PRICE:
+    elif phase == DPHASE_BID:
+        if action_id != BID_DROP:
+            _decode_price(&info, action_id, BID_POINT, PHASE_ACTION_SIZE[phase])
+    elif phase == DPHASE_TRAIN_PRICE or phase == DPHASE_PRIVATE_PRICE:
         _decode_price(&info, action_id, 0, PHASE_ACTION_SIZE[phase])
-    elif phase == DPHASE_RAISE:
-        if action_id != RAISE_DROP:
-            _decode_price(&info, action_id, RAISE_POINT, PHASE_ACTION_SIZE[phase])
     elif phase == DPHASE_STOCK:
         if action_id == STOCK_PASS:
             pass
@@ -264,13 +258,17 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
             info.type = ACTION_SELECT_PAR
             info.corp = action_id - STOCK_PAR
         elif action_id < STOCK_DR:
-            _decode_sale(&info, action_id - STOCK_SELL)
+            info.type = ACTION_SELECT_SALE
+            info.corp = action_id - STOCK_SELL
         else:
             info.type = ACTION_MF_PORT if action_id == STOCK_MF else ACTION_DR_EXCHANGE
     elif phase == DPHASE_PAR:
         info.type = ACTION_PAR
         info.count = action_id
         info.amount = PAR_PRICE[action_id]
+    elif phase == DPHASE_SELL_AMOUNT or phase == DPHASE_EMERGENCY_SELL_AMOUNT:
+        info.type = ACTION_SELL
+        info.count = action_id + 1
     elif phase == DPHASE_TRACK:
         if action_id == TRACK_PASS:
             pass
@@ -312,22 +310,16 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
     elif phase == DPHASE_BUY_TRAIN:
         if action_id == BUY_TRAIN_PASS:
             pass
-        elif action_id < BUY_TRAIN_TRADE_IN:
+        elif action_id == BUY_TRAIN_DEPOT:
             info.type = ACTION_BUY_DEPOT_TRAIN
-            info.train_type = action_id - BUY_TRAIN_DEPOT
-        elif action_id < BUY_TRAIN_POOL:
-            info.type = ACTION_TRADE_IN
-            info.train_type = TRADE_IN_TYPE[action_id - BUY_TRAIN_TRADE_IN]
-        elif action_id < BUY_TRAIN_CORP:
+        elif action_id == BUY_TRAIN_POOL:
             info.type = ACTION_BUY_POOL_TRAIN
-            info.train_type = action_id - BUY_TRAIN_POOL
         elif action_id < BUY_TRAIN_SELL:
-            k = action_id - BUY_TRAIN_CORP
             info.type = ACTION_BUY_CORP_TRAIN
-            info.corp = k // <int>NUM_TRAIN_TYPES
-            info.train_type = k % <int>NUM_TRAIN_TYPES
+            info.corp = action_id - BUY_TRAIN_CORP
         elif action_id < BUY_TRAIN_BANKRUPT:
-            _decode_sale(&info, action_id - BUY_TRAIN_SELL)
+            info.type = ACTION_SELECT_SALE
+            info.corp = action_id - BUY_TRAIN_SELL
         elif action_id == BUY_TRAIN_BANKRUPT:
             info.type = ACTION_BANKRUPT
         elif action_id < BUY_TRAIN_DR:
@@ -335,6 +327,13 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
             info.private = action_id - BUY_TRAIN_BUY_PRIVATE
         else:
             info.type = ACTION_DR_EXCHANGE
+    elif phase == DPHASE_SELECT_TRAIN:
+        if action_id < SELECT_TRAIN_TRADE_IN:
+            info.type = ACTION_TRAIN_TYPE
+            info.train_type = action_id - SELECT_TRAIN_TYPE
+        else:
+            info.type = ACTION_TRADE_IN
+            info.train_type = TRADE_IN_TYPE[action_id - SELECT_TRAIN_TRADE_IN]
     elif phase == DPHASE_BUY_PRIVATE:
         if action_id == BUY_PRIVATE_DONE:
             pass
@@ -386,26 +385,30 @@ cdef int final_scores(GameState state, int* scores) noexcept nogil:
 
 
 cdef inline bint _has_exact(int phase) noexcept nogil:
-    return (phase == DPHASE_BID or phase == DPHASE_RAISE or phase == DPHASE_TRAIN_PRICE
-            or phase == DPHASE_PRIVATE_PRICE)
+    return phase == DPHASE_BID or phase == DPHASE_TRAIN_PRICE or phase == DPHASE_PRIVATE_PRICE
 
 
 # =============================================================================
-# AUCTION, BID, RAISE
+# AUCTION, BID
 # =============================================================================
 #
-# A bid on private p ranges from its minimum bid (``private_min_bid``) to the
-# bidder's cash less their other bids (``player_available``). Grid point k is
-# the minimum + ¥5k; points past the range are not offered.
+# BID names the amount of a bid on the private AUCTION selected
+# (``pending_private``), or in a closed auction on the topmost private
+# (``auction_private``), whose lowest bidder raises or drops out (slot 0, legal
+# only there). A bid ranges from the private's minimum bid
+# (``private_min_bid``: in a closed auction the high bid + ¥5) to the bidder's
+# cash less their other bids (``player_available``). Grid point k is the
+# minimum + ¥5k; points past the range are not offered.
 
-cdef inline int _bid_private(GameState state, int phase) noexcept nogil:
-    """The private a BID or RAISE amount is for."""
-    return turn_pending_private(state) if phase == DPHASE_BID else turn_auction_private(state)
+cdef inline int _bid_private(GameState state) noexcept nogil:
+    """The private BID is for: the closed auction's, else the selected one."""
+    cdef int p = turn_auction_private(state)
+    return p if p >= 0 else turn_pending_private(state)
 
 
 cdef int price_amount(GameState state, const ActionInfo* info) noexcept nogil:
-    """The yen of a BID, RAISE, TRAIN_PRICE, or PRIVATE_PRICE decision: its
-    exact amount, or grid point ``count``."""
+    """The yen of a BID, TRAIN_PRICE, or PRIVATE_PRICE decision: its exact
+    amount, or grid point ``count``."""
     cdef int points[5]  # TRAIN_PRICE_POINTS; PRIVATE_PRICE_POINTS fits
     if info.type == ACTION_EXACT_PRICE:
         return info.amount
@@ -415,7 +418,7 @@ cdef int price_amount(GameState state, const ActionInfo* info) noexcept nogil:
     if info.phase == DPHASE_PRIVATE_PRICE:
         _private_price_points(state, points)
         return points[info.count]
-    return private_min_bid(state, _bid_private(state, info.phase)) + <int>MIN_BID_INCREMENT * info.count
+    return private_min_bid(state, _bid_private(state)) + <int>MIN_BID_INCREMENT * info.count
 
 
 cdef inline bint _amount_in_range(GameState state, int phase, int amount) noexcept nogil:
@@ -425,21 +428,24 @@ cdef inline bint _amount_in_range(GameState state, int phase, int amount) noexce
     if phase == DPHASE_PRIVATE_PRICE:
         _private_price_range(state, &low, &high)
         return low <= amount <= high
-    p = _bid_private(state, phase)
+    p = _bid_private(state)
     return private_min_bid(state, p) <= amount <= player_available(state, turn_active_player(state), p)
 
 
-cdef int _bid_points(GameState state, int phase, uint16_t* ids, int count, int first_id,
-                     int num_points) noexcept nogil:
-    """Append the grid points of the actor's bid in ``phase``, from ``first_id``."""
-    cdef int p = _bid_private(state, phase)
+cdef int _enumerate_bid(GameState state, uint16_t* ids) noexcept nogil:
+    """The drop in a closed auction, then the grid points the bidder covers."""
+    cdef int p = _bid_private(state)
     cdef int low = private_min_bid(state, p)
     cdef int high = player_available(state, turn_active_player(state), p)
+    cdef int count = 0
     cdef int k
-    for k in range(num_points):
+    if turn_auction_private(state) >= 0:
+        ids[0] = BID_DROP
+        count = 1
+    for k in range(<int>BID_POINTS):
         if low + <int>MIN_BID_INCREMENT * k > high:
             break
-        ids[count] = <uint16_t>(first_id + k)
+        ids[count] = <uint16_t>(BID_POINT + k)
         count += 1
     return count
 
@@ -503,10 +509,12 @@ cdef int _filter_auction(GameState state, uint16_t* ids, int count) noexcept nog
 
 
 cdef int _filter_bid(GameState state, int count) noexcept nogil:
-    """Once capped, keep the points (ids 0, 1, ...) that leave the bidder able
+    """Once capped, keep the points (ids 1, 2, ...) that leave the bidder able
     to buy the topmost; keep all of them if none does, which only a selection
-    outside the policy can bring about."""
-    cdef int p = turn_pending_private(state)
+    outside the policy can bring about. Bids on the topmost, a closed
+    auction's included, are for the private the cap protects, so it leaves
+    them alone."""
+    cdef int p = _bid_private(state)
     cdef int room
     if not _capped(state) or p == topmost_private(state):
         return count
@@ -517,13 +525,14 @@ cdef int _filter_bid(GameState state, int count) noexcept nogil:
 
 
 # =============================================================================
-# STOCK, PAR
+# STOCK, PAR, SELL_AMOUNT
 # =============================================================================
 #
 # Ruby's BuySellParShares (step/buy_sell_par_shares.rb). On a turn the player
 # buys at most one certificate (a share, or a par through PAR) and sells any
 # number of blocks, one per corp, until a purchase follows a sale
-# (SELL_BUY_ORDER = :sell_buy_or_buy_sell). Nothing is sold in the first SR
+# (SELL_BUY_ORDER = :sell_buy_or_buy_sell). A sale is factored: STOCK picks
+# the corp, and SELL_AMOUNT the block's size. Nothing is sold in the first SR
 # (SELL_AFTER = :first), and nothing sold this SR is bought back. A player
 # over a limit with something to sell has a must-sell turn: sales only, no
 # pass. Slot 0 passes before acting and is "done" after; it is legal at every
@@ -571,11 +580,11 @@ cdef bint _must_sell(GameState state, int player) noexcept nogil:
 
 cdef int _enumerate_stock(GameState state, uint16_t* ids) noexcept nogil:
     """Pass; buys from the IPO, from the pool, and pars, unless the turn has
-    bought; then every legal block of every corp. A must-sell turn offers only
+    bought; then each corp the player may sell. A must-sell turn offers only
     the sales."""
     cdef int player = turn_active_player(state)
     cdef int count = 0
-    cdef int c, n
+    cdef int c
     if not _must_sell(state, player):
         ids[count] = STOCK_PASS
         count += 1
@@ -594,12 +603,22 @@ cdef int _enumerate_stock(GameState state, uint16_t* ids) noexcept nogil:
                     ids[count] = <uint16_t>(STOCK_PAR + c)
                     count += 1
     for c in range(<int>NUM_CORPS):
-        for n in range(_sale_limit(state, player, c)):
-            ids[count] = <uint16_t>(STOCK_SELL + <int>MAX_SALE_SHARES * c + n)
+        if _sale_limit(state, player, c):
+            ids[count] = <uint16_t>(STOCK_SELL + c)
             count += 1
     if _asks(ids, count):
         count = _append_dr(state, ids, count, STOCK_DR)
         count = _append_mf(state, ids, count, STOCK_MF)
+    return count
+
+
+cdef int _enumerate_sell_amount(GameState state, uint16_t* ids) noexcept nogil:
+    """Each block of the pending corp the player may sell, from one share up."""
+    cdef int corp = turn_pending_corp(state)
+    cdef int count = _sale_limit(state, turn_active_player(state), corp) if corp >= 0 else 0
+    cdef int n
+    for n in range(count):
+        ids[n] = <uint16_t>n
     return count
 
 
@@ -781,18 +800,21 @@ cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
 
 
 # =============================================================================
-# DIVIDEND, BUY_TRAIN, TRAIN_PRICE, DISCARD, BUY_PRIVATE
+# DIVIDEND, BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE, EMERGENCY_SELL_AMOUNT, DISCARD,
+# BUY_PRIVATE
 # =============================================================================
 #
 # Ruby's Dividend, BuyTrain, DiscardTrain, and BuyCompany steps
 # (step/dividend.rb, step/buy_train.rb, step/train.rb, step/discard_train.rb,
 # step/buy_company.rb). Ruby skips Dividend at zero revenue with a withhold,
 # so DIVIDEND then offers only that, and the driver applies it. BUY_TRAIN
-# buys one train at a time until the corp passes; a buy from another corp
-# names its price in TRAIN_PRICE. A must-buy the treasury cannot fund is an
-# emergency (step/emergency_money.rb, step/bankrupt.rb): the president's
-# cash, their share sales, and bankruptcy. Each of these decisions Ruby asks
-# also takes the interjection slots (section INTERJECTIONS below).
+# buys one train at a time until the corp passes: it picks the source (the
+# depot, the pool, or another corp), and SELECT_TRAIN the train; a buy from
+# another corp names its price in TRAIN_PRICE. A must-buy the treasury cannot
+# fund is an emergency (step/emergency_money.rb, step/bankrupt.rb): the
+# president's cash, their share sales (BUY_TRAIN picks the corp and
+# EMERGENCY_SELL_AMOUNT the block), and bankruptcy. Each top-level decision
+# Ruby asks also takes the interjection slots (section INTERJECTIONS below).
 
 
 cdef bint must_buy_train(GameState state, int corp) noexcept nogil:
@@ -817,75 +839,112 @@ cdef int _enumerate_dividend(GameState state, uint16_t* ids) noexcept nogil:
 
 
 cdef int _enumerate_buy_train(GameState state, uint16_t* ids) noexcept nogil:
-    """Pass unless the corp must buy. Then, with room under the phase's limit
-    (``room?``), each depot type its treasury affords (``depot_trains``);
-    each 4, 5, or 6 it may trade with ¥800 for an available D, room or not
-    (``discountable_trains_for``); with room again, each pool type it affords
-    and, with ¥1 or more, every train of another corp (``other_trains``),
-    priced in TRAIN_PRICE (``spend_minmax``: ¥1 to the treasury). Ruby's
-    ``buy_train_action`` checks no room, but at the limit its BuyTrain step
-    opens only for a trade-in (``can_buy_train?``), and the UI then offers
-    only that. A must-buy whose treasury is short of the cheapest depot or
-    pool train is an emergency instead (``_buy_train_emergency``). Where
-    Ruby asks, the interjection slots follow: Ruby's BuyCompany offers
-    privates in an emergency too (``can_buy_company?`` ignores it)."""
+    """Pass unless the corp must buy; each source with a train to offer
+    (``_source_trains``); and in an emergency each corp whose shares the
+    president may sell, then bankruptcy (``_append_emergency``). Where Ruby
+    asks, the interjection slots follow: Ruby's BuyCompany offers privates in
+    an emergency too (``can_buy_company?`` ignores it)."""
     cdef int corp = turn_operating_corp(state)
-    cdef int count
+    cdef bint must_buy, emergency
+    cdef int count = 0
+    cdef int s
     if corp < 0:
         ids[0] = BUY_TRAIN_PASS
         return 1
-    count = _buy_train_base(state, corp, ids)
+    must_buy = must_buy_train(state, corp)
+    emergency = must_buy and corp_cash(state, corp) < trains_cheapest_price(state)
+    if not must_buy:
+        ids[0] = BUY_TRAIN_PASS
+        count = 1
+    for s in range(<int>NUM_TRAIN_SOURCES):
+        if _source_trains(state, corp, s, emergency, NULL):
+            ids[count] = <uint16_t>(BUY_TRAIN_DEPOT + s)
+            count += 1
+    if emergency:
+        count = _append_emergency(state, corp, ids, count)
     if _asks(ids, count):
         count = _append_private_buys(state, ids, count, BUY_TRAIN_BUY_PRIVATE)
         count = _append_dr(state, ids, count, BUY_TRAIN_DR)
     return count
 
 
-cdef int _buy_train_base(GameState state, int corp, uint16_t* ids) noexcept nogil:
-    """BUY_TRAIN's own choices: the pass and the trains (``_enumerate_buy_train``)."""
+cdef inline int _put(uint16_t* ids, int count, int action_id) noexcept nogil:
+    if ids != NULL:
+        ids[count] = <uint16_t>action_id
+    return count + 1
+
+
+cdef int _source_trains(GameState state, int corp, int source, bint emergency, uint16_t* ids) noexcept nogil:
+    """SELECT_TRAIN's ids for a purchase by ``corp`` from ``source``, or with
+    ``ids`` NULL their count. With room under the phase's limit (``room?``),
+    each depot type its treasury affords (``depot_trains``), each pool type
+    it affords, and with ¥1 or more every train of another corp
+    (``other_trains``), priced in TRAIN_PRICE (``spend_minmax``: ¥1 to the
+    treasury); and room or not, each 4, 5, or 6 it may trade with ¥800 for an
+    available D, from the depot (``discountable_trains_for``). Ruby's
+    ``buy_train_action`` checks no room, but at the limit its BuyTrain step
+    opens only for a trade-in (``can_buy_train?``), and the UI then offers
+    only that. In an emergency (§6.2; 1889's EBUY_* constants are Ruby's
+    defaults but EBUY_PRES_SWAP = false and EBUY_FROM_OTHERS = :never):
+
+    - only the cheapest depot or pool train (``min_depot_train``, the
+      depot's on a tie), while the treasury and the president's cash cover
+      it: the president pays the rest (``buy_train_action``), toward that
+      train only (``check_for_cheapest_train``). A depot buy may change the
+      phase;
+    - every train of another corp, for ¥1 to the treasury (``spend_minmax``),
+      while the treasury holds ¥1 and the president has sold nothing since
+      the turn's last purchase (``last_share_sold_price``)."""
+    cdef int cash = corp_cash(state, corp)
+    cdef int seller = source - <int>TRAIN_SOURCE_CORP
+    cdef bint room = corp_train_total(state, corp) < trains_limit(state)
     cdef int count = 0
-    cdef int cash, types, t, c, i
-    cdef bint room
-    cash = corp_cash(state, corp)
-    if not must_buy_train(state, corp):
-        ids[count] = BUY_TRAIN_PASS
-        count += 1
-    elif cash < trains_cheapest_price(state):
-        return _buy_train_emergency(state, corp, ids)
-    room = corp_train_total(state, corp) < trains_limit(state)
-    types = trains_depot_types(state)
-    if room:
+    cdef int types, t, i
+    if seller >= 0:
+        if seller == corp or cash <= 0 or (turn_ebuy_sold_any(state) if emergency else not room):
+            return 0
         for t in range(<int>NUM_TRAIN_TYPES):
-            if types >> t & 1 and TRAIN_PRICE[t] <= cash:
-                ids[count] = <uint16_t>(BUY_TRAIN_DEPOT + t)
-                count += 1
+            if corp_train_count(state, seller, t):
+                count = _put(ids, count, SELECT_TRAIN_TYPE + t)
+        return count
+    if emergency:
+        if _emergency_need(state, corp) > 0 or trains_cheapest_in_pool(state) != (source == TRAIN_SOURCE_POOL):
+            return 0
+        return _put(ids, 0, SELECT_TRAIN_TYPE + trains_cheapest_type(state))
+    if source == TRAIN_SOURCE_POOL:
+        for t in range(<int>NUM_TRAIN_TYPES):
+            if room and pool_count(state, t) and TRAIN_PRICE[t] <= cash:
+                count = _put(ids, count, SELECT_TRAIN_TYPE + t)
+        return count
+    types = trains_depot_types(state)
+    for t in range(<int>NUM_TRAIN_TYPES):
+        if room and types >> t & 1 and TRAIN_PRICE[t] <= cash:
+            count = _put(ids, count, SELECT_TRAIN_TYPE + t)
     if types >> <int>D_TRAIN & 1:
         for i in range(<int>NUM_TRADE_IN_TYPES):
             t = TRADE_IN_TYPE[i]
             if corp_train_count(state, corp, t) and trade_in_price(t) <= cash:
-                ids[count] = <uint16_t>(BUY_TRAIN_TRADE_IN + i)
-                count += 1
-    if not room:
-        return count
-    for t in range(<int>NUM_TRAIN_TYPES):
-        if pool_count(state, t) and TRAIN_PRICE[t] <= cash:
-            ids[count] = <uint16_t>(BUY_TRAIN_POOL + t)
-            count += 1
-    if cash > 0:
-        for c in range(<int>NUM_CORPS):
-            for t in range(<int>NUM_TRAIN_TYPES):
-                if c != corp and corp_train_count(state, c, t):
-                    ids[count] = <uint16_t>(BUY_TRAIN_CORP + <int>NUM_TRAIN_TYPES * c + t)
-                    count += 1
+                count = _put(ids, count, SELECT_TRAIN_TRADE_IN + i)
     return count
+
+
+cdef int _enumerate_select_train(GameState state, uint16_t* ids) noexcept nogil:
+    """The trains of the pending source (``_source_trains``)."""
+    cdef int corp = turn_operating_corp(state)
+    cdef int source = turn_pending_train_source(state)
+    if corp < 0 or source < 0:
+        return 0
+    return _source_trains(state, corp, source, in_emergency(state, corp), ids)
 
 
 # Emergency money (§6.2). The corp must buy, and its treasury is short of
 # the cheapest depot or pool train (``buyable_trains`` with ``entity.cash <
-# min_depot_price``; 1889's EBUY_* constants are Ruby's defaults but
-# EBUY_PRES_SWAP = false and EBUY_FROM_OTHERS = :never). What the president
-# must still raise is the need: that train's price less the treasury and
-# their cash (``needed_cash`` - ``available_cash``).
+# min_depot_price``). What the president must still raise is the need: that
+# train's price less the treasury and their cash (``needed_cash`` -
+# ``available_cash``). Ruby's BuyTrain also takes the president's share sales
+# outside a must-buy, and its Bankrupt step a bankruptcy at any step of the
+# turn, whenever the president's cash and the treasury fall short of the
+# cheapest train; the UI offers both only in an emergency, as the engine does.
 
 
 cdef inline int _emergency_need(GameState state, int corp) noexcept nogil:
@@ -913,57 +972,47 @@ cdef bint can_go_bankrupt(GameState state, int corp) noexcept nogil:
     return need > 0
 
 
-cdef int _buy_train_emergency(GameState state, int corp, uint16_t* ids) noexcept nogil:
-    """An emergency's choices, without a pass:
+cdef int _emergency_sale_limit(GameState state, int corp, int seller, int need) noexcept nogil:
+    """The largest block of ``seller``'s shares the president of ``corp`` may
+    sell toward ``need`` (``can_sell?``; every smaller block is legal too):
+    while the need is unmet, of each corp at most once this turn
+    (``MUST_SELL_IN_BLOCKS``), within ``corp_emergency_sale`` (the pool's
+    room; no presidency changes), and only while the next smaller block
+    falls short (``EBUY_SELL_MORE_THAN_NEEDED = false``). The operating
+    corp's own shares are sellable too."""
+    cdef int most
+    if need <= 0 or turn_ebuy_sold_mask(state) >> seller & 1:
+        return 0
+    most = corp_emergency_sale(state, corp_president(state, corp), seller)
+    return min(most, (need - 1) // market_price(state, seller) + 1) if most else 0
 
-    - the cheapest depot or pool train (``min_depot_train``, the depot's on
-      a tie), while the treasury and the president's cash cover it: the
-      president pays the rest (``buy_train_action``), toward that train only
-      (``check_for_cheapest_train``). A depot buy may change the phase;
-    - every train of another corp, for ¥1 to the treasury (``spend_minmax``),
-      while the treasury holds ¥1 and the president has sold nothing since
-      the turn's last purchase (``EBUY_FROM_OTHERS = :never``);
-    - while the need is unmet, each block of the president's shares they may
-      sell (``can_sell?``): of each corp at most once this turn
-      (``MUST_SELL_IN_BLOCKS``), within ``corp_emergency_sale`` (the pool's
-      room; no presidency changes), and only while the next smaller block
-      falls short (``EBUY_SELL_MORE_THAN_NEEDED = false``). The operating
-      corp's own shares are sellable too;
-    - bankruptcy, when even all of that falls short (``can_go_bankrupt``).
 
-    Ruby's BuyTrain also takes the president's share sales outside a
-    must-buy, and its Bankrupt step a bankruptcy at any step of the turn,
-    whenever the president's cash and the treasury fall short of the
-    cheapest train; the UI offers both only here, as the engine does."""
-    cdef int president = corp_president(state, corp)
+cdef int _append_emergency(GameState state, int corp, uint16_t* ids, int count) noexcept nogil:
+    """An emergency's other choices, after the trains: each corp whose shares
+    the president may sell (``_emergency_sale_limit``), then bankruptcy when
+    even all of that falls short (``can_go_bankrupt``)."""
     cdef int need = _emergency_need(state, corp)
-    cdef int sold = turn_ebuy_sold_mask(state)
-    cdef int count = 0
-    cdef int c, t, n, price
-    if need <= 0:
-        t = trains_cheapest_type(state)
-        ids[count] = <uint16_t>((BUY_TRAIN_POOL if trains_cheapest_in_pool(state) else BUY_TRAIN_DEPOT) + t)
-        count += 1
-    if corp_cash(state, corp) > 0 and not turn_ebuy_sold_any(state):
-        for c in range(<int>NUM_CORPS):
-            for t in range(<int>NUM_TRAIN_TYPES):
-                if c != corp and corp_train_count(state, c, t):
-                    ids[count] = <uint16_t>(BUY_TRAIN_CORP + <int>NUM_TRAIN_TYPES * c + t)
-                    count += 1
-    if need <= 0:
-        return count
+    cdef int c
     for c in range(<int>NUM_CORPS):
-        if sold >> c & 1:
-            continue
-        price = market_price(state, c)
-        for n in range(1, corp_emergency_sale(state, president, c) + 1):
-            if (n - 1) * price >= need:
-                break
-            ids[count] = <uint16_t>(BUY_TRAIN_SELL + <int>MAX_SALE_SHARES * c + n - 1)
+        if _emergency_sale_limit(state, corp, c, need):
+            ids[count] = <uint16_t>(BUY_TRAIN_SELL + c)
             count += 1
     if can_go_bankrupt(state, corp):
         ids[count] = BUY_TRAIN_BANKRUPT
         count += 1
+    return count
+
+
+cdef int _enumerate_emergency_sell_amount(GameState state, uint16_t* ids) noexcept nogil:
+    """Each block of the pending corp the president may sell, from one share up."""
+    cdef int corp = turn_operating_corp(state)
+    cdef int seller = turn_pending_corp(state)
+    cdef int count = 0
+    cdef int n
+    if corp >= 0 and seller >= 0:
+        count = _emergency_sale_limit(state, corp, seller, _emergency_need(state, corp))
+    for n in range(count):
+        ids[n] = <uint16_t>n
     return count
 
 
@@ -986,7 +1035,7 @@ cdef int _filter_private_buys(GameState state, uint16_t* ids, int count, int fir
 
 cdef int _filter_buy_train(GameState state, uint16_t* ids, int count) noexcept nogil:
     """``train_sale_same_president`` (§7): only corps with the buyer's
-    president sell it trains."""
+    president are sources."""
     cdef int president, i, id_
     cdef int kept = 0
     if not state.train_sale_same_president:
@@ -994,8 +1043,7 @@ cdef int _filter_buy_train(GameState state, uint16_t* ids, int count) noexcept n
     president = corp_president(state, turn_operating_corp(state))
     for i in range(count):
         id_ = ids[i]
-        if (BUY_TRAIN_CORP <= id_ < BUY_TRAIN_SELL
-                and corp_president(state, (id_ - BUY_TRAIN_CORP) // <int>NUM_TRAIN_TYPES) != president):
+        if BUY_TRAIN_CORP <= id_ < BUY_TRAIN_SELL and corp_president(state, id_ - BUY_TRAIN_CORP) != president:
             continue
         ids[kept] = ids[i]
         kept += 1
@@ -1005,7 +1053,7 @@ cdef int _filter_buy_train(GameState state, uint16_t* ids, int count) noexcept n
 cdef inline int _train_price_cash(GameState state) noexcept nogil:
     """The most TRAIN_PRICE may pay: the buyer's treasury, 0 without a pending train."""
     cdef int corp = turn_operating_corp(state)
-    return corp_cash(state, corp) if corp >= 0 and turn_pending_train_source(state) >= 0 else 0
+    return corp_cash(state, corp) if corp >= 0 and turn_pending_train_type(state) >= 0 else 0
 
 
 cdef void _train_price_points(GameState state, int* points) noexcept nogil:
@@ -1013,10 +1061,10 @@ cdef void _train_price_points(GameState state, int* points) noexcept nogil:
     ⌈cash/3⌉, ⌈2·cash/3⌉, and the buyer's cash. A point outside ¥1 to the
     cash (``spend_minmax``), or equal to an earlier one, is -1: not offered."""
     cdef int cash = _train_price_cash(state)
-    cdef int source = turn_pending_train_source(state)
+    cdef int train = turn_pending_train_type(state)
     cdef int k, j
     points[0] = 1
-    points[1] = TRAIN_PRICE[source % <int>NUM_TRAIN_TYPES] if source >= 0 else 0
+    points[1] = TRAIN_PRICE[train] if train >= 0 else 0
     points[2] = (cash + 2) // 3
     points[3] = (2 * cash + 2) // 3
     points[4] = cash
@@ -1292,14 +1340,13 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
     if phase == DPHASE_AUCTION:
         count = _enumerate_auction(state, action_ids)
     elif phase == DPHASE_BID:
-        count = _bid_points(state, phase, action_ids, 0, BID_POINT, BID_POINTS)
-    elif phase == DPHASE_RAISE:
-        action_ids[0] = RAISE_DROP
-        count = _bid_points(state, phase, action_ids, 1, RAISE_POINT, RAISE_POINTS)
+        count = _enumerate_bid(state, action_ids)
     elif phase == DPHASE_STOCK:
         count = _enumerate_stock(state, action_ids)
     elif phase == DPHASE_PAR:
         count = _enumerate_par(state, action_ids)
+    elif phase == DPHASE_SELL_AMOUNT:
+        count = _enumerate_sell_amount(state, action_ids)
     elif phase == DPHASE_TRACK:
         count = _enumerate_track(state, action_ids)
     elif phase == DPHASE_TILE:
@@ -1310,8 +1357,12 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
         count = _enumerate_dividend(state, action_ids)
     elif phase == DPHASE_BUY_TRAIN:
         count = _enumerate_buy_train(state, action_ids)
+    elif phase == DPHASE_SELECT_TRAIN:
+        count = _enumerate_select_train(state, action_ids)
     elif phase == DPHASE_TRAIN_PRICE:
         count = _enumerate_train_price(state, action_ids)
+    elif phase == DPHASE_EMERGENCY_SELL_AMOUNT:
+        count = _enumerate_emergency_sell_amount(state, action_ids)
     elif phase == DPHASE_DISCARD:
         count = _enumerate_discard(state, action_ids)
     elif phase == DPHASE_BUY_PRIVATE:
@@ -1357,7 +1408,7 @@ cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except 
 cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
     """Engine legality: a scan of the enumerated ids, or a range check for an
     exact amount. False at an automated step."""
-    cdef uint16_t ids[102]  # MAX_ACTION_SIZE
+    cdef uint16_t ids[62]  # MAX_ACTION_SIZE
     cdef int phase = get_decision_phase(state)
     cdef int count, i
     if phase < 0 or action_id < 0:
@@ -1381,8 +1432,8 @@ cdef bint wide_amount_range(GameState state, int phase) except -1 nogil:
     """Whether the current amount decision's legal range holds more than one
     amount, so exact amounts may lie beyond its grid points."""
     cdef int p, low, high
-    if phase == DPHASE_BID or phase == DPHASE_RAISE:
-        p = _bid_private(state, phase)
+    if phase == DPHASE_BID:
+        p = _bid_private(state)
         return player_available(state, turn_active_player(state), p) > private_min_bid(state, p)
     if phase == DPHASE_TRAIN_PRICE:
         return _train_price_cash(state) > 1
@@ -1458,13 +1509,13 @@ cpdef bint is_legal_action_py(GameState state, int action_id) except -1:
 
 cpdef int price_amount_py(GameState state, int action_id) except -1:
     """The yen of ``action_id`` (a grid point or an exact amount) at the current
-    BID, RAISE, TRAIN_PRICE, or PRIVATE_PRICE decision."""
+    BID, TRAIN_PRICE, or PRIVATE_PRICE decision."""
     cdef int phase = get_decision_phase(state)
     assert phase >= 0 and _has_exact(phase), \
-        f"not at a BID, RAISE, TRAIN_PRICE, or PRIVATE_PRICE decision (phase {phase})"
+        f"not at a BID, TRAIN_PRICE, or PRIVATE_PRICE decision (phase {phase})"
     _check_id(phase, action_id)
     cdef ActionInfo info = decode_action(phase, action_id)
-    assert info.type != ACTION_PASS, "RAISE's drop has no amount"
+    assert info.type != ACTION_PASS, "BID's drop has no amount"
     return price_amount(state, &info)
 
 
@@ -1559,8 +1610,8 @@ del _name, _member
 # IMPORT-TIME CHECKS
 # =============================================================================
 
-# Local id, candidate, price, and score buffers are sized with the literals 102, 15, 24, 5, 4, and 6.
-assert <int>MAX_ACTION_SIZE == 102 and <int>MAX_LAY_CANDIDATES == 15 and <int>MAX_PLAYERS == 6
+# Local id, candidate, price, and score buffers are sized with the literals 62, 15, 24, 5, 4, and 6.
+assert <int>MAX_ACTION_SIZE == 62 and <int>MAX_LAY_CANDIDATES == 15 and <int>MAX_PLAYERS == 6
 assert <int>NUM_PORTS * <int>NUM_SIDES == 24 and <int>TRAIN_PRICE_POINTS == 5 and <int>PRIVATE_PRICE_POINTS == 4
 
 

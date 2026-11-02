@@ -18,6 +18,7 @@ cdef int turn_pending_private(GameState state) noexcept nogil
 cdef int turn_pending_corp(GameState state) noexcept nogil
 cdef int turn_pending_hex(GameState state) noexcept nogil
 cdef int turn_pending_train_source(GameState state) noexcept nogil
+cdef int turn_pending_train_type(GameState state) noexcept nogil
 cdef int turn_pending_seller(GameState state) noexcept nogil
 cdef int turn_return_step(GameState state) noexcept nogil
 cdef int turn_operating_corp(GameState state) noexcept nogil
@@ -92,6 +93,8 @@ cdef class TurnState:
     cpdef void set_pending_private(self, GameState state, int value)
     cpdef int pending_train_source(self, GameState state)
     cpdef void set_pending_train_source(self, GameState state, int value)
+    cpdef int pending_train_type(self, GameState state)
+    cpdef void set_pending_train_type(self, GameState state, int value)
     cpdef int pending_seller(self, GameState state)
     cpdef void set_pending_seller(self, GameState state, int value)
 

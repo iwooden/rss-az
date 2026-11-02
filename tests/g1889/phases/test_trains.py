@@ -1,12 +1,14 @@
-"""DIVIDEND, BUY_TRAIN, TRAIN_PRICE, DISCARD, and the phases, as 6.7 builds
-them (1889/engine-design.md §4-6; rules §8.7-8.9, §9; Ruby's
+"""DIVIDEND, BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE, DISCARD, and the phases, as
+6.7 builds them and 6.10 factors them (1889/engine-design.md §4-6; rules
+§8.7-8.9, §9; Ruby's
 ``step/dividend.rb``, ``step/buy_train.rb``, ``step/train.rb``,
 ``step/discard_train.rb``, ``depot.rb``, and ``phase.rb``).
 
 Covers the payout and withhold amounts, the price moves at the market's
 edges, the bank breaking on a payout; each BUY_TRAIN source (the depot's
 lowest rank and D from phase 6, the pool, other corps) with the train limit
-and the treasury; the must-buy without a pass, funded from the treasury;
+and the treasury, and the trains SELECT_TRAIN then offers (composed by
+``train_choices``); the must-buy without a pass, funded from the treasury;
 TRAIN_PRICE's grid and exact amounts; the D trade-in; each phase's effects
 (rusting, the pool's too; the limit; the privates' closing, UTF's; D's
 availability); and the discards' order. Everything runs through the driver,
@@ -36,8 +38,8 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    apply_and_verify, at_or, enter_operating_round, enter_phase, exact_id, give_train, hold,
-    lay, legal_ids, policy_ids, set_cash,
+    apply_and_verify, at_or, choose_train, depot, enter_operating_round, enter_phase, exact_id, from_corp,
+    give_train, hold, lay, legal_ids, opened, policy_ids, pool, set_cash, trade, train_choices,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -45,22 +47,6 @@ PAR_65, PAR_100 = 0, 5
 T2, T3, T4, T5, T6, TD = range(D.NUM_TRAIN_TYPES)
 PHASE_3, PHASE_4, PHASE_5, PHASE_6, PHASE_D = D.GAME_PHASE_3, D.GAME_PHASE_4, D.GAME_PHASE_5, D.GAME_PHASE_6, \
     D.GAME_PHASE_D
-
-
-def depot(t):
-    return K.BUY_TRAIN_DEPOT + t
-
-
-def pool(t):
-    return K.BUY_TRAIN_POOL + t
-
-
-def from_corp(c, t):
-    return K.BUY_TRAIN_CORP + D.NUM_TRAIN_TYPES * c + t
-
-
-def trade(t):
-    return K.BUY_TRAIN_TRADE_IN + D.TRADE_IN_TYPE.index(t)
 
 
 def private_buys(state):
@@ -150,8 +136,8 @@ class TestBuyTrain:
         to_buy_train(state)
         cash, results = CORPS[KO].cash(state), []
         for n in range(1, D.PHASE_TRAIN_LIMIT[0] + 1):
-            assert legal_ids(state) == [K.BUY_TRAIN_PASS, depot(T2)]
-            results.append(apply_and_verify(state, depot(T2)))
+            assert train_choices(state) == [K.BUY_TRAIN_PASS, depot(T2)]
+            results.append(choose_train(state, depot(T2)))
             assert TRAINS.corp_trains(state, KO, T2) == n and TRAINS.depot(state, T2) == D.TRAIN_COUNT[T2] - n
         assert CORPS[KO].cash(state) == cash - 4 * 80 and TRAINS.corp_total(state, KO) == TRAINS.limit(state)
         assert results[-1].forced == [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS)]  # at the limit: nothing left to buy
@@ -162,9 +148,9 @@ class TestBuyTrain:
         hold(state, KO, {0: 6}, par=PAR_100)
         enter_operating_round(state)
         to_buy_train(state)
-        assert set(legal_ids(state)) >= {depot(T6)} and depot(TD) not in legal_ids(state)
+        assert set(train_choices(state)) >= {depot(T6)} and depot(TD) not in train_choices(state)
         set_cash(state, KO, D.TRAIN_PRICE[TD])
-        assert {depot(T6), depot(TD)} <= set(legal_ids(state))
+        assert {depot(T6), depot(TD)} <= set(train_choices(state))
 
     def test_the_pool_sells_any_rank_at_its_list_price(self):
         state = at_or(3)
@@ -173,13 +159,13 @@ class TestBuyTrain:
         TRAINS.set_pool(state, T2, 1)
         enter_operating_round(state)
         to_buy_train(state)
-        assert legal_ids(state) == [K.BUY_TRAIN_PASS, depot(T2), pool(T2)]
+        assert train_choices(state) == [K.BUY_TRAIN_PASS, depot(T2), pool(T2)]
         cash, bank = CORPS[KO].cash(state), BANK.cash(state)
-        apply_and_verify(state, pool(T2))
+        choose_train(state, pool(T2))
         assert TRAINS.pool(state, T2) == 0 and trains_of(state, KO) == {'2': 1}
         assert CORPS[KO].cash(state) == cash - 80 and BANK.cash(state) == bank + 80
         set_cash(state, KO, 79)
-        assert legal_ids(state) == [K.BUY_TRAIN_PASS]
+        assert train_choices(state) == [K.BUY_TRAIN_PASS]
 
     def test_another_corp_sells_any_train_for_a_price_from_one_yen_to_the_treasury(self):
         """Its president needs no consent (``depot.rb:118-126``); TRAIN_PRICE
@@ -190,14 +176,17 @@ class TestBuyTrain:
         give_train(state, IR, T2, 2)
         enter_operating_round(state)
         to_buy_train(state)
-        assert TURN.operating_corp(state) == KO and legal_ids(state) == [K.BUY_TRAIN_PASS, depot(T2), from_corp(IR, T2)]
-        apply_and_verify(state, from_corp(IR, T2))
-        assert TURN.step(state) == K.STEP_TRAIN_PRICE and TURN.pending_train_source(state) == IR * 6 + T2
+        assert TURN.operating_corp(state) == KO
+        assert train_choices(state) == [K.BUY_TRAIN_PASS, depot(T2), from_corp(IR, T2)]
+        choose_train(state, from_corp(IR, T2))
+        assert TURN.step(state) == K.STEP_TRAIN_PRICE
+        assert (TURN.pending_train_source(state), TURN.pending_train_type(state)) == (K.TRAIN_SOURCE_CORP + IR, T2)
         ko, ir, bank = CORPS[KO].cash(state), CORPS[IR].cash(state), BANK.cash(state)
         apply_and_verify(state, exact_id(state, 123))
         assert CORPS[KO].cash(state) == ko - 123 and CORPS[IR].cash(state) == ir + 123 and BANK.cash(state) == bank
         assert trains_of(state, KO) == {'2': 1} and trains_of(state, IR) == {'2': 1}
-        assert TURN.step(state) == K.STEP_BUY_TRAIN and TURN.pending_train_source(state) == -1
+        assert TURN.step(state) == K.STEP_BUY_TRAIN
+        assert (TURN.pending_train_source(state), TURN.pending_train_type(state)) == (-1, -1)
 
     def test_a_treasury_without_cash_buys_from_no_corp(self):
         """``other_trains`` needs ¥1, so KO's one choice is the pass."""
@@ -221,10 +210,10 @@ class TestBuyTrain:
         enter_operating_round(state)
         to_buy_train(state)
         assert TURN.operating_corp(state) == KO
-        assert {from_corp(IR, T2), from_corp(SR, T2)} <= set(legal_ids(state)) == set(policy_ids(state))
+        ir, sr = K.BUY_TRAIN_CORP + IR, K.BUY_TRAIN_CORP + SR  # the sources the policy filters
+        assert {ir, sr} <= set(legal_ids(state)) == set(policy_ids(state))
         state.train_sale_same_president = True
-        assert from_corp(SR, T2) in policy_ids(state) and from_corp(IR, T2) not in policy_ids(state)
-        assert from_corp(IR, T2) in legal_ids(state)
+        assert sr in policy_ids(state) and ir not in policy_ids(state) and ir in legal_ids(state)
 
     def test_a_corp_at_its_limit_buys_nothing_even_a_rusting_rank_away(self):
         """Rules §8.8: the first 4 would rust KO's 2s, but KO is at the limit."""
@@ -252,9 +241,9 @@ class TestBuyTrain:
         enter_operating_round(state)
         to_buy_train(state)
         assert TURN.operating_corp(state) == KO and A.must_buy_train_py(state)
-        assert legal_ids(state) == [depot(T3), pool(T2), pool(T3), from_corp(IR, T2), *private_buys(state)]
+        assert train_choices(state) == [depot(T3), pool(T2), pool(T3), from_corp(IR, T2), *private_buys(state)]
         set_cash(state, KO, 100)  # the pool's 2 alone is in reach, and IR's train
-        assert legal_ids(state) == [pool(T2), from_corp(IR, T2), *private_buys(state)]
+        assert train_choices(state) == [pool(T2), from_corp(IR, T2), *private_buys(state)]
 
     def test_a_must_buy_the_treasury_cannot_fund_is_an_emergency(self):
         """Short of every depot and pool train, KO may buy the cheapest with its
@@ -271,7 +260,7 @@ class TestBuyTrain:
         apply_and_verify(state, K.BUY_TRAIN_PASS)  # IR's turn ends
         apply_and_verify(state, K.TRACK_PASS)
         assert TURN.operating_corp(state) == KO and A.in_emergency_py(state)
-        assert legal_ids(state) == [depot(T2), from_corp(IR, T2)]
+        assert train_choices(state) == [depot(T2), from_corp(IR, T2)]
 
 
 # =============================================================================
@@ -288,7 +277,7 @@ def at_train_price(cash, train=T4):
     enter_operating_round(state)
     to_buy_train(state)
     set_cash(state, KO, cash)
-    apply_and_verify(state, from_corp(IR, train))
+    choose_train(state, from_corp(IR, train))
     assert TURN.step(state) == K.STEP_TRAIN_PRICE
     return state
 
@@ -322,7 +311,7 @@ class TestTrainPrice:
         enter_operating_round(state)
         to_buy_train(state)
         set_cash(state, KO, 1)
-        result = apply_and_verify(state, from_corp(IR, T4))
+        result = choose_train(state, from_corp(IR, T4))
         assert result.forced[0] == (K.DPHASE_TRAIN_PRICE, 0) and trains_of(state, KO) == {'4': 1}
         assert CORPS[KO].cash(state) == 0
 
@@ -348,15 +337,27 @@ def in_phase_6(trains, cash=1000):
 class TestTradeIn:
     def test_a_corp_at_its_limit_may_trade_a_4_5_or_6_for_a_d(self):
         state = in_phase_6({T5: 1, T6: 1})
-        assert legal_ids(state) == [K.BUY_TRAIN_PASS, trade(T5), trade(T6)]
+        assert train_choices(state) == [K.BUY_TRAIN_PASS, trade(T5), trade(T6)]
         set_cash(state, KO, 799)
-        assert legal_ids(state) == [K.BUY_TRAIN_PASS]
+        assert train_choices(state) == [K.BUY_TRAIN_PASS]
+
+    def test_select_train_offers_the_depots_trains_and_trade_ins_together(self):
+        """BUY_TRAIN offers the depot as one source; SELECT_TRAIN then offers
+        its 6 and D, and the D for KO's 4 with ¥800."""
+        state = in_phase_6({T4: 1}, cash=1100)
+        assert K.BUY_TRAIN_DEPOT in legal_ids(state)
+        depot_trains = legal_ids(opened(state, K.BUY_TRAIN_DEPOT))
+        assert depot_trains == [K.SELECT_TRAIN_TYPE + T6, K.SELECT_TRAIN_TYPE + TD, K.SELECT_TRAIN_TRADE_IN]
+        assert [A.decode_action_py(K.DPHASE_SELECT_TRAIN, i).type for i in depot_trains] == \
+            [A.ACTION_TRAIN_TYPE, A.ACTION_TRAIN_TYPE, A.ACTION_TRADE_IN]
+        apply_and_verify(state, K.BUY_TRAIN_DEPOT)
+        assert TURN.step(state) == K.STEP_SELECT_TRAIN and TURN.pending_train_source(state) == K.TRAIN_SOURCE_DEPOT
 
     def test_the_first_d_starts_phase_d_and_rusts_every_4_the_traded_one_too(self):
         state = in_phase_6({T4: 1, T5: 1})
         assert TRAINS.pool(state, T4) == D.TRAIN_COUNT[T4] - 1
         cash, bank = CORPS[KO].cash(state), BANK.cash(state)
-        result = apply_and_verify(state, trade(T4))
+        result = choose_train(state, trade(T4))
         assert PHASE.current(state) == PHASE_D and trains_of(state, KO) == {'5': 1, 'D': 1}
         assert TRAINS.pool(state, T4) == 0 and TRAINS.depot(state, TD) == -1
         assert result.forced[0] == (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS)  # at the limit, short of another D
@@ -365,7 +366,7 @@ class TestTradeIn:
 
     def test_a_traded_5_or_6_goes_to_the_pool(self):
         state = in_phase_6({T6: 2})
-        apply_and_verify(state, trade(T6))
+        choose_train(state, trade(T6))
         assert trains_of(state, KO) == {'6': 1, 'D': 1} and TRAINS.pool(state, T6) == 1
 
 
@@ -384,9 +385,9 @@ class TestPhases:
         TRAINS.set_pool(state, T2, D.TRAIN_COUNT[T2] - 1)
         enter_operating_round(state)
         to_buy_train(state)
-        apply_and_verify(state, depot(T2))
+        choose_train(state, depot(T2))
         assert TRAINS.depot_types(state) == 1 << T3
-        apply_and_verify(state, depot(T3))
+        choose_train(state, depot(T3))
         assert PHASE.current(state) == PHASE_3 and TRAINS.limit(state) == 4 and trains_of(state, KO) == {'2': 1, '3': 1}
         assert TURN.or_count(state) == 1  # the set's length changes when the next SR ends
         apply_and_verify(state, K.BUY_TRAIN_PASS)
@@ -404,7 +405,7 @@ class TestPhases:
         enter_operating_round(state)
         to_buy_train(state)
         assert TURN.operating_corp(state) == KO and TRAINS.pool(state, T2) == 3
-        apply_and_verify(state, depot(T4))
+        choose_train(state, depot(T4))
         assert PHASE.current(state) == PHASE_4 and TRAINS.limit(state) == 3
         assert trains_of(state, KO) == {'4': 1} and trains_of(state, IR) == {} and TRAINS.pool(state, T2) == 0
         assert CORPS[KO].route_dirty(state) and CORPS[IR].route_dirty(state)
@@ -424,7 +425,7 @@ class TestPhases:
         enter_operating_round(state)
         to_buy_train(state)
         assert PRIVATES[D.PRIVATE_UTF].revenue(state) == D.PRIVATE_REVENUE[D.PRIVATE_UTF]
-        apply_and_verify(state, depot(T5))
+        choose_train(state, depot(T5))
         assert PHASE.current(state) == PHASE_5 and TRAINS.limit(state) == 2
         closed = [p for p in range(D.NUM_PRIVATES) if PRIVATES[p].owner(state) == K.OWNER_CLOSED]
         if owner == 'player':
@@ -444,7 +445,7 @@ class TestPhases:
         enter_operating_round(state)
         to_buy_train(state)
         assert TRAINS.depot_types(state) == 1 << T6
-        apply_and_verify(state, depot(T6))
+        choose_train(state, depot(T6))
         assert PHASE.current(state) == PHASE_6 and trains_of(state, KO) == {'6': 1} and TRAINS.pool(state, T3) == 0
         assert TRAINS.depot_types(state) == 1 << T6 | 1 << TD
 
@@ -478,7 +479,7 @@ class TestDiscard:
         """IR comes before KO in corp order (``crowded_corps``), whatever the
         stock prices; each discard goes to the pool."""
         state = at_crowding_buy()
-        apply_and_verify(state, depot(T5))
+        choose_train(state, depot(T5))
         assert (TURN.step(state), TURN.return_step(state)) == (K.STEP_DISCARD, K.STEP_BUY_TRAIN)
         assert TRAINS.first_crowded(state) == IR and TURN.active_player(state) == 1
         assert legal_ids(state) == [T3, T4]
@@ -499,7 +500,7 @@ class TestDiscard:
         TRAINS.set_pool(state, T4, TRAINS.pool(state, T4) + 1)
         TRAINS.set_corp_trains(state, IR, T3, 3)
         TRAINS.set_pool(state, T3, TRAINS.pool(state, T3) - 1)
-        result = apply_and_verify(state, depot(T5))
+        result = choose_train(state, depot(T5))
         assert result.forced == [(K.DPHASE_DISCARD, T3)] and TRAINS.first_crowded(state) == KO
 
     def test_discard_is_illegal_outside_a_crowded_corp(self):

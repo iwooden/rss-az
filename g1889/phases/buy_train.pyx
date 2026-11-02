@@ -1,12 +1,15 @@
-"""BUY_TRAIN, TRAIN_PRICE, and DISCARD handlers; see buy_train.pxd.
+"""BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE, EMERGENCY_SELL_AMOUNT, and DISCARD
+handlers; see buy_train.pxd.
 
 Ruby's BuyTrain and DiscardTrain steps (``step/buy_train.rb``,
 ``step/train.rb``, ``step/emergency_money.rb``, ``step/discard_train.rb``)
 and the OR's Bankrupt step (``step/bankrupt.rb``). The corp buys one train at
 a time and stays in BUY_TRAIN until it passes; with nothing left to buy, the
 pass is its one choice, which the driver applies as Ruby passes the step
-(``pass_if_cannot_buy_train?``). A buy from another corp names its price in
-TRAIN_PRICE (``pending_train_source``) and returns to BUY_TRAIN. Every
+(``pass_if_cannot_buy_train?``). A purchase is factored: BUY_TRAIN picks the
+source, the depot, the pool, or another corp (``pending_train_source``), and
+SELECT_TRAIN the train; a buy from another corp then names its price in
+TRAIN_PRICE (``pending_train_type``). Each returns to BUY_TRAIN. Every
 purchase runs ``PHASE.on_train_bought`` (``Phase#buying_train!``); when the
 phase advances, each corp over the new limit discards in DISCARD, the first
 in corp order first (``crowded_corps``), before BUY_TRAIN goes on
@@ -16,8 +19,9 @@ cannot change the result, so replay reorders such discards (§10.2).
 Emergency money (§6.2), when the corp must buy and its treasury is short of
 the cheapest depot or pool train (``actions.pyx`` has the legality): the
 president pays what the treasury lacks toward that train, sells shares into
-the pool first if need be, and goes bankrupt when even that falls short.
-Fields:
+the pool first if need be (BUY_TRAIN picks the corp, ``pending_corp``, and
+EMERGENCY_SELL_AMOUNT the block), and goes bankrupt when even that falls
+short. Fields:
 
 - ``ebuy_sold_mask`` holds the corps the president has sold this turn,
   each once (Ruby's ``corporations_sold``, ``MUST_SELL_IN_BLOCKS``);
@@ -31,20 +35,22 @@ TURN_END clears both. A bankruptcy ends the game at once (``GAME_END_CHECK``'s
 
 from g1889.actions cimport (
     ACTION_BANKRUPT, ACTION_BUY_CORP_TRAIN, ACTION_BUY_DEPOT_TRAIN, ACTION_BUY_POOL_TRAIN, ACTION_DISCARD,
-    ACTION_PASS, ACTION_SELL, ACTION_TRADE_IN, ActionInfo, price_amount,
+    ACTION_PASS, ACTION_SELECT_SALE, ACTION_TRADE_IN, ActionInfo, price_amount,
 )
 from g1889.constants cimport (
     END_REASON_BANKRUPT, OWNER_CORP, OWNER_PLAYER, STEP_BUY_PRIVATE, STEP_BUY_TRAIN, STEP_DISCARD,
-    STEP_TRAIN_PRICE, STEP_TURN_END,
+    STEP_EMERGENCY_SELL_AMOUNT, STEP_SELECT_TRAIN, STEP_TRAIN_PRICE, STEP_TURN_END, TRAIN_SOURCE_CORP,
+    TRAIN_SOURCE_DEPOT, TRAIN_SOURCE_POOL,
 )
-from g1889.data.tables cimport D_TRAIN, NUM_CORPS, NUM_TRAIN_TYPES, PHASE_CAN_BUY_PRIVATES, TRAIN_PRICE
+from g1889.data.tables cimport D_TRAIN, NUM_CORPS, PHASE_CAN_BUY_PRIVATES, TRAIN_PRICE
 from g1889.entities.bank cimport BANK_ACCOUNT, Bank
 from g1889.entities.corp cimport Corporation, corp_cash, corp_emergency_sale, corp_president
 from g1889.entities.phase cimport Phase, game_phase
 from g1889.entities.player cimport Player, player_cash
 from g1889.entities.trains cimport Trains, trains_first_crowded
 from g1889.entities.turn cimport (
-    TurnState, turn_ebuy_sold_mask, turn_operating_corp, turn_pending_train_source, turn_return_step,
+    TurnState, turn_ebuy_sold_mask, turn_operating_corp, turn_pending_corp, turn_pending_train_source,
+    turn_pending_train_type, turn_return_step,
 )
 from g1889.phases.operating cimport end_game, resort_order
 from g1889.state cimport GameState
@@ -120,49 +126,74 @@ cdef void _bankrupt(GameState state, int corp) except *:
 
 cdef void apply_buy_train(GameState state, const ActionInfo* info) except *:
     """Pass: the turn's train buying is done; in phases 3-4 the corp may then
-    buy privates (Ruby's blocking BuyCompany), otherwise the turn ends. Buy a
-    depot or pool train at its list price, the president paying what the
-    treasury lacks in an emergency; trade a 4, 5, or 6 and ¥800 for a D; or
-    choose another corp's train (TRAIN_PRICE follows). In an emergency the
-    president may also sell shares, or go bankrupt."""
-    cdef int corp = turn_operating_corp(state)
-    cdef int t = info.train_type
+    buy privates (Ruby's blocking BuyCompany), otherwise the turn ends. Or
+    choose a source of trains (SELECT_TRAIN follows). In an emergency the
+    president may also choose a corp to sell (EMERGENCY_SELL_AMOUNT follows),
+    or go bankrupt."""
+    cdef int source = TRAIN_SOURCE_DEPOT
     if info.type == ACTION_PASS:
         TURN.set_step(state, STEP_BUY_PRIVATE if PHASE_CAN_BUY_PRIVATES[game_phase(state)] else STEP_TURN_END)
-        return
-    if info.type == ACTION_BUY_CORP_TRAIN:
-        TURN.set_pending_train_source(state, info.corp * <int>NUM_TRAIN_TYPES + t)
+    elif info.type == ACTION_SELECT_SALE:
+        TURN.set_pending_corp(state, info.corp)
+        TURN.set_step(state, STEP_EMERGENCY_SELL_AMOUNT)
+    elif info.type == ACTION_BANKRUPT:
+        _bankrupt(state, turn_operating_corp(state))
+    else:
+        if info.type == ACTION_BUY_POOL_TRAIN:
+            source = TRAIN_SOURCE_POOL
+        elif info.type == ACTION_BUY_CORP_TRAIN:
+            source = TRAIN_SOURCE_CORP + info.corp
+        else:
+            assert info.type == ACTION_BUY_DEPOT_TRAIN, f"apply_buy_train: action type {info.type}"
+        TURN.set_pending_train_source(state, source)
+        TURN.set_step(state, STEP_SELECT_TRAIN)
+
+
+cdef void apply_select_train(GameState state, const ActionInfo* info) except *:
+    """Buy a train of the chosen type from the pending source: from the depot
+    or the pool at its list price, the president paying what the treasury
+    lacks in an emergency, or a D for a traded 4, 5, or 6 and ¥800; or choose
+    another corp's train (TRAIN_PRICE follows). BUY_TRAIN goes on."""
+    cdef int corp = turn_operating_corp(state)
+    cdef int source = turn_pending_train_source(state)
+    cdef int t = info.train_type
+    if source >= TRAIN_SOURCE_CORP:
+        TURN.set_pending_train_type(state, t)
         TURN.set_step(state, STEP_TRAIN_PRICE)
         return
-    if info.type == ACTION_SELL:
-        _sell(state, corp, info.corp, info.count)
-        return
-    if info.type == ACTION_BANKRUPT:
-        _bankrupt(state, corp)
-        return
-    if info.type == ACTION_BUY_DEPOT_TRAIN:
-        _contribute(state, corp, TRAIN_PRICE[t])
-        TRAINS.buy_from_depot(state, corp, t)
-    elif info.type == ACTION_TRADE_IN:
+    TURN.set_pending_train_source(state, -1)
+    TURN.set_step(state, STEP_BUY_TRAIN)
+    if info.type == ACTION_TRADE_IN:
         TRAINS.trade_in_for_d(state, corp, t)
         t = <int>D_TRAIN
     else:
-        assert info.type == ACTION_BUY_POOL_TRAIN, f"apply_buy_train: action type {info.type}"
         _contribute(state, corp, TRAIN_PRICE[t])
-        TRAINS.buy_from_pool(state, corp, t)
+        if source == TRAIN_SOURCE_POOL:
+            TRAINS.buy_from_pool(state, corp, t)
+        else:
+            TRAINS.buy_from_depot(state, corp, t)
     _bought(state, t)
 
 
 cdef void apply_train_price(GameState state, const ActionInfo* info) except *:
     """Buy the pending train from its corp for the chosen price, paid to the
     seller (``Game#buy_train``), and go back to BUY_TRAIN."""
-    cdef int source = turn_pending_train_source(state)
-    cdef int t = source % <int>NUM_TRAIN_TYPES
-    TRAINS.buy_from_corp(state, turn_operating_corp(state), source // <int>NUM_TRAIN_TYPES, t,
-                         price_amount(state, info))
+    cdef int t = turn_pending_train_type(state)
+    TRAINS.buy_from_corp(state, turn_operating_corp(state), turn_pending_train_source(state) - TRAIN_SOURCE_CORP,
+                         t, price_amount(state, info))
     TURN.set_pending_train_source(state, -1)
+    TURN.set_pending_train_type(state, -1)
     TURN.set_step(state, STEP_BUY_TRAIN)
     _bought(state, t)
+
+
+cdef void apply_emergency_sell_amount(GameState state, const ActionInfo* info) except *:
+    """The president sells ``count`` of the chosen corp's shares; BUY_TRAIN
+    goes on."""
+    cdef int seller = turn_pending_corp(state)
+    TURN.set_pending_corp(state, -1)
+    _sell(state, turn_operating_corp(state), seller, info.count)
+    TURN.set_step(state, STEP_BUY_TRAIN)
 
 
 cdef void apply_discard(GameState state, const ActionInfo* info) except *:

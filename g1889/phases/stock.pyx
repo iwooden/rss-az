@@ -16,14 +16,18 @@ Fields:
   purchase, its sales, and whether a purchase followed a sale;
 - each player's ``sold_mask`` holds the corps they sold this SR, which they
   may not buy back;
-- ``pending_corp`` is PAR's corp while PAR is open;
+- ``pending_corp`` is the corp PAR pars or SELL_AMOUNT sells, while it is open;
 - ``priority_player`` is Ruby's ``priority_deal_player``: the player after
   the last to buy or sell, else the SR's first player. SR_END moves it to the
   player after the last passer, which is the same player.
 """
 
-from g1889.actions cimport ACTION_BUY_IPO, ACTION_BUY_POOL, ACTION_PASS, ACTION_SELECT_PAR, ACTION_SELL, ActionInfo
-from g1889.constants cimport ROUND_OPERATING, ROUND_STOCK, STEP_OR_START, STEP_PAR, STEP_SR_END, STEP_STOCK
+from g1889.actions cimport (
+    ACTION_BUY_IPO, ACTION_BUY_POOL, ACTION_PASS, ACTION_SELECT_PAR, ACTION_SELECT_SALE, ActionInfo,
+)
+from g1889.constants cimport (
+    ROUND_OPERATING, ROUND_STOCK, STEP_OR_START, STEP_PAR, STEP_SELL_AMOUNT, STEP_SR_END, STEP_STOCK,
+)
 from g1889.data.tables cimport NUM_CORPS, PHASE_ORS
 from g1889.entities.corp cimport Corporation, corp_floated
 from g1889.entities.market cimport Market, market_sort_by_price
@@ -85,7 +89,8 @@ cdef void _acted(GameState state, int player, bint bought) except *:
 # =============================================================================
 
 cdef void apply_stock(GameState state, const ActionInfo* info) except *:
-    """Pass or done, buy a share, select a corp to par (PAR follows), or sell a block."""
+    """Pass or done, buy a share, or select a corp to par (PAR follows) or to
+    sell (SELL_AMOUNT follows)."""
     cdef int player = turn_active_player(state)
     cdef int c = info.corp
     if info.type == ACTION_PASS:
@@ -97,15 +102,11 @@ cdef void apply_stock(GameState state, const ActionInfo* info) except *:
     elif info.type == ACTION_BUY_IPO or info.type == ACTION_BUY_POOL:
         _corp_at(c).buy_share(state, player, info.type == ACTION_BUY_POOL)
         _acted(state, player, True)
-    elif info.type == ACTION_SELECT_PAR:
-        TURN.set_pending_corp(state, c)
-        TURN.set_step(state, STEP_PAR)
     else:
-        assert info.type == ACTION_SELL, f"apply_stock: action type {info.type}"
-        _corp_at(c).sell_shares(state, player, info.count)
-        _player_at(player).set_sold_mask(state, player_sold_mask(state, player) | 1 << c)
-        TURN.set_sr_sold_mask(state, turn_sr_sold_mask(state) | 1 << c)
-        _acted(state, player, False)
+        assert info.type == ACTION_SELECT_PAR or info.type == ACTION_SELECT_SALE, \
+            f"apply_stock: action type {info.type}"
+        TURN.set_pending_corp(state, c)
+        TURN.set_step(state, STEP_PAR if info.type == ACTION_SELECT_PAR else STEP_SELL_AMOUNT)
 
 
 cdef void apply_par(GameState state, const ActionInfo* info) except *:
@@ -115,6 +116,19 @@ cdef void apply_par(GameState state, const ActionInfo* info) except *:
     TURN.set_pending_corp(state, -1)
     _corp_at(c).par(state, player, info.count)
     _acted(state, player, True)
+    TURN.set_step(state, STEP_STOCK)
+
+
+cdef void apply_sell_amount(GameState state, const ActionInfo* info) except *:
+    """Sell ``count`` shares of the selected corp as one block, which the
+    player may not buy back this SR; the turn goes on in STOCK."""
+    cdef int player = turn_active_player(state)
+    cdef int c = turn_pending_corp(state)
+    TURN.set_pending_corp(state, -1)
+    _corp_at(c).sell_shares(state, player, info.count)
+    _player_at(player).set_sold_mask(state, player_sold_mask(state, player) | 1 << c)
+    TURN.set_sr_sold_mask(state, turn_sr_sold_mask(state) | 1 << c)
+    _acted(state, player, False)
     TURN.set_step(state, STEP_STOCK)
 
 

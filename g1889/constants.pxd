@@ -2,10 +2,9 @@
 
 Phase-local action ids follow 1889/engine-design.md §5.2. Each block of ids
 is named by its first id; "+ x" marks a block indexed by x (corp c, private p,
-hex h, train type t), and "+ stride·x + y" a 2D block. A sale of n shares is
-encoded as n - 1. Exact amounts in BID, RAISE, TRAIN_PRICE, and PRIVATE_PRICE
-are ``*_EXACT + amount``: at or above the phase size, legal by range check,
-and never enumerated.
+hex h, train type t). A sale of n shares is encoded as n - 1. Exact amounts in
+BID, TRAIN_PRICE, and PRIVATE_PRICE are ``*_EXACT + amount``: at or above the
+phase size, legal by range check, and never enumerated.
 """
 
 from libc.stdint cimport int8_t, int16_t
@@ -27,9 +26,9 @@ cpdef enum Round:
 cpdef enum Step:
     STEP_AUCTION = 0
     STEP_BID = 1
-    STEP_RAISE = 2
-    STEP_STOCK = 3
-    STEP_PAR = 4
+    STEP_STOCK = 2
+    STEP_PAR = 3
+    STEP_SELL_AMOUNT = 4
     STEP_PORT = 5
     STEP_SR_END = 6
     STEP_OR_START = 7
@@ -40,34 +39,38 @@ cpdef enum Step:
     STEP_ROUTE = 12
     STEP_DIVIDEND = 13
     STEP_BUY_TRAIN = 14
-    STEP_TRAIN_PRICE = 15
-    STEP_DISCARD = 16
-    STEP_BUY_PRIVATE = 17
-    STEP_PRIVATE_PRICE = 18
-    STEP_ER_BONUS = 19
-    STEP_TURN_END = 20
-    STEP_OR_END = 21
-    STEP_GAME_OVER = 22
-    NUM_STEPS = 23
+    STEP_SELECT_TRAIN = 15
+    STEP_TRAIN_PRICE = 16
+    STEP_EMERGENCY_SELL_AMOUNT = 17
+    STEP_DISCARD = 18
+    STEP_BUY_PRIVATE = 19
+    STEP_PRIVATE_PRICE = 20
+    STEP_ER_BONUS = 21
+    STEP_TURN_END = 22
+    STEP_OR_END = 23
+    STEP_GAME_OVER = 24
+    NUM_STEPS = 25
 
 cpdef enum DecisionPhase:
     DPHASE_AUCTION = 0
     DPHASE_BID = 1
-    DPHASE_RAISE = 2
-    DPHASE_STOCK = 3
-    DPHASE_PAR = 4
+    DPHASE_STOCK = 2
+    DPHASE_PAR = 3
+    DPHASE_SELL_AMOUNT = 4
     DPHASE_TRACK = 5
     DPHASE_TILE = 6
     DPHASE_TOKEN = 7
     DPHASE_DIVIDEND = 8
     DPHASE_DISCARD = 9
     DPHASE_BUY_TRAIN = 10
-    DPHASE_TRAIN_PRICE = 11
-    DPHASE_BUY_PRIVATE = 12
-    DPHASE_PRIVATE_PRICE = 13
-    DPHASE_ER_BONUS = 14
-    DPHASE_PORT = 15
-    NUM_DECISION_PHASES = 16
+    DPHASE_SELECT_TRAIN = 11
+    DPHASE_TRAIN_PRICE = 12
+    DPHASE_EMERGENCY_SELL_AMOUNT = 13
+    DPHASE_BUY_PRIVATE = 14
+    DPHASE_PRIVATE_PRICE = 15
+    DPHASE_ER_BONUS = 16
+    DPHASE_PORT = 17
+    NUM_DECISION_PHASES = 18
 
 # Private owner codes (the privates block of the state).
 cpdef enum Owner:
@@ -95,32 +98,33 @@ cpdef enum AuctionAction:
     AUCTION_BID = 2                 # + p
     ACTION_SIZE_AUCTION = AUCTION_BID + NUM_PRIVATES
 
-# BID: point k bids the minimum + ¥5k.
+# BID: point k bids the minimum + ¥5k. Slot 0 drops out, legal only in a closed auction
+# (``auction_private``), where the lowest bidder acts and the minimum is the high bid + ¥5.
 cpdef enum BidAction:
-    BID_POINT = 0                   # + k
+    BID_DROP = 0
+    BID_POINT = 1                   # + k
     BID_POINTS = 16
     ACTION_SIZE_BID = BID_POINT + BID_POINTS
     BID_EXACT = ACTION_SIZE_BID     # + amount
 
-# RAISE: the lowest bidder drops out, or point k bids the high bid + ¥5 + ¥5k.
-cpdef enum RaiseAction:
-    RAISE_DROP = 0
-    RAISE_POINT = 1                 # + k
-    RAISE_POINTS = 16
-    ACTION_SIZE_RAISE = RAISE_POINT + RAISE_POINTS
-    RAISE_EXACT = ACTION_SIZE_RAISE  # + amount
-
-# STOCK: pass or done, buy from the IPO or the pool, par (PAR follows), sell n shares, DR, MF.
+# STOCK: pass or done, buy from the IPO or the pool, par (PAR follows), sell corp c's
+# shares (SELL_AMOUNT follows), DR, MF.
 cpdef enum StockAction:
     STOCK_PASS = 0
     STOCK_IPO = 1                   # + c
     STOCK_POOL = STOCK_IPO + NUM_CORPS  # + c
     STOCK_PAR = STOCK_POOL + NUM_CORPS  # + c
-    STOCK_SELL = STOCK_PAR + NUM_CORPS  # + MAX_SALE_SHARES·c + (n - 1)
-    MAX_SALE_SHARES = 5             # the pool holds at most 50%
-    STOCK_DR = STOCK_SELL + MAX_SALE_SHARES * NUM_CORPS
+    STOCK_SELL = STOCK_PAR + NUM_CORPS  # + c
+    STOCK_DR = STOCK_SELL + NUM_CORPS
     STOCK_MF = STOCK_DR + 1
     ACTION_SIZE_STOCK = STOCK_MF + 1
+
+# SELL_AMOUNT (an SR sale) and EMERGENCY_SELL_AMOUNT (the president's, in an emergency):
+# n shares of the pending corp, as n - 1.
+cpdef enum SellAmountAction:
+    MAX_SALE_SHARES = 5             # the pool holds at most 50%
+    ACTION_SIZE_SELL_AMOUNT = MAX_SALE_SHARES
+    ACTION_SIZE_EMERGENCY_SELL_AMOUNT = MAX_SALE_SHARES
 
 # PAR: the par index, in ascending price order (PAR_PRICE).
 cpdef enum ParAction:
@@ -158,19 +162,33 @@ cpdef enum DividendAction:
 cpdef enum DiscardAction:
     ACTION_SIZE_DISCARD = NUM_TRAIN_TYPES
 
-# BUY_TRAIN: pass, buy from the depot, trade TRADE_IN_TYPE[i] for a D, buy from the pool or
-# corp c (TRAIN_PRICE follows), an emergency sale of n shares, bankruptcy, buy a private, DR.
+# A train purchase's source (``pending_train_source``): the depot, the pool, or corp c.
+cpdef enum TrainSource:
+    TRAIN_SOURCE_DEPOT = 0
+    TRAIN_SOURCE_POOL = 1
+    TRAIN_SOURCE_CORP = 2           # + c
+    NUM_TRAIN_SOURCES = TRAIN_SOURCE_CORP + NUM_CORPS
+
+# BUY_TRAIN: pass, buy from source s (BUY_TRAIN_DEPOT + s; SELECT_TRAIN follows), an
+# emergency sale of corp c's shares (EMERGENCY_SELL_AMOUNT follows), bankruptcy, buy a
+# private, DR.
 cpdef enum BuyTrainAction:
     BUY_TRAIN_PASS = 0
-    BUY_TRAIN_DEPOT = 1             # + t
-    BUY_TRAIN_TRADE_IN = BUY_TRAIN_DEPOT + NUM_TRAIN_TYPES  # + i
-    BUY_TRAIN_POOL = BUY_TRAIN_TRADE_IN + NUM_TRADE_IN_TYPES  # + t
-    BUY_TRAIN_CORP = BUY_TRAIN_POOL + NUM_TRAIN_TYPES  # + NUM_TRAIN_TYPES·c + t
-    BUY_TRAIN_SELL = BUY_TRAIN_CORP + NUM_TRAIN_TYPES * NUM_CORPS  # + MAX_SALE_SHARES·c + (n - 1)
-    BUY_TRAIN_BANKRUPT = BUY_TRAIN_SELL + MAX_SALE_SHARES * NUM_CORPS
+    BUY_TRAIN_DEPOT = 1
+    BUY_TRAIN_POOL = BUY_TRAIN_DEPOT + TRAIN_SOURCE_POOL
+    BUY_TRAIN_CORP = BUY_TRAIN_DEPOT + TRAIN_SOURCE_CORP  # + c
+    BUY_TRAIN_SELL = BUY_TRAIN_DEPOT + NUM_TRAIN_SOURCES  # + c
+    BUY_TRAIN_BANKRUPT = BUY_TRAIN_SELL + NUM_CORPS
     BUY_TRAIN_BUY_PRIVATE = BUY_TRAIN_BANKRUPT + 1  # + p
     BUY_TRAIN_DR = BUY_TRAIN_BUY_PRIVATE + NUM_PRIVATES
     ACTION_SIZE_BUY_TRAIN = BUY_TRAIN_DR + 1
+
+# SELECT_TRAIN: a train of type t from the pending source (TRAIN_PRICE follows a corp's),
+# or from the depot a D for a traded TRADE_IN_TYPE[i].
+cpdef enum SelectTrainAction:
+    SELECT_TRAIN_TYPE = 0           # + t
+    SELECT_TRAIN_TRADE_IN = SELECT_TRAIN_TYPE + NUM_TRAIN_TYPES  # + i
+    ACTION_SIZE_SELECT_TRAIN = SELECT_TRAIN_TRADE_IN + NUM_TRADE_IN_TYPES
 
 # TRAIN_PRICE points: ¥1, list price, ⌈cash/3⌉, ⌈2·cash/3⌉, cash.
 cpdef enum TrainPriceAction:
@@ -202,13 +220,14 @@ cpdef enum PortAction:
     ACTION_SIZE_PORT = NUM_PORTS * NUM_SIDES
 
 cpdef enum PolicyDims:
-    MAX_ACTION_SIZE = ACTION_SIZE_BUY_TRAIN
+    MAX_ACTION_SIZE = ACTION_SIZE_TRACK
     UNIFIED_ACTION_DIM = (
-        ACTION_SIZE_AUCTION + ACTION_SIZE_BID + ACTION_SIZE_RAISE + ACTION_SIZE_STOCK + ACTION_SIZE_PAR
-        + ACTION_SIZE_TRACK + ACTION_SIZE_TILE + ACTION_SIZE_TOKEN + ACTION_SIZE_DIVIDEND
-        + ACTION_SIZE_DISCARD + ACTION_SIZE_BUY_TRAIN + ACTION_SIZE_TRAIN_PRICE + ACTION_SIZE_BUY_PRIVATE
-        + ACTION_SIZE_PRIVATE_PRICE + ACTION_SIZE_ER_BONUS + ACTION_SIZE_PORT)
+        ACTION_SIZE_AUCTION + ACTION_SIZE_BID + ACTION_SIZE_STOCK + ACTION_SIZE_PAR + ACTION_SIZE_SELL_AMOUNT
+        + ACTION_SIZE_TRACK + ACTION_SIZE_TILE + ACTION_SIZE_TOKEN + ACTION_SIZE_DIVIDEND + ACTION_SIZE_DISCARD
+        + ACTION_SIZE_BUY_TRAIN + ACTION_SIZE_SELECT_TRAIN + ACTION_SIZE_TRAIN_PRICE
+        + ACTION_SIZE_EMERGENCY_SELL_AMOUNT + ACTION_SIZE_BUY_PRIVATE + ACTION_SIZE_PRIVATE_PRICE
+        + ACTION_SIZE_ER_BONUS + ACTION_SIZE_PORT)
 
 # Indexed by Step and DecisionPhase; filled at import in constants.pyx.
-cdef int8_t[23] STEP_TO_DECISION_PHASE
-cdef int16_t[16] PHASE_ACTION_SIZE
+cdef int8_t[25] STEP_TO_DECISION_PHASE
+cdef int16_t[18] PHASE_ACTION_SIZE

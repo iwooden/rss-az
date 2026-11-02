@@ -2,11 +2,15 @@
 acceptance).
 
 At every BuyTrain snapshot of the four fixtures, the state comes from
-``load_state`` and the operating corp's BUY_TRAIN ids are checked against
-the extract's ``operating.trains`` and ``operating.emergency``
-(``extracts.py``): Ruby's own ``BuyTrain#buyable_trains``, ``spend_minmax``,
-``room?``, and ``discountable_trains_for``, and in a must-buy the president's
-contribution toward the cheapest depot or pool train, the bundles BuyTrain's
+``load_state`` and the operating corp's BUY_TRAIN choices are checked
+against the extract's ``operating.trains`` and ``operating.emergency``
+(``extracts.py``). BUY_TRAIN offers sources and corps to sell, so each is
+composed with the choices of the sub-phase it opens, through the driver
+(``snapshot.engine_train_buys``): SELECT_TRAIN's trains and
+EMERGENCY_SELL_AMOUNT's blocks. Ruby's side is its own
+``BuyTrain#buyable_trains``, ``spend_minmax``, ``room?``, and
+``discountable_trains_for``, and in a must-buy the president's contribution
+toward the cheapest depot or pool train, the bundles BuyTrain's
 ``can_sell?`` lets them sell, and ``can_go_bankrupt?``, read through
 ``snapshot.ruby_train_buys``. At every DiscardTrain snapshot the crowded
 corps match ``operating.crowded``, and DISCARD offers the first one's train
@@ -39,7 +43,9 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_probe_extract
-from tests.g1889.replay.snapshot import CORP, compare, engine_train_buys, load_state, ruby_operator_buys
+from tests.g1889.replay.snapshot import (
+    CORP, compare, engine_train_buys, legal_actions, load_state, ruby_operator_buys, sub_decisions,
+)
 
 # (BuyTrain snapshots, emergencies, legal choices, from other corps, from the
 # pool, trade-ins, DiscardTrain snapshots) per fixture.
@@ -49,6 +55,16 @@ COVERAGE = {
     'hs_jmmljkbw_17502': (1, 0, 2, 0, 0, 0, 0),
     'hs_lhglbbiz_17502': (1, 0, 2, 0, 0, 0, 0),
 }
+# Per fixture, the sub-phases composed at the BuyTrain snapshots: (SELECT_TRAIN
+# for a source, of which with one train, which the driver would apply;
+# EMERGENCY_SELL_AMOUNT for a corp to sell, of which with one block).
+SUB_PHASES = {
+    '314': (214, 144, 27, 21),
+    '962': (225, 111, 0, 0),
+    'hs_jmmljkbw_17502': (1, 1, 0, 0),
+    'hs_lhglbbiz_17502': (1, 1, 0, 0),
+}
+SOURCES = (A.ACTION_BUY_DEPOT_TRAIN, A.ACTION_BUY_POOL_TRAIN, A.ACTION_BUY_CORP_TRAIN)
 # Per fixture, in the emergencies: (president-funded buys offered, sales
 # offered, bankruptcies offered); and the snapshots where Ruby's steps take
 # more than the UI offers: (BuyTrain snapshots outside a must-buy where
@@ -72,6 +88,7 @@ def test_buy_train_and_discard_match_ruby(fixture):
     extract = load_fixture_extract(fixture)
     snapshots = emergencies = choices = corps = pool = trades = discards = 0
     funded = sales = bankruptcies = ruby_sales = ruby_bankruptcies = 0
+    sub_phases = [0] * 4
     for record in extract['records']:
         snap = record['state']
         operating = snap['operating']
@@ -86,6 +103,11 @@ def test_buy_train_and_discard_match_ruby(fixture):
             assert ours == ruby_operator_buys(state, operating), where
             snapshots += 1
             choices += len(ours)
+            for action_id, info in legal_actions(state):
+                if info.type in SOURCES or info.type == A.ACTION_SELECT_SALE:
+                    k = 0 if info.type in SOURCES else 2
+                    sub_phases[k] += 1
+                    sub_phases[k + 1] += len(sub_decisions(state, action_id)) == 1
             corps += sum(source in D.CORP_SYMS for source, *_ in ours)
             pool += sum(source == 'pool' for source, *_ in ours)
             trades += sum(source == 'trade' for source, *_ in ours)
@@ -115,6 +137,7 @@ def test_buy_train_and_discard_match_ruby(fixture):
             assert _ids(state) == [t for t in range(D.NUM_TRAIN_TYPES) if TRAINS.corp_trains(state, first, t)]
             discards += 1
     assert (snapshots, emergencies, choices, corps, pool, trades, discards) == COVERAGE[fixture]
+    assert tuple(sub_phases) == SUB_PHASES[fixture]
     assert ((funded, sales, bankruptcies), (ruby_sales, ruby_bankruptcies)) == EMERGENCIES[fixture]
 
 

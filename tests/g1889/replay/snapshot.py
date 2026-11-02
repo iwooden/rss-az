@@ -38,20 +38,23 @@ form than Ruby; ``compare`` treats these as equal (``EQUIVALENT:`` below):
 
 At a STOCK decision, ``compare`` also checks the engine's legal ids against
 Ruby's ``stock.legal``: the pass (absent on a must-sell turn), each IPO and
-pool buy, each par, and each sellable block. PAR is not checked there; it
-lies inside one Ruby ``par``. In an OR it checks Ruby's network oracles for
-every corp with a token (``operating.graph``, ``tokens``, and ``lays``):
-GRAPH's sides and nodes reached and ``route_available``, the cities the corp
-may token, and its lay candidates with their costs. They do not depend on
+pool buy, each par, and each sellable block, which composes STOCK's "sell
+corp c" with the blocks SELL_AMOUNT then offers (``sub_decisions``). PAR is
+not checked there; it lies inside one Ruby ``par``. In an OR it checks
+Ruby's network oracles for every corp with a token (``operating.graph``,
+``tokens``, and ``lays``): GRAPH's sides and nodes reached and
+``route_available``, the cities the corp may token, and its lay candidates
+with their costs. They do not depend on
 whose turn it is; the oracle tests also check the operating corp's TRACK,
 TILE, and TOKEN ids. At a BuyTrain snapshot it checks ``must_buy_train``
 against Ruby's ``must_buy_train?`` on a fresh graph (``operating.must_buy``)
 and BUY_TRAIN's legal choices against Ruby's BuyTrain step
 (``operating.trains``, ``ruby_train_buys``), with the president's emergency
-sales and bankruptcy in a must-buy (``operating.emergency``); at a
-DiscardTrain snapshot the
-crowded corps in Ruby's order (``operating.crowded``), the first of which is
-Ruby's current entity there; and at a Route snapshot the route solver's
+sales and bankruptcy in a must-buy (``operating.emergency``), each source
+composed with the trains SELECT_TRAIN then offers and each sale with
+EMERGENCY_SELL_AMOUNT's blocks (``engine_train_buys``); at a DiscardTrain
+snapshot the crowded corps in Ruby's order (``operating.crowded``), the
+first of which is Ruby's current entity there; and at a Route snapshot the route solver's
 maximum against AutoRouter's (``operating.auto_router``;
 ``test_route_oracles.py`` checks the routes). With an operator it checks the
 privates the corp may buy (``operating.companies``, ``ruby_private_buys``),
@@ -87,6 +90,7 @@ import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
 from g1889.data import COLORS
+from g1889.driver import DRIVER, STATUS_INVALID
 from g1889.entities.bank import BANK, BANK_ACCOUNT
 from g1889.entities.corp import CORPS
 from g1889.entities.graph import GRAPH
@@ -112,10 +116,11 @@ GAME_PHASE = {name: p for p, name in enumerate(D.PHASE_NAMES)}
 RUBY_ROUNDS = {K.ROUND_AUCTION: 'ISR', K.ROUND_STOCK: 'SR', K.ROUND_OPERATING: 'OR'}
 END_REASONS = {K.END_REASON_NONE: None, K.END_REASON_BANKRUPT: 'bankrupt', K.END_REASON_BANK: 'bank'}
 # Ruby's active step at each engine step the engine can rest at between Ruby
-# actions. Sub-phases inside one Ruby action (BID, PORT, PRIVATE_PRICE) and
-# automated steps are absent.
+# actions; BID rests there in a closed auction. Sub-phases inside one Ruby
+# action (SELL_AMOUNT, PORT, SELECT_TRAIN, EMERGENCY_SELL_AMOUNT,
+# PRIVATE_PRICE) and automated steps are absent.
 RUBY_STEPS = {
-    K.STEP_AUCTION: 'WaterfallAuction', K.STEP_RAISE: 'WaterfallAuction', K.STEP_STOCK: 'BuySellParShares',
+    K.STEP_AUCTION: 'WaterfallAuction', K.STEP_BID: 'WaterfallAuction', K.STEP_STOCK: 'BuySellParShares',
     K.STEP_PAR: 'BuySellParShares', K.STEP_TRACK: 'Track', K.STEP_TILE: 'Track', K.STEP_TOKEN: 'Token',
     K.STEP_DIVIDEND: 'Dividend', K.STEP_BUY_TRAIN: 'BuyTrain', K.STEP_TRAIN_PRICE: 'BuyTrain',
     K.STEP_DISCARD: 'DiscardTrain', K.STEP_BUY_PRIVATE: 'BuyCompany', K.STEP_ER_BONUS: 'SpecialTrack',
@@ -497,21 +502,44 @@ def ruby_train_buys(trains: dict, cash: int, president_cash: int = 0,
     return buys
 
 
-def engine_train_buys(state: GameState) -> set[tuple[str, ...]]:
-    """The operating corp's legal BUY_TRAIN ids in ``ruby_train_buys``'s form."""
+def legal_actions(state: GameState) -> list[tuple[int, A.ActionInfoTuple]]:
+    """The current decision's engine-legal ids, decoded."""
+    phase = A.get_decision_phase_py(state)
     ids = np.zeros(K.MAX_ACTION_SIZE, dtype=np.uint16)
+    return [(int(i), A.decode_action_py(phase, int(i))) for i in ids[:A.enumerate_legal_actions_py(state, ids)]]
+
+
+def sub_decisions(state: GameState, action_id: int) -> list[tuple[int, A.ActionInfoTuple]]:
+    """The legal choices of the sub-phase ``action_id`` opens (SELL_AMOUNT,
+    SELECT_TRAIN, EMERGENCY_SELL_AMOUNT), through the driver on a copy: the
+    sub-phase as it opens, before any choice the driver then forces."""
+    n = TURN.num_players(state)
+    after = GameState.from_array(state._array, n, state.max_players)
+    history: list = []
+    assert DRIVER.apply_action(after, action_id, history) != STATUS_INVALID, action_id
+    if len(history) > 1:
+        after = GameState.from_array(history[1][0], n, state.max_players)
+    return legal_actions(after)
+
+
+def engine_train_buys(state: GameState) -> set[tuple[str, ...]]:
+    """The operating corp's legal BUY_TRAIN choices in ``ruby_train_buys``'s
+    form: each source with each train SELECT_TRAIN then offers (a trade-in
+    from the depot), and each corp the president may sell with each block
+    EMERGENCY_SELL_AMOUNT then offers."""
+    sources = {A.ACTION_BUY_DEPOT_TRAIN: 'depot', A.ACTION_BUY_POOL_TRAIN: 'pool', A.ACTION_BUY_CORP_TRAIN: None}
     buys: set[tuple[str, ...]] = set()
-    for action_id in ids[:A.enumerate_legal_actions_py(state, ids)]:
-        info = A.decode_action_py(K.DPHASE_BUY_TRAIN, int(action_id))
+    for action_id, info in legal_actions(state):
         if info.type in (A.ACTION_BUY_PRIVATE, A.ACTION_DR_EXCHANGE):  # the interjection slots
             continue
-        if info.type == A.ACTION_SELL:
-            buys.add(('sell', D.CORP_SYMS[info.corp], 10 * info.count))
-            continue
-        name = D.TRAIN_NAMES[info.train_type] if info.train_type >= 0 else ''
-        buys.add({A.ACTION_PASS: ('pass',), A.ACTION_BANKRUPT: ('bankrupt',), A.ACTION_BUY_DEPOT_TRAIN: ('depot', name),
-                  A.ACTION_BUY_POOL_TRAIN: ('pool', name), A.ACTION_TRADE_IN: ('trade', name),
-                  A.ACTION_BUY_CORP_TRAIN: (D.CORP_SYMS[info.corp], name)}[info.type])
+        if info.type == A.ACTION_SELECT_SALE:
+            buys |= {('sell', D.CORP_SYMS[info.corp], 10 * sale.count) for _, sale in sub_decisions(state, action_id)}
+        elif info.type in sources:
+            source = sources[info.type] or D.CORP_SYMS[info.corp]
+            buys |= {('trade' if train.type == A.ACTION_TRADE_IN else source, D.TRAIN_NAMES[train.train_type])
+                     for _, train in sub_decisions(state, action_id)}
+        else:
+            buys.add({A.ACTION_PASS: ('pass',), A.ACTION_BANKRUPT: ('bankrupt',)}[info.type])
     return buys
 
 
@@ -529,9 +557,10 @@ def _compare_train_buys(state, operating, check) -> None:
 
 
 def _compare_stock_legal(state, legal, check) -> None:
-    """The engine's legal STOCK ids against Ruby's options for the turn player."""
-    ids = np.zeros(K.MAX_ACTION_SIZE, dtype=np.uint16)
-    infos = [A.decode_action_py(K.DPHASE_STOCK, int(i)) for i in ids[:A.enumerate_legal_actions_py(state, ids)]]
+    """The engine's legal STOCK ids against Ruby's options for the turn
+    player, each corp to sell with the blocks SELL_AMOUNT then offers."""
+    actions = legal_actions(state)
+    infos = [info for _, info in actions]
 
     def corps(kind):
         return [D.CORP_SYMS[info.corp] for info in infos if info.type == kind]
@@ -540,10 +569,8 @@ def _compare_stock_legal(state, legal, check) -> None:
     check('stock.legal.buy_ipo', corps(A.ACTION_BUY_IPO), legal['buy_ipo'])
     check('stock.legal.buy_pool', corps(A.ACTION_BUY_POOL), legal['buy_pool'])
     check('stock.legal.par', corps(A.ACTION_SELECT_PAR), legal['par'])
-    sales: dict[str, list[int]] = {}
-    for info in infos:
-        if info.type == A.ACTION_SELL:
-            sales.setdefault(D.CORP_SYMS[info.corp], []).append(10 * info.count)
+    sales = {D.CORP_SYMS[info.corp]: [10 * sale.count for _, sale in sub_decisions(state, action_id)]
+             for action_id, info in actions if info.type == A.ACTION_SELECT_SALE}
     check('stock.legal.sell', sales, legal['sell'])
 
 
@@ -630,7 +657,7 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
     elif g['round'] == 'ISR':
         auction = snap['auction']
         TURN.set_round(state, K.ROUND_AUCTION)
-        TURN.set_step(state, K.STEP_RAISE if auction['auctioning'] else K.STEP_AUCTION)
+        TURN.set_step(state, K.STEP_BID if auction['auctioning'] else K.STEP_AUCTION)
         TURN.set_auction_private(state, PRIVATE[auction['auctioning']] if auction['auctioning'] else -1)
         TURN.set_auction_discount(state, snap['privates'][D.PRIVATE_SYMS[DISCOUNTED_PRIVATE]]['discount'])
         TURN.set_auction_turn(state, ids.index(g['round_entities'][g['entity_index']]))

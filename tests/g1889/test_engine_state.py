@@ -51,17 +51,17 @@ def test_block_sizes_and_total_width():
         'graph': layout.players_offset - layout.graph_offset,
     }
     assert layout.global_offset == 0
-    assert sizes == {'global': 40, 'corps': 7 * 19, 'privates': 7 * 2, 'hexes': 52 * 3, 'supply': 40,
+    assert sizes == {'global': 41, 'corps': 7 * 19, 'privates': 7 * 2, 'hexes': 52 * 3, 'supply': 40,
                      'trains': 12, 'graph': 7 * 52}
     assert (get_global_fields().size, get_corp_fields().size, get_private_fields().size,
-            get_hex_fields().size, get_train_fields().size, get_player_fields().size) == (40, 19, 2, 3, 12, 18)
-    assert layout.players_offset == sum(sizes.values()) == 759
+            get_hex_fields().size, get_train_fields().size, get_player_fields().size) == (41, 19, 2, 3, 12, 18)
+    assert layout.players_offset == sum(sizes.values()) == 760
 
 
 @pytest.mark.parametrize('capacity', PLAYER_COUNTS)
 def test_players_last_so_only_the_width_varies(capacity):
     layout = get_layout(capacity)
-    assert layout.total_size == 759 + 18 * capacity
+    assert layout.total_size == 760 + 18 * capacity
     assert layout._replace(total_size=0, max_players=0) == get_layout(2)._replace(total_size=0, max_players=0)
     assert get_storage_player_capacity(layout.total_size) == capacity
     assert GameState(D.MIN_PLAYERS, max_players=capacity)._array.shape == (layout.total_size,)
@@ -76,7 +76,7 @@ def test_field_offsets_tile_each_block():
         assert starts[0] == 0 and len(set(starts)) == len(starts) and starts[-1] < size, fields
 
 
-@pytest.mark.parametrize('width', [758, 759 + 18 * 1, 759 + 18 * 7, 759 + 18 * 3 + 1])
+@pytest.mark.parametrize('width', [759, 760 + 18 * 1, 760 + 18 * 7, 760 + 18 * 3 + 1])
 def test_capacity_rejects_bad_widths(width):
     with pytest.raises(AssertionError):
         get_storage_player_capacity(width)

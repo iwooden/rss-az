@@ -1,8 +1,8 @@
 """Random play through the auction and the first SR (1889/engine-design.md
 §10.4): from a fresh game at 2-6 players, with the policy flags on (policy
-ids only) and off (every legal id, and exact amounts in BID and RAISE), the
-first SR ends within a step cap. ``test_random_playouts.py`` plays on
-through the operating rounds.
+ids only) and off (every legal id, and exact amounts in BID), the first SR
+ends within a step cap. ``test_random_playouts.py`` plays on through the
+operating rounds.
 
 ``apply_and_verify`` checks every state the driver passes through, forced
 decisions and SR_END included: money is conserved, each corp's ten shares are
@@ -35,15 +35,15 @@ from tests.g1889.phases.conftest import (
 
 SEEDS = range(80)
 MAX_DECISIONS = 3000
-EXACT_SHARE = 0.25                 # of BID and RAISE decisions, with the flags off
+EXACT_SHARE = 0.25                 # of BID decisions, with the flags off
 UNCAPPED_PAYOUTS = 3               # payout rounds before the flags-off player turns the cap on
 SECOND_SR_PASS = 0.5
 
 
 def _choose(state, rng, flags, pass_share=0.0):
     phase = A.get_decision_phase_py(state)
-    if not flags and phase in (K.DPHASE_BID, K.DPHASE_RAISE) and rng.random() < EXACT_SHARE:
-        p = TURN.pending_private(state) if phase == K.DPHASE_BID else TURN.auction_private(state)
+    if not flags and phase == K.DPHASE_BID and rng.random() < EXACT_SHARE:
+        p = TURN.auction_private(state) if TURN.auction_private(state) >= 0 else TURN.pending_private(state)
         low, high = PRIVATES[p].min_bid(state), PLAYERS[TURN.active_player(state)].available(state, p)
         return exact_id(state, int(rng.integers(low, high + 1)))
     ids = policy_ids(state) if state.auction_pass_payout_cap else legal_ids(state)
@@ -111,6 +111,6 @@ def test_random_play_reaches_the_first_or(num_players, flags):
         enter_stock_round(state, TURN.priority_player(state), turn=2)
         second_sr += _play(state, rng, flags, f'seed {seed}, SR 2', SECOND_SR_PASS, check=_must_sell_offers_only_sales)
     kinds = {A.decode_action_py(phase, i).type for phase, i in second_sr if phase == K.DPHASE_STOCK}
-    assert A.ACTION_SELL in kinds  # the second SRs did sell
+    assert A.ACTION_SELECT_SALE in kinds and K.DPHASE_SELL_AMOUNT in {phase for phase, _ in second_sr}  # they sold
     kinds |= {A.decode_action_py(phase, i).type for phase, i in first_sr if phase == K.DPHASE_STOCK}
     assert A.ACTION_DR_EXCHANGE in kinds and A.ACTION_MF_PORT in kinds

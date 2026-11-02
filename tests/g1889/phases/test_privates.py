@@ -36,8 +36,8 @@ from g1889.entities.private import PRIVATES
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    HEX, TILE, apply_and_verify, at_or, end_auction, enter_operating_round, enter_phase, enter_stock_round,
-    exact_id, give_train, hold, lay, legal_ids, new_game, policy_ids, set_cash,
+    HEX, TILE, apply_and_verify, at_or, depot, end_auction, enter_operating_round, enter_phase, enter_stock_round,
+    exact_id, give_train, hold, lay, legal_ids, new_game, policy_ids, set_cash, train_choices,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -136,7 +136,7 @@ class TestWindow:
         buy(state, K.DIVIDEND_BUY_PRIVATE, P_TR, price_point=0)  # the revenue waits through the purchase
         assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) > 0
         apply_and_verify(state, K.DIVIDEND_WITHHOLD)
-        assert TURN.step(state) == K.STEP_BUY_TRAIN and K.BUY_TRAIN_DEPOT + T3 in legal_ids(state)
+        assert TURN.step(state) == K.STEP_BUY_TRAIN and depot(T3) in train_choices(state)
         assert [i for i in legal_ids(state) if i >= K.BUY_TRAIN_BUY_PRIVATE] == buy_slot(
             K.BUY_TRAIN_BUY_PRIVATE, [P_MF, P_ER, P_SMR, P_DR, P_SIR])
 
@@ -351,7 +351,7 @@ class TestDrExchange:
         assert PRIVATES[P_DR].owner(state) == K.OWNER_CLOSED and PLAYERS[0].shares(state, IR) == 1
         assert (ir.ipo_shares(state), ir.president(state), ir.par_index(state)) == (9, -1, -1)
         assert (TURN.step(state), TURN.active_player(state), TURN.sr_bought(state)) == (K.STEP_STOCK, 0, 0)
-        assert K.STOCK_DR not in legal_ids(state) and A.ACTION_SELL not in [
+        assert K.STOCK_DR not in legal_ids(state) and A.ACTION_SELECT_SALE not in [
             A.decode_action_py(K.DPHASE_STOCK, i).type for i in legal_ids(state)]  # no price, no sale
         apply_and_verify(state, K.STOCK_PASS)
         apply_and_verify(state, K.STOCK_PAR + IR)

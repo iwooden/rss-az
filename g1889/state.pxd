@@ -42,7 +42,7 @@ cdef struct GlobalOffsets:
     int end_reason                 # EndReason, set when the game ends
     # Auction
     int auction_turn
-    int auction_private            # the private in a closed auction (RAISE), else -1
+    int auction_private            # the private in a closed auction (at BID), else -1
     int auction_discount
     int auction_pass_payouts
     # Stock round
@@ -55,11 +55,12 @@ cdef struct GlobalOffsets:
     int or_order                   # NUM_CORPS, -1 padded
     int route_revenue
     # Pending choice, each -1 when unset
-    int pending_hex
-    int pending_corp
-    int pending_private
-    int pending_train_source
-    int pending_seller
+    int pending_hex                # TILE's hex
+    int pending_corp               # PAR's, SELL_AMOUNT's, or EMERGENCY_SELL_AMOUNT's corp
+    int pending_private            # BID's, PRIVATE_PRICE's
+    int pending_train_source       # SELECT_TRAIN's and TRAIN_PRICE's TrainSource
+    int pending_train_type         # TRAIN_PRICE's train type
+    int pending_seller             # ER_BONUS's player
     # Emergency money, caches
     int ebuy_sold_mask
     int ebuy_sold_any

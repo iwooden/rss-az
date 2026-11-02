@@ -10,7 +10,7 @@ import g1889.data.tables as D
 from g1889.entities.turn import TURN
 from g1889.state import GameState
 
-EXACT_PHASES = (K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_TRAIN_PRICE, K.DPHASE_PRIVATE_PRICE)
+EXACT_PHASES = (K.DPHASE_BID, K.DPHASE_TRAIN_PRICE, K.DPHASE_PRIVATE_PRICE)
 SAMPLED_AMOUNTS = (0, 1, 5, 65, 100, 150, 165, 360, 370, 450, 1100, 4000)
 
 
@@ -46,7 +46,7 @@ def test_every_id_round_trips(phase):
 
 def test_exact_phases():
     assert [p for p in range(K.NUM_DECISION_PHASES) if A.has_exact_amounts(p)] == list(EXACT_PHASES)
-    exacts = (K.BID_EXACT, K.RAISE_EXACT, K.TRAIN_PRICE_EXACT, K.PRIVATE_PRICE_EXACT)
+    exacts = (K.BID_EXACT, K.TRAIN_PRICE_EXACT, K.PRIVATE_PRICE_EXACT)
     for phase, exact in zip(EXACT_PHASES, exacts):
         assert decode(phase, exact + 370) == info(phase, A.ACTION_EXACT_PRICE, amount=370)
         assert decode(phase, exact - 1).type == A.ACTION_PRICE_POINT
@@ -56,16 +56,17 @@ def test_exact_phases():
     (K.DPHASE_AUCTION, K.AUCTION_PASS, dict(type=A.ACTION_PASS)),
     (K.DPHASE_AUCTION, K.AUCTION_BUY, dict(type=A.ACTION_BUY_TOPMOST)),
     (K.DPHASE_AUCTION, K.AUCTION_BID + D.PRIVATE_UTF, dict(type=A.ACTION_SELECT_BID, private=D.PRIVATE_UTF)),
-    (K.DPHASE_BID, 3, dict(type=A.ACTION_PRICE_POINT, count=3)),
-    (K.DPHASE_RAISE, K.RAISE_DROP, dict(type=A.ACTION_PASS)),
-    (K.DPHASE_RAISE, K.RAISE_POINT, dict(type=A.ACTION_PRICE_POINT, count=0)),
+    (K.DPHASE_BID, K.BID_DROP, dict(type=A.ACTION_PASS)),
+    (K.DPHASE_BID, K.BID_POINT, dict(type=A.ACTION_PRICE_POINT, count=0)),
+    (K.DPHASE_BID, K.BID_POINT + 3, dict(type=A.ACTION_PRICE_POINT, count=3)),
     (K.DPHASE_STOCK, K.STOCK_IPO + D.CORP_KU, dict(type=A.ACTION_BUY_IPO, corp=D.CORP_KU)),
     (K.DPHASE_STOCK, K.STOCK_POOL + D.CORP_AR, dict(type=A.ACTION_BUY_POOL, corp=D.CORP_AR)),
     (K.DPHASE_STOCK, K.STOCK_PAR + D.CORP_IR, dict(type=A.ACTION_SELECT_PAR, corp=D.CORP_IR)),
-    (K.DPHASE_STOCK, K.STOCK_SELL + 5 * D.CORP_KO + 2, dict(type=A.ACTION_SELL, corp=D.CORP_KO, count=3)),
+    (K.DPHASE_STOCK, K.STOCK_SELL + D.CORP_KO, dict(type=A.ACTION_SELECT_SALE, corp=D.CORP_KO)),
     (K.DPHASE_STOCK, K.STOCK_DR, dict(type=A.ACTION_DR_EXCHANGE)),
     (K.DPHASE_STOCK, K.STOCK_MF, dict(type=A.ACTION_MF_PORT)),
     (K.DPHASE_PAR, 5, dict(type=A.ACTION_PAR, count=5, amount=100)),
+    (K.DPHASE_SELL_AMOUNT, 2, dict(type=A.ACTION_SELL, count=3)),
     (K.DPHASE_TRACK, K.TRACK_HEX + 51, dict(type=A.ACTION_SELECT_HEX, hex=51)),
     (K.DPHASE_TRACK, K.TRACK_BUY_PRIVATE + D.PRIVATE_SIR, dict(type=A.ACTION_BUY_PRIVATE, private=D.PRIVATE_SIR)),
     (K.DPHASE_TRACK, K.TRACK_MF, dict(type=A.ACTION_MF_PORT)),
@@ -75,16 +76,17 @@ def test_exact_phases():
     (K.DPHASE_DIVIDEND, K.DIVIDEND_WITHHOLD, dict(type=A.ACTION_WITHHOLD)),
     (K.DPHASE_DIVIDEND, K.DIVIDEND_PAYOUT, dict(type=A.ACTION_PAYOUT)),
     (K.DPHASE_DISCARD, D.TRAIN_D, dict(type=A.ACTION_DISCARD, train_type=D.TRAIN_D)),
-    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_DEPOT + D.TRAIN_D, dict(type=A.ACTION_BUY_DEPOT_TRAIN, train_type=D.TRAIN_D)),
-    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_TRADE_IN, dict(type=A.ACTION_TRADE_IN, train_type=D.TRAIN_4)),
-    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_TRADE_IN + 2, dict(type=A.ACTION_TRADE_IN, train_type=D.TRAIN_6)),
-    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_POOL + D.TRAIN_3, dict(type=A.ACTION_BUY_POOL_TRAIN, train_type=D.TRAIN_3)),
-    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_CORP + 6 * D.CORP_SR + D.TRAIN_5,
-     dict(type=A.ACTION_BUY_CORP_TRAIN, corp=D.CORP_SR, train_type=D.TRAIN_5)),
-    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_SELL + 5 * D.CORP_UR + 4, dict(type=A.ACTION_SELL, corp=D.CORP_UR, count=5)),
+    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_DEPOT, dict(type=A.ACTION_BUY_DEPOT_TRAIN)),
+    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_POOL, dict(type=A.ACTION_BUY_POOL_TRAIN)),
+    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_CORP + D.CORP_SR, dict(type=A.ACTION_BUY_CORP_TRAIN, corp=D.CORP_SR)),
+    (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_SELL + D.CORP_UR, dict(type=A.ACTION_SELECT_SALE, corp=D.CORP_UR)),
     (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_BANKRUPT, dict(type=A.ACTION_BANKRUPT)),
     (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_BUY_PRIVATE, dict(type=A.ACTION_BUY_PRIVATE, private=0)),
     (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_DR, dict(type=A.ACTION_DR_EXCHANGE)),
+    (K.DPHASE_SELECT_TRAIN, K.SELECT_TRAIN_TYPE + D.TRAIN_D, dict(type=A.ACTION_TRAIN_TYPE, train_type=D.TRAIN_D)),
+    (K.DPHASE_SELECT_TRAIN, K.SELECT_TRAIN_TRADE_IN, dict(type=A.ACTION_TRADE_IN, train_type=D.TRAIN_4)),
+    (K.DPHASE_SELECT_TRAIN, K.SELECT_TRAIN_TRADE_IN + 2, dict(type=A.ACTION_TRADE_IN, train_type=D.TRAIN_6)),
+    (K.DPHASE_EMERGENCY_SELL_AMOUNT, 4, dict(type=A.ACTION_SELL, count=5)),
     (K.DPHASE_BUY_PRIVATE, K.BUY_PRIVATE_DONE, dict(type=A.ACTION_PASS)),
     (K.DPHASE_BUY_PRIVATE, K.BUY_PRIVATE_PRIVATE + D.PRIVATE_ER, dict(type=A.ACTION_BUY_PRIVATE, private=D.PRIVATE_ER)),
     (K.DPHASE_ER_BONUS, K.ER_BONUS_PASS, dict(type=A.ACTION_PASS)),
@@ -98,9 +100,11 @@ def test_decoded_fields(phase, action_id, expected):
 @pytest.mark.parametrize('bad, error', [
     (info(K.DPHASE_PAR, A.ACTION_PASS), ValueError),                                  # PAR has no pass
     (info(K.DPHASE_DIVIDEND, A.ACTION_PASS), ValueError),                             # nor DIVIDEND
-    (info(K.DPHASE_STOCK, A.ACTION_SELL, corp=0, count=6), AssertionError),
+    (info(K.DPHASE_STOCK, A.ACTION_SELL, corp=0, count=1), ValueError),               # STOCK picks the corp
+    (info(K.DPHASE_SELL_AMOUNT, A.ACTION_SELL, count=6), AssertionError),
+    (info(K.DPHASE_BUY_TRAIN, A.ACTION_SELECT_SALE, corp=D.NUM_CORPS), AssertionError),
     (info(K.DPHASE_AUCTION, A.ACTION_SELECT_BID, private=D.NUM_PRIVATES), AssertionError),
-    (info(K.DPHASE_BUY_TRAIN, A.ACTION_TRADE_IN, train_type=D.TRAIN_3), ValueError),  # no trade-in for a 3
+    (info(K.DPHASE_SELECT_TRAIN, A.ACTION_TRADE_IN, train_type=D.TRAIN_3), ValueError),  # no trade-in for a 3
     (info(K.DPHASE_PORT, A.ACTION_PORT_LAY, hex=0, count=0), ValueError),             # not a port hex
     (info(K.DPHASE_BID, A.ACTION_EXACT_PRICE, amount=-1), AssertionError),
     (info(K.NUM_DECISION_PHASES, A.ACTION_PASS), AssertionError),

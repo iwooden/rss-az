@@ -13,14 +13,16 @@ from g1889.actions cimport (
 )
 from g1889.constants cimport (
     DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND,
-    DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE, DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE,
-    DPHASE_TOKEN, DPHASE_TRACK, DPHASE_TRAIN_PRICE, NUM_STEPS, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND,
-    STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END,
-    STEP_TURN_START,
+    DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE,
+    DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
+    DPHASE_TRAIN_PRICE, NUM_STEPS, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND, STEP_GAME_OVER, STEP_OR_END,
+    STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END, STEP_TURN_START,
 )
 from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_round, turn_step
-from g1889.phases.auction cimport apply_auction, apply_bid, apply_raise
-from g1889.phases.buy_train cimport apply_buy_train, apply_discard, apply_train_price
+from g1889.phases.auction cimport apply_auction, apply_bid
+from g1889.phases.buy_train cimport (
+    apply_buy_train, apply_discard, apply_emergency_sell_amount, apply_select_train, apply_train_price,
+)
 from g1889.phases.dividend cimport apply_dividend
 from g1889.phases.operating cimport (
     apply_tile, apply_token, apply_track, run_or_end, run_or_start, run_route, run_turn_end, run_turn_start,
@@ -28,7 +30,7 @@ from g1889.phases.operating cimport (
 from g1889.phases.privates cimport (
     apply_buy_private, apply_er_bonus, apply_interjection, apply_port, apply_private_price,
 )
-from g1889.phases.stock cimport apply_par, apply_stock, run_sr_end
+from g1889.phases.stock cimport apply_par, apply_sell_amount, apply_stock, run_sr_end
 from g1889.state cimport GameState
 
 from g1889.constants import Step
@@ -51,7 +53,7 @@ cdef class GameDriver:
         off-grid bid left a range narrower than a grid step. When the policy
         drops legal grid points (the pass cap), self-play never uses exact
         amounts, so its one point is forced."""
-        cdef uint16_t ids[102]  # MAX_ACTION_SIZE
+        cdef uint16_t ids[62]  # MAX_ACTION_SIZE
         cdef int count = enumerate_policy_actions(state, ids)
         cdef int action_id = ids[0]
         cdef int phase
@@ -75,12 +77,12 @@ cdef class GameDriver:
             apply_auction(state, &info)
         elif phase == DPHASE_BID:
             apply_bid(state, &info)
-        elif phase == DPHASE_RAISE:
-            apply_raise(state, &info)
         elif phase == DPHASE_STOCK:
             apply_stock(state, &info)
         elif phase == DPHASE_PAR:
             apply_par(state, &info)
+        elif phase == DPHASE_SELL_AMOUNT:
+            apply_sell_amount(state, &info)
         elif phase == DPHASE_TRACK:
             apply_track(state, &info)
         elif phase == DPHASE_TILE:
@@ -91,8 +93,12 @@ cdef class GameDriver:
             apply_dividend(state, &info)
         elif phase == DPHASE_BUY_TRAIN:
             apply_buy_train(state, &info)
+        elif phase == DPHASE_SELECT_TRAIN:
+            apply_select_train(state, &info)
         elif phase == DPHASE_TRAIN_PRICE:
             apply_train_price(state, &info)
+        elif phase == DPHASE_EMERGENCY_SELL_AMOUNT:
+            apply_emergency_sell_amount(state, &info)
         elif phase == DPHASE_DISCARD:
             apply_discard(state, &info)
         elif phase == DPHASE_BUY_PRIVATE:

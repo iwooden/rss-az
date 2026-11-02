@@ -17,6 +17,44 @@ Paths are relative to the repo, and `path:line` cites the code at 90d5825.
 `scratchpad/g1889_extract_design/` (Section 2); **Test:** marks a claim to
 measure once the code exists.
 
+**Affected by 6.10.** Engine sub-step 6.10 refactored the decision phases
+after this draft (engine-design §5.2-5.3, §12 item 7): RAISE folded into
+BID, sales factor into a corp and SELL_AMOUNT or EMERGENCY_SELL_AMOUNT, and
+BUY_TRAIN into a source, SELECT_TRAIN, and TRAIN_PRICE. The draft is not yet
+revised for it; these parts change:
+
+- **Phase count and sizes.** 18 decision phases, not 16: GLOBAL's phase
+  one-hot (Section 5.3, slots 1-16) needs 18 slots, so GLOBAL grows to 81
+  and its later slots shift. The unified dimension is 320, not 421
+  (Section 12, item 8), and `max_action_size` 62, not 102.
+- **The price-grid row's phases** (Sections 5.1 and 5.4). PRICE is visible
+  at BID, PAR, TRAIN_PRICE, and PRIVATE_PRICE; its kind slots lose RAISE.
+  BID's ids are 0 (a closed auction's drop, else unused) and 1-16 (the
+  points), so slots 6-22 read BID's points from id 1, and slots 23-24's
+  RAISE cases are BID's in a closed auction.
+- **Selections** (Sections 5.2, 5.5, 5.6). PRIVATE's `is_selected` is BID's
+  private, `auction_private` in a closed auction, else `pending_private`.
+  The selling corp is `pending_train_source` − `TRAIN_SOURCE_CORP` at
+  SELECT_TRAIN and TRAIN_PRICE (not `/ 6`), and TRAIN's `is_selected` is
+  `pending_train_type` at TRAIN_PRICE (not `% 6`). SELECT_TRAIN's source
+  (the depot, the pool, or a corp) and the corp a sale is of
+  (`pending_corp` at SELL_AMOUNT and EMERGENCY_SELL_AMOUNT) need selection
+  slots, and the decision corp's definition needs the three new phases.
+- **Per-choice features move to the sub-phases** (Sections 5.5, 5.6, 5.10,
+  7.2, and 9). TRAIN 10-12's train deltas and their cost ("a solve per
+  offered type and trade-in") belong to SELECT_TRAIN, over the pending
+  source's trains; BUY_TRAIN's choices are sources and corps to sell.
+  CORP 14-18's sale prices serve SELL_AMOUNT and EMERGENCY_SELL_AMOUNT for
+  the pending corp, and STOCK's choice of a corp. Section 7.2's table needs
+  rows for SELL_AMOUNT, SELECT_TRAIN, and EMERGENCY_SELL_AMOUNT, and its
+  BID, STOCK, and BUY_TRAIN rows change; Section 13, item 8 refers to them.
+- **Tests** (Section 10, item 2): sale prices check against applying
+  SELL_AMOUNT and EMERGENCY_SELL_AMOUNT, and train deltas at SELECT_TRAIN.
+- **Measurements** (Sections 2 and 9): the decision mix and the per-phase
+  costs predate 6.10, whose sub-phases take shares of BUY_TRAIN's and
+  STOCK's decisions. `path:line` citations of `actions.pyx` and
+  `constants.pxd` predate it too.
+
 ## 1. Contract and scope
 
 What the pipeline already fixes (pipeline-refactor §3.2 and §5,

@@ -6,8 +6,13 @@ list of ``(decision phase, phase-local id)``, starting in ``phase``. It reads
 the extractor's ``pre`` annotation for what the log entry leaves implicit (a
 bid's purchase or closed auction, a share's source, a token's hex, a train's
 owner). Prices are exact ids, so any price a human chose is expressible;
-bids and corp train prices that land on the BID, RAISE, or TRAIN_PRICE grid
-use the grid point instead.
+bids and corp train prices that land on the BID or TRAIN_PRICE grid use the
+grid point instead. A factored choice maps to its parent decision and its
+sub-phases: a ``sell_shares`` to STOCK's corp and SELL_AMOUNT's block in an
+SR, or BUY_TRAIN's and EMERGENCY_SELL_AMOUNT's in an emergency; a
+``buy_train`` to BUY_TRAIN's source, SELECT_TRAIN's train, and for another
+corp's train TRAIN_PRICE. Where the driver forces a sub-phase (one block,
+one train), the harness's sync rule takes it from the driver's history.
 
 Actions with no engine decision map to ``[]``: ``message``, ``program_*``,
 and ``run_routes`` whose revenue the engine's ROUTE step already matches.
@@ -80,7 +85,9 @@ DR_SLOT = {
     K.DPHASE_STOCK: K.STOCK_DR, K.DPHASE_TRACK: K.TRACK_DR, K.DPHASE_TOKEN: K.TOKEN_DR,
     K.DPHASE_DIVIDEND: K.DIVIDEND_DR, K.DPHASE_BUY_TRAIN: K.BUY_TRAIN_DR, K.DPHASE_BUY_PRIVATE: K.BUY_PRIVATE_DR,
 }
-SELL_BLOCK = {K.DPHASE_STOCK: K.STOCK_SELL, K.DPHASE_BUY_TRAIN: K.BUY_TRAIN_SELL}
+# A sale's corp slot and the sub-phase that names the block: an SR's, or an emergency's.
+SELL_SLOT = {K.DPHASE_STOCK: (K.STOCK_SELL, K.DPHASE_SELL_AMOUNT),
+             K.DPHASE_BUY_TRAIN: (K.BUY_TRAIN_SELL, K.DPHASE_EMERGENCY_SELL_AMOUNT)}
 MF_SLOT = {K.DPHASE_STOCK: K.STOCK_MF, K.DPHASE_TRACK: K.TRACK_MF}
 # The decision phase of a pass in each Ruby OR step.
 OR_PASS_PHASE = {
@@ -95,17 +102,17 @@ def _phase_name(phase: int) -> str:
     return K.DecisionPhase(phase).name.removeprefix('DPHASE_') if phase >= 0 else 'an automated step'
 
 
-def _slot(table: dict[int, int], phase: int, what: str) -> int:
+def _slot(table: dict[int, Any], phase: int, what: str) -> Any:
     if phase not in table:
         raise UnsupportedAction(f'{what} in {_phase_name(phase)}')
     return table[phase]
 
 
-def _bid_id(first_point: int, points: int, exact: int, minimum: int, price: int) -> int:
-    """A grid point when the price lands on one, else an exact id. Forced
+def _bid_id(minimum: int, price: int) -> int:
+    """BID's grid point when the price lands on one, else an exact id. Forced
     decisions are always grid points, so the sync rule can match them."""
     k, off = divmod(price - minimum, D.MIN_BID_INCREMENT)
-    return first_point + k if off == 0 and 0 <= k < points else exact + price
+    return K.BID_POINT + k if off == 0 and 0 <= k < K.BID_POINTS else K.BID_EXACT + price
 
 
 def _bid(action, pre, phase, state) -> list[Decision]:
@@ -113,14 +120,13 @@ def _bid(action, pre, phase, state) -> list[Decision]:
     if pre['auctioning'] is not None:
         if pre['company'] != pre['auctioning']:  # Ruby takes it as a bid outside the closed auction
             raise UnsupportedAction(f"bid on {pre['company']} during the closed auction for {pre['auctioning']}")
-        return [(K.DPHASE_RAISE, _bid_id(K.RAISE_POINT, K.RAISE_POINTS, K.RAISE_EXACT, minimum, price))]
+        return [(K.DPHASE_BID, _bid_id(minimum, price))]
     if pre['purchase'] and price < minimum:  # Ruby does not check a purchase's price
         raise UnsupportedAction(f'bid: the topmost private bought for {price}, below its price {minimum}')
     if pre['purchase'] and price == minimum:
         return [(K.DPHASE_AUCTION, K.AUCTION_BUY)]
     # A bid on another private, or on the topmost above its price: a purchase at the bid.
-    return [(K.DPHASE_AUCTION, K.AUCTION_BID + PRIVATE[pre['company']]),
-            (K.DPHASE_BID, _bid_id(K.BID_POINT, K.BID_POINTS, K.BID_EXACT, minimum, price))]
+    return [(K.DPHASE_AUCTION, K.AUCTION_BID + PRIVATE[pre['company']]), (K.DPHASE_BID, _bid_id(minimum, price))]
 
 
 def _pass(action, pre, phase, state) -> list[Decision]:
@@ -169,8 +175,10 @@ def _buy_shares(action, pre, phase, state) -> list[Decision]:
 
 
 def _sell_shares(action, pre, phase, state) -> list[Decision]:
-    first = _slot(SELL_BLOCK, phase, 'sell_shares')
-    return [(phase, first + K.MAX_SALE_SHARES * CORP[pre['corporation']] + pre['percent'] // 10 - 1)]
+    """The corp, then the block: in STOCK and SELL_AMOUNT, or in an emergency
+    in BUY_TRAIN and EMERGENCY_SELL_AMOUNT."""
+    first, amount_phase = _slot(SELL_SLOT, phase, 'sell_shares')
+    return [(phase, first + CORP[pre['corporation']]), (amount_phase, pre['percent'] // 10 - 1)]
 
 
 def _lay_tile(action, pre, phase, state) -> list[Decision]:
@@ -233,27 +241,28 @@ def _train_price_id(state, corp: int, train: int, price: int) -> int:
 
 
 def _buy_train(action, pre, phase, state) -> list[Decision]:
-    """By source: the depot or pool at the list price, a D for a traded 4, 5,
-    or 6 at ¥800, or another corp's train at its price (TRAIN_PRICE). Ruby
-    checks no depot or pool price (``check_spend`` admits ¥1 to the cash),
-    so any other price is rejected."""
+    """BUY_TRAIN's source, then SELECT_TRAIN's train: the depot's or pool's
+    at the list price, a D for a traded 4, 5, or 6 at ¥800 (from the depot),
+    or another corp's train at its price (TRAIN_PRICE). Ruby checks no depot
+    or pool price (``check_spend`` admits ¥1 to the cash), so any other price
+    is rejected."""
     train, price = TRAIN[pre['train_type']], pre['price']
     if pre['source'] == 'corporation':
         corp = CORP[action['entity']]
-        return [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_CORP + D.NUM_TRAIN_TYPES * CORP[pre['seller']] + train),
+        return [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_CORP + CORP[pre['seller']]),
+                (K.DPHASE_SELECT_TRAIN, K.SELECT_TRAIN_TYPE + train),
                 (K.DPHASE_TRAIN_PRICE, _train_price_id(state, corp, train, price))]
     if 'exchange_type' in pre:
         traded = TRAIN[pre['exchange_type']]
-        expected, decision = D.TRAIN_PRICE[train] - D.TRAIN_TRADE_IN[train][traded], \
-            (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_TRADE_IN + D.TRADE_IN_TYPE.index(traded))
+        expected, source = D.TRAIN_PRICE[train] - D.TRAIN_TRADE_IN[train][traded], K.BUY_TRAIN_DEPOT
+        choice = K.SELECT_TRAIN_TRADE_IN + D.TRADE_IN_TYPE.index(traded)
     else:
-        expected = D.TRAIN_PRICE[train]
-        first = K.BUY_TRAIN_POOL if pre['source'] == 'pool' else K.BUY_TRAIN_DEPOT
-        decision = (K.DPHASE_BUY_TRAIN, first + train)
+        expected, choice = D.TRAIN_PRICE[train], K.SELECT_TRAIN_TYPE + train
+        source = K.BUY_TRAIN_POOL if pre['source'] == 'pool' else K.BUY_TRAIN_DEPOT
     if price != expected:
         raise UnsupportedAction(f"buy_train of a {pre['train_type']} from the {pre['source']} for {price}, "
                                 f'not {expected}')
-    return [decision]
+    return [(K.DPHASE_BUY_TRAIN, source), (K.DPHASE_SELECT_TRAIN, choice)]
 
 
 def _private_price_id(state, corp: int, private: int, price: int) -> int:

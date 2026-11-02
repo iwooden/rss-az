@@ -36,12 +36,13 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    HEX, TILE, apply_and_verify, at_or, enter_operating_round, hold, lay, legal_ids, set_cash,
+    HEX, TILE, apply_and_verify, at_or, depot, enter_operating_round, hold, lay, legal_ids, set_cash,
+    train_choices, train_decisions,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
 PAR_65, PAR_70, PAR_100 = 0, 1, 5
-BUY_2 = K.BUY_TRAIN_DEPOT + D.TRAIN_2
+BUY_2 = train_decisions(depot(D.TRAIN_2))  # the depot, then its 2
 
 
 def order(state):
@@ -272,7 +273,7 @@ class TestTrackTileToken:
         cash, bank = CORPS[KO].cash(state), BANK.cash(state)
         result = apply_and_verify(state, K.TOKEN_HEX + HEX['K8'])
         assert MAP.tokens(state, HEX['K8']) == 1 << KO and CORPS[KO].tokens_left(state) == 0
-        assert result.steps[0] == K.STEP_ROUTE and result.forced[-1] == (K.DPHASE_BUY_TRAIN, BUY_2)
+        assert result.steps[0] == K.STEP_ROUTE and result.forced[-2:] == BUY_2
         assert CORPS[KO].cash(state) == cash - 40 - 80 and BANK.cash(state) == bank + 40 + 80
         assert TURN.step(state) == K.STEP_BUY_TRAIN and not A.must_buy_train_py(state)
 
@@ -344,7 +345,7 @@ class TestBuyTrain:
     def test_a_corp_without_a_route_may_pass_or_buy(self):
         state = at_or(3)
         to_buy_train(state)
-        assert TURN.step(state) == K.STEP_BUY_TRAIN and legal_ids(state) == [K.BUY_TRAIN_PASS, BUY_2]
+        assert TURN.step(state) == K.STEP_BUY_TRAIN and train_choices(state) == [K.BUY_TRAIN_PASS, depot(D.TRAIN_2)]
         assert not A.must_buy_train_py(state)
         result = apply_and_verify(state, K.BUY_TRAIN_PASS)
         assert result.steps[0] == K.STEP_TURN_END and TURN.round(state) == K.ROUND_STOCK
@@ -362,9 +363,9 @@ class TestBuyTrain:
         state = at_or(3)
         lay(state, 'J3', '8', 3)  # K4 to Okayama: two revenue centers
         result = to_buy_train(state)
-        assert result.forced[-1] == (K.DPHASE_BUY_TRAIN, BUY_2) and TRAINS.corp_trains(state, KO, D.TRAIN_2) == 1
+        assert result.forced[-2:] == BUY_2 and TRAINS.corp_trains(state, KO, D.TRAIN_2) == 1
         assert TURN.step(state) == K.STEP_BUY_TRAIN and not A.must_buy_train_py(state)
-        assert legal_ids(state) == [K.BUY_TRAIN_PASS, BUY_2]
+        assert train_choices(state) == [K.BUY_TRAIN_PASS, depot(D.TRAIN_2)]
 
     def test_a_must_buy_beyond_the_treasury_is_an_emergency(self):
         """The president pays what the treasury lacks of the cheapest train,
@@ -376,7 +377,7 @@ class TestBuyTrain:
         enter_operating_round(state)
         cash = PLAYERS[0].cash(state)
         result = apply_and_verify(state, K.TRACK_PASS)
-        assert (K.DPHASE_BUY_TRAIN, BUY_2) in result.forced and TRAINS.corp_trains(state, KO, D.TRAIN_2) == 1
+        assert result.forced[-3:-1] == BUY_2 and TRAINS.corp_trains(state, KO, D.TRAIN_2) == 1
         assert CORPS[KO].cash(state) == 0 and PLAYERS[0].cash(state) == cash - 1
 
     def test_the_depot_sells_its_lowest_rank_and_d_from_phase_6(self):
