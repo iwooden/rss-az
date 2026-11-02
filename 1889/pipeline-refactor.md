@@ -642,6 +642,21 @@ Engine track, independent of the pipeline track:
 6. Rules and driver: auction, stock round, OR (track, tokens, routes,
    dividends, trains, privates), and game end, with random-playout and
    differential tests (milestones 2-3).
+
+   Gates before step 7, agreed with the user on 2026-11-02:
+   - **Code review of `g1889/`.** Agents wrote the engine in about ten
+     hours, and its review leaned on the Ruby oracles and the tests. Read it
+     for correctness, clarity, and fit with the RSS patterns, and land any
+     cleanup before extraction builds on it.
+   - **Parity on scraped games.** Scrape completed 1889 games from
+     18xx.games and replay each through the engine, comparing state at every
+     step, as the RSS engine was validated. This needs its own design,
+     review, and implementation. The scraper must not overload the site:
+     18xx.games shadow-blocks IPs that fetch game JSON too often. The replay
+     tooling in `tests/g1889/replay/` (Ruby's state extractor, the action
+     mapper, and `snapshot.compare`/`load_state`) is the starting point.
+     The extractor only checks parity. Ruby is never called from training
+     or live play.
 7. Feature extraction (milestone 4), the extraction half of
    `games/g1889.py`, and extraction conformance for 1889. The engine half and
    its conformance landed with step 6.
