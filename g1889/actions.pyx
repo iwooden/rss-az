@@ -72,12 +72,6 @@ cdef enum:
     MAX_ACTION_ID = 0xFFFF
 
 
-cdef int _unimplemented(int phase, const char* what) except -1 nogil:
-    with gil:
-        raise NotImplementedError(
-            f"1889 {_PHASE_NAMES[phase]}: {what.decode('ascii')} not implemented yet (engine-design.md §11)")
-
-
 # =============================================================================
 # ENCODE / DECODE
 # =============================================================================
@@ -1395,7 +1389,8 @@ cdef bint wide_amount_range(GameState state, int phase) except -1 nogil:
     if phase == DPHASE_PRIVATE_PRICE:
         _private_price_range(state, &low, &high)
         return high > low
-    return _unimplemented(phase, b"exact amounts")
+    with gil:
+        raise ValueError(f"{_PHASE_NAMES[phase]} takes no exact amounts")
 
 
 # =============================================================================

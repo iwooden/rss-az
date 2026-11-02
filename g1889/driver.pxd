@@ -7,12 +7,10 @@ has one action, unless that action is the only legal grid point of an amount
 decision with exact amounts above it (§6).
 
 History, when a list is passed, gets ``(row copy, decision phase, id)`` before
-each decision and ``(row copy, -1, step)`` before each automated step. Until
-6.9 the auto-chain rests where a later sub-step takes over (the development
-stop): a handler, step, or enumerator that raises NotImplementedError has
-changed nothing and recorded no history. ``advance`` runs the auto-chain on
-a state set up by hand. ``override_route_revenue`` lets replay pay a human's
-routes instead of the solver's maximum.
+each decision and ``(row copy, -1, step)`` before each automated step.
+``advance`` runs the auto-chain on a state set up by hand.
+``override_route_revenue`` lets replay pay a human's routes instead of the
+solver's maximum.
 """
 
 from g1889.state cimport GameState

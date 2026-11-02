@@ -37,7 +37,7 @@ STATUS_INVALID = 2
 
 RELATION_RECORD_WIDTH = 4
 
-_GAME_MODULES = {"rss": "games.rss"}
+_GAME_MODULES = {"rss": "games.rss", "1889": "games.g1889"}
 GAME_NAMES = tuple(_GAME_MODULES)
 
 

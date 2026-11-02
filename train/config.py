@@ -12,6 +12,12 @@ from nn.model_contract import ModelKind, normalize_model_type
 
 POLICY_TARGET_PRUNING_MODES = ("none", "forced", "raw_prior")
 
+# Each game's engine options: another game's config keeps them at their defaults.
+_ENGINE_OPTIONS = {
+    "rss": ("v3_behavior", "acq_same_president", "max_acq_price_actions"),
+    "1889": ("private_sale_same_president", "train_sale_same_president", "auction_pass_payout_cap"),
+}
+
 
 def _validate_max_acq_price_actions(value: int) -> None:
     from core.data import ActionSize
@@ -125,6 +131,8 @@ class TrainingConfig:
     num_players: int = 3
     min_players: int = 0
     max_players: int = 0
+
+    # --- RSS engine options (non-default values need game "rss") ---
     # General engine behavior mode; independent of model/input layout.
     v3_behavior: bool = False
     acq_same_president: bool = True
@@ -132,6 +140,18 @@ class TrainingConfig:
     # ACQ_SELECT_PRICE legal set. Positive even values cap policy/search to the
     # low half and high half of legal acquisition prices.
     max_acq_price_actions: int = 0
+
+    # --- 1889 engine options (non-default values need game "1889") ---
+    # Policy-only flags on self-play states (1889/engine-design.md §7); the
+    # driver still accepts every legal move. A corp buys only privates its own
+    # president owns, and corps sell each other trains only under one
+    # president.
+    private_sale_same_president: bool = True
+    train_sale_same_president: bool = True
+    # After this many all-pass auction payouts, a player who can buy the
+    # topmost private may neither pass nor bid themselves out of buying it.
+    # 0 = off.
+    auction_pass_payout_cap: int = 1
 
     # --- Inference ---
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
@@ -331,6 +351,18 @@ class TrainingConfig:
         if not isinstance(self.acq_same_president, bool):
             raise ValueError(f"acq_same_president must be bool, got {self.acq_same_president!r}")
         _validate_max_acq_price_actions(self.max_acq_price_actions)
+        for name in ("private_sale_same_president", "train_sale_same_president"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be bool, got {getattr(self, name)!r}")
+        cap = self.auction_pass_payout_cap
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap < 0:
+            raise ValueError(f"auction_pass_payout_cap must be an integer >= 0, got {cap!r}")
+        for game, names in _ENGINE_OPTIONS.items():
+            changed = [name for name in names if getattr(self, name) != self.__dataclass_fields__[name].default]
+            if changed and self.game != game:
+                raise ValueError(
+                    f"{', '.join(changed)}: engine options of game {game!r}, but game is {self.game!r}"
+                )
         if self.model_path is not None:
             if not isinstance(self.model_path, str):
                 raise ValueError(

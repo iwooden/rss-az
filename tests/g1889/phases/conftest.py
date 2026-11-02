@@ -10,15 +10,19 @@
 - ``apply_and_verify(state, action_id)``: apply through the driver with
   history, checking ``assert_invariants`` on every intermediate state and the
   result, and that a returned decision is a choice: two or more policy
-  actions, or an amount decision with exact amounts beyond its one point,
-  unless the driver rests at its development stop (``at_development_stop``).
+  actions, or an amount decision with exact amounts beyond its one point.
 - ``assert_invariants`` also checks the trains: every train is in the depot,
   the pool, or a floated corp until its rank rusts, and then none is left;
   no corp is over the limit outside DISCARD, which is for the first one that is.
   And the privates: TR and ER block their hexes exactly while a player owns
   them, none is open after phase 4 but a player's UTF, and MF's port tile is
   on a port hex once used. ``apply_and_verify`` checks that no corp's private
-  ever goes back to a player. And the game's end and the emergencies: the
+  ever goes back to a player. And the actor, the player ``active_player``
+  names, at every decision: the turn player in the auction (the lowest
+  bidder in RAISE); in an SR, the priority holder first, and the turn passes
+  to the next seat only at STOCK's slot 0; MF's owner at PORT; the operating
+  corp's president in an OR, the crowded corp's at DISCARD, and ER's seller
+  at ER_BONUS. And the game's end and the emergencies: the
   game is over exactly at GAME_OVER with an ``end_reason``, which a
   bankruptcy's matches its one bankrupt player at ¥0 and a broken bank's
   the bank; the turn's emergency sales stand from BUY_TRAIN to the turn's
@@ -293,6 +297,9 @@ def assert_invariants(state, msg=''):
         assert (TURN.pending_private(state) >= 0) == (step == K.STEP_PRIVATE_PRICE), f'{msg}: pending private'
         assert (TURN.pending_seller(state) >= 0) == (step == K.STEP_ER_BONUS), f'{msg}: pending seller'
         assert (TURN.return_step(state) >= 0) == (step in RETURNING_STEPS), f'{msg}: return step'
+        if step == K.STEP_PORT:  # in an SR or at TRACK, MF's owner lays its port tile
+            mf = PRIVATES[D.PRIVATE_MF]
+            assert mf.owner(state) == K.OWNER_PLAYER + active and not mf.flags(state) & 1, f'{msg}: PORT for MF'
         if TURN.round(state) == K.ROUND_STOCK:
             assert step in (K.STEP_STOCK, K.STEP_PAR, K.STEP_PORT, K.STEP_SR_END), f'{msg}: step {step} in the SR'
             assert step != K.STEP_PORT or TURN.return_step(state) == K.STEP_STOCK, f'{msg}: PORT returns to STOCK'
@@ -370,11 +377,29 @@ def _assert_privates(state, msg):
 
 
 def _assert_private_moves(before, after, msg):
-    """A corp's private stays the corp's until it closes (``company_sellable``)."""
+    """A corp's private stays the corp's until it closes (``company_sellable``),
+    and ER_BONUS opens for the player who sold ER."""
     for p in range(D.NUM_PRIVATES):
         owner = PRIVATES[p].owner(before)
         if owner >= K.OWNER_CORP:
             assert PRIVATES[p].owner(after) in (owner, K.OWNER_CLOSED), f'{msg}: corp private {p} moved'
+    if TURN.step(after) == K.STEP_ER_BONUS and TURN.step(before) != K.STEP_ER_BONUS:
+        seller = PRIVATES[D.PRIVATE_ER].owner(before) - K.OWNER_PLAYER
+        assert TURN.pending_seller(after) == seller, f'{msg}: ER_BONUS for {TURN.pending_seller(after)}, not {seller}'
+
+
+def _assert_sr_turns(before, after, entry, msg):
+    """In an SR the turn player acts: the priority holder opens it, and only
+    STOCK's slot 0 (a pass, or done) hands the turn to the next seat."""
+    if TURN.round(after) != K.ROUND_STOCK or TURN.step(after) == K.STEP_SR_END:
+        return
+    if TURN.round(before) != K.ROUND_STOCK:
+        expected = TURN.priority_player(after)
+    else:
+        expected = TURN.active_player(before)
+        if entry == (K.DPHASE_STOCK, K.STOCK_PASS):
+            expected = TURN.next_player(before, expected)
+    assert TURN.active_player(after) == expected, f'{msg}: player {TURN.active_player(after)} acts, not {expected}'
 
 
 def _assert_trains(state, msg):
@@ -471,21 +496,6 @@ def price_of(state, point):
 # APPLY + VERIFY
 # =============================================================================
 
-def at_development_stop(state):
-    """Whether the driver rests where a later sub-step takes over (its TEMPORARY
-    development stop, removed at 6.9): an automated step, a decision whose
-    legal set raises NotImplementedError, or a forced decision, whose handler
-    raised it."""
-    if TURN.round(state) == K.ROUND_GAME_OVER:
-        return False
-    if A.get_decision_phase_py(state) < 0:
-        return True
-    try:
-        return DRIVER.forced_action_py(state) >= 0
-    except NotImplementedError:
-        return True
-
-
 class ApplyResult:
     """``history`` holds ``(row, decision phase, id)`` before each applied
     decision and ``(row, -1, step)`` before each automated step."""
@@ -527,10 +537,11 @@ def _verify(result, msg):
         before = states[i]
         assert_invariants(before, f'{msg}: before entry {i} {result.history[i][1:]}')
         _assert_private_moves(before, states[i + 1], f'{msg}: entry {i}')
+        _assert_sr_turns(before, states[i + 1], result.history[i][1:], f'{msg}: entry {i}')
         if result.history[i][1] >= 0:
             assert_action_sets(before, f'{msg}: before decision {i}')
     assert_invariants(result.state, f'{msg}: after')
-    if not at_development_stop(result.state) and TURN.round(result.state) != K.ROUND_GAME_OVER:
+    if TURN.round(result.state) != K.ROUND_GAME_OVER:
         assert_action_sets(result.state, f'{msg}: after')
         assert is_choice(result.state), f'{msg}: returned a forced decision {get_policy_actions(result.state)}'
     return result

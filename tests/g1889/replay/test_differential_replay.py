@@ -7,7 +7,10 @@ forced decisions, which Ruby may log as actions or skip silently. The sync
 rule: a Ruby action that matches a forced decision applied since the last sync,
 by the same player, is consumed instead of applied; one that matches none
 means Ruby skipped the pending forced decisions, so they are dropped. States
-are compared whenever no forced decision is pending.
+are compared whenever no forced decision is pending. Every decision a Ruby
+action maps to, sub-phases such as PRIVATE_PRICE and PORT included, must be
+the engine's active player's, one of Ruby's active players before the action;
+``compare`` checks the active player at every snapshot too.
 
 Three equivalences need the harness. Track after the lay (engine-design
 §10.2): Ruby keeps Track open after a corp's lay while its president owns MF,
@@ -25,16 +28,15 @@ engine takes them in corp order, so the mapper holds a discard that comes
 early (``HELD_DISCARD``) until the engine reaches its corp; the records in
 between are not compared.
 
-Replay stops at the first unsupported action, engine NotImplementedError, or
-mismatch, and at the driver's development stop (an automated step from a later
-sub-step, where the engine rests). When it stops at an action while forced
-decisions are pending, Ruby may be waiting at one of them (a Track step whose
-only choice is the pass, which Ruby asks), so the record before is compared
-with the engine where Ruby rests (``_ruby_rests``); so is a record whose
-forced decisions are pending when the replay runs out. Ruby acting at a Track
-step it keeps open after the lay (MF's port tile, a private's purchase, DR's
-exchange) is unsupported: the engine has left TRACK, and offers MF's port
-tile before the lay only (engine-design §10.2).
+Replay stops at the first unsupported action or mismatch; an engine error
+propagates. When it stops at an action while forced decisions are pending,
+Ruby may be waiting at one of them (a Track step whose only choice is the
+pass, which Ruby asks), so the record before is compared with the engine
+where Ruby rests (``_ruby_rests``); so is a record whose forced decisions
+are pending when the replay runs out. Ruby acting at a Track step it keeps
+open after the lay (MF's port tile, a private's purchase, DR's exchange) is
+unsupported: the engine has left TRACK, and offers MF's port tile before the
+lay only (engine-design §10.2).
 Since 6.8b every fixture replays end to end, 314 to its bankruptcy and 962
 to the game's end after the bank breaks, and the engine's final scores equal
 Ruby's ``result`` (the ``hs_*`` fixtures' players end the game by hand,
@@ -56,6 +58,7 @@ import g1889.constants as K
 import g1889.data.tables as D
 from g1889.actions import get_decision_phase_py, is_terminal_py
 from g1889.driver import DRIVER, STATUS_INVALID
+from g1889.entities.corp import CORPS
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
@@ -75,6 +78,8 @@ ENDINGS = {'314': 'bankrupt', '962': 'bank', 'hs_jmmljkbw_17502': 'manually_ende
 # A forced decision the driver applied: (decision phase, id, the player it was
 # for, and the row before it); the sync tests give only the first three.
 Forced = tuple[Any, ...]
+# A discard Ruby took early: (corp, train type, the players who may make it).
+Held = tuple[int, int, set[int]]
 ACTIVE_PLAYER_SLOT = get_layout(D.MIN_PLAYERS).global_offset + get_global_fields().active_player
 
 
@@ -83,7 +88,7 @@ class Progress:
     fixture: str
     records: int
     matched: int = -1              # the last record whose snapshot compared equal
-    stop: str | None = None        # 'unsupported', 'engine', or 'mismatch'; None when replay ran out
+    stop: str | None = None        # 'unsupported' or 'mismatch'; None when replay ran out
     detail: str = ''
     state: GameState | None = None  # the engine's state, where replay stopped
 
@@ -125,17 +130,22 @@ def consume(pending: list[Forced], decisions_in: Callable[[int], list[Decision]]
     return None
 
 
-def _apply(state: GameState, decisions: list[Decision], pending: list[Forced], log: list,
-           held: list[tuple[int, int]]) -> str | None:
-    """Apply decisions through the driver, queueing the forced ones it adds and
-    adding its history to ``log``; an error message on failure. A
+def _apply(state: GameState, decisions: list[Decision], actors: set[int], pending: list[Forced], log: list,
+           held: list[Held]) -> str | None:
+    """Apply decisions by one of ``actors`` through the driver, queueing the
+    forced ones it adds and adding its history to ``log``; an error message on
+    failure, or when the engine's active player is not one of ``actors``. A
     ``ROUTE_OVERRIDE`` pays a human's revenue (``override_route_revenue``),
     which records no decision of its own, and a ``HELD_DISCARD`` waits in
     ``held`` for its corp's turn to discard (``_release``)."""
     for phase, action_id in decisions:
-        if phase == HELD_DISCARD:
-            held.append(divmod(action_id, D.NUM_TRAIN_TYPES))
+        if phase == HELD_DISCARD:  # by its corp's president, whose discard Ruby takes out of its order
+            corp, train = divmod(action_id, D.NUM_TRAIN_TYPES)
+            held.append((corp, train, {CORPS[corp].president(state)}))
             continue
+        player = pending[0][2] if pending else TURN.active_player(state)
+        if player not in actors:
+            return f'{_phase_name(phase)} is player {player}\'s in the engine, not one of Ruby\'s {sorted(actors)}'
         if pending:  # forced inside one Ruby action: it must be the decision Ruby made
             if pending[0][:2] != (phase, action_id):
                 return f'engine forced {pending[0][:2]} where Ruby chose {(phase, action_id)}'
@@ -165,18 +175,19 @@ def _discarding(state: GameState, row=None) -> int:
     return TRAINS.first_crowded(state) if TURN.step(state) == K.STEP_DISCARD else -1
 
 
-def _release(state: GameState, pending: list[Forced], log: list, held: list[tuple[int, int]]) -> str | None:
+def _release(state: GameState, pending: list[Forced], log: list, held: list[Held]) -> str | None:
     """Apply each held discard once the engine reaches its corp: consume the
     discard the driver forced for it, or make it at the engine's DISCARD."""
     while held:
-        corp, train = held[0]
-        hit = next((i for i, (phase, action_id, _, row) in enumerate(pending)
-                    if (phase, action_id) == (K.DPHASE_DISCARD, train) and _discarding(state, row) == corp), None)
+        corp, train, actors = held[0]
+        hit = next((i for i, (phase, action_id, player, row) in enumerate(pending)
+                    if (phase, action_id) == (K.DPHASE_DISCARD, train) and _discarding(state, row) == corp
+                    and player in actors), None)
         if hit is not None:
             del pending[hit]
         elif _discarding(state) == corp:
             held.pop(0)
-            if error := _apply(state, [(K.DPHASE_DISCARD, train)], pending, log, held):
+            if error := _apply(state, [(K.DPHASE_DISCARD, train)], actors, pending, log, held):
                 return error
             continue
         else:
@@ -190,11 +201,6 @@ def _ruby_rests(state: GameState, pending: list[Forced]) -> list[GameState]:
     pending, when no next action tells: past them all, as the engine is, or
     waiting at one of them (``replay_extract``'s ``rests``)."""
     return [state] + [GameState.from_array(row, TURN.num_players(state), state.max_players) for *_, row in pending]
-
-
-def _at_development_stop(state: GameState) -> bool:
-    """The driver rests at an automated step only at its development stop (6.9 removes it)."""
-    return get_decision_phase_py(state) < 0 and TURN.round(state) != K.ROUND_GAME_OVER
 
 
 def _closes_track(record) -> bool:
@@ -225,7 +231,7 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
     progress.state = state
     pending: list[Forced] = []     # forced decisions applied since the last sync
     deferred = None                # the record whose snapshot waits for them
-    held: list[tuple[int, int]] = []  # (corp, train type) of discards Ruby took early
+    held: list[Held] = []          # discards Ruby took early
     track_open = False             # Ruby kept Track open after the lay; the engine is past it
     route_row = None               # the engine's row at its last ROUTE step, not yet compared
 
@@ -270,10 +276,6 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
             return stop('unsupported', f'{where}: Ruby acts at its Track step kept open after the lay, '
                                        f'which the engine has left (engine-design §10.2)')
         track_open = False
-        if _at_development_stop(state):  # loaded at an automated step a later sub-step owns
-            progress.stop, progress.detail = 'engine', f'{where}: the engine rests at its development stop, ' \
-                                                       f'{K.Step(TURN.step(state)).name}'
-            return progress
         try:
             for action, pre in singles:
                 actors = {ids.index(player) for player in pre['active_players']}
@@ -284,19 +286,13 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
                         pending.clear()
                         if deferred is not None and not held and not matches(deferred):
                             return progress
-                if error := _apply(state, decisions, pending, log, held):
+                if error := _apply(state, decisions, actors, pending, log, held):
                     progress.stop, progress.detail = 'mismatch', f'{where}: {error}'
                     return progress
         except UnsupportedAction as e:
             return stop('unsupported', f'{where}: {e}')
-        except NotImplementedError as e:
-            return stop('engine', f'{where}: {e}')
         except ReplayEnd:
             progress.detail = f'{where}: Ruby ended the game by hand'
-            return progress
-        if _at_development_stop(state):  # the engine cannot finish Ruby's action, so its record is not compared
-            progress.stop, progress.detail = 'engine', f'{where}: the engine rests at its development stop, ' \
-                                                       f'{K.Step(TURN.step(state)).name}'
             return progress
         route_row = next((row for row, phase, step in log if phase < 0 and step == K.STEP_ROUTE), route_row)
         if track_after_lay(record['state']):  # compare at TOKEN: the row before a forced TOKEN, or the rest

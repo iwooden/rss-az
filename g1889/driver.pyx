@@ -2,12 +2,7 @@
 
 Handlers are ``cdef void apply_<phase>(GameState, const ActionInfo*) except *``
 in ``g1889/phases/`` and assume legal actions; ``except *`` lets an entity
-assertion reach the caller. Each joins ``_dispatch`` or ``_run_automated_step``
-in its sub-step (engine-design.md §11); until then the driver raises
-NotImplementedError on reaching it. So does a handler or step whose branch a
-later sub-step owns, before it changes anything; history is recorded only
-once a handler or step returns, so the state and the history are left as
-they were.
+assertion reach the caller. History is recorded once a handler or step returns.
 """
 
 from libc.stdint cimport uint16_t
@@ -36,8 +31,7 @@ from g1889.phases.privates cimport (
 from g1889.phases.stock cimport apply_par, apply_stock, run_sr_end
 from g1889.state cimport GameState
 
-from g1889.actions import decode_action_py
-from g1889.constants import DecisionPhase, Step
+from g1889.constants import Step
 from g1889.entities import turn as _turn
 
 cdef TurnState TURN = _turn.TURN
@@ -72,9 +66,7 @@ cdef class GameDriver:
 
     cdef int _dispatch(self, GameState state, int phase, int action_id, object history) except -1:
         """Apply one decision. The privates' slots interject in several phases
-        (§5.1), so they dispatch by action type. A handler a later sub-step
-        owns raises NotImplementedError before touching the state or the
-        history."""
+        (§5.1), so they dispatch by action type."""
         cdef object row = state._array.copy() if history is not None else None
         cdef ActionInfo info = decode_action(phase, action_id)
         if info.type == ACTION_BUY_PRIVATE or info.type == ACTION_DR_EXCHANGE or info.type == ACTION_MF_PORT:
@@ -112,15 +104,13 @@ cdef class GameDriver:
         elif phase == DPHASE_PORT:
             apply_port(state, &info)
         else:
-            raise NotImplementedError(
-                f"1889 {DecisionPhase(phase).name} handler not implemented yet: {decode_action_py(phase, action_id)}")
+            assert False, f"_dispatch: unknown decision phase {phase}"
         if history is not None:
             history.append((row, phase, action_id))
         return 0
 
     cdef int _run_automated_step(self, GameState state, int step, object history) except -1:
-        """Run one automated step. A step from a later sub-step raises
-        NotImplementedError before touching the state or the history."""
+        """Run one automated step."""
         if not 0 <= step < <int>NUM_STEPS or STEP_TO_DECISION_PHASE[step] >= 0 or step == STEP_GAME_OVER:
             raise RuntimeError(f"step {step} is not an automated step")
         cdef object row = state._array.copy() if history is not None else None
@@ -137,35 +127,24 @@ cdef class GameDriver:
         elif step == STEP_OR_END:
             run_or_end(state)
         else:
-            raise NotImplementedError(f"1889 automated step {Step(step).name} not implemented yet")
+            assert False, f"_run_automated_step: step {Step(step).name} has no handler"
         if history is not None:
             history.append((row, -1, step))
         return 0
 
     cdef int _auto_chain(self, GameState state, object history) except -1:
-        cdef int i, step, phase, action_id
+        cdef int i, phase, action_id
         for i in range(<int>MAX_AUTO_CHAIN_ITERATIONS):
             if turn_round(state) == ROUND_GAME_OVER:
                 return STATUS_GAME_OVER
-            step = turn_step(state)
             phase = get_decision_phase(state)
-            try:
-                if phase < 0:
-                    self._run_automated_step(state, step, history)
-                    continue
-                action_id = self._forced_action(state)
-                if action_id < 0:
-                    return STATUS_OK
-                self._dispatch(state, phase, action_id, history)
-            except NotImplementedError:
-                # TEMPORARY development stop, removed at 6.9 (§11): rest where
-                # a later sub-step takes over (a decision whose legal set it
-                # owns, or an automated step), so replay can compare the state
-                # there. Since 6.8b no legal play reaches one.
-                # Nothing has changed since the last decision or step. The next
-                # apply_action fails loudly: NotImplementedError at a decision,
-                # STATUS_INVALID at an automated step.
+            if phase < 0:
+                self._run_automated_step(state, turn_step(state), history)
+                continue
+            action_id = self._forced_action(state)
+            if action_id < 0:
                 return STATUS_OK
+            self._dispatch(state, phase, action_id, history)
         raise RuntimeError(f"auto-chain exceeded {MAX_AUTO_CHAIN_ITERATIONS} iterations")
 
     cpdef int apply_action(self, GameState state, int action_id, object history=None) except -1:

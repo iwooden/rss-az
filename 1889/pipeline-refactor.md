@@ -1,7 +1,9 @@
 # Pipeline Refactor for Shikoku 1889
 
-Status: steps 0, 1, and 5 and the ACQ cap commit done (2026-11-01); the
-rest is plan. This expands Section 11
+Status: steps 0, 1, and 5 and the ACQ cap commit done (2026-11-01), and
+step 6, the 1889 engine with the engine half of `games/g1889.py`
+(2026-11-02, [`engine-design.md`](engine-design.md) §11); the rest is plan.
+This expands Section 11
 of the model blueprint, [`1889.md`](1889.md). The rules are in
 [`1889-rules.md`](1889-rules.md).
 
@@ -152,6 +154,11 @@ spellings.
   stay as top-level fields under an "RSS engine options" comment block.
   `games/rss.py` reads them, and validation rejects non-default values when
   `game != "rss"`. 1889 options get their own block.
+- As built (step 6): the "1889 engine options" block holds
+  `private_sale_same_president` and `train_sale_same_president` (True) and
+  `auction_pass_payout_cap` (1), the self-play values of engine-design §7,
+  under their `GameState` names; `games/g1889.py` reads them, and
+  validation rejects non-default values when `game != "1889"`.
 
 ## 4. Game-specific behavior: where it belongs
 
@@ -319,7 +326,10 @@ adapter:
 - `final_scores` returns one score per player.
 
 It runs for RSS from step 1 and catches 1889 contract slips as soon as the
-adapter exists.
+adapter exists. Since step 6 (engine-design 6.9) it runs every engine check
+for 1889, with the self-play flags and with them off, and skips the
+extraction checks, whose 1889 callables raise until step 7, with that
+reason.
 
 ### 6.4 Boundary test
 
@@ -388,7 +398,9 @@ Pipeline track. Each step is a behavior-preserving commit or a short series:
    trainer, `play_game`, and `train/main.py`. `StatePool` keeps the root state
    instead of three named flags, since search builds its scratch state through
    `scratch_state`. Update RSS tooling call sites mechanically, and add the
-   boundary test. (`config.game` landed in step 1.)
+   boundary test. (`config.game` landed in step 1.) Until steps 2 and 4,
+   `nn.create_model` rejects a config whose game is not RSS: every consumer
+   builds its model there before it plays (step 6).
 3. Move game-specific behavior out of the pipeline:
    - the self-play stats hook;
    - the cross-president adapter, into an RSS module.
@@ -404,8 +416,9 @@ Engine track, independent of the pipeline track:
 6. Rules and driver: auction, stock round, OR (track, tokens, routes,
    dividends, trains, privates), and game end, with random-playout and
    differential tests (milestones 2-3).
-7. Feature extraction (milestone 4), `games/g1889.py`, and conformance for
-   1889.
+7. Feature extraction (milestone 4), the extraction half of
+   `games/g1889.py`, and extraction conformance for 1889. The engine half and
+   its conformance landed with step 6.
 
 Then both tracks join:
 

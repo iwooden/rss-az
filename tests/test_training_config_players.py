@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 import torch
 
 from games import get_game
+from nn import create_model
 from train.checkpoint import load_checkpoint
 from train.config import TrainingConfig
 from train.logging import _format_player_range
@@ -55,6 +57,38 @@ def test_cross_player_acquisition_config_and_cli_round_trip():
         args = _build_parser().parse_args([option])
         _apply_overrides(config, args)
         assert config.acq_same_president is expected
+
+
+def test_engine_options_belong_to_their_game():
+    """Each game's engine options keep their defaults in another game's config;
+    the 1889 defaults are the self-play flags (1889/engine-design.md §7)."""
+    config = TrainingConfig(game="1889")
+    assert (config.private_sale_same_president, config.train_sale_same_president,
+            config.auction_pass_payout_cap) == (True, True, 1)
+    off = '{"game": "1889", "private_sale_same_president": false, "train_sale_same_president": false, ' \
+          '"auction_pass_payout_cap": 0}'
+    config = TrainingConfig.from_json(off)
+    assert TrainingConfig.from_json(config.to_json()) == config
+    state = get_game(config).new_game(3, 3, 1)
+    assert (state.private_sale_same_president, state.train_sale_same_president,
+            state.auction_pass_payout_cap) == (False, False, 0)
+    for game, name, value in (("rss", "auction_pass_payout_cap", 0), ("rss", "train_sale_same_president", False),
+                              ("1889", "v3_behavior", True), ("1889", "max_acq_price_actions", 8)):
+        with pytest.raises(ValueError, match=f"{name}: engine options of game"):
+            TrainingConfig.from_json(json.dumps({"game": game, name: value}))
+    for invalid in (1, "true", None):
+        with pytest.raises(ValueError, match="private_sale_same_president must be bool"):
+            TrainingConfig(game="1889", private_sale_same_president=invalid)  # type: ignore[arg-type]
+    for invalid in (-1, True, 1.0, "1"):
+        with pytest.raises(ValueError, match="auction_pass_payout_cap must be an integer"):
+            TrainingConfig(game="1889", auction_pass_payout_cap=invalid)  # type: ignore[arg-type]
+
+
+def test_rss_only_consumers_reject_1889_configs():
+    """Training, self-play, evaluation, and analysis build their model first,
+    and they run only RSS until pipeline steps 2 and 4."""
+    with pytest.raises(ValueError, match="game '1889' cannot be trained, played, or analyzed yet"):
+        create_model(TrainingConfig(game="1889"))
 
 
 def test_legacy_num_players_config_validates_with_effective_single_range() -> None:

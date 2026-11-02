@@ -2,10 +2,10 @@
 
 Status: design for step 6 of [`pipeline-refactor.md`](pipeline-refactor.md),
 dated 2026-11-01; the user accepted every recommendation in Section 12 the
-same day. Sub-steps 6.1 through 6.8b are implemented, with "As built"
-notes where the code departs from or refines this design. Implementation
-agents work through the sub-steps in Section 11, and each sub-step ends
-with its acceptance criteria green.
+same day. Every sub-step, 6.1 through 6.9, is implemented, with "As built"
+notes where the code departs from or refines this design: the engine plays
+complete games, and `games/g1889.py` wires its engine half into the adapter
+(Section 11). Step 7 adds extraction.
 
 The rules are [`1889-rules.md`](1889-rules.md). Where they are silent or
 disagree with 18xx.games, the engine follows 18xx.games (rules §14,
@@ -228,7 +228,9 @@ the semi-restrictive verdicts equal Ruby's on 150 random grown networks
 (`tests/g1889/replay/test_network_oracles.py`). Those networks are denser in
 junctions than real games (phase D colors, ample cash), and there the
 converging walks backtrack more: a refresh takes a median 1.8 µs, a p99 of
-34 µs, and 78 µs at most. **Test:** profile on random playouts at 6.9.
+34 µs, and 78 µs at most. **Measured (6.9):** on random-playout states with
+the self-play flags (Section 6's profile), a refresh of each corp with a
+token takes a median 0.3 µs, a p99 of 2.5-2.8 µs, and 91 µs at most.
 
 **Ruby quirk.** The game's own graph keeps `route_train_purchase`
 once it is true: `Graph#clear` keeps such routes, so `must_buy_train?` can
@@ -459,13 +461,16 @@ phase, id)` before each mutation and `(row, −1, step)` for automated steps
 0/1/2 (`core/driver.pxd:35-41`), with no step mode. Replay's one other entry
 point is `override_route_revenue` (Section 8).
 
-**Development stop (until 6.9).** A handler, automated step, or enumerator
-whose case a later sub-step owns raises NotImplementedError before it
-changes anything, and the driver records history only once a handler or
-step returns. The auto-chain rests there with the state as it was, also at a
-forced decision whose handler raises (a must-buy with one affordable train).
-`DRIVER.advance` runs the auto-chain on a state set up by hand at an
-automated step.
+**No development stop (6.9).** From 6.3 to 6.8b, a case a later sub-step
+owned raised NotImplementedError, and the auto-chain rested there. Every
+decision and automated step now has its handler, so the auto-chain ends only
+at a choice or the game's end; the driver catches nothing, and an unknown
+phase or step fails an assertion, as in `core/driver.pyx`. Nothing in
+`g1889/` or its test tooling raises NotImplementedError: the replay harness
+and `apply_and_verify` fail on an engine error or a state at rest at an
+automated step. The driver records history only once a handler or step
+returns. `DRIVER.advance` runs the auto-chain on a state set up by hand at
+an automated step.
 
 **One deliberate difference: a decision is forced when its policy set has one
 action**, where RSS counts engine-legal actions (`core/driver.pyx:113-122`).
@@ -620,7 +625,38 @@ The engine sets `round = ROUND_GAME_OVER`, `step = STEP_GAME_OVER`, and
 **Hot paths** run nogil as in RSS (`core/actions.pyx:352`, `:1054`,
 `core/token_data_v3.pyx:345`): `get_decision_phase`, `_enumerate_*`,
 `is_legal_action`, `enumerate_lay_candidates`, `GRAPH.refresh`, the solver,
-and extraction prologues. Handlers hold the GIL. **Test:** profile at 6.9.
+and extraction prologues. Handlers hold the GIL.
+
+**Profile (6.9).** One core, from Python, on the states of 600 random games
+(200 at each of 3-5 players, capacity 5) with the self-play flags, played
+two ways: uniformly over the policy set, as the adapter conformance test
+plays (424,235 returned decisions), and by the default suite's random
+player (Section 10.4; 332,940), which reaches phase D more often. Each call
+below is timed at every returned decision; the row copy, `GRAPH.refresh`,
+and the solver run on a copy of the state, and the last two take the
+minimum of three runs with the cache marked stale. Ranges span the two
+policies. Scripts and output are in `scratchpad/g1889_69/`.
+
+| Call | Median | p99 | Max |
+|---|---|---|---|
+| `enumerate_policy_actions` | 0.37-0.42 µs | 5.2-5.9 µs | 171 µs |
+| `apply_action`, its auto-chain included | 0.84-0.96 µs | 11-12 µs | 304 µs |
+| a row copy plus `rebind` | 0.50-0.52 µs | 3.8-4.0 µs | 160 µs |
+| `GRAPH.refresh`, each corp with a token | 0.31-0.32 µs | 2.5-2.8 µs | 91 µs |
+| `max_route_revenue`, each corp with trains | 1.0 µs | 5.1-5.7 µs | 279 µs |
+
+`apply_action`'s p99 is highest at TRACK, TILE, DIVIDEND, and TRAIN_PRICE
+(12-20 µs), whose auto-chains run the turn's ROUTE step or the next corp's
+turn up to its TRACK. **Throughput:** through the adapter, a playout loop
+(enumerate, a uniform pick, apply) runs 389,000-391,000 decisions a second,
+against RSS's adapter's 292,000-301,000 with the v3 training config's engine
+options and 278,000-292,000 with the defaults, on the same machine; the
+loop's Python is about half of 1889's 2.6 µs a decision. A random 1889 game
+takes 707 decisions to RSS's 197, so it plays in 1.8 ms to RSS's 0.7 ms.
+Random play differs from self-play: it lays track on random hexes, buys
+random trains, and often ends early in a bankruptcy, so self-play's maps may
+be denser and its games longer. Profile self-play states again once step 8
+trains.
 
 ## 7. Runtime flags
 
@@ -652,9 +688,16 @@ policy-restricted. Search roots copied from it turn them on, as in self-play.
   isn't enough (6.3): in random 2-3 player auctions, players outbid
   themselves on later privates, never afford the topmost, and the payouts
   never stop. So once capped, the policy also drops bids that would leave
-  the bidder unable to buy the topmost, which makes the auction terminate. **Config:** a
-  `TrainingConfig` "1889 engine options" block, read by `games/g1889.py` and
-  rejected unless `game == "1889"` (pipeline-refactor §3.4).
+  the bidder unable to buy the topmost, which makes the auction terminate.
+- **Config (as built, 6.9).** `TrainingConfig`'s "1889 engine options" block
+  holds the three flags under their `GameState` names, defaulting to the
+  self-play column above: `private_sale_same_president` and
+  `train_sale_same_president` True, `auction_pass_payout_cap` 1.
+  `games/g1889.py`'s `new_game` sets them on each state, and
+  `scratch_state` copies the root's. Validation rejects a non-default 1889
+  option unless `game == "1889"`, and a non-default RSS option
+  (`v3_behavior`, `acq_same_president`, `max_acq_price_actions`) unless
+  `game == "rss"` (pipeline-refactor §3.4).
 
 ## 8. Route solver
 
@@ -791,6 +834,33 @@ ms, all two D trains splitting a dense network. Self-play may build such
 maps early in training. Extraction should read `route_max`, whose cache
 rides in the row through MCTS copies, rather than solve each time, and a
 profile of self-play states at 6.9 should decide whether the tail matters.
+
+**Measured (6.9)** on the random-play states of Section 6's profile, since
+no self-play exists yet. A solve takes a median 1.0 µs and a p99 of 5.1-5.7
+µs. Of 2,457,405 solves, 79 took over 100 µs (0.003%) and none over 0.3 ms:
+all were D + D or 6 + D in phase D on maps of 38-42 lays, the slowest 279 µs
+(D + D, 42 lays). Random play never reached the dense maps' tail (0.43 ms
+for one D, 1.8 ms for two, on up to 119 lays). An extraction-like prologue
+that reads `route_max` of all seven corps at every returned decision, on
+the live row so the cache rides along as it would in MCTS pool rows, finds
+93.5-94.4% of reads cached: 84-87% of decisions need no solve, and a
+decision needs 0.39-0.46 solves on average. It takes a median 0.17 µs, a
+p99 of 11-12 µs, and 0.2-0.3 ms at most (single runs, so noisy), against
+3.2-3.4 µs, 19-20 µs, and 0.44 ms when every corp is solved (the minimum of
+three runs). The engine's own ROUTE step finds the operating corp's cache
+fresh only 0.7-1.5% of the time: the turn's lay, or an earlier turn's, has
+just made it stale.
+
+**Recommendation for step 7:** read `route_max` in the extraction prologue,
+not `solve_routes`, and let it write the cache into the row it reads. The
+pipeline's leaf extraction (`evaluate_leaves`) reads pool-row views, so a
+leaf's solves ride into its children's copies, as the prologue above
+measures. The tail then costs one solve per stale corp, and only at a miss;
+nothing on this evidence calls for more (a time limit or an approximate
+bound). Extraction that wants the routes themselves, not only the revenue,
+must call `solve_routes` each time, at about the uncached prologue's cost.
+Check the prologue's p99 and maximum on self-play states once step 8
+trains, since self-play may build denser maps than random play.
 
 **`train.operated` never binds (6.7).** Ruby runs only `runnable_trains`,
 which skip a train that ran this OR (`train.operated`). It is cleared for
@@ -1036,6 +1106,16 @@ equal its `result`.
    (`--probes`) equal Ruby too: a president beside a co-holder of three or
    four shares (keeping as many), a need of ¥0 and ¥1, and a bankruptcy
    either side of its boundary.
+   **As of 6.9:** the harness checks who acts, for MCTS backs each value up
+   to the active player. `compare` already checked Ruby's active players at
+   every snapshot; now every decision a Ruby action maps to, the sub-phases
+   no snapshot sees (BID, PAR, TILE, TRAIN_PRICE, PRIVATE_PRICE, PORT)
+   included, must be the engine's active player's and one of Ruby's active
+   players before the action, and so must every forced decision it consumes.
+   A held discard is its corp's president's, whose discard Ruby takes out of
+   its order (314 record 339: UR's president, while Ruby's active player is
+   SR's). Every decision phase occurs in the replays. A replay no longer
+   stops quietly at an engine error or a state at rest at an automated step.
 
    **Test:** can Ruby's `check_track_restrictions!` (`step/tracker.rb:326`,
    skipped while loading) run cheaply per candidate on a cloned game? **Answer
@@ -1102,7 +1182,30 @@ equal its `result`.
    president-funded depot buys and 22 pool buys, 105 sales, 106
    bankruptcies, and 4 privates. Over 13,321 corp turns the games reach
    phase 4 in 198, 5 in 184, 6 in 104, and D in 78 (51 flags off, 27 on).
-   The test takes 26 s.
+   The test takes 26 s. **As of 6.9:** `apply_and_verify` also checks who
+   acts: the priority holder opens an SR, and only STOCK's slot 0 hands the
+   turn to the next seat; MF's owner, with MF unused, acts at PORT; and
+   ER_BONUS opens for the player who sold ER (the auction's and the OR's
+   actors were checked already). A one-off soak (`scratchpad/g1889_69/
+   soak.py`, not in the default suite) played 6,000 games from new, 500 at
+   each of 3-5 players for each of four settings: flags on and off, each by
+   this test's random player and by uniform choices (over the policy set,
+   or the legal set flags off), with every check of this test on; flags-off
+   games turn the pass cap on after three payout rounds, as here. All 6,000
+   reached GAME_OVER, at most 1,684 decisions in (the cap is 3,000):
+
+   | Setting | Decisions: median, p99, max | Bankrupt / bank | Phases 4, 5, 6, D |
+   |---|---|---|---|
+   | this test's player, flags on | 548, 874, 1,176 | 670 / 830 | 1,494, 1,389, 654, 502 |
+   | this test's player, flags off | 562, 984, 1,125 | 851 / 649 | 1,497, 1,379, 868, 669 |
+   | uniform, flags on | 727, 1,202, 1,560 | 846 / 654 | 1,471, 1,077, 437, 332 |
+   | uniform, flags off | 725, 1,459, 1,684 | 976 / 524 | 1,253, 631, 112, 88 |
+
+   Every decision phase and automated step occurs in each setting. The
+   uniform players reach the later phases less often, as corps spend their
+   treasuries on each other's trains and privates, and longer games come
+   from more SR turns (a uniform pass is rare). The soak takes 66 s on 16
+   processes.
 5. **Per-phase unit tests** (`tests/g1889/phases/`), in the style of
    `tests/phases/` and `.claude/commands/phase-test.md`, run through the
    driver. A `conftest.py` provides `game_state`, `apply_and_verify`, and
@@ -1132,16 +1235,54 @@ up to X; the harness reports the first unsupported action.
 | 6.7 | Dividends; BUY_TRAIN from the depot, the pool, and other corps, plus the D trade-in; TRAIN_PRICE; train limits; must-buy funded from the treasury; `PHASE`; DISCARD | `314` and `962` green through the first private buy or emergency; random playouts reach phase D |
 | 6.8a | Privates: the buy-private slots at the top-level OR decisions Ruby asks in phases 3-4, PRIVATE_PRICE, ER_BONUS, PORT, and the DR exchange, in their owners' turns; `private_sale_same_president`; extractor schema 7 | `314` and `962` green up to the first record that needs 6.8b (314 to 349, before TR's emergency; 962 to 445, before the game's end); per-turn replays no longer stop at a private's action; the schema-7 oracles equal Ruby at every snapshot; random playouts use every new action kind |
 | 6.8b | Emergency money, including Ruby's emergency buys from other corps and any private purchase in an emergency; bankruptcy; game end; `final_scores` and `is_terminal`; extractor schema 8 and in-place probes | all four fixtures green end to end, including the final results; per-turn replays no longer stop at emergencies or the game's end; the schema-8 oracles and probes equal Ruby; random playouts run to the game's end |
-| 6.9 | Full random playouts; flags; profiling; the engine half of `games/g1889.py`; remove the driver's development stop (6.3) | seeds terminate within the cap with the invariants intact; the driver no longer catches `NotImplementedError`; adapter conformance passes the engine checks for 1889; the profile is recorded here |
+| 6.9 | Full random playouts; flags; profiling; the engine half of `games/g1889.py`; remove the driver's development stop (6.3) | seeds terminate within the cap with the invariants intact; the driver no longer catches `NotImplementedError`; adapter conformance passes the engine checks for 1889; the profile is recorded here. **As built:** all met: the soak (Section 10.4), the driver (Section 6), the config (Section 7), the profile (Sections 4, 6, and 8), and the adapter below |
 
-**The `Game` adapter.** `games/g1889.py` is first wired in at 6.9, once a
-full random game runs (pipeline-refactor §6.1). It fills every engine field
-(`policy`, `state_size`, `storage_player_capacity`, `num_players_from_row`,
-`new_game`, `scratch_state`, `apply_action`, `active_player`, `is_terminal`,
-`decision_phase`, `enumerate_policy_actions`, `final_scores`). Its extraction
-fields raise `NotImplementedError` until step 7, so the conformance test
-(pipeline-refactor §6.3) runs only its engine checks for 1889. `"1889"` joins
-`_GAME_MODULES` (`games/__init__.py:40`) at the same time.
+**The `Game` adapter (as built, 6.9).** `games/g1889.py` is wired in at
+6.9, once a full random game runs (pipeline-refactor §6.1), and `"1889"`
+joins `_GAME_MODULES`; importing `games` still imports no engine. It fills
+every engine field:
+
+- `policy`: a `PolicyLayout` of Section 5.2's sizes (unified dimension
+  421), named as Section 5.2 names the metrics (`div`, `train`, `private`,
+  and the other phases in lower case). `phases_with_pass_slot` means what
+  it means for RSS: the phases whose slot 0 passes before several other
+  choices, whose pass logit the trainer compares with theirs. RSS lists
+  INVEST, BID, ACQ_SELECT_CORP, CLOSING, and IPO, and leaves out its zero
+  dividend (an amount, not a pass) and its two-slot ACQ_OFFER and ISSUE.
+  For 1889 that is `constants.PHASES_WITH_PASS_SLOT`, the phases whose slot
+  0 decodes to a pass: AUCTION, RAISE, STOCK, TRACK, TOKEN, BUY_TRAIN,
+  BUY_PRIVATE, and ER_BONUS. DIVIDEND's withhold is a choice, like RSS's
+  zero dividend, and the sub-phases have no pass.
+- `state_size`, `storage_player_capacity`, and `num_players_from_row`
+  from the layout (Section 3).
+- `new_game` builds a `GameState` with the config's Section 7 flags and lets
+  the seed pick the first player; `scratch_state` wraps a row with
+  `from_buffer` and copies the root's three flags, as `games/rss.py` does
+  RSS's.
+- The rest are the engine's own functions: `DRIVER.apply_action`,
+  `TURN.active_player`, `is_terminal_py`, `get_decision_phase_py`,
+  `enumerate_policy_actions_py`, and `final_scores_py`. The driver's status
+  codes equal `games.STATUS_*`.
+- **`active_player`** is the player whose choice it is, to whom MCTS backs
+  values up: the turn player in the auction (in RAISE, the lowest bidder)
+  and in an SR (at PAR and PORT too); the operating corp's president in an
+  OR, TRAIN_PRICE, PRIVATE_PRICE, and PORT included; the crowded corp's
+  president at DISCARD; and ER's seller at ER_BONUS. The replay checks it
+  against Ruby at every decision of the fixtures, and the invariants at
+  every state of the random playouts (Sections 10.3-10.4).
+
+The extraction callables raise `NotImplementedError` ("1889 extraction lands
+in pipeline step 7"), and `num_relations` and `max_relation_edges` are
+`NO_SIZE`, −1, which any buffer or layer sized from them rejects, where 0
+would pass for a game without relations. The conformance test
+(pipeline-refactor §6.3) runs every engine check for 1889, with the
+self-play flags and with them off, and skips the extraction checks with the
+adapter's reason. Training, self-play, evaluation, and analysis still call
+the RSS engine directly until pipeline step 2, and their models are RSS's
+until step 4, so `nn.create_model` rejects a config whose game is not RSS:
+each of them builds its model there before it plays (training, with its
+self-play workers and eval servers; analysis; tournaments; live play;
+strategy data).
 
 ## 12. Decisions
 

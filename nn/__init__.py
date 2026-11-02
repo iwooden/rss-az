@@ -222,6 +222,17 @@ def create_model(
             "price_slot_fourier_bands": price_slot_fourier_bands,
         }
     else:
+        game = _config_value(config, "game", "rss")
+        if game != "rss":
+            # Every pipeline consumer builds its model here before it plays:
+            # training (with its self-play workers and eval servers), analysis,
+            # tournaments, live play, and strategy data. They call the RSS
+            # engine directly until pipeline step 2, and the models are RSS's
+            # until step 4 (1889/pipeline-refactor.md §8).
+            raise ValueError(
+                f"game {game!r} cannot be trained, played, or analyzed yet: the pipeline "
+                "and its models run only RSS until pipeline-refactor steps 2 and 4"
+            )
         normalize_model_type(
             str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
         )

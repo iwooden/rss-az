@@ -557,7 +557,7 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
     is left dirty. ``auction_pass_payouts`` has no Ruby counterpart and loads
     as 0. Auction, SR, OR, and finished snapshots load fully (a finished one
     with the OR's fields Ruby keeps); an SR step other than BuySellParShares,
-    which 1889 never blocks at, raises NotImplementedError.
+    which 1889 never blocks at, raises ValueError.
     """
     ids = [p['id'] for p in snap['players']]
     assert len(ids) == num_players, f'snapshot has {len(ids)} players, not {num_players}'
@@ -640,7 +640,7 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
     elif g['round'] == 'OR':
         _load_operating(state, snap, ids)
     else:
-        raise NotImplementedError(f"load_state: {g['round']} turn fields at step {g['step']} land later")
+        raise ValueError(f"load_state: 1889 never blocks at {g['round']} step {g['step']}")
     return state
 
 

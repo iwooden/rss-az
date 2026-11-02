@@ -1,8 +1,11 @@
 """Adapter conformance: every registered game meets the ``Game`` contract.
 
-The generic tests talk only to the adapter. The RSS migration tests pin the
-RSS adapter to the direct engine calls that consumers make today, so moving
-them onto the adapter (pipeline-refactor.md step 2) changes nothing.
+The generic tests talk only to the adapter. The engine checks run for every
+game; the extraction checks skip a game whose extraction has not landed (1889
+until pipeline step 7), whose adapter raises NotImplementedError for it. The
+RSS migration tests pin the RSS adapter to the direct engine calls that
+consumers make today, so moving them onto the adapter (pipeline-refactor.md
+step 2) changes nothing. The 1889 tests pin its adapter to the g1889 engine.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ import sys
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 import pytest
@@ -29,7 +32,7 @@ from games import (
 )
 from train.config import TrainingConfig
 
-# RSS migration checks only.
+# RSS migration and 1889 checks only.
 from core.actions import (
     enumerate_legal_actions_py,
     enumerate_policy_actions_py,
@@ -57,6 +60,19 @@ from core.token_data import (
 )
 from entities.player import PLAYERS
 from entities.turn import TURN
+import g1889.constants as K1889
+from g1889.actions import (
+    ACTION_PASS as G1889_PASS,
+    decode_action_py as g1889_decode,
+    enumerate_legal_actions_py as g1889_legal,
+)
+from g1889.driver import (
+    STATUS_GAME_OVER as G1889_GAME_OVER,
+    STATUS_INVALID as G1889_INVALID,
+    STATUS_OK as G1889_OK,
+)
+from g1889.state import GameState as G1889State, get_layout as g1889_layout
+from games.g1889 import NO_SIZE
 from mcts.evaluator import BaseEvaluator, compute_terminal_values
 from nn import policy_layout as legacy_policy_layout
 from tests.test_actions_width import _state_acq_select_price
@@ -72,13 +88,24 @@ V3_ENGINE_OPTIONS = {
     "max_acq_price_actions": 8,
 }
 
-# Case id -> (config fields, token layout version). Every registered game
-# needs at least one case.
-CASES: dict[str, tuple[dict[str, Any], int]] = {
+# Replay and live play run 1889 with every policy flag off (engine-design.md
+# §7); self-play keeps the config defaults.
+G1889_FLAGS_OFF = {
+    "private_sale_same_president": False,
+    "train_sale_same_president": False,
+    "auction_pass_payout_cap": 0,
+}
+
+# Case id -> (config fields, token layout version, or None for a game whose
+# extraction has not landed). Every registered game needs at least one case.
+CASES: dict[str, tuple[dict[str, Any], int | None]] = {
     "rss-v2": ({"game": "rss"}, 2),
     "rss-v3": ({"game": "rss", **V3_ENGINE_OPTIONS}, 3),
+    "1889": ({"game": "1889"}, None),
+    "1889-flags-off": ({"game": "1889", **G1889_FLAGS_OFF}, None),
 }
 RSS_CASES = [case_id for case_id, (fields, _) in CASES.items() if fields["game"] == "rss"]
+G1889_CASES = [case_id for case_id, (fields, _) in CASES.items() if fields["game"] == "1889"]
 
 # (num_players, max_players): exact-size rows, and padded rows that share one
 # capacity as in mixed-player training.
@@ -116,7 +143,7 @@ class Playout:
 class Case:
     config: TrainingConfig
     game: Game
-    layout_version: int
+    layout_version: int | None  # None: no extraction, so no samples
     playouts: list[Playout]
 
 
@@ -146,7 +173,7 @@ def _materialize(
 
 
 def _play(
-    game: Game, num_players: int, max_players: int, seed: int, layout_version: int,
+    game: Game, num_players: int, max_players: int, seed: int, layout_version: int | None,
 ) -> Playout:
     state = game.new_game(num_players, max_players, seed)
     playout = Playout(num_players, max_players, state)
@@ -161,7 +188,7 @@ def _play(
         playout.phases.append(game.decision_phase(state))
         playout.actions.append(buf[:n].copy())
         playout.active_players.append(game.active_player(state))
-        if decision % SAMPLE_EVERY == 0:
+        if layout_version is not None and decision % SAMPLE_EVERY == 0:
             tokens = _token_buffer(game, max_players, layout_version)
             game.fill_tokens(state, tokens, max_players=max_players, layout_version=layout_version)
             records = _record_buffer(game)
@@ -191,8 +218,24 @@ def case(request: pytest.FixtureRequest) -> Case:
     return _case(request.param)
 
 
+@pytest.fixture
+def extraction_case(case: Case) -> Case:
+    """``case``, or a skip, with the adapter's reason, for a game whose
+    extraction has not landed."""
+    if case.layout_version is None:
+        with pytest.raises(NotImplementedError) as missing:
+            case.game.num_tokens(case.playouts[0].max_players)
+        pytest.skip(str(missing.value))
+    return case
+
+
 @pytest.fixture(params=RSS_CASES)
 def rss_case(request: pytest.FixtureRequest) -> Case:
+    return _case(request.param)
+
+
+@pytest.fixture(params=G1889_CASES)
+def g1889_case(request: pytest.FixtureRequest) -> Case:
     return _case(request.param)
 
 
@@ -208,14 +251,14 @@ def test_every_registered_game_has_a_case():
 def test_get_game_rejects_unknown_names():
     config = TrainingConfig()
     config.game = "chess"
-    with pytest.raises(ValueError, match="registered games: rss"):
+    with pytest.raises(ValueError, match="registered games: rss, 1889$"):
         get_game(config)
 
 
 def test_importing_games_imports_no_engine():
     code = (
         "import sys, games; "
-        "print(sorted({m.split('.')[0] for m in sys.modules} & {'core', 'entities', 'phases'}))"
+        "print(sorted({m.split('.')[0] for m in sys.modules} & {'core', 'entities', 'phases', 'g1889'}))"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True, check=True,
@@ -291,40 +334,57 @@ def test_every_policy_action_applies_on_a_rebound_scratch_state(case: Case):
                 assert (status == STATUS_GAME_OVER) == game.is_terminal(scratch)
 
 
-def test_scratch_state_reproduces_decisions_and_model_inputs(case: Case):
+def _scratch_states(game: Game, playout: Playout, decisions) -> Iterator[tuple[int, Any]]:
+    """For each decision, a fresh scratch state over a copy of the row before
+    it, and one scratch state of the playout's rebound to another copy."""
+    rebound = game.scratch_state(playout.final, playout.rows[0].copy())
+    for decision in decisions:
+        source = playout.rows[decision]
+        row = source.copy()
+        fresh = game.scratch_state(playout.final, row)
+        assert np.shares_memory(fresh._array, row)
+        rebound.rebind(source.copy(), playout.num_players, max_players=playout.max_players)
+        yield decision, fresh
+        yield decision, rebound
+
+
+def test_scratch_state_reproduces_decisions(case: Case):
     game = case.game
     buf = np.empty(game.policy.max_action_size, dtype=np.uint16)
     for playout in case.playouts:
-        rebound = game.scratch_state(playout.final, playout.rows[0].copy())
-        for sample in playout.samples:
-            source = playout.rows[sample.decision]
-            row = source.copy()
-            fresh = game.scratch_state(playout.final, row)
-            assert np.shares_memory(fresh._array, row)
-            rebound.rebind(source.copy(), playout.num_players, max_players=playout.max_players)
-            for scratch in (fresh, rebound):
-                assert scratch.max_players == playout.max_players
-                assert game.decision_phase(scratch) == playout.phases[sample.decision]
-                assert game.active_player(scratch) == playout.active_players[sample.decision]
-                n = game.enumerate_policy_actions(scratch, buf)
-                np.testing.assert_array_equal(buf[:n], playout.actions[sample.decision])
-                tokens = _token_buffer(game, playout.max_players, case.layout_version)
-                game.fill_tokens(
-                    scratch, tokens,
-                    max_players=playout.max_players, layout_version=case.layout_version,
-                )
-                np.testing.assert_array_equal(tokens, sample.tokens)
-                records = _record_buffer(game)
-                count = game.fill_relations_sparse(
-                    scratch, records, max_players=playout.max_players,
-                )
-                assert count == sample.record_count
-                np.testing.assert_array_equal(records, sample.records)
+        for decision, scratch in _scratch_states(game, playout, range(0, len(playout.rows), SAMPLE_EVERY)):
+            assert scratch.max_players == playout.max_players
+            assert game.decision_phase(scratch) == playout.phases[decision]
+            assert game.active_player(scratch) == playout.active_players[decision]
+            n = game.enumerate_policy_actions(scratch, buf)
+            np.testing.assert_array_equal(buf[:n], playout.actions[decision])
 
 
-def test_dense_and_sparse_relations_encode_the_same_edges(case: Case):
+def test_scratch_state_reproduces_model_inputs(extraction_case: Case):
+    case = extraction_case
     game = case.game
+    assert case.layout_version is not None
     for playout in case.playouts:
+        samples = {sample.decision: sample for sample in playout.samples}
+        for decision, scratch in _scratch_states(game, playout, samples):
+            sample = samples[decision]
+            tokens = _token_buffer(game, playout.max_players, case.layout_version)
+            game.fill_tokens(
+                scratch, tokens,
+                max_players=playout.max_players, layout_version=case.layout_version,
+            )
+            np.testing.assert_array_equal(tokens, sample.tokens)
+            records = _record_buffer(game)
+            count = game.fill_relations_sparse(
+                scratch, records, max_players=playout.max_players,
+            )
+            assert count == sample.record_count
+            np.testing.assert_array_equal(records, sample.records)
+
+
+def test_dense_and_sparse_relations_encode_the_same_edges(extraction_case: Case):
+    game = extraction_case.game
+    for playout in extraction_case.playouts:
         num_tokens = game.num_tokens(playout.max_players)
         for sample in playout.samples:
             assert np.isfinite(sample.tokens).all()
@@ -341,8 +401,10 @@ def test_dense_and_sparse_relations_encode_the_same_edges(case: Case):
             )
 
 
-def test_batch_extraction_matches_single_states(case: Case):
+def test_batch_extraction_matches_single_states(extraction_case: Case):
+    case = extraction_case
     game, layout_version = case.game, case.layout_version
+    assert layout_version is not None
     for max_players in sorted({playout.max_players for playout in case.playouts}):
         # One batch per capacity, mixing player counts like a replay batch.
         playouts = [playout for playout in case.playouts if playout.max_players == max_players]
@@ -452,6 +514,7 @@ def _assert_same_fill(adapter_fill, direct_fill, source, buf: np.ndarray, **kwar
 
 def test_rss_model_inputs_match_direct_extractors(rss_case: Case):
     game, layout_version = rss_case.game, rss_case.layout_version
+    assert layout_version is not None
     for playout in rss_case.playouts:
         mp = playout.max_players
         rows = [playout.rows[sample.decision].copy() for sample in playout.samples]
@@ -522,3 +585,68 @@ def test_rss_new_game_and_scratch_state_match_today_construction(rss_case: Case)
     expected.max_acq_price_actions = root.max_acq_price_actions
     assert {f: getattr(scratch, f) for f in flags} == {f: getattr(expected, f) for f in flags}
     np.testing.assert_array_equal(scratch._array, state._array)
+
+
+# ---------------------------------------------------------------------------
+# 1889: the adapter over the g1889 engine; extraction lands in step 7
+# ---------------------------------------------------------------------------
+
+
+def test_g1889_conventions_match_engine_constants(g1889_case: Case):
+    game = g1889_case.game
+    assert (STATUS_OK, STATUS_GAME_OVER, STATUS_INVALID) == (G1889_OK, G1889_GAME_OVER, G1889_INVALID)
+    policy = game.policy
+    assert policy.phase_sizes == tuple(K1889.PHASE_ACTION_SIZES)
+    assert (policy.unified_dim, policy.max_action_size) == (421, K1889.MAX_ACTION_SIZE)  # engine-design §5.2
+    # As in RSS, the phases whose slot 0 passes before their other choices.
+    assert set(policy.phases_with_pass_slot) == {
+        phase for phase in range(policy.num_phases) if g1889_decode(phase, 0).type == G1889_PASS
+    }
+    for max_players in range(3, 7):  # engine-design §3: 759 + 18 per seat
+        assert game.state_size(max_players) == g1889_layout(max_players).total_size == 759 + 18 * max_players
+
+
+def test_g1889_new_game_and_scratch_state_carry_the_flags(g1889_case: Case):
+    config, game = g1889_case.config, g1889_case.game
+    flags = tuple(G1889_FLAGS_OFF)
+    state = game.new_game(4, 5, 7)
+    expected = G1889State(4, max_players=5, **{flag: getattr(config, flag) for flag in flags})
+    expected.initialize_game(4, seed=7, max_players=5)
+    np.testing.assert_array_equal(state._array, expected._array)
+    assert {flag: getattr(state, flag) for flag in flags} == {flag: getattr(config, flag) for flag in flags}
+
+    # The scratch carries the root's flags, whatever the config's.
+    root = G1889State.from_array(state._array, 4, max_players=5)
+    root.private_sale_same_president = not config.private_sale_same_president
+    root.train_sale_same_president = not config.train_sale_same_president
+    root.auction_pass_payout_cap = 3  # neither case's
+    scratch = game.scratch_state(root, state._array.copy())
+    assert {flag: getattr(scratch, flag) for flag in flags} == {flag: getattr(root, flag) for flag in flags}
+    np.testing.assert_array_equal(scratch._array, state._array)
+
+
+def test_g1889_policy_actions_are_engine_legal(g1889_case: Case):
+    game = g1889_case.game
+    buf = np.empty(game.policy.max_action_size, dtype=np.uint16)
+    for playout in g1889_case.playouts:
+        for row, actions in zip(playout.rows, playout.actions, strict=True):
+            n = g1889_legal(game.scratch_state(playout.final, row.copy()), buf)
+            assert set(actions.tolist()) <= set(buf[:n].tolist())
+
+
+def test_g1889_extraction_raises_until_step_7(g1889_case: Case):
+    game = g1889_case.game
+    state = g1889_case.playouts[0].final
+    assert game.num_relations == game.max_relation_edges == NO_SIZE < 0
+    for call in (
+        lambda: game.num_tokens(5),
+        lambda: game.token_dim(1),
+        lambda: game.fill_tokens(state, None, max_players=5, layout_version=1),
+        lambda: game.fill_tokens_batch([], None, max_players=5, layout_version=1),
+        lambda: game.fill_relations_dense(state, None, max_players=5),
+        lambda: game.fill_relations_dense_batch([], None, max_players=5),
+        lambda: game.fill_relations_sparse(state, None, max_players=5),
+        lambda: game.fill_relations_sparse_batch([], None, max_players=5),
+    ):
+        with pytest.raises(NotImplementedError, match="1889 extraction lands in pipeline step 7"):
+            call()
