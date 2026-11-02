@@ -9,6 +9,13 @@ by the same player, is consumed instead of applied; one that matches none
 means Ruby skipped the pending forced decisions, so they are dropped. States
 are compared whenever no forced decision is pending.
 
+One equivalence needs the harness (engine-design §10.2, "Track after the
+lay"): Ruby keeps Track open after a corp's lay while its president owns MF,
+for the port tile, and the engine moves on to TOKEN. That snapshot is
+compared with the engine at TOKEN (``snapshot.track_after_lay``), and Ruby's
+pass that then closes Track maps to no decision: the forced decisions the
+engine applied since the lay are what Ruby does on that pass.
+
 Replay stops at the first unsupported action, engine NotImplementedError, or
 mismatch, and at the driver's development stop (an automated step from a later
 sub-step, where the engine rests). ``REPLAY_FLOOR`` holds the last record index
@@ -19,7 +26,6 @@ later rounds replay before the engine can reach them.
 
 from __future__ import annotations
 
-import copy
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,19 +36,17 @@ import g1889.constants as K
 import g1889.data.tables as D
 from g1889.actions import get_decision_phase_py
 from g1889.driver import DRIVER, STATUS_INVALID
-from g1889.entities.corp import CORPS
-from g1889.entities.hexmap import MAP
-from g1889.entities.private import PRIVATES
 from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
 
 from tests.g1889.replay.action_map import Decision, ReplayEnd, UnsupportedAction, map_action
 from tests.g1889.replay.extracts import Extract, FIXTURES, load_fixture_extract, load_new_game_extract
-from tests.g1889.replay.snapshot import Snapshot, compare, load_state
+from tests.g1889.replay.snapshot import compare, load_state, track_after_lay
 
-# Sub-step 6.4: through the first SR. Its last record starts the first OR,
-# where the engine rests at OR_START (the development stop).
-REPLAY_FLOOR = {'314': 21, '962': 24, 'hs_jmmljkbw_17502': 26, 'hs_lhglbbiz_17502': 26}
+# Sub-step 6.5: the hs_* fixtures to their end_game; 314 and 962 to the
+# record before their first train purchase, which the engine rests at (6.7).
+REPLAY_FLOOR = {'314': 23, '962': 25, 'hs_jmmljkbw_17502': 49, 'hs_lhglbbiz_17502': 46}
+END_TO_END = ('hs_jmmljkbw_17502', 'hs_lhglbbiz_17502')
 
 # A forced decision the driver applied: (decision phase, id, the player it was for).
 Forced = tuple[int, int, int]
@@ -95,8 +99,9 @@ def consume(pending: list[Forced], decisions_in: Callable[[int], list[Decision]]
     return None
 
 
-def _apply(state: GameState, decisions: list[Decision], pending: list[Forced]) -> str | None:
-    """Apply decisions through the driver, queueing the forced ones it adds; an error message on failure."""
+def _apply(state: GameState, decisions: list[Decision], pending: list[Forced], log: list) -> str | None:
+    """Apply decisions through the driver, queueing the forced ones it adds and
+    adding its history to ``log``; an error message on failure."""
     for phase, action_id in decisions:
         if pending:  # forced inside one Ruby action: it must be the decision Ruby made
             if pending[0][:2] != (phase, action_id):
@@ -110,6 +115,7 @@ def _apply(state: GameState, decisions: list[Decision], pending: list[Forced]) -
         if DRIVER.apply_action(state, action_id, history) == STATUS_INVALID:
             return f'{_phase_name(phase)} id {action_id} is illegal in the engine'
         pending.extend((p, a, int(row[ACTIVE_PLAYER_SLOT])) for row, p, a in history[1:] if p >= 0)
+        log += history
     return None
 
 
@@ -118,59 +124,29 @@ def _at_development_stop(state: GameState) -> bool:
     return get_decision_phase_py(state) < 0 and TURN.round(state) != K.ROUND_GAME_OVER
 
 
-# TEMPORARY, until OR_START lands (6.5): after the SR's last action the engine
-# rests at OR_START, while Ruby's snapshot has started the OR. Ruby paid each
-# owned private's revenue, placed the floated corps' home tokens, and gave the
-# turn to the first corp (``Round::Operating#setup``). Undo the first two in
-# the snapshot and skip the OR's turn fields, so the SR's end compares in full.
-OR_TURN_FIELDS = ('game.step', 'game.active_players', 'game.current_entity', 'game.round_entities',
-                  'game.entity_index', 'operating.')
-
-
-def _before_or_start(state: GameState, snap: Snapshot) -> Snapshot:
-    snap = copy.deepcopy(snap)
-    for private in PRIVATES:
-        owner, revenue = private.owner(state), private.revenue(state)
-        if owner >= K.OWNER_CORP:
-            snap['corporations'][D.CORP_SYMS[owner - K.OWNER_CORP]]['cash'] -= revenue
-        elif owner >= K.OWNER_PLAYER:
-            snap['players'][owner - K.OWNER_PLAYER]['cash'] -= revenue
-        else:
-            continue
-        snap['game']['bank_cash'] += revenue
-    for c, corp in enumerate(CORPS):
-        home = D.CORP_HOME[c]
-        if corp.floated(state) and not MAP.tokens(state, home) >> c & 1:
-            ruby_hex, ruby_corp = snap['hexes'][D.HEX_IDS[home]], snap['corporations'][corp.sym]
-            ruby_hex['tokens'].remove(corp.sym)
-            ruby_hex['reserved'].append(corp.sym)
-            ruby_corp['token_hexes'].remove(D.HEX_IDS[home])
-            ruby_corp['tokens_left'] += 1
-    return snap
-
-
-def compare_at_rest(state: GameState, snap: Snapshot) -> list[str]:
-    """``compare``, allowing for the development stop at OR_START."""
-    if not (_at_development_stop(state) and TURN.step(state) == K.STEP_OR_START and snap['game']['round'] == 'OR'):
-        return compare(state, snap)
-    return [d for d in compare(state, _before_or_start(state, snap)) if not d.startswith(OR_TURN_FIELDS)]
+def _closes_track(record) -> bool:
+    """Ruby's pass that closes a Track step kept open after the lay."""
+    host = record['action']
+    return host['type'] == 'pass' and record['pre']['step'] == 'Track' and not host.get('auto_actions')
 
 
 def replay(fixture: str) -> Progress:
     return replay_extract(fixture, load_fixture_extract(fixture))
 
 
-def replay_extract(name: str, extract: Extract, start: int = 0) -> Progress:
-    """Replay ``extract`` from a new game, or from ``load_state`` of record ``start``."""
+def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None = None) -> Progress:
+    """Replay ``extract`` from a new game, or from ``load_state`` of record
+    ``start``, through record ``end`` (the last by default)."""
     records = extract['records']
     progress = Progress(name, len(records))
     ids = [p['id'] for p in extract['players']]
     state = load_state(records[start]['state'], len(ids)) if start else new_game(extract)
     pending: list[Forced] = []     # forced decisions applied since the last sync
     deferred = None                # the record whose snapshot waits for them
+    track_open = False             # Ruby kept Track open after the lay; the engine is past it
 
-    def matches(record) -> bool:
-        if diffs := compare_at_rest(state, record['state']):
+    def matches(record, at: GameState = state) -> bool:
+        if diffs := compare(at, record['state']):
             progress.stop, progress.detail = 'mismatch', f"record {record['index']}: " + '; '.join(diffs)
             return False
         progress.matched = record['index']
@@ -178,16 +154,24 @@ def replay_extract(name: str, extract: Extract, start: int = 0) -> Progress:
 
     if not matches(records[start]):
         return progress
-    for record in records[start + 1:]:
+    for record in records[start + 1:None if end is None else end + 1]:
         host = record['action']
         singles = [(host, record['pre']), *zip(host.get('auto_actions') or [], record.get('auto_pre') or [])]
         where = f"record {record['index']} ({host['type']})"
+        if track_open:
+            track_open = False
+            if _closes_track(record):  # EQUIVALENT: Track after the lay; Ruby's pass does what the engine forced
+                pending.clear()
+                if not matches(record):
+                    return progress
+                continue
         if _at_development_stop(state):
             if pending and deferred is not None and not matches(deferred):  # Ruby skips forced passes silently
                 return progress
             progress.stop, progress.detail = 'engine', f'{where}: the engine rests at its development stop, ' \
                                                        f'{K.Step(TURN.step(state)).name}'
             return progress
+        log: list = []
         try:
             for action, pre in singles:
                 actors = {ids.index(player) for player in pre['active_players']}
@@ -198,7 +182,7 @@ def replay_extract(name: str, extract: Extract, start: int = 0) -> Progress:
                         if deferred is not None and not matches(deferred):
                             return progress
                     decisions = map_action(action, pre, get_decision_phase_py(state), state)
-                if error := _apply(state, decisions, pending):
+                if error := _apply(state, decisions, pending, log):
                     progress.stop, progress.detail = 'mismatch', f'{where}: {error}'
                     return progress
         except UnsupportedAction as e:
@@ -210,6 +194,13 @@ def replay_extract(name: str, extract: Extract, start: int = 0) -> Progress:
         except ReplayEnd:
             progress.detail = f'{where}: Ruby ended the game by hand'
             return progress
+        if track_after_lay(record['state']):  # compare at TOKEN: the row before a forced TOKEN, or the rest
+            at_token = next((row for row, phase, _ in log if phase == K.DPHASE_TOKEN), None)
+            at = state if at_token is None else GameState.from_array(at_token, len(ids), state.max_players)
+            if not matches(record, at):
+                return progress
+            track_open, deferred = True, None
+            continue
         deferred = record if pending else None
         if not pending and not matches(record):
             return progress
@@ -223,6 +214,8 @@ def test_replay_reaches_its_floor(fixture):
     progress = replay(fixture)
     print(progress)
     assert progress.matched >= REPLAY_FLOOR[fixture], str(progress)
+    if fixture in END_TO_END:  # every record but the closing end_game
+        assert progress.stop is None and progress.matched == progress.records - 2, str(progress)
     if progress.stop == 'mismatch':
         warnings.warn(str(progress))
 
@@ -250,8 +243,69 @@ def test_every_later_sr_replays_from_its_first_snapshot(fixture):
     spans = _later_srs(extract)
     assert len(spans) == {'314': 6, '962': 4}.get(fixture, 1)
     for first, last in spans:
-        progress = replay_extract(fixture, extract, start=first)
-        assert progress.matched >= last and progress.stop in (None, 'engine'), str(progress)
+        progress = replay_extract(fixture, extract, start=first, end=last)
+        assert progress.matched == last and progress.stop is None, str(progress)
+
+
+def _or_turns(extract: Extract) -> list[tuple[int, int, bool]]:
+    """``(first, last, opens_or)`` for each corp's turn in an OR: the snapshot
+    where it opens, the action that hands the round on (the next turn, the next
+    round, or the game's end), and whether the turn opens its OR."""
+    records = extract['records']
+
+    def turn_of(record):
+        g = record['state']['game']
+        if g['round'] != 'OR' or g['finished']:
+            return None
+        return g['turn'], g['round_num'], record['state']['operating']['operator']
+
+    turns = []
+    for prev, record in zip(records, records[1:]):
+        if (key := turn_of(record)) is not None and key != (before := turn_of(prev)):
+            last = next((r['index'] for r in records[record['index'] + 1:] if turn_of(r) != key), len(records) - 1)
+            turns.append((record['index'], last, before is None or before[:2] != key[:2]))
+    return turns
+
+
+def _lays_and_tokens(records, first: int, last: int) -> list[int]:
+    """The records of a corp's lays and tokens."""
+    return [i for i in range(first + 1, last + 1) if records[i]['action']['type'] == 'place_token' or (
+        records[i]['action']['type'] == 'lay_tile' and records[i]['action']['entity_type'] == 'corporation')]
+
+
+# Per fixture: ORs, turns, the corps' lays and tokens, how many of them replay,
+# and the turns that stop at an action of a later sub-step before their last
+# lay or token (962 record 33: MF's port tile, ahead of TR's lay and token).
+OR_TURN_COVERAGE = {
+    '314': (10, 43, 46, 46, 0), '962': (10, 56, 59, 57, 1),
+    'hs_jmmljkbw_17502': (1, 1, 0, 0, 0), 'hs_lhglbbiz_17502': (1, 1, 0, 0, 0),
+}
+
+
+@pytest.mark.parametrize('fixture', FIXTURES)
+def test_every_or_turn_replays_from_its_first_snapshot(fixture):
+    """Each corp's turn in each OR, from ``load_state`` of the snapshot where
+    it opens (each OR's first turn opens the OR): the lays, tokens, passes,
+    and zero-revenue withholds of real games. A turn replays until the
+    engine rests where a later sub-step takes over (ROUTE for a corp with
+    trains, a train purchase) or an action of a later sub-step; it never
+    mismatches, and it gets through its lays and tokens."""
+    extract = load_fixture_extract(fixture)
+    records = extract['records']
+    turns = _or_turns(extract)
+    replayed = cut_short = 0
+    total = []
+    for first, last, _ in turns:
+        progress = replay_extract(fixture, extract, start=first, end=last)
+        assert progress.stop != 'mismatch', str(progress)
+        lays_and_tokens = _lays_and_tokens(records, first, last)
+        total += lays_and_tokens
+        replayed += sum(i <= progress.matched for i in lays_and_tokens)
+        if lays_and_tokens and progress.matched < lays_and_tokens[-1]:
+            assert progress.stop == 'unsupported', str(progress)
+            cut_short += 1
+    coverage = (sum(opens for *_, opens in turns), len(turns), len(total), replayed, cut_short)
+    assert coverage == OR_TURN_COVERAGE[fixture]
 
 
 # Acceptance for 6.2: initialize_game equals Ruby's new game.

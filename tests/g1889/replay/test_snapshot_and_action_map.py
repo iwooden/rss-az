@@ -213,6 +213,8 @@ def _expected(kind, pre, decoded):
         return last.corp == CORP[pre['corporation']] and 10 * last.count == pre['percent']
     if kind == 'place_token':
         return last.hex == HEX[pre['hex']]
+    if kind == 'lay_tile':
+        return decoded[0].hex == HEX[pre['hex']] and last.phase == K.DPHASE_TILE
     if kind in ('buy_train', 'discard_train'):
         return decoded[0].train_type in (TRAIN[pre['train_type']], TRAIN.get(pre.get('exchange_type')))
     if kind == 'buy_company':
@@ -221,6 +223,8 @@ def _expected(kind, pre, decoded):
 
 
 def test_map_action_covers_the_fixtures():
+    """A corp's lay maps against the state before it, where TILE's index
+    names Ruby's tile and canonical rotation among the engine's candidates."""
     scratch = GameState(3)
     mapped, unsupported, ended = 0, {}, 0
     for fixture in FIXTURES:
@@ -230,10 +234,13 @@ def test_map_action_covers_the_fixtures():
             autos = zip(host.get('auto_actions') or [], record.get('auto_pre') or [])
             for action, pre in [(host, record['pre']), *autos]:
                 kind = action['type']
+                state = scratch
                 if kind == 'run_routes':
                     TURN.set_route_revenue(scratch, pre['revenue'])
+                elif kind == 'lay_tile' and action['entity_type'] == 'corporation':
+                    state = load(before['state'])
                 try:
-                    decisions = map_action(action, pre, _ruby_phase(pre, before['state']), scratch)
+                    decisions = map_action(action, pre, _ruby_phase(pre, before['state']), state)
                 except UnsupportedAction:
                     key = (kind, action['entity_type'])
                     unsupported[key] = unsupported.get(key, 0) + 1
@@ -244,10 +251,14 @@ def test_map_action_covers_the_fixtures():
                     continue
                 decoded = [A.decode_action_py(phase, action_id) for phase, action_id in decisions]
                 assert not decoded or _expected(kind, pre, decoded), (fixture, record['index'], kind, decoded)
+                if state is not scratch:
+                    tile = D.TILE_NAMES.index(pre['tile'])
+                    lay = (tile, D.TILE_CANON_ROT[tile][pre['rotation']])
+                    assert A.lay_candidates_py(state, HEX[pre['hex']], CORP[action['entity']])[decoded[1].count] == lay
                 mapped += 1
-    # Only tile lays are left: 91 by corps (6.5), MF's port lay and ER's bonus lay (6.8).
-    assert unsupported == {('lay_tile', 'corporation'): 91, ('lay_tile', 'company'): 2}
-    assert (mapped, ended) == (914, 2)
+    # MF's port lay and ER's bonus lay, and the privates corps buy, are left for 6.8.
+    assert unsupported == {('lay_tile', 'company'): 2, ('buy_company', 'corporation'): 13}
+    assert (mapped, ended) == (992, 2)
 
 
 def test_map_action_skips_and_rejects():
@@ -258,6 +269,14 @@ def test_map_action_skips_and_rejects():
         map_action({'type': 'undo'}, {}, K.DPHASE_STOCK, scratch)
     with pytest.raises(UnsupportedAction, match='pass in PAR'):
         map_action({'type': 'pass', 'entity_type': 'player'}, {}, K.DPHASE_PAR, scratch)
+    # An OR pass is the pass of Ruby's step, whatever phase the engine is in.
+    corp_pass = {'type': 'pass', 'entity_type': 'corporation'}
+    assert map_action(corp_pass, {'round': 'OR', 'step': 'BuyTrain'}, K.DPHASE_TOKEN, scratch) == \
+        [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS)]
+    with pytest.raises(UnsupportedAction, match='Dividend'):
+        map_action(corp_pass, {'round': 'OR', 'step': 'Dividend'}, K.DPHASE_DIVIDEND, scratch)
+    with pytest.raises(UnsupportedAction, match='6.8'):
+        map_action({'type': 'buy_company', 'entity_type': 'corporation'}, {}, K.DPHASE_TRACK, scratch)
     TURN.set_route_revenue(scratch, 100)
     with pytest.raises(UnsupportedAction, match='6.6'):
         map_action({'type': 'run_routes'}, {'revenue': 120}, -1, scratch)

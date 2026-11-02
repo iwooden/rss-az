@@ -10,11 +10,15 @@
 - ``apply_and_verify(state, action_id)``: apply through the driver with
   history, checking ``assert_invariants`` on every intermediate state and the
   result, and that a returned decision is a choice: two or more policy
-  actions, or an amount decision with exact amounts beyond its one point.
+  actions, or an amount decision with exact amounts beyond its one point,
+  unless the driver rests at its development stop (``at_development_stop``).
 - ``enter_auction(state, turn_player, sold, bids)``: hand-built auction
   positions through ``setup_auction_py``.
 - ``hold(state, corp, ...)`` and ``enter_stock_round(state, first, turn)``:
   hand-built SR positions through ``setup_stock_round_py``.
+- ``enter_operating_round(state, or_num)``: an OR on hand-built holdings and
+  map, through ``setup_operating_round_py`` and ``DRIVER.advance``, verified
+  as ``apply_and_verify`` does.
 """
 
 import numpy as np
@@ -26,17 +30,22 @@ import g1889.data.tables as D
 from g1889.driver import DRIVER, STATUS_OK
 from g1889.entities.bank import BANK
 from g1889.entities.corp import CORPS, PRESIDENT_SHARES, SHARES_PER_CORP
+from g1889.entities.hexmap import MAP
 from g1889.entities.market import MARKET
+from g1889.entities.phase import PHASE
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES, topmost
 from g1889.entities.turn import TURN
 from g1889.phases.auction import setup_auction_py
+from g1889.phases.operating import setup_operating_round_py
 from g1889.phases.stock import setup_stock_round_py
 from g1889.state import GameState
 
-# Decision phases whose handlers have landed (6.4); later phases raise NotImplementedError.
-IMPLEMENTED_PHASES = (K.DPHASE_AUCTION, K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_STOCK, K.DPHASE_PAR)
 POOL_LIMIT = D.MARKET_SHARE_LIMIT // 10
+# The steps of a corp's turn, from TURN_START to TURN_END, as 6.5 builds them.
+TURN_STEPS = (K.STEP_TRACK, K.STEP_TILE, K.STEP_TOKEN, K.STEP_ROUTE, K.STEP_DIVIDEND, K.STEP_BUY_TRAIN,
+              K.STEP_BUY_PRIVATE)
+OR_STEPS = (K.STEP_OR_START, K.STEP_TURN_START, *TURN_STEPS, K.STEP_TURN_END, K.STEP_OR_END)
 
 
 # =============================================================================
@@ -105,6 +114,16 @@ def enter_stock_round(state, first, turn=2):
     TURN.set_turn(state, turn)
     setup_stock_round_py(state, first)
     assert_invariants(state, 'enter_stock_round')
+
+
+def enter_operating_round(state, or_num=1, or_count=None, msg='enter_operating_round'):
+    """Open OR ``or_num`` of a set of ``or_count`` (the phase's by default) on
+    the holdings and map set up by hand, and run it to the first choice."""
+    TURN.set_or_count(state, or_count or D.PHASE_ORS[PHASE.current(state)])
+    setup_operating_round_py(state, or_num)
+    history = []
+    status = DRIVER.advance(state, history)
+    return _verify(ApplyResult(state, history, status), msg)
 
 
 # =============================================================================
@@ -177,6 +196,8 @@ def assert_invariants(state, msg=''):
     in_play = [o for o in owners if o != K.OWNER_NOT_IN_PLAY]
     unsold_last = sorted(in_play, key=lambda o: o == K.OWNER_UNSOLD)
     assert in_play == unsold_last, f'{msg}: privates sold out of order {owners}'
+    assert all(K.OWNER_NOT_IN_PLAY <= o < K.OWNER_PLAYER + n or K.OWNER_CORP <= o < K.OWNER_CORP + D.NUM_CORPS
+               for o in owners), f'{msg}: private owners {owners}'
     for i in range(n):
         player = PLAYERS[i]
         assert player.committed(state) <= player.cash(state), f'{msg}: player {i} bids beyond cash'
@@ -184,6 +205,7 @@ def assert_invariants(state, msg=''):
             if player.bid(state, p):
                 assert owners[p] == K.OWNER_UNSOLD, f'{msg}: player {i} bids on sold private {p}'
                 assert player.bid(state, p) >= D.PRIVATE_VALUE[p] + D.MIN_BID_INCREMENT, f'{msg}: low bid'
+    _assert_map(state, msg)
 
     step, top, active = TURN.step(state), topmost(state), TURN.active_player(state)
     if TURN.round(state) != K.ROUND_AUCTION:
@@ -200,6 +222,7 @@ def assert_invariants(state, msg=''):
         else:  # the SR's fields clear when it ends
             assert TURN.sr_bought(state) == TURN.sr_sold_mask(state) == TURN.sr_sold_then_bought(state) == 0, msg
             assert all(PLAYERS[i].sold_mask(state) == 0 for i in range(n)), f'{msg}: SR sales left over'
+        _assert_operating(state, msg)
         return
     assert step in (K.STEP_AUCTION, K.STEP_BID, K.STEP_RAISE), f'{msg}: step {step} in the auction'
     if step == K.STEP_RAISE:
@@ -210,6 +233,37 @@ def assert_invariants(state, msg=''):
     assert TURN.auction_private(state) == -1 and PRIVATES[top].bid_count(state) == 0, f'{msg}: topmost has bids'
     assert active == TURN.auction_turn(state), f'{msg}: the turn player acts'
     assert (TURN.pending_private(state) >= 0) == (step == K.STEP_BID), f'{msg}: pending private'
+
+
+def _assert_map(state, msg):
+    """No supply below zero, and every charter token is left or placed, at most one per hex."""
+    assert all(MAP.supply(state, t) >= 0 for t in range(D.NUM_SUPPLY_TILES)), f'{msg}: negative supply'
+    for c in CORPS:
+        placed = sum(MAP.tokens(state, h) >> c.corp_id & 1 for h in range(D.NUM_HEXES))
+        assert c.tokens_left(state) + placed == D.CORP_TOKENS[c.corp_id], f'{msg}: {c.sym} tokens'
+
+
+def _assert_operating(state, msg):
+    """The OR order lists distinct floated corps, the operating corp is the one
+    at ``or_index`` and its president acts, TILE alone has a pending hex, and
+    every OR field is clear outside the OR."""
+    step, corp = TURN.step(state), TURN.operating_corp(state)
+    order = [TURN.or_order(state, i) for i in range(D.NUM_CORPS)]
+    corps = [c for c in order if c >= 0]
+    assert order == corps + [-1] * (D.NUM_CORPS - len(corps)) and len(set(corps)) == len(corps), f'{msg}: {order}'
+    assert (TURN.pending_hex(state) >= 0) == (step == K.STEP_TILE), f'{msg}: pending hex'
+    assert TURN.route_revenue(state) == 0, f'{msg}: route revenue'  # until 6.6
+    if TURN.round(state) != K.ROUND_OPERATING:
+        assert corps == [] and corp == -1 and TURN.or_index(state) == 0, f'{msg}: OR fields outside the OR'
+        return
+    assert step in OR_STEPS, f'{msg}: step {step} in the OR'
+    assert all(CORPS[c].floated(state) for c in corps), f'{msg}: an unfloated corp in {corps}'
+    if step in TURN_STEPS or step == K.STEP_TURN_END:
+        assert corp == order[TURN.or_index(state)] >= 0, f'{msg}: operating corp {corp}, order {order}'
+        assert TURN.active_player(state) == CORPS[corp].president(state), f'{msg}: the president acts'
+        assert MAP.tokens(state, D.CORP_HOME[corp]) >> corp & 1, f'{msg}: no home token'
+    else:
+        assert corp == -1, f'{msg}: operating corp {corp} between turns'
 
 
 def assert_action_sets(state, msg=''):
@@ -242,6 +296,21 @@ def price_of(state, point):
 # APPLY + VERIFY
 # =============================================================================
 
+def at_development_stop(state):
+    """Whether the driver rests where a later sub-step takes over (its TEMPORARY
+    development stop, removed at 6.9): an automated step, a decision whose
+    legal set raises NotImplementedError, or a forced decision, whose handler
+    raised it."""
+    if TURN.round(state) == K.ROUND_GAME_OVER:
+        return False
+    if A.get_decision_phase_py(state) < 0:
+        return True
+    try:
+        return DRIVER.forced_action_py(state) >= 0
+    except NotImplementedError:
+        return True
+
+
 class ApplyResult:
     """``history`` holds ``(row, decision phase, id)`` before each applied
     decision and ``(row, -1, step)`` before each automated step."""
@@ -267,6 +336,24 @@ class ApplyResult:
         return GameState.from_array(self.history[index][0], TURN.num_players(self.state),
                                     max_players=self.state.max_players)
 
+    def state_before(self, step):
+        """The state as automated step ``step`` first began, so the one before
+        OR_START is the SR's end."""
+        return self.state_at(next(i for i, (_, phase, s) in enumerate(self.history) if phase < 0 and s == step))
+
+
+def _verify(result, msg):
+    for i in range(len(result.history)):
+        before = result.state_at(i)
+        assert_invariants(before, f'{msg}: before entry {i} {result.history[i][1:]}')
+        if result.history[i][1] >= 0:
+            assert_action_sets(before, f'{msg}: before decision {i}')
+    assert_invariants(result.state, f'{msg}: after')
+    if not at_development_stop(result.state) and TURN.round(result.state) != K.ROUND_GAME_OVER:
+        assert_action_sets(result.state, f'{msg}: after')
+        assert is_choice(result.state), f'{msg}: returned a forced decision {get_policy_actions(result.state)}'
+    return result
+
 
 def apply_and_verify(state, action_id, msg='', expected_status=STATUS_OK):
     """Apply a legal id (enumerated, or an exact amount in range) through the
@@ -275,14 +362,4 @@ def apply_and_verify(state, action_id, msg='', expected_status=STATUS_OK):
     history = []
     status = DRIVER.apply_action(state, action_id, history)
     assert status == expected_status, f'{msg}: status {status}, expected {expected_status}'
-    result = ApplyResult(state, history, status)
-    for i in range(len(history)):
-        before = result.state_at(i)
-        assert_invariants(before, f'{msg}: before entry {i} {history[i][1:]}')
-        if history[i][1] >= 0:
-            assert_action_sets(before, f'{msg}: before decision {i}')
-    assert_invariants(state, f'{msg}: after')
-    if A.get_decision_phase_py(state) in IMPLEMENTED_PHASES:
-        assert_action_sets(state, f'{msg}: after')
-        assert is_choice(state), f'{msg}: returned a forced decision {get_policy_actions(state)}'
-    return result
+    return _verify(ApplyResult(state, history, status), msg)

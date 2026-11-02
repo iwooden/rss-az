@@ -1,7 +1,8 @@
 """Random play through the auction and the first SR (1889/engine-design.md
 §10.4): from a fresh game at 2-6 players, with the policy flags on (policy
 ids only) and off (every legal id, and exact amounts in BID and RAISE), the
-game reaches OR_START, the driver's development stop, within a step cap.
+first SR ends within a step cap. ``test_random_playouts.py`` plays on
+through the operating rounds.
 
 ``apply_and_verify`` checks every state the driver passes through, forced
 decisions and SR_END included: money is conserved, each corp's ten shares are
@@ -9,10 +10,10 @@ accounted for, presidents hold the most, floats follow the IPO, and every
 returned decision is a choice. In the first SR nobody can exceed the
 certificate or 60% limit, so those are checked too.
 
-The first SR sells nothing, so a second one follows from OR_START's state,
-opened by hand: sales, presidency changes, and must-sell turns. Uniform play
-would rarely see everyone pass in succession once sales refill cash, so it
-passes half the time it may.
+The first SR sells nothing, so a second one follows from the state at its
+end, opened by hand: sales, presidency changes, and must-sell turns. Uniform
+play would rarely see everyone pass in succession once sales refill cash, so
+it passes half the time it may.
 """
 
 import numpy as np
@@ -58,21 +59,26 @@ def _over_a_limit(state, player):
 
 
 def _play(state, rng, flags, msg, pass_share=0.0, check=None):
-    """Random decisions until the development stop at OR_START; returns every
-    decision applied, forced ones included."""
+    """Random decisions until the SR ends; then the state goes back to where
+    the OR that follows began, and every decision applied until then, forced
+    ones included, is returned."""
     decisions = []
     for _ in range(MAX_DECISIONS):
-        if TURN.step(state) == K.STEP_OR_START:
-            return decisions
         if TURN.round(state) == K.ROUND_AUCTION and TURN.auction_pass_payouts(state) >= UNCAPPED_PAYOUTS:
             state.auction_pass_payout_cap = 1
         result = apply_and_verify(state, _choose(state, rng, flags, pass_share), msg)
-        decisions += result.decisions
+        end = next((i for i, (_, phase, step) in enumerate(result.history)
+                    if phase < 0 and step == K.STEP_OR_START), None)
+        decisions += [(phase, i) for _, phase, i in result.history[:end] if phase >= 0]
         if check is not None:
-            for i in range(len(result.history)):
+            for i in range(len(result.history[:end])):
                 check(result.state_at(i))
+        if end is not None:
+            np.copyto(state._array, result.history[end][0])  # keeps the state's policy flags
+            return decisions
+        if check is not None:
             check(state)
-    pytest.fail(f'{msg}: no OR_START within {MAX_DECISIONS} decisions')
+    pytest.fail(f'{msg}: the SR did not end within {MAX_DECISIONS} decisions')
 
 
 def _first_sr_limits(state):
@@ -97,7 +103,8 @@ def test_random_play_reaches_the_first_or(num_players, flags):
         state = new_game(num_players, max_players=D.MAX_PLAYERS if seed % 2 else 0, seed=seed, priority_player=-1,
                          auction_pass_payout_cap=1 if flags else 0, same_president=flags)
         _play(state, rng, flags, f'seed {seed}', check=_first_sr_limits)
-        assert TURN.round(state) == K.ROUND_OPERATING and TURN.or_count(state) == D.PHASE_ORS[0]
+        assert (TURN.round(state), TURN.step(state)) == (K.ROUND_OPERATING, K.STEP_OR_START)
+        assert TURN.or_count(state) == D.PHASE_ORS[0]
         # A second SR from here, with sales.
         enter_stock_round(state, TURN.priority_player(state), turn=2)
         second_sr += _play(state, rng, flags, f'seed {seed}, SR 2', SECOND_SR_PASS, check=_must_sell_offers_only_sales)

@@ -44,6 +44,10 @@ g1889/
   (`entities/corp.pxd:112`). Phase handlers are
   `cdef void apply_*(GameState, ActionInfo*) noexcept` and assume legal
   actions (`phases/par.pxd:12`).
+- **One OR module for now.** 6.5 keeps the OR's flow and its turn's steps
+  through BUY_TRAIN in `phases/operating.pyx`, a few lines each; the
+  sub-steps that grow ROUTE, DIVIDEND, BUY_TRAIN, and the rest split them
+  into the modules above as they do.
 - **The four root modules** play the role of RSS `core/`. At the package
   root they keep one `core` in the repo and short cimports
   (`from g1889.state cimport GameState`). The solver gets `routes/` because
@@ -223,7 +227,10 @@ converging walks backtrack more: a refresh takes a median 1.8 µs, a p99 of
 **Ruby quirk, for 6.7.** The game's own graph keeps `route_train_purchase`
 once it is true: `Graph#clear` keeps such routes, so `must_buy_train?` can
 read a stale true after the corp's route is cut. The extractor's oracles use
-a fresh graph, as GRAPH does.
+a fresh graph, as GRAPH does. **Measured (6.5):** the `must_buy` oracle
+answers `must_buy_train?` both ways at every BuyTrain snapshot. At all 115
+(22 must-buys), the game's graph had the operator's route cached and agreed
+with the fresh one: no stale value. The engine follows the fresh graph.
 
 ## 5. Decision phases and actions
 
@@ -384,6 +391,14 @@ phase, id)` before each mutation and `(row, −1, step)` for automated steps
 (`:147`, `:197`); a guard stops at 1,000 iterations (`:90`); status codes are
 0/1/2 (`core/driver.pxd:35-41`), with no step mode.
 
+**Development stop (until 6.9).** A handler, automated step, or enumerator
+whose case a later sub-step owns raises NotImplementedError before it
+changes anything, and the driver records history only once a handler or
+step returns. The auto-chain rests there with the state as it was, also at a
+forced decision whose handler raises (a must-buy with one affordable train).
+`DRIVER.advance` runs the auto-chain on a state set up by hand at an
+automated step.
+
 **One deliberate difference: a decision is forced when its policy set has one
 action**, where RSS counts engine-legal actions (`core/driver.pyx:113-122`).
 Replay runs with every flag off, where the two sets coincide. In self-play, a
@@ -407,11 +422,11 @@ forced: only self-play sets flags, and it never plays exact amounts.
 | `AUCTION`, `BID`, `RAISE` | decisions | See the auction notes below |
 | `STOCK`, `PAR`, `PORT` | decisions | A pass without acting sets `passed`; "done" after acting clears it (`step/buy_sell_par_shares.rb:202`). A must-sell turn offers only sales, and any legal sale counts, as in Ruby (`:106`). Buying and then selling the same corp in one turn is legal. Priority follows Ruby's `priority_deal_player`: the player after the last to buy or sell. A player with nothing to do gets only slot 0, which the forced rule applies, as Ruby skips them |
 | `SR_END` | automated | Priority goes to the player after the last passer. Sold-out corps move up in price order (`round/stock.rb:70`). `or_count` is fixed |
-| `OR_START`, `TURN_START` | automated | Pays private revenue in Ruby's order (`game/base.rb:1649`), places home tokens, and orders the floated corps (`game/base.rb:986`) |
-| `TRACK`, `TILE`, `TOKEN` | decisions | One lay and one token per turn |
-| `ROUTE` | automated | Section 8 |
-| `DIVIDEND`, `BUY_TRAIN`, `TRAIN_PRICE`, `DISCARD`, `BUY_PRIVATE`, `PRIVATE_PRICE`, `ER_BONUS` | decisions | Open Market shares pay their dividend to the corp (`step/dividend.rb:151-181`) |
-| `TURN_END`, `OR_END` | automated | Emergency sales re-sort the corps yet to run (`round/operating.rb:97`). After a set's last OR: game over if the bank has broken, otherwise an SR. A corp floated mid-OR by DR runs from the next OR |
+| `OR_START`, `TURN_START` | automated | OR_START pays private revenue (`game/base.rb:1649`; the bank only pays out, so Ruby's payment order cannot matter), places every floated corp's free home token (`HOME_TOKEN_TIMING = :operating_round`), and fixes the order: the floated corps in stock price order (`game/base.rb:986`). With none, OR_END follows. TURN_START gives the turn to the next corp's president |
+| `TRACK`, `TILE`, `TOKEN` | decisions | One lay and one token per turn: TILE moves on to TOKEN, and TOKEN to ROUTE |
+| `ROUTE` | automated | Section 8. A corp without trains runs for ¥0 |
+| `DIVIDEND`, `BUY_TRAIN`, `TRAIN_PRICE`, `DISCARD`, `BUY_PRIVATE`, `PRIVATE_PRICE`, `ER_BONUS` | decisions | Open Market shares pay their dividend to the corp (`step/dividend.rb:151-181`). At zero revenue only the withhold is legal, which Ruby applies by skipping the step; it moves the price left (down at column 0, `TwoDimensionalMovement`). BUY_TRAIN's pass ends the turn, or in phases 3-4 opens BUY_PRIVATE (Ruby's blocking BuyCompany) |
+| `TURN_END`, `OR_END` | automated | Emergency sales re-sort the corps yet to run (`round/operating.rb:97`). After a set's last OR: game over if the bank has broken, otherwise an SR, with the SR number up and `or_num` back to 1; Ruby reorders the players only after an SR, so the priority holder opens it. A corp floated mid-OR by DR runs from the next OR |
 | `GAME_OVER` | terminal | |
 
 **Auction notes.** After a sale, the handler resolves the next topmost
@@ -577,12 +592,16 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
      `connected_nodes`, `route_train_purchase`, token cities, and lays with
      cost and the semi-restrictive verdict for every corp with a token, at
      every OR snapshot (lays at Track snapshots only), on a fresh `Graph`.
+     Schema 4 (6.5) adds `must_buy` at BuyTrain snapshots, on a fresh graph
+     and from the game's own cached route (Section 4).
      `extract_states.rb --graphs` answers the same graph queries, and the
      semi-restrictive verdicts, for hand-built maps.
    - **`snapshot.py`** provides `compare(state, snap)` and
      `load_state(snap)`. `load_state` builds the state through entity APIs,
      so oracle tests don't depend on replaying up to that point.
-   - **`action_map.py`** implements Section 5.5.
+   - **`action_map.py`** implements Section 5.5. An OR pass maps by Ruby's
+     step, not the engine's phase, so the sync rule never takes a BuyTrain
+     pass for a forced TOKEN pass.
    - **Sync rule.** A Ruby action that matches a forced action in the driver
      history since the last sync is consumed rather than applied. States are
      compared whenever no auto-applied history is pending.
@@ -602,30 +621,42 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
        after the corp's lay while its president owns MF
        (`tile_lay_abilities_should_block?`), for the port tile; 314 records
        22, 47, and 93 rest there. The corp cannot lay again, and the engine
-       has moved on to TOKEN, so the replay needs an equivalence there.
-       `load_state` loads such a snapshot at TRACK; the extractor records no
-       lays for it.
+       has moved on to TOKEN, so the replay needs an equivalence there. The
+       extractor records no lays for such a snapshot; `compare` takes its
+       Track for the engine's TOKEN, and `load_state` loads it at TOKEN. The
+       replay compares it with the engine at TOKEN (before a forced token
+       pass, if any), and maps Ruby's pass that closes Track to no decision:
+       the decisions the engine forced since the lay are what that pass does.
      - **Programmed actions.** In the `hs_*` fixtures, programmed buys ride
        as `auto_actions` on another player's pass, alongside
        `program_disable` and `program_share_pass` entries that the mapper
        skips.
      - **Ids.** Corp TR and private TR share a symbol. Ruby keeps one D
        train in the depot and clones it per sale; the engine stores −1.
-3. **Differential replay** (`test_replay.py`): all four fixtures, compared
-   after every action, including the final results. **Test:** can Ruby's
-   `check_track_restrictions!` (`step/tracker.rb:326`, skipped while loading)
-   run cheaply per candidate on a cloned game? **Answer (6.5): yes, and no
-   clone is needed.** The extractor lays each candidate in place with
-   `Hex#lay` (which moves tokens and reservations across), swaps in a fresh
-   `Graph`, turns loading off, runs the check, and lays the old tile back,
-   failing if the hex's snapshot changed. A probe costs about 0.15 ms, and
-   the fixtures' final results are unchanged. With every corp's lays probed
-   at every Track snapshot, cold extraction takes 3.1 s for 314 (1.0 s
-   before), 8.4 s for 962 (1.3 s), and 0.5 s for each `hs_*` fixture. The
-   rule rejects 1,091 of 314's probed rotations and 3,670 of 962's, so the
-   lay oracle compares the set after the filter; unit tests pin the rule
-   too.
-4. **Random playouts** (`test_random_game.py`, like
+3. **Differential replay** (`test_differential_replay.py`): all four fixtures,
+   compared after every action, including the final results. Later rounds
+   replay from `load_state` of their first snapshot before the replay
+   reaches them: every SR, and every corp's turn in every OR. **As of
+   6.5:** the `hs_*` fixtures replay to their `end_game`, and 314 and 962 to
+   the record before their first train purchase (23 and 25). The 43 OR turns
+   of 314 and 56 of 962 replay until the engine rests where a later
+   sub-step takes over (ROUTE for a corp with trains, a train purchase) or a
+   later sub-step's action, and they cover every corp lay and token of 314
+   (46) and 57 of 962's 59; the two left follow MF's port tile (962 record
+   33, 6.8).
+
+   **Test:** can Ruby's `check_track_restrictions!` (`step/tracker.rb:326`,
+   skipped while loading) run cheaply per candidate on a cloned game? **Answer
+   (6.5): yes, and no clone is needed.** The extractor lays each candidate in
+   place with `Hex#lay` (which moves tokens and reservations across), swaps in
+   a fresh `Graph`, turns loading off, runs the check, and lays the old tile
+   back, failing if the hex's snapshot changed. A probe costs about 0.15 ms,
+   and the fixtures' final results are unchanged. With every corp's lays probed
+   at every Track snapshot, cold extraction takes 3.1 s for 314 (1.0 s before),
+   8.4 s for 962 (1.3 s), and 0.5 s for each `hs_*` fixture. The rule rejects
+   1,091 of 314's probed rotations and 3,670 of 962's, so the lay oracle
+   compares the set after the filter; unit tests pin the rule too.
+4. **Random playouts** (`phases/test_random_playouts.py`, like
    `tests/test_random_game.py`): many seeds at 3-5 players, plus smoke tests
    at 2 and 6, with flags on and off. After every step and history
    intermediate, check pipeline-refactor §6.2's invariants: players + corps +
@@ -635,7 +666,12 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    within the step cap. Also check that every returned decision has two or
    more policy actions, that the policy set is non-empty whenever the engine
    set is, that recomputed caches equal the stored ones, and that a rebound
-   row copy gives the same legal and policy sets.
+   row copy gives the same legal and policy sets. **As of 6.5:** 20 seeds at
+   each of 2-6 players, flags on and off, play from new games to the
+   development stop. All 200 stop where a corp must buy its first train,
+   after about nine SR and OR cycles each (random SRs float few corps, so
+   many ORs are empty) and 913 corp turns in all: 579 lays, 12 tokens, and
+   913 withholds.
 5. **Per-phase unit tests** (`tests/g1889/phases/`), in the style of
    `tests/phases/` and `.claude/commands/phase-test.md`, run through the
    driver. A `conftest.py` provides `game_state`, `apply_and_verify`, and
@@ -656,7 +692,7 @@ up to X; the harness reports the first unsupported action.
 | 6.2 | `GameState` and the layout; all entities except `GRAPH` and the solver; an actions skeleton (decode/encode for every phase, dispatch, `is_legal_action`); the driver; the extractor, `compare`/`load_state`, a mapper skeleton, and the sync harness | the initial states of all four fixtures, and Ruby's `new_game` at 2-6 players, equal Ruby's; padded rows rebind across capacities; every id round-trips through encode and decode |
 | 6.3 | Auction: AUCTION, BID, and RAISE; resolution chains; all-pass rules; priority; the pass cap | all four fixtures green through the auction; unit tests; random auctions terminate |
 | 6.4 | Stock round: buys, pars, block sales with presidency swaps, must-sell, limits and zones, no buy-back, sell/buy order, floats, `SR_END` | all four fixtures green through SR 1 (`hs_*` through their first OR needs a Track pass and a withhold that moves the price, so it moved to 6.5); every later SR of every fixture replays from `load_state`; unit tests |
-| 6.5 | OR flow; TRACK and TILE (terrain, SMR, blockers, colors, supply, the semi-restrictive rule); TOKEN; `GRAPH`; zero-revenue DIVIDEND; a pass-only BUY_TRAIN | `hs_*` fully green; the replay harness's temporary OR_START workaround (`_before_or_start`) removed; lay and token sets equal the Ruby oracles at every Track and Token snapshot of `314` and `962`; connectivity matches, or the gap is measured; unit tests |
+| 6.5 | OR flow; TRACK and TILE (terrain, SMR, blockers, colors, supply, the semi-restrictive rule); TOKEN; `GRAPH`; zero-revenue DIVIDEND; BUY_TRAIN's pass and its depot offers, with must-buy (a purchase rests at the development stop until 6.7) | `hs_*` fully green; the replay harness's temporary OR_START workaround (`_before_or_start`) removed; lay and token sets equal the Ruby oracles at every Track and Token snapshot of `314` and `962`; connectivity matches, or the gap is measured; unit tests |
 | 6.6 | Route solver, the route cache, `ROUTE`, `override_route_revenue` | matches `AutoRouter` at every Route snapshot; at least every human revenue; agrees with brute force; profile recorded |
 | 6.7 | Dividends; BUY_TRAIN from the depot, the pool, and other corps, plus the D trade-in; TRAIN_PRICE; train limits; must-buy funded from the treasury; `PHASE`; DISCARD | `314` and `962` green through the first private buy or emergency; random playouts reach phase D |
 | 6.8 | Buy-private windows, PRIVATE_PRICE, ER_BONUS, PORT, and the DR exchange; emergency money; bankruptcy; game end; `final_scores` | all four fixtures green end to end, including the final results |

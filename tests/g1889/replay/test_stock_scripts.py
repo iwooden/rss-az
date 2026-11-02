@@ -118,9 +118,18 @@ def _last_sr_record(extract, start):
 def test_scripted_first_sr_matches_ruby(label):
     extract = _extract(label)
     first_sr = next(r['index'] for r in extract['records'] if r['state']['game']['round'] == 'SR')
-    progress = replay_extract(label, extract)
-    assert progress.matched == _last_sr_record(extract, first_sr), str(progress)
-    assert progress.stop in (None, 'engine'), str(progress)  # the development stop at OR_START
+    last = _last_sr_record(extract, first_sr)
+    progress = replay_extract(label, extract, end=last)
+    assert progress.matched == last and progress.stop is None, str(progress)
+
+
+def test_scripted_game_replays_end_to_end():
+    """From a new game through SR 1, OR 1 (IR passes Track and BuyTrain;
+    Ruby skips its token and withhold silently, the driver forces them), and
+    SR 2."""
+    extract = _extract('presidency_changes')
+    progress = replay_extract('presidency_changes', extract)
+    assert progress.stop is None and progress.matched == len(extract['records']) - 1, str(progress)
 
 
 def test_scripted_second_sr_matches_ruby():

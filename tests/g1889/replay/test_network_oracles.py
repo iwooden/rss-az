@@ -7,7 +7,8 @@ and each corp with a token is checked against the extract's
 ``check_track_restrictions!`` run per candidate. The oracles ignore whose turn
 it is, so every corp is checked, not only the operating one; at Track and
 Token snapshots the operating corp's TRACK, TILE, and TOKEN ids are checked
-too. They all agree exactly: the engine replays Ruby's walk step for step
+too, and at BuyTrain snapshots ``must_buy_train`` (``operating.must_buy``).
+They all agree exactly: the engine replays Ruby's walk step for step
 (``g1889/entities/graph.pyx``). Random maps, denser in junctions and loops
 than the fixtures, check GRAPH against Ruby's ``Graph`` as well.
 """
@@ -118,6 +119,26 @@ def test_operating_corp_track_tile_and_token_ids_match_ruby(fixture):
             assert _ids(state) == [K.TOKEN_PASS] + [K.TOKEN_HEX + h for h in hexes], (fixture, index)
             checked += 1
     assert checked == {'314': 59, '962': 72}.get(fixture, 1)
+
+
+# (BuyTrain snapshots before the game ends, must-buys among them) per fixture.
+MUST_BUY_COVERAGE = {'314': (60, 15), '962': (52, 6), 'hs_jmmljkbw_17502': (1, 0), 'hs_lhglbbiz_17502': (1, 0)}
+
+
+@pytest.mark.parametrize('fixture', FIXTURES)
+def test_must_buy_matches_ruby_at_every_buy_train_snapshot(fixture):
+    """``must_buy_train`` against ``must_buy_train?`` on a fresh graph. Ruby's
+    own graph keeps ``route_train_purchase`` through ``Graph#clear``
+    (engine-design §4), but here it had the operator's route cached at every
+    snapshot and never read a stale value."""
+    snapshots = must_buys = 0
+    for index, snap, state in _or_snapshots(fixture):
+        if (ruby := snap['operating']['must_buy']) is None:
+            continue
+        assert A.must_buy_train_py(state) == ruby['fresh'] == ruby['game'], (fixture, index)
+        snapshots += 1
+        must_buys += ruby['fresh']
+    assert (snapshots, must_buys) == MUST_BUY_COVERAGE[fixture]
 
 
 def random_map(rng: random.Random) -> tuple[GameState, dict]:

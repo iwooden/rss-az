@@ -12,7 +12,10 @@ There are three id sets:
   phase size, so they have no unified policy slot.
 
 The enumerators and ``is_legal_action`` raise NotImplementedError for phases
-whose sub-step (§11) has not landed.
+whose sub-step (§11) has not landed, and in states whose own moves need one
+(DIVIDEND on revenue; BUY_TRAIN with trains outside the depot, or a must-buy
+the treasury cannot fund). Until 6.8 the OR decisions lack only the
+buy-private, DR, and MF slots.
 """
 
 cimport numpy as cnp
@@ -83,6 +86,7 @@ cdef int lay_candidates(GameState state, int corp, int hex, LayCandidate* buf) n
 cdef int enumerate_lay_candidates(GameState state, int hex, LayCandidate* buf) noexcept nogil
 cdef bint can_lay(GameState state, int corp, int hex) noexcept nogil
 cdef bint can_token(GameState state, int corp, int hex) noexcept nogil
+cdef bint must_buy_train(GameState state, int corp) noexcept nogil
 
 cpdef bint has_exact_amounts(int phase)
 cpdef object decode_action_py(int phase, int action_id)
@@ -94,3 +98,4 @@ cpdef bint is_legal_action_py(GameState state, int action_id) except -1
 cpdef list lay_candidates_py(GameState state, int hex, int corp=*)
 cpdef list lay_hexes_py(GameState state, int corp=*)
 cpdef list token_hexes_py(GameState state, int corp=*)
+cpdef bint must_buy_train_py(GameState state, int corp=*)

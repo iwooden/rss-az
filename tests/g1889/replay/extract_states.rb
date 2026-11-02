@@ -27,7 +27,7 @@ require 'logger'
 
 module G1889Extract
   ROOT = File.expand_path('../../..', __dir__)
-  SCHEMA_VERSION = 3
+  SCHEMA_VERSION = 4
   TITLE = '1889'
 
   module_function
@@ -330,7 +330,26 @@ module G1889Extract
         'routes_revenue' => round.routes.empty? ? nil : @game.routes_revenue(round.routes),
         'ebuy_sold' => buy_train.instance_variable_get(:@corporations_sold)&.map(&:name) || [],
         'ebuy_last_share_price' => buy_train.last_share_sold_price,
+        'must_buy' => must_buy_info(round),
       }.merge(network_snapshot(round))
+    end
+
+    # At a BuyTrain snapshot, Game#must_buy_train? for the operator: 'fresh'
+    # on a fresh Graph, as the other oracles, and 'game' as the game's own
+    # graph answers it from the route it has cached, whose
+    # route_train_purchase survives Graph#clear; nil when nothing is cached
+    # (Ruby would compute it fresh). Reading the cache leaves the game as it was.
+    def must_buy_info(round)
+      corp = round.current_operator
+      return nil unless corp && round.active_step.is_a?(Engine::Step::BuyTrain)
+
+      log_size = @game.log.size
+      fresh = with_graph(Engine::Graph.new(@game)) { @game.must_buy_train?(corp) }
+      cached = @game.instance_variable_get(:@graph).instance_variable_get(:@routes)[corp]
+      game = cached && (corp.trains.empty? && !@game.depot.depot_trains.empty? && !!cached[:route_train_purchase])
+      { 'fresh' => !!fresh, 'game' => game }
+    ensure
+      @game.log.slice!(log_size..) if log_size
     end
 
     # ------------------------------------------------------- track, tokens

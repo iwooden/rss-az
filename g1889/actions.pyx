@@ -25,14 +25,15 @@ from g1889.constants cimport (
 from g1889.data.tables cimport (
     CERT_LIMIT, ENDPOINT_PAIRS, HEX_EXIT_MASK, HEX_NEIGHBOR, MAX_LAY_CANDIDATES, MAX_OWNERSHIP_PERCENT,
     MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS, NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES,
-    NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE, PHASE_TILE_COLORS, TILE_BLOCKS_LAY, TILE_COLOR,
-    TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, UPG_ROT, UPG_START, UPG_TILE,
+    NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE, PHASE_TILE_COLORS, PHASE_TRAIN_LIMIT,
+    TILE_BLOCKS_LAY, TILE_COLOR, TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, TRAIN_PRICE, UPG_ROT,
+    UPG_START, UPG_TILE,
 )
 from g1889.entities.corp cimport (
     corp_cash, corp_ipo_shares, corp_max_sale, corp_par_index, corp_par_price, corp_pool_shares, corp_token_price,
     corp_tokens_left,
 )
-from g1889.entities.graph cimport graph_node, graph_sides, graph_walks_new_track
+from g1889.entities.graph cimport graph_node, graph_route_available, graph_sides, graph_walks_new_track
 from g1889.entities.hexmap cimport hex_paths, hex_rotation, hex_tile, map_has_slot_for, map_lay_cost, supply_count
 from g1889.entities.market cimport market_price, market_unlimited
 from g1889.entities.player cimport (
@@ -42,10 +43,11 @@ from g1889.entities.phase cimport game_phase
 from g1889.entities.private cimport (
     private_blocks_hex, private_min_bid, private_owner, private_price, topmost_private,
 )
+from g1889.entities.trains cimport corp_train_total, trains_depot_types, trains_outside_depot
 from g1889.entities.turn cimport (
     turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_num_players, turn_operating_corp,
-    turn_pending_hex, turn_pending_private, turn_sr_bought, turn_sr_sold_mask, turn_sr_sold_then_bought, turn_step,
-    turn_turn,
+    turn_pending_hex, turn_pending_private, turn_route_revenue, turn_sr_bought, turn_sr_sold_mask,
+    turn_sr_sold_then_bought, turn_step, turn_turn,
 )
 from g1889.state cimport GameState
 
@@ -733,6 +735,64 @@ cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
     return count
 
 
+# =============================================================================
+# DIVIDEND, BUY_TRAIN
+# =============================================================================
+#
+# Ruby's Dividend and BuyTrain steps (step/dividend.rb, step/buy_train.rb,
+# step/train.rb). Ruby skips Dividend at zero revenue with a withhold, so
+# DIVIDEND offers only that, and the driver applies it. Revenue to pay out
+# arrives with 6.7. BUY_TRAIN offers the depot's trains; the pool, other
+# corps, and the D trade-in arrive with 6.7, and emergency money with 6.8.
+# Each enumerator raises where its own moves would need a later sub-step, so
+# it never offers an incomplete set of them. Buying a private, DR, and MF,
+# which the OR decisions lack until 6.8, are the exception.
+
+
+cdef bint must_buy_train(GameState state, int corp) noexcept nogil:
+    """``must_buy_train?`` (``MUST_BUY_TRAIN = :route``): the corp has no train
+    and some token's walk reaches two revenue centers (GRAPH's
+    ``route_available``, computed fresh, as the extractor's oracle is; Ruby's
+    own graph can keep a stale true, engine-design.md §4). Ruby also needs a
+    train in the depot or pool, and the unlimited D keeps the depot stocked."""
+    return corp_train_total(state, corp) == 0 and graph_route_available(state, corp)
+
+
+cdef int _enumerate_dividend(GameState state, uint16_t* ids) except -1 nogil:
+    """Withhold, the one choice at zero revenue."""
+    if turn_route_revenue(state) > 0:
+        return _unimplemented(DPHASE_DIVIDEND, b"dividends on revenue")
+    ids[0] = DIVIDEND_WITHHOLD
+    return 1
+
+
+cdef int _enumerate_buy_train(GameState state, uint16_t* ids) except -1 nogil:
+    """Pass unless the corp must buy, then each depot train it can afford
+    while under the phase's limit (``can_buy_train?``, ``room?``). Any train
+    outside the depot (the pool's and the corps', 6.7's sources) and a
+    must-buy the treasury cannot fund (emergency money, 6.8) raise."""
+    cdef int corp = turn_operating_corp(state)
+    cdef int count = 0
+    cdef int types, t
+    if corp < 0:
+        ids[0] = BUY_TRAIN_PASS
+        return 1
+    if trains_outside_depot(state):
+        return _unimplemented(DPHASE_BUY_TRAIN, b"trains from the pool or corps")
+    if not must_buy_train(state, corp):
+        ids[count] = BUY_TRAIN_PASS
+        count += 1
+    types = trains_depot_types(state)
+    if corp_train_total(state, corp) < PHASE_TRAIN_LIMIT[game_phase(state)]:
+        for t in range(<int>NUM_TRAIN_TYPES):
+            if types >> t & 1 and TRAIN_PRICE[t] <= corp_cash(state, corp):
+                ids[count] = <uint16_t>(BUY_TRAIN_DEPOT + t)
+                count += 1
+    if count == 0:
+        return _unimplemented(DPHASE_BUY_TRAIN, b"emergency money")
+    return count
+
+
 cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -1 nogil:
     """Write the engine-legal ids of the current decision in a fixed order and
     return the count, 0 at an automated step. The buffer holds MAX_ACTION_SIZE."""
@@ -758,6 +818,10 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
         count = _enumerate_tile(state, action_ids)
     elif phase == DPHASE_TOKEN:
         count = _enumerate_token(state, action_ids)
+    elif phase == DPHASE_DIVIDEND:
+        count = _enumerate_dividend(state, action_ids)
+    elif phase == DPHASE_BUY_TRAIN:
+        count = _enumerate_buy_train(state, action_ids)
     else:
         count = _unimplemented(phase, b"legal actions")
     if count > <int>MAX_ACTION_SIZE:
@@ -780,8 +844,9 @@ cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except 
     if phase == DPHASE_BID:
         return _filter_bid(state, count)
     if (phase == DPHASE_RAISE or phase == DPHASE_STOCK or phase == DPHASE_PAR or phase == DPHASE_TRACK
-            or phase == DPHASE_TILE or phase == DPHASE_TOKEN):
-        return count  # no flag restricts these
+            or phase == DPHASE_TILE or phase == DPHASE_TOKEN or phase == DPHASE_DIVIDEND
+            or phase == DPHASE_BUY_TRAIN):
+        return count  # no flag restricts these (yet: BUY_TRAIN's corp trains arrive with 6.7)
     return _unimplemented(phase, b"policy filter")
 
 
@@ -904,6 +969,11 @@ cpdef list lay_hexes_py(GameState state, int corp=-1):
     """The hexes ``corp`` (the operating corp by default) may lay on: TRACK's hexes."""
     corp = _corp_or_operating(state, corp)
     return [h for h in range(<int>NUM_HEXES) if can_lay(state, corp, h)]
+
+
+cpdef bint must_buy_train_py(GameState state, int corp=-1):
+    """Whether ``corp`` (the operating corp by default) must buy a train."""
+    return must_buy_train(state, _corp_or_operating(state, corp))
 
 
 cpdef list token_hexes_py(GameState state, int corp=-1):

@@ -59,6 +59,10 @@ cdef int turn_operating_corp(GameState state) noexcept nogil:
     return _get(state, GLOBALS.operating_corp)
 
 
+cdef int turn_route_revenue(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.route_revenue)
+
+
 cdef int turn_turn(GameState state) noexcept nogil:
     return _get(state, GLOBALS.turn)
 
@@ -231,7 +235,7 @@ cdef class TurnState:
         _set(state, GLOBALS.or_order + index, corp)
 
     cpdef int route_revenue(self, GameState state):
-        return _get(state, GLOBALS.route_revenue)
+        return turn_route_revenue(state)
 
     cpdef void set_route_revenue(self, GameState state, int value):
         _set(state, GLOBALS.route_revenue, value)

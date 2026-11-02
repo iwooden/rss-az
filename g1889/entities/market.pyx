@@ -3,8 +3,8 @@
 from libc.stdint cimport int16_t
 
 from g1889.data.tables cimport (
-    MARKET_COLS, MARKET_NO_CERT_LIMIT, MARKET_NORMAL, MARKET_PRICE, MARKET_ROWS, MARKET_TYPE, MARKET_UNLIMITED,
-    NUM_CORPS,
+    MARKET_COLS, MARKET_NO_CERT_LIMIT, MARKET_NORMAL, MARKET_PRICE, MARKET_ROW_LEN, MARKET_ROWS, MARKET_TYPE,
+    MARKET_UNLIMITED, NUM_CORPS,
 )
 from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, GameState
 
@@ -124,6 +124,26 @@ cdef class Market:
         assert row >= 0, f"corp {corp} is not on the market"
         if row > 0:
             self.set_position(state, corp, row - 1, market_col(state, corp))
+
+    cpdef void move_left(self, GameState state, int corp):
+        """One column left, as for a withhold; at column 0 one row down instead
+        (``TwoDimensionalMovement#left``), so ¥10 stays put."""
+        cdef int row = market_row(state, corp), col = market_col(state, corp)
+        assert row >= 0, f"corp {corp} is not on the market"
+        if col > 0:
+            self.set_position(state, corp, row, col - 1)
+        else:
+            self.move_down(state, corp)
+
+    cpdef void move_right(self, GameState state, int corp):
+        """One column right, as for a payout; at a row's end one row up instead
+        (``TwoDimensionalMovement#right``), so ¥350 stays put."""
+        cdef int row = market_row(state, corp), col = market_col(state, corp)
+        assert row >= 0, f"corp {corp} is not on the market"
+        if col + 1 < MARKET_ROW_LEN[row]:
+            self.set_position(state, corp, row, col + 1)
+        else:
+            self.move_up(state, corp)
 
     cpdef int type(self, GameState state, int corp):
         return market_type(state, corp)

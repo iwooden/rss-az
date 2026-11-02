@@ -198,10 +198,15 @@ Snapshot (``state``)
 ``operating``
     None outside ORs, else ``operator``; ``routes_revenue``, the revenue of
     this turn's routes once run, else None; ``ebuy_sold`` (corporations the
-    president has sold in this emergency) and ``ebuy_last_share_price``; and
-    three oracles (schema 3), keyed by every corporation with a placed token
-    and computed on a fresh ``Graph`` so the game's own graph caches stay
-    untouched:
+    president has sold in this emergency) and ``ebuy_last_share_price``;
+    ``must_buy`` (schema 4), None unless the active step is ``BuyTrain``,
+    else ``{fresh, game}``: ``Game#must_buy_train?`` for the operator on a
+    fresh ``Graph``, and as the game's own graph answers it from the route
+    it has cached, whose ``route_train_purchase`` survives ``Graph#clear``
+    (None when nothing is cached, and Ruby would compute it fresh; the cache
+    is read, never filled); and three oracles (schema 3), keyed by every
+    corporation with a placed token and computed on a fresh ``Graph`` so the
+    game's own graph caches stay untouched:
 
     ``graph``
         ``{corporation: {hexes, nodes, route}}``: ``hexes``, Ruby's
@@ -249,7 +254,7 @@ from typing import Any
 
 import pytest
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
@@ -280,7 +285,7 @@ HEX_KEYS = frozenset({'tile', 'rotation', 'tokens', 'reserved'})
 AUCTION_KEYS = frozenset({'companies', 'auctioning', 'min_bids'})
 STOCK_KEYS = frozenset({'sold', 'current_actions', 'bought_from_ipo', 'last_to_act', 'pass_order', 'legal'})
 OPERATING_KEYS = frozenset({
-    'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'graph', 'tokens', 'lays',
+    'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'must_buy', 'graph', 'tokens', 'lays',
 })
 
 PRE_KEYS = frozenset({

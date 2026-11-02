@@ -55,15 +55,13 @@ def test_random_auctions_reach_the_stock_round(num_players, flags):
         else:
             pytest.fail(f'seed {seed}: the auction did not end within {MAX_DECISIONS} decisions')
         # The SR opens with the auction's turn player, and the driver passes
-        # for each player who can do nothing else, as Ruby skips them; when
-        # nobody can, the SR ends at once and priority stays.
+        # for each player who can do nothing else, as Ruby skips them. When
+        # nobody can, the SR ends at once, an empty OR pays the privates, and
+        # SRs follow until someone can act; priority stays throughout.
         assert TURN.priority_player(state) == TURN.auction_turn(state)
-        if TURN.round(state) == K.ROUND_OPERATING:
-            assert TURN.step(state) == K.STEP_OR_START
-        else:
-            assert (TURN.round(state), TURN.step(state)) == (K.ROUND_STOCK, K.STEP_STOCK)
-            skipped = (TURN.active_player(state) - TURN.priority_player(state)) % num_players
-            assert all(PLAYERS[(TURN.priority_player(state) + k) % num_players].passed(state)
-                       for k in range(skipped))
+        assert (TURN.round(state), TURN.step(state)) == (K.ROUND_STOCK, K.STEP_STOCK)
+        skipped = (TURN.active_player(state) - TURN.priority_player(state)) % num_players
+        assert all(PLAYERS[(TURN.priority_player(state) + k) % num_players].passed(state)
+                   for k in range(skipped))
         owners = [p.owner(state) for p in PRIVATES if p.owner(state) != K.OWNER_NOT_IN_PLAY]
         assert all(K.OWNER_PLAYER <= o < K.OWNER_PLAYER + num_players for o in owners)

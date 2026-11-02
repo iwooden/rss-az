@@ -7,8 +7,8 @@ Certificate, presidency changes both ways, floats, the certificate limit at
 every player count, the 60% limit, the yellow and orange zones, must-sell
 turns, players with nothing to do, PAR, market edges and stacking, and
 SR_END's order and priority. It also covers the driver's forced rule for
-amounts and its development stop. ``tests/g1889/replay/test_stock_scripts.py``
-and the fixtures' SRs check the same paths against Ruby.
+amounts. ``tests/g1889/replay/test_stock_scripts.py`` and the fixtures' SRs
+check the same paths against Ruby.
 """
 
 import pytest
@@ -16,7 +16,7 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
-from g1889.driver import DRIVER, STATUS_INVALID
+from g1889.driver import DRIVER
 from g1889.entities.bank import BANK, BANK_ACCOUNT
 from g1889.entities.corp import CORPS
 from g1889.entities.market import MARKET
@@ -111,8 +111,9 @@ class TestTurns:
         apply_and_verify(state, PASS)  # player 0 again: player 1 acted since, so the SR goes on
         assert TURN.round(state) == K.ROUND_STOCK and passed(state) == [True, False, True]
         result = apply_and_verify(state, PASS)  # player 1 completes the run
-        assert result.steps == [K.STEP_SR_END]
-        assert (TURN.round(state), TURN.step(state)) == (K.ROUND_OPERATING, K.STEP_OR_START)
+        # KO has not floated, so the OR has nobody to operate, and SR 2 follows.
+        assert result.steps == [K.STEP_SR_END, K.STEP_OR_START, K.STEP_OR_END]
+        assert (TURN.round(state), TURN.step(state), TURN.turn(state)) == (K.ROUND_STOCK, K.STEP_STOCK, 2)
 
     def test_priority_goes_to_the_player_after_the_last_to_act(self):
         state = first_sr(3)
@@ -124,7 +125,8 @@ class TestTurns:
         assert TURN.priority_player(state) == 2
         for _ in range(3):
             apply_and_verify(state, PASS)
-        assert TURN.step(state) == K.STEP_OR_START and TURN.priority_player(state) == 2
+        # The OR is empty (KO has not floated), and player 2 opens SR 2.
+        assert (TURN.turn(state), TURN.priority_player(state), TURN.active_player(state)) == (2, 2, 2)
 
     def test_one_purchase_per_turn(self):
         state = at_sr(3)
@@ -191,13 +193,15 @@ class TestTurns:
 
     def test_the_round_ends_by_itself_when_nobody_can_act(self):
         state = at_sr(2)
+        hold(state, IR, {0: 6})  # floated, so the OR that follows has a turn to rest in
         for i in range(2):
             BANK.transfer(state, i, BANK_ACCOUNT, PLAYERS[i].cash(state))
         enter_stock_round(state, 1, turn=1)
         result = apply_and_verify(state, PASS)
         assert [entry[1:] for entry in result.history] == [
-            (K.DPHASE_STOCK, PASS), (K.DPHASE_STOCK, PASS), (-1, K.STEP_SR_END)]
-        assert TURN.step(state) == K.STEP_OR_START and TURN.priority_player(state) == 1
+            (K.DPHASE_STOCK, PASS), (K.DPHASE_STOCK, PASS), (-1, K.STEP_SR_END), (-1, K.STEP_OR_START),
+            (-1, K.STEP_TURN_START)]
+        assert TURN.step(state) == K.STEP_TRACK and TURN.priority_player(state) == 1
 
     def test_abilities_wait_for_their_sub_step(self):
         state = at_sr(3, owners=[0])  # player 0 owns DR and MF
@@ -440,11 +444,12 @@ class TestZones:
 # =============================================================================
 
 def _end_round(state):
-    """Pass for everyone from the turn player on; return the last result."""
+    """Pass for everyone from the turn player on; return the state at the SR's
+    end, before the OR that follows begins."""
     result = apply_and_verify(state, PASS)
-    while TURN.round(state) == K.ROUND_STOCK:
+    while K.STEP_SR_END not in result.steps:
         result = apply_and_verify(state, PASS)
-    return result
+    return result.state_before(K.STEP_OR_START)
 
 
 class TestRoundEnd:
@@ -454,8 +459,7 @@ class TestRoundEnd:
         hold(state, KO, {0: 4, 1: 3, 2: 3})  # (5, 3), on top
         hold(state, IR, {1: 4, 2: 3, 3: 3})  # (5, 3), beneath KO
         enter_stock_round(state, 0)
-        result = _end_round(state)
-        assert result.steps == [K.STEP_SR_END]
+        state = _end_round(state)
         assert [(MARKET.row(state, c), MARKET.col(state, c)) for c in (AR, KO, IR)] == [(4, 3)] * 3
         assert MARKET.sort_by_price(state, 0x7F) == [AR, KO, IR]
 
@@ -464,7 +468,7 @@ class TestRoundEnd:
         hold(state, IR, {1: 4, 2: 3, 3: 3})
         hold(state, KO, {0: 4, 1: 3, 2: 3})
         enter_stock_round(state, 0)
-        _end_round(state)
+        state = _end_round(state)
         assert MARKET.sort_by_price(state, 0x7F) == [IR, KO]
 
     def test_the_top_row_and_unsold_corps_stay(self):
@@ -474,7 +478,7 @@ class TestRoundEnd:
         hold(state, AR, {0: 4, 1: 3, 2: 2}, pool=1)  # one in the pool
         enter_stock_round(state, 0)
         stamps = [MARKET.stamp(state, c) for c in (KO, IR, AR)]
-        _end_round(state)
+        state = _end_round(state)
         assert [MARKET.stamp(state, c) for c in (KO, IR, AR)] == stamps
 
     def test_priority_ors_and_clearing(self):
@@ -490,7 +494,7 @@ class TestRoundEnd:
         apply_and_verify(state, PASS)  # 2
         assert TURN.round(state) == K.ROUND_STOCK
         apply_and_verify(state, PASS)  # 0: the last passer
-        assert TURN.step(state) == K.STEP_OR_START and TURN.priority_player(state) == 1
+        assert TURN.round(state) == K.ROUND_OPERATING and TURN.priority_player(state) == 1
         assert TURN.or_count(state) == D.PHASE_ORS[D.GAME_PHASE_3] == 2 and TURN.or_num(state) == 1
         assert passed(state) == [False] * 3 and PLAYERS[0].sold_mask(state) == 0
 
@@ -500,16 +504,6 @@ class TestRoundEnd:
 # =============================================================================
 
 class TestDriver:
-    def test_the_development_stop_rests_at_or_start(self):
-        """TEMPORARY (6.9 removes it): the SR's end rests at OR_START, whose
-        handler lands at 6.5; the history records SR_END only."""
-        state = first_sr(2)
-        result = apply_and_verify(state, PASS)
-        result = apply_and_verify(state, PASS)
-        assert result.steps == [K.STEP_SR_END] and TURN.step(state) == K.STEP_OR_START
-        assert A.get_decision_phase_py(state) == -1
-        assert DRIVER.apply_action(state, 0) == STATUS_INVALID
-
     def test_a_narrow_off_grid_bid_range_is_not_forced(self):
         """A human's off-grid ¥373 on SIR leaves ¥47 for ER: one grid point
         (¥45), and the exact ¥46 and ¥47 above it, so BID waits."""

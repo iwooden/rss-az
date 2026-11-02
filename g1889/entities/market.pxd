@@ -2,9 +2,10 @@
 
 A cell is (row, column) in ``MARKET_PRICE``; row -1 is unparred. Every
 placement takes the next stamp, and a lower stamp sits higher in a stack.
-Moves follow Ruby's ``TwoDimensionalMovement`` (rules §6.7): a move that
+Moves follow Ruby's ``TwoDimensionalMovement`` (rules §6.7, §8.7): a move that
 leaves the cell goes to the bottom of the new cell's stack, and one blocked
-at an edge leaves the stamp alone.
+at an edge leaves the stamp alone. Each row starts at column 0, so left at
+column 0 is down, right at a row's end is up, and the corners stay put.
 """
 
 from g1889.state cimport GameState
@@ -34,6 +35,8 @@ cdef class Market:
     cpdef int next_stamp(self, GameState state)
     cpdef void move_down(self, GameState state, int corp)
     cpdef void move_up(self, GameState state, int corp)
+    cpdef void move_left(self, GameState state, int corp)
+    cpdef void move_right(self, GameState state, int corp)
     cpdef int type(self, GameState state, int corp)
     cpdef bint counts_for_limit(self, GameState state, int corp)
     cpdef bint unlimited(self, GameState state, int corp)

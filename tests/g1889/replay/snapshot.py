@@ -26,7 +26,11 @@ form than Ruby; ``compare`` treats these as equal (``EQUIVALENT:`` below):
   ``sr_sold_then_bought``, and the turn player's ``sr_sold_mask``;
 - lays: Ruby lists every legal rotation with its cost and its
   semi-restrictive verdict, the engine one canonical rotation per candidate,
-  legal only if affordable and passing the rule.
+  legal only if affordable and passing the rule;
+- Track after the lay: Ruby keeps the Track step open after the corp's lay
+  while its president owns MF (``tile_lay_abilities_should_block?``, for the
+  port tile; the extractor's ``lays`` is None there), though the corp cannot
+  lay again; the engine has moved on to TOKEN (engine-design §10.2).
 
 At a STOCK decision, ``compare`` also checks the engine's legal ids against
 Ruby's ``stock.legal``: the pass (absent on a must-sell turn), each IPO and
@@ -36,7 +40,8 @@ every corp with a token (``operating.graph``, ``tokens``, and ``lays``):
 GRAPH's sides and nodes reached and ``route_available``, the cities the corp
 may token, and its lay candidates with their costs. They do not depend on
 whose turn it is; the oracle tests also check the operating corp's TRACK,
-TILE, and TOKEN ids.
+TILE, and TOKEN ids. At a BuyTrain snapshot it checks ``must_buy_train``
+against Ruby's ``must_buy_train?`` on a fresh graph (``operating.must_buy``).
 
 Not compared, because the engine does not model them (or not yet): player
 ``value`` and the game ``result`` (``final_scores``, 6.8); a corporation's
@@ -200,7 +205,8 @@ def _compare_game(state, snap, ids, check) -> None:
         return
     check('game.round', RUBY_ROUNDS.get(TURN.round(state)), g['round'])
     step = TURN.step(state)
-    check('game.step', RUBY_STEPS.get(step, K.Step(step).name), g['step'])
+    ruby_step = 'Token' if track_after_lay(snap) and step == K.STEP_TOKEN else g['step']  # EQUIVALENT
+    check('game.step', RUBY_STEPS.get(step, K.Step(step).name), ruby_step)
     check('game.active_players', [ids[TURN.active_player(state)]], g['active_players'])
     entity = g['current_entity'] or {}
     if entity.get('type') == 'player':
@@ -215,6 +221,11 @@ def _compare_game(state, snap, ids, check) -> None:
         order = [D.CORP_SYMS[c] for c in (TURN.or_order(state, i) for i in range(D.NUM_CORPS)) if c >= 0]
         check('game.round_entities', order, g['round_entities'])
         check('game.entity_index', TURN.or_index(state), g['entity_index'])
+
+
+def track_after_lay(snap: Snapshot) -> bool:
+    """Ruby's Track step, kept open after the turn's lay for MF's port tile."""
+    return snap['game']['step'] == 'Track' and snap['operating'] is not None and snap['operating']['lays'] is None
 
 
 def _compare_players(state, snap, ids, check) -> None:
@@ -320,6 +331,8 @@ def _compare_rounds(state, snap, ids, check) -> None:
             check('operating.routes_revenue', TURN.route_revenue(state), operating['routes_revenue'])
         check('operating.ebuy_sold', _bits(TURN.ebuy_sold_mask(state), D.CORP_SYMS),
               sorted(operating['ebuy_sold'], key=CORP.__getitem__))
+        if operating['must_buy'] is not None and corp >= 0:
+            check('operating.must_buy', A.must_buy_train_py(state, corp), operating['must_buy']['fresh'])
         _compare_network(state, operating, check)
 
 
@@ -499,11 +512,11 @@ def _load_operating(state: GameState, snap: Snapshot, ids: list) -> None:
     player Ruby waits on, Ruby's step, this turn's route revenue once run, and
     the emergency sales. A Track or Token snapshot opens its step, with the
     turn's lay or token still to come, except a Track snapshot after the lay,
-    which Ruby keeps open for MF's port tile (engine-design §10.2) and which
-    loads at TRACK all the same."""
+    which Ruby keeps open for MF's port tile (engine-design §10.2): it loads
+    at TOKEN, where the engine stands then."""
     g, operating = snap['game'], snap['operating']
     TURN.set_round(state, K.ROUND_OPERATING)
-    TURN.set_step(state, OR_STEPS[g['step']])
+    TURN.set_step(state, K.STEP_TOKEN if track_after_lay(snap) else OR_STEPS[g['step']])
     for i, sym in enumerate(g['round_entities']):
         TURN.set_or_order(state, i, CORP[sym])
     TURN.set_or_index(state, g['entity_index'])

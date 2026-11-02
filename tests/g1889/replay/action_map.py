@@ -12,6 +12,12 @@ Actions with no engine decision map to ``[]``: ``message``, ``program_*``,
 and ``run_routes`` whose revenue the engine's ROUTE step already matches.
 ``end_game`` raises ``ReplayEnd``. An action the mapper cannot express yet
 raises ``UnsupportedAction`` naming its type.
+
+An OR pass maps by Ruby's step (Track, Token, BuyTrain, BuyCompany), not by
+the engine's phase, so the sync rule never takes a pass in one step for a
+forced pass in another. Ruby's Track pass after a lay, where it keeps Track
+open for MF's port tile, maps to no decision; the replay harness handles it
+(``test_differential_replay.py``, engine-design.md §10.2).
 """
 
 from __future__ import annotations
@@ -19,14 +25,18 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
 from g1889.entities.turn import TURN
 from g1889.state import GameState
 
-from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TRAIN
+from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TILE, TRAIN
 
 Decision = tuple[int, int]
+# TEMPORARY until 6.8 makes the buy-private slots legal: until then the mapper
+# reports a fixture's buy_company as unsupported rather than as an illegal id.
+BUY_PRIVATE_LANDED = False
 
 
 class UnsupportedAction(Exception):
@@ -48,6 +58,11 @@ DR_SLOT = {
     K.DPHASE_DIVIDEND: K.DIVIDEND_DR, K.DPHASE_BUY_TRAIN: K.BUY_TRAIN_DR, K.DPHASE_BUY_PRIVATE: K.BUY_PRIVATE_DR,
 }
 SELL_BLOCK = {K.DPHASE_STOCK: K.STOCK_SELL, K.DPHASE_BUY_TRAIN: K.BUY_TRAIN_SELL}
+# The decision phase of a pass in each Ruby OR step.
+OR_PASS_PHASE = {
+    'Track': K.DPHASE_TRACK, 'Token': K.DPHASE_TOKEN, 'BuyTrain': K.DPHASE_BUY_TRAIN,
+    'BuyCompany': K.DPHASE_BUY_PRIVATE,
+}
 
 
 def _phase_name(phase: int) -> str:
@@ -85,6 +100,10 @@ def _bid(action, pre, phase, state) -> list[Decision]:
 def _pass(action, pre, phase, state) -> list[Decision]:
     if action['entity_type'] == 'company':  # only ER's seller passes for a private
         return [(K.DPHASE_ER_BONUS, K.ER_BONUS_PASS)]
+    if pre.get('round') == 'OR':
+        if pre['step'] not in OR_PASS_PHASE:
+            raise UnsupportedAction(f"pass in Ruby's {pre['step']} step")
+        return [(OR_PASS_PHASE[pre['step']], 0)]
     if phase not in K.PHASES_WITH_PASS_SLOT:
         raise UnsupportedAction(f'pass in {_phase_name(phase)}')
     return [(phase, 0)]
@@ -110,10 +129,17 @@ def _sell_shares(action, pre, phase, state) -> list[Decision]:
 
 
 def _lay_tile(action, pre, phase, state) -> list[Decision]:
-    entity = action['entity']
-    if action['entity_type'] == 'corporation':
-        raise UnsupportedAction('lay_tile by a corporation needs enumerate_lay_candidates (6.5)')
-    raise UnsupportedAction(f'lay_tile by private {entity} (6.8)')
+    """A corp's lay: TRACK at the hex, then TILE at the index of (tile,
+    canonical rotation) among the corp's candidates there."""
+    if action['entity_type'] != 'corporation':
+        raise UnsupportedAction(f"lay_tile by private {action['entity']} (6.8)")
+    h, tile = HEX[pre['hex']], TILE[pre['tile']]
+    candidates = A.lay_candidates_py(state, h, CORP[action['entity']])
+    lay = (tile, D.TILE_CANON_ROT[tile][pre['rotation']])
+    if lay not in candidates:
+        raise ValueError(f"Ruby's lay of {pre['tile']} on {pre['hex']} at rotation {pre['rotation']} "
+                         f'is not an engine candidate: {candidates}')
+    return [(K.DPHASE_TRACK, K.TRACK_HEX + h), (K.DPHASE_TILE, candidates.index(lay))]
 
 
 def _place_token(action, pre, phase, state) -> list[Decision]:
@@ -151,6 +177,8 @@ def _buy_train(action, pre, phase, state) -> list[Decision]:
 
 
 def _buy_company(action, pre, phase, state) -> list[Decision]:
+    if not BUY_PRIVATE_LANDED:
+        raise UnsupportedAction('buy_company: the buy-private slots arrive with 6.8')
     first = _slot(BUY_PRIVATE_SLOT, phase, 'buy_company')
     return [(phase, first + PRIVATE[pre['company']]), (K.DPHASE_PRIVATE_PRICE, K.PRIVATE_PRICE_EXACT + pre['price'])]
 

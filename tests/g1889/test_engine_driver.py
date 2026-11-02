@@ -41,6 +41,6 @@ def test_automated_steps_reject_actions(state):
 
 def test_unimplemented_phases_fail_loudly(state):
     TURN.set_round(state, K.ROUND_OPERATING)
-    TURN.set_step(state, K.STEP_TRACK)
-    with pytest.raises(NotImplementedError, match='TRACK'):
-        Dr.DRIVER.apply_action(state, K.TRACK_PASS)
+    TURN.set_step(state, K.STEP_BUY_PRIVATE)
+    with pytest.raises(NotImplementedError, match='BUY_PRIVATE'):
+        Dr.DRIVER.apply_action(state, K.BUY_PRIVATE_DONE)
