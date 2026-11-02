@@ -4,7 +4,8 @@ from libc.stdint cimport int16_t
 
 from g1889.constants cimport OWNER_CORP, OWNER_PLAYER
 from g1889.data.tables cimport (
-    CORP_TOKENS, FLOAT_PERCENT, MARKET_SHARE_LIMIT, NUM_CORPS, NUM_PAR_PRICES, PAR_COL, PAR_PRICE, PAR_ROW,
+    CORP_TOKEN_PRICE, CORP_TOKENS, FLOAT_PERCENT, MARKET_SHARE_LIMIT, NUM_CORPS, NUM_PAR_PRICES, PAR_COL,
+    PAR_PRICE, PAR_ROW,
 )
 from g1889.entities.bank cimport BANK_ACCOUNT, Bank
 from g1889.entities.market cimport Market, market_price
@@ -64,6 +65,17 @@ cdef int corp_pool_shares(GameState state, int corp) noexcept nogil:
 
 cdef int corp_president(GameState state, int corp) noexcept nogil:
     return _get(state, corp, CORP_FIELDS.president)
+
+
+cdef int corp_tokens_left(GameState state, int corp) noexcept nogil:
+    return _get(state, corp, CORP_FIELDS.tokens_left)
+
+
+cdef int corp_token_price(GameState state, int corp) noexcept nogil:
+    """The price of the corp's next charter token (``next_token``), which the
+    Token step charges; the first, the home token, is free. 0 with none left."""
+    cdef int left = corp_tokens_left(state, corp)
+    return CORP_TOKEN_PRICE[corp][CORP_TOKENS[corp] - left] if left > 0 else 0
 
 
 cdef void invalidate_route(GameState state, int corp) noexcept nogil:
@@ -171,11 +183,14 @@ cdef class Corporation:
         _set(state, self.corp_id, CORP_FIELDS.president, player)
 
     cpdef int tokens_left(self, GameState state):
-        return _get(state, self.corp_id, CORP_FIELDS.tokens_left)
+        return corp_tokens_left(state, self.corp_id)
 
     cpdef void set_tokens_left(self, GameState state, int tokens):
         assert 0 <= tokens <= CORP_TOKENS[self.corp_id], f"tokens {tokens} exceed the charter"
         _set(state, self.corp_id, CORP_FIELDS.tokens_left, tokens)
+
+    cpdef int token_price(self, GameState state):
+        return corp_token_price(state, self.corp_id)
 
     cpdef int last_revenue(self, GameState state):
         return _get(state, self.corp_id, CORP_FIELDS.last_revenue)

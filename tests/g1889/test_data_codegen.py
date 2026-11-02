@@ -62,6 +62,18 @@ def test_derived_tile_tables():
         assert C.TILE_CANON_ROT[t] == [masks.index(m) for m in masks]
 
 
+def test_walk_tables_keep_ruby_order():
+    for t, tile in enumerate(TILES):
+        count = C.TILE_PATH_COUNT[t]
+        assert count == len(tile['paths'])
+        assert [PAIRS[p] for p in C.TILE_PATHS[t][0][:count]] == [tuple(p) for p in tile['paths']]
+        for r in range(C.NUM_SIDES):
+            assert sum(1 << p for p in C.TILE_PATHS[t][r][:count]) == C.TILE_MASK[t][r]
+            assert C.TILE_PATHS[t][r][count:] == [255] * (C.MAX_TILE_PATHS - count)
+    assert [HEXES[h]['ruby_order'] for h in C.HEX_WALK_ORDER] == list(range(C.NUM_HEXES))
+    assert C.ENDPOINT_PAIRS == [sum(1 << i for i, pair in enumerate(PAIRS) if e in pair) for e in range(C.NODE + 1)]
+
+
 def test_upgrade_csr_holds_canonical_json_targets():
     rows = {tuple(row['from']): row['to'] for row in T['upgrades']}
     assert len(C.UPG_START) == C.NUM_TILES * C.NUM_SIDES + 1

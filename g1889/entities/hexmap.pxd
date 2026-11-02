@@ -1,15 +1,31 @@
 """MAP: each hex's tile, canonical rotation, and token mask, and the tile supply.
 
 Any change to the map makes every corp's connectivity and routes stale.
+
+Home reservations are implicit (state.pxd): a hex whose ``HEX_HOME_CORP`` has
+not placed its token keeps one slot for it, as Ruby's ``City#reservations``
+do (``part/city.rb``: ``get_slot``, ``tokenable?``). A reservation keeps the
+slot from other corps' tokens but never blocks a route (``City#blocks?``).
 """
+
+from libc.stdint cimport uint32_t
 
 from g1889.state cimport GameState
 
 cdef int hex_tile(GameState state, int hex) noexcept nogil
 cdef int hex_rotation(GameState state, int hex) noexcept nogil
 cdef int hex_tokens(GameState state, int hex) noexcept nogil
+cdef uint32_t hex_paths(GameState state, int hex) noexcept nogil
 cdef int supply_count(GameState state, int tile) noexcept nogil
 cdef void invalidate_connectivity(GameState state) noexcept nogil
+
+# Cities, revenue, and terrain
+cdef int map_token_count(GameState state, int hex) noexcept nogil
+cdef int map_free_slots(GameState state, int hex) noexcept nogil
+cdef bint map_has_slot_for(GameState state, int hex, int corp) noexcept nogil
+cdef bint map_blocked_for(GameState state, int hex, int corp) noexcept nogil
+cdef int map_revenue(GameState state, int hex, int phase, bint is_d) noexcept nogil
+cdef int map_lay_cost(GameState state, int hex, int corp) noexcept nogil
 
 
 cdef class HexMap:
@@ -21,3 +37,16 @@ cdef class HexMap:
     cpdef int supply(self, GameState state, int tile)
     cpdef void set_supply(self, GameState state, int tile, int count)
     cpdef int conn_dirty(self, GameState state)
+
+    # Queries
+    cpdef int free_slots(self, GameState state, int hex)
+    cpdef bint has_slot_for(self, GameState state, int hex, int corp)
+    cpdef bint blocked_for(self, GameState state, int hex, int corp)
+    cpdef int revenue(self, GameState state, int hex, int phase, bint is_d=*)
+    cpdef int lay_cost(self, GameState state, int hex, int corp)
+
+    # Mutations
+    cpdef void lay(self, GameState state, int hex, int tile, int rotation)
+    cpdef void lay_track(self, GameState state, int corp, int hex, int tile, int rotation)
+    cpdef void place_token(self, GameState state, int hex, int corp)
+    cpdef void buy_token(self, GameState state, int hex, int corp)

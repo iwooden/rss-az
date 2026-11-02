@@ -172,8 +172,8 @@ def test_pairs():
 
 def test_paths_masks_and_rotations():
     for t in TILES:
-        paths = t['paths']
-        assert all(a < b for a, b in paths) and paths == sorted(paths) and len(set(map(tuple, paths))) == len(paths)
+        paths = t['paths']  # in Ruby's order
+        assert all(a < b for a, b in paths) and len(set(map(tuple, paths))) == len(paths)
         for r in range(6):
             assert t['masks'][r] == path_mask(paths, r)
             assert t['masks'][r] < 1 << NUM_PAIRS

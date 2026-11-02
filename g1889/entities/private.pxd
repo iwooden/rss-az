@@ -5,6 +5,7 @@ from g1889.state cimport GameState
 
 cdef int private_owner(GameState state, int private) noexcept nogil
 cdef int private_revenue(GameState state, int private) noexcept nogil
+cdef bint private_blocks_hex(GameState state, int hex) noexcept nogil
 
 # Auction (Ruby's WaterfallAuction): unsold privates sell top-down.
 cdef int topmost_private(GameState state) noexcept nogil
@@ -24,6 +25,7 @@ cdef class Private:
     cpdef int flags(self, GameState state)
     cpdef void set_flags(self, GameState state, int flags)
     cpdef int revenue(self, GameState state)
+    cpdef bint blocks_hex(self, GameState state, int hex)
 
     cpdef int price(self, GameState state)
     cpdef int high_bid(self, GameState state)

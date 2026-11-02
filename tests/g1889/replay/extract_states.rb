@@ -12,6 +12,7 @@
 #
 #   ruby tests/g1889/replay/extract_states.rb path/to/game.json
 #   ruby tests/g1889/replay/extract_states.rb --new-game N [--seed S] [--players ID,ID,...]
+#   ruby tests/g1889/replay/extract_states.rb --graphs specs.json
 #
 # Ruby is the oracle, so the extractor records what the engine does and never
 # corrects it. Actions are processed the way Engine::Game.load processes them:
@@ -26,7 +27,7 @@ require 'logger'
 
 module G1889Extract
   ROOT = File.expand_path('../../..', __dir__)
-  SCHEMA_VERSION = 2
+  SCHEMA_VERSION = 3
   TITLE = '1889'
 
   module_function
@@ -329,7 +330,108 @@ module G1889Extract
         'routes_revenue' => round.routes.empty? ? nil : @game.routes_revenue(round.routes),
         'ebuy_sold' => buy_train.instance_variable_get(:@corporations_sold)&.map(&:name) || [],
         'ebuy_last_share_price' => buy_train.last_share_sold_price,
+      }.merge(network_snapshot(round))
+    end
+
+    # ------------------------------------------------------- track, tokens
+
+    # The connectivity, token, and lay oracles for every corporation with a
+    # placed token, answered by Ruby's own Graph, Tokener, and Tracker code.
+    # They run on a fresh Graph swapped in for the game's, whose
+    # route_train_purchase cache outlives Graph#clear and would otherwise
+    # change what the replay does later; log lines Ruby writes while
+    # answering are dropped.
+    def network_snapshot(round)
+      corps = @game.corporations.select { |c| c.tokens.any?(&:used) }
+      # Ruby keeps Track open after the turn's lay while the president owns
+      # MF (tile_lay_abilities_should_block?), but no corporation may lay.
+      track = round.active_step
+      track = nil unless track.is_a?(Engine::Step::Track) && round.num_laid_track.zero?
+      log_size = @game.log.size
+      with_graph(Engine::Graph.new(@game)) do |graph|
+        {
+          'graph' => corps.to_h { |c| [c.name, graph_info(graph, c)] },
+          'tokens' => corps.to_h { |c| [c.name, tokenable_hexes(graph, c)] },
+          'lays' => track && corps.to_h { |c| [c.name, legal_lays(track, c)] },
+        }
+      end
+    ensure
+      @game.log.slice!(log_size..) if log_size
+    end
+
+    def with_graph(graph)
+      saved = @game.instance_variable_get(:@graph)
+      @game.instance_variable_set(:@graph, graph)
+      yield graph
+    ensure
+      @game.instance_variable_set(:@graph, saved)
+    end
+
+    # connected_hexes (hex => edges reached), connected_nodes (by hex), and
+    # route_info's route_train_purchase.
+    def graph_info(graph, corp)
+      hexes = graph.connected_hexes(corp).select { |hex, _| hex }
+      {
+        'hexes' => hexes.sort_by { |hex, _| hex.id }.to_h { |hex, edges| [hex.id, edges.sort] },
+        'nodes' => graph.connected_nodes(corp).keys.map { |node| node.hex.id }.uniq.sort,
+        'route' => !!graph.route_info(corp)&.dig(:route_train_purchase),
       }
+    end
+
+    # Cities the corporation's Token step would accept now, setting aside
+    # whose turn it is: City#tokenable? (a token left and affordable, a free
+    # or reserved slot, no token of its own on the hex), reachable_hexes
+    # (Token#available_hex), and connected_nodes (Tokener#check_connected).
+    def tokenable_hexes(graph, corp)
+      reachable = graph.reachable_hexes(corp)
+      nodes = graph.connected_nodes(corp)
+      @game.hexes.select do |hex|
+        reachable[hex] && hex.tile.cities.any? { |city| nodes[city] && city.tokenable?(corp) }
+      end.map(&:id).sort
+    end
+
+    # Every lay the Track step offers the corporation, setting aside whose
+    # turn it is: [hex, tile, rotation, cost, ok] for each hex available_hex
+    # accepts and each legal rotation of upgradeable_tiles there. cost is
+    # what lay_tile charges (upgrade_cost, then tile_cost_with_discount); the
+    # lay needs cost <= cash. ok is check_track_restrictions!, which
+    # Game.load skips, run by laying the tile in place and taking it back up.
+    def legal_lays(step, corp)
+      @game.hexes.flat_map do |hex|
+        next [] unless step.available_hex(corp, hex)
+
+        cost = @game.upgrade_cost(hex.tile, hex, corp, corp)
+        step.upgradeable_tiles(corp, hex).flat_map do |tile|
+          tile.legal_rotations.map do |rotation|
+            tile.rotate!(rotation)
+            [hex.id, tile.name, rotation, @game.tile_cost_with_discount(tile, hex, corp, corp, cost),
+             track_restrictions_ok?(step, corp, hex, tile)]
+          end
+        end
+      end
+    end
+
+    # Step::Tracker#check_track_restrictions! for the rotated tile on hex: it
+    # reads the corporation's graph with the tile laid, so the tile goes down
+    # with Hex#lay (which moves tokens and reservations across) on a fresh
+    # graph, with loading off so the check runs, and comes back up.
+    def track_restrictions_ok?(step, corp, hex, tile)
+      old_tile = hex.tile
+      before = hex_snapshot(hex)
+      loading = @game.loading
+      with_graph(Engine::Graph.new(@game)) do
+        @game.instance_variable_set(:@loading, false)
+        hex.lay(tile)
+        step.check_track_restrictions!(corp, old_tile, tile)
+        true
+      rescue Engine::GameError
+        false
+      ensure
+        hex.lay(old_tile) if hex.tile == tile
+        @game.instance_variable_set(:@loading, loading)
+      end
+    ensure
+      raise AnnotationError, "probing #{tile.name} changed #{hex.id}" unless hex_snapshot(hex) == before
     end
 
     def round_state_snapshot
@@ -621,12 +723,69 @@ module G1889Extract
     }
   end
 
+  # Ruby's Graph on hand-built maps. Each spec's ops run in order on a new
+  # 4-player game: ['lay', hex, tile, rotation] lays a supply tile with
+  # Hex#lay and the supply bookkeeping, and ['token', corporation, hex]
+  # places the corporation's next token free. Records graph_info for every
+  # corporation with a token, and for each lay in the spec's probe
+  # ({corporation: [[hex, tile, rotation], ...]}) whether
+  # check_track_restrictions! accepts it.
+  def extract_graphs(path)
+    # Step::Tracker's checks outside a round; the engine loads after this file.
+    checker_class = Class.new do
+      include Engine::Step::Tracker
+
+      def initialize(game)
+        @game = game
+      end
+    end
+    specs = JSON.parse(File.read(path))
+    graphs = specs.map do |spec|
+      game = Engine::Game::G1889::Game.new((1..4).to_h { |i| [i, "Player #{i}"] }, id: 'graphs', seed: 1)
+      corps = []
+      spec['ops'].each do |kind, *args|
+        if kind == 'lay'
+          hex_id, name, rotation = args
+          hex = game.hex_by_id(hex_id)
+          tile = game.tiles.find { |t| t.name == name } || raise("#{name} is not in supply")
+          tile.rotate!(rotation)
+          game.update_tile_lists(tile, hex.tile)
+          hex.lay(tile)
+        else
+          corp = game.corporation_by_id(args[0])
+          game.hex_by_id(args[1]).tile.cities.first.place_token(corp, corp.next_token, free: true,
+                                                                  check_tokenable: false)
+          corps |= [corp]
+        end
+      end
+      reader = Reader.new(game, player_ids(game))
+      graph = Engine::Graph.new(game)
+      checker = checker_class.new(game)
+      {
+        'graph' => corps.to_h { |c| [c.name, reader.graph_info(graph, c)] },
+        'restrictions' => (spec['probe'] || {}).to_h do |sym, lays|
+          corp = game.corporation_by_id(sym)
+          [sym, lays.map do |hex_id, name, rotation|
+            tile = game.tiles.find { |t| t.name == name }
+            tile.rotate!(rotation)
+            reader.track_restrictions_ok?(checker, corp, game.hex_by_id(hex_id), tile)
+          end]
+        end,
+      }
+    end
+    { 'schema' => SCHEMA_VERSION, 'source' => { 'kind' => 'graphs' }, 'graphs' => graphs }
+  end
+
   def parse_id(text)
     text.match?(/\A-?\d+\z/) ? text.to_i : text
   end
 
   def main(argv)
-    if argv.first == '--new-game'
+    if argv.first == '--graphs'
+      abort "usage: ruby #{$PROGRAM_NAME} --graphs specs.json" unless argv.size == 2
+      load_engine
+      extract = extract_graphs(argv[1])
+    elsif argv.first == '--new-game'
       num_players = Integer(argv[1])
       opts = argv.drop(2).each_slice(2).to_h
       unknown = opts.keys - %w[--seed --players]

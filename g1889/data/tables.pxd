@@ -28,6 +28,7 @@ cpdef enum TableDims:
     NUM_UPGRADE_TARGETS = 1206
     MAX_LAY_CANDIDATES = 15
     MAX_ROUTE_HEXES = 104
+    MAX_TILE_PATHS = 6
 
 cpdef enum TableRules:
     BANK_CASH = 7000
@@ -114,6 +115,7 @@ cdef uint8_t[52] HEX_EXIT_MASK
 cdef int8_t[52] HEX_RC
 cdef int8_t[52] HEX_HOME_CORP
 cdef int8_t[52] HEX_BLOCKER
+cdef int8_t[52] HEX_WALK_ORDER
 
 # Revenue centers: printed values; revenue by game phase for non-D trains
 cdef int8_t[25] RC_HEX
@@ -122,7 +124,7 @@ cdef int8_t[25] RC_PORT
 cdef int16_t[25][6] RC_REVENUE
 cdef int16_t[25] RC_D_REVENUE
 
-# Tiles: 0-39 supply, 40 + h printed on hex h; masks, exits, and canonical rotations by rotation
+# Tiles: 0-39 supply, 40 + h printed on hex h; masks, exits, canonical rotations, and paths by rotation
 cdef uint8_t[92] TILE_COLOR
 cdef uint8_t[92] TILE_LABEL
 cdef uint8_t[92] TILE_RC
@@ -135,6 +137,8 @@ cdef int16_t[92] TILE_COST
 cdef uint32_t[92][6] TILE_MASK
 cdef uint8_t[92][6] TILE_EXITS
 cdef uint8_t[92][6] TILE_CANON_ROT
+cdef uint8_t[92] TILE_PATH_COUNT
+cdef uint8_t[92][6][6] TILE_PATHS
 
 # Upgrades: CSR over k = 6 * tile + rotation; k has targets UPG_START[k] to UPG_START[k + 1] - 1
 cdef int16_t[553] UPG_START
@@ -179,6 +183,7 @@ cdef int8_t[6] PAR_ROW
 cdef int8_t[6] PAR_COL
 cdef int16_t[6] PAR_PRICE
 
-# Endpoint pairs: bit i of a path mask joins PAIR_A[i] and PAIR_B[i]
+# Endpoint pairs: bit i of a path mask joins PAIR_A[i] and PAIR_B[i]; ENDPOINT_PAIRS[e] has the pairs at e
 cdef uint8_t[21] PAIR_A
 cdef uint8_t[21] PAIR_B
+cdef uint32_t[7] ENDPOINT_PAIRS

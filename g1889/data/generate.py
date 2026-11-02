@@ -17,12 +17,13 @@ import json
 import shutil
 import subprocess
 import textwrap
+from math import prod
 from pathlib import Path
 from typing import Any
 
 from g1889.data import (
-    COLORS, LABELS, MARKET_TYPES, NODE, NUM_PAIRS, NUM_SIDES, PAIRS, RC_TYPES, TABLES_PATH, TERRAINS, mask_exits,
-    path_mask,
+    COLORS, LABELS, MARKET_TYPES, NODE, NUM_PAIRS, NUM_SIDES, PAIR_INDEX, PAIRS, RC_TYPES, TABLES_PATH, TERRAINS,
+    mask_exits, path_mask, rotate_endpoint,
 )
 
 DUMP_SCRIPT = Path(__file__).with_name('dump_1889.rb')
@@ -33,6 +34,7 @@ C_RANGES = {'int8_t': (-2**7, 2**7 - 1), 'uint8_t': (0, 2**8 - 1), 'int16_t': (-
             'uint32_t': (0, 2**32 - 1)}
 TRAIN_KEYS = {'name', 'distance', 'price', 'num', 'rusts_on', 'available_on', 'discount', 'events'}
 PHASE_KEYS = {'name', 'on', 'train_limit', 'tiles', 'operating_rounds', 'status'}
+NO_PATH = 255  # TILE_PATHS padding
 
 
 def run_dump() -> dict[str, Any]:
@@ -49,7 +51,7 @@ def _tile(t: dict, hex_index: int) -> dict:
     rc = t['revenue_centers'][0] if t['revenue_centers'] else None
     if rc and rc['type'] != 'offboard' and len(set(rc['phase_revenue'] + [rc['d_revenue']])) != 1:
         raise ValueError(f"tile {t['name']} has phase-dependent city/town revenue")
-    paths = sorted(sorted(p) for p in t['paths'])
+    paths = [sorted(p) for p in t['paths']]  # Ruby's order, which its path walk follows
     masks = [path_mask(paths, r) for r in range(NUM_SIDES)]
     if mask_exits(masks[0]) != sum(1 << e for e in t['exits']):
         raise ValueError(f"tile {t['name']}: paths disagree with Ruby exits")
@@ -95,6 +97,7 @@ def _upgrade_rows(tiles: list[dict]) -> list[dict]:
 def build(dump: dict[str, Any]) -> dict[str, Any]:
     if dump['layout'] != 'flat':
         raise ValueError(f"unexpected layout {dump['layout']}")
+    ruby_order = {h['id']: i for i, h in enumerate(dump['hexes'])}
     hexes = sorted(dump['hexes'], key=lambda h: (h['x'], h['y']))
     hex_index = {h['id']: i for i, h in enumerate(hexes)}
     corp_index = {c['sym']: i for i, c in enumerate(dump['corporations'])}
@@ -131,6 +134,7 @@ def build(dump: dict[str, Any]) -> dict[str, Any]:
             'rc': len(rc_rows) - 1 if rcs else -1,
             'reserved': [corp_index[sym] for sym in h['reservations']],
             'blockers': [private_index[sym] for sym in h['blockers']],
+            'ruby_order': ruby_order[h['id']],
         })
 
     corporations = []
@@ -241,6 +245,18 @@ def _wrapped(items: Any) -> list[str]:
     return textwrap.wrap(', '.join(items) + ',', width=100, initial_indent='    ', subsequent_indent='    ')
 
 
+def _shape(values: Any) -> tuple[int, ...]:
+    return (len(values), *_shape(values[0])) if isinstance(values, list) else ()
+
+
+def _flat(values: Any) -> list:
+    return [v for row in values for v in _flat(row)] if isinstance(values, list) else [values]
+
+
+def _literal(values: Any) -> str:
+    return f'[{", ".join(map(_literal, values))}]' if isinstance(values, list) else str(values)
+
+
 def _one(values: Any) -> Any:
     """The single value shared by every item of values."""
     distinct = set(values)
@@ -253,8 +269,10 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
     """Stage 2: tables.json as the enums and C arrays of tables.pxd and tables.pyx.
 
     Derives TILE_EXITS, TILE_CANON_ROT, the upgrade CSR (canonical targets
-    only), and MAX_LAY_CANDIDATES. Every array gets a Python list mirror and
-    every enum member an int mirror, set through globals() as in core/data.pyx.
+    only), MAX_LAY_CANDIDATES, and the path walk's tables: TILE_PATHS (each
+    tile's paths in Ruby's order, by rotation), HEX_WALK_ORDER, and
+    ENDPOINT_PAIRS. Every array gets a Python list mirror and every enum
+    member an int mirror, set through globals() as in core/data.pyx.
     """
     hexes, rcs, tiles = tables['hexes'], tables['revenue_centers'], tables['tiles']
     corps, privates, trains, phases = (tables[k] for k in ('corporations', 'privates', 'trains', 'phases'))
@@ -277,6 +295,9 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
     market_cols = max(map(len, prices))
 
     canon = [[t['masks'].index(m) for m in t['masks']] for t in tiles]
+    max_paths = max(len(t['paths']) for t in tiles)
+    tile_paths = [[[PAIR_INDEX[rotate_endpoint(a, r)][rotate_endpoint(b, r)] for a, b in t['paths']]
+                   + [NO_PATH] * (max_paths - len(t['paths'])) for r in range(NUM_SIDES)] for t in tiles]
     exits = [[mask_exits(m) for m in t['masks']] for t in tiles]
     rows = {tuple(row['from']): row['to'] for row in tables['upgrades']}
     csr = [sorted({(new, canon[new][r]) for new, r in rows.get((t, rot), [])})
@@ -304,6 +325,7 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
             ('MIN_PLAYERS', min(counts)), ('MAX_PLAYERS', max(counts)),
             ('NUM_UPGRADE_TARGETS', sum(map(len, csr))), ('MAX_LAY_CANDIDATES', max_lay),
             ('MAX_ROUTE_HEXES', 2 * len(hexes)),  # a route can cross a hex twice on a crossing tile
+            ('MAX_TILE_PATHS', max_paths),
         ]),
         ('TableRules', [
             ('BANK_CASH', tables['rules']['BANK_CASH']), ('MIN_BID_INCREMENT', tables['rules']['MIN_BID_INCREMENT']),
@@ -338,15 +360,17 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
 
     def array(ctype: str, name: str, values: list, labels: list | None = None,
               groups: list[tuple[str, list]] | None = None) -> None:
-        """One C array: a row per line for 2D (labelled), a group per line or wrapped for 1D."""
+        """One C array: a row per line for 2D and 3D (labelled), a group per line or wrapped for 1D."""
         if isinstance(values[0], list):
-            shape = (len(values), len(values[0]))
-            flat = [v for row in values for v in row]
-            if any(len(row) != shape[1] for row in values):
+            shape = _shape(values)
+            flat = _flat(values)
+            if len(flat) != prod(shape):
                 raise ValueError(f'{name} is ragged')
-            body = [f'    [{", ".join(map(str, row))}],' + (f'  # {labels[i]}' if labels else '')
-                    for i, row in enumerate(values)]
-            mirror = f'[[<int>{name}[i][j] for j in range({shape[1]})] for i in range({shape[0]})]'
+            body = [f'    {_literal(row)},' + (f'  # {labels[i]}' if labels else '') for i, row in enumerate(values)]
+            index = ''.join(f'[{"ijk"[d]}]' for d in range(len(shape)))
+            mirror = f'<int>{name}{index}'
+            for d in reversed(range(len(shape))):
+                mirror = f'[{mirror} for {"ijk"[d]} in range({shape[d]})]'
         else:
             shape = (len(values),)
             flat = values
@@ -374,13 +398,14 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
     array('int8_t', 'HEX_RC', [h['rc'] for h in hexes])
     array('int8_t', 'HEX_HOME_CORP', [h['reserved'][0] if h['reserved'] else -1 for h in hexes])
     array('int8_t', 'HEX_BLOCKER', [h['blockers'][0] if h['blockers'] else -1 for h in hexes])
+    array('int8_t', 'HEX_WALK_ORDER', sorted(range(len(hexes)), key=lambda i: hexes[i]['ruby_order']))
     section('Revenue centers: printed values; revenue by game phase for non-D trains')
     array('int8_t', 'RC_HEX', [rc['hex'] for rc in rcs])
     array('int8_t', 'RC_TYPE', [rc['type'] for rc in rcs])
     array('int8_t', 'RC_PORT', [int(rc['port']) for rc in rcs])
     array('int16_t', 'RC_REVENUE', [rc['revenue'] for rc in rcs], rc_ids)
     array('int16_t', 'RC_D_REVENUE', [rc['d_revenue'] for rc in rcs])
-    section('Tiles: 0-39 supply, 40 + h printed on hex h; masks, exits, and canonical rotations by rotation')
+    section('Tiles: 0-39 supply, 40 + h printed on hex h; masks, exits, canonical rotations, and paths by rotation')
     for ctype, name, key in (('uint8_t', 'TILE_COLOR', 'color'), ('uint8_t', 'TILE_LABEL', 'label'),
                              ('uint8_t', 'TILE_RC', 'rc'), ('uint8_t', 'TILE_SLOTS', 'slots'),
                              ('uint8_t', 'TILE_TERRAIN', 'terrain'), ('uint8_t', 'TILE_BLOCKS_LAY', 'blocks_lay'),
@@ -390,6 +415,8 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
     array('uint32_t', 'TILE_MASK', [t['masks'] for t in tiles], tile_names)
     array('uint8_t', 'TILE_EXITS', exits, tile_names)
     array('uint8_t', 'TILE_CANON_ROT', canon, tile_names)
+    array('uint8_t', 'TILE_PATH_COUNT', [len(t['paths']) for t in tiles])
+    array('uint8_t', 'TILE_PATHS', tile_paths, tile_names)
     section('Upgrades: CSR over k = 6 * tile + rotation; k has targets UPG_START[k] to UPG_START[k + 1] - 1')
     starts = [0]
     for targets in csr:
@@ -436,9 +463,11 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
     array('int8_t', 'PAR_ROW', [r for _, r, _ in par])
     array('int8_t', 'PAR_COL', [c for _, _, c in par])
     array('int16_t', 'PAR_PRICE', [p for p, _, _ in par])
-    section('Endpoint pairs: bit i of a path mask joins PAIR_A[i] and PAIR_B[i]')
+    section('Endpoint pairs: bit i of a path mask joins PAIR_A[i] and PAIR_B[i]; ENDPOINT_PAIRS[e] has the pairs at e')
     array('uint8_t', 'PAIR_A', [a for a, _ in PAIRS])
     array('uint8_t', 'PAIR_B', [b for _, b in PAIRS])
+    array('uint32_t', 'ENDPOINT_PAIRS', [sum(1 << i for i, pair in enumerate(PAIRS) if e in pair)
+                                         for e in range(NODE + 1)])
 
     enum_lines = []
     for name, values in enum_defs:

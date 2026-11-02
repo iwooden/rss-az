@@ -219,6 +219,33 @@ def test_stock_legality_allows_each_logged_move(case):
     assert checked > 20
 
 
+def test_network_oracles_admit_each_logged_move(case):
+    """``operating.lays`` and ``tokens`` admit every corporation's logged lay
+    and token at the snapshot before it, and they cover exactly the
+    corporations with a placed token."""
+    records = case[2]['records']
+    lays = tokens = 0
+    for before, record in zip(records, records[1:]):
+        operating, action, pre = before['state']['operating'], record['action'], record['pre']
+        if operating is None:
+            continue
+        placed = {sym for sym, corp in before['state']['corporations'].items() if corp['token_hexes']}
+        assert set(operating['graph']) == set(operating['tokens']) == placed
+        assert operating['lays'] is None or set(operating['lays']) == placed
+        if action['entity_type'] != 'corporation':
+            continue
+        corp = action['entity']
+        if action['type'] == 'lay_tile':
+            cash = before['state']['corporations'][corp]['cash']
+            assert [pre['hex'], pre['tile'], pre['rotation']] in \
+                [row[:3] for row in operating['lays'][corp] if row[4] and row[3] <= cash]
+            lays += 1
+        elif action['type'] == 'place_token':
+            assert pre['hex'] in operating['tokens'][corp]
+            tokens += 1
+    assert (lays, tokens) == {'314': (40, 6), '962': (51, 8)}.get(case[0], (0, 0))
+
+
 def test_logged_revenue_exceeds_ruby_max_only_where_known():
     # Ruby pays logged route revenue unchecked. 314's 367 logs ¥400 for IR, whose
     # 3-train route I4-I2-J3-K4 passes through I2, which SR and AR fill; the

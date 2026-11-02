@@ -4,7 +4,7 @@ from collections import namedtuple
 
 cimport numpy as cnp
 import numpy as np
-from libc.stdint cimport int8_t, uint16_t
+from libc.stdint cimport int8_t, uint16_t, uint32_t
 from libc.stdio cimport fprintf, stderr
 from libc.stdlib cimport abort
 
@@ -23,18 +23,29 @@ from g1889.constants cimport (
     TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS,
 )
 from g1889.data.tables cimport (
-    CERT_LIMIT, MAX_OWNERSHIP_PERCENT, MF_PORT_HEX, MIN_BID_INCREMENT, NUM_CORPS, NUM_HEXES, NUM_PAR_PRICES,
-    NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE, TRADE_IN_TYPE,
+    CERT_LIMIT, ENDPOINT_PAIRS, HEX_EXIT_MASK, HEX_NEIGHBOR, MAX_LAY_CANDIDATES, MAX_OWNERSHIP_PERCENT,
+    MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS, NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES,
+    NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE, PHASE_TILE_COLORS, TILE_BLOCKS_LAY, TILE_COLOR,
+    TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, UPG_ROT, UPG_START, UPG_TILE,
 )
-from g1889.entities.corp cimport corp_ipo_shares, corp_max_sale, corp_par_index, corp_par_price, corp_pool_shares
+from g1889.entities.corp cimport (
+    corp_cash, corp_ipo_shares, corp_max_sale, corp_par_index, corp_par_price, corp_pool_shares, corp_token_price,
+    corp_tokens_left,
+)
+from g1889.entities.graph cimport graph_node, graph_sides, graph_walks_new_track
+from g1889.entities.hexmap cimport hex_paths, hex_rotation, hex_tile, map_has_slot_for, map_lay_cost, supply_count
 from g1889.entities.market cimport market_price, market_unlimited
 from g1889.entities.player cimport (
     player_available, player_can_gain, player_cash, player_cert_count, player_shares, player_sold_mask,
 )
-from g1889.entities.private cimport private_min_bid, private_owner, private_price, topmost_private
+from g1889.entities.phase cimport game_phase
+from g1889.entities.private cimport (
+    private_blocks_hex, private_min_bid, private_owner, private_price, topmost_private,
+)
 from g1889.entities.turn cimport (
-    turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_num_players, turn_pending_private,
-    turn_sr_bought, turn_sr_sold_mask, turn_sr_sold_then_bought, turn_step, turn_turn,
+    turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_num_players, turn_operating_corp,
+    turn_pending_hex, turn_pending_private, turn_sr_bought, turn_sr_sold_mask, turn_sr_sold_then_bought, turn_step,
+    turn_turn,
 )
 from g1889.state cimport GameState
 
@@ -564,6 +575,164 @@ cdef int _enumerate_par(GameState state, uint16_t* ids) noexcept nogil:
     return count
 
 
+# =============================================================================
+# TRACK, TILE, TOKEN
+# =============================================================================
+#
+# Ruby's Track and Token steps (step/tracker.rb, step/tokener.rb). A lay is
+# factored (§5.4): TRACK picks a hex that has a candidate, and TILE an index
+# into the hex's candidates, the upgrade table's canonical targets that pass
+# Ruby's checks, sorted by (tile, rotation). Buying a private, DR, and MF
+# arrive with 6.8.
+
+
+cdef uint32_t _enterable_paths(GameState state, int hex) noexcept nogil:
+    """The paths at the sides a walk could enter the hex by: those where the
+    hex across has track facing it, through a side open to it."""
+    cdef uint32_t paths = 0
+    cdef int side, across, back
+    for side in range(<int>NUM_SIDES):
+        across = HEX_NEIGHBOR[hex][side]
+        back = (side + 3) % <int>NUM_SIDES
+        if across >= 0 and HEX_EXIT_MASK[across] >> back & 1 and hex_paths(state, across) & ENDPOINT_PAIRS[back]:
+            paths |= ENDPOINT_PAIRS[side]
+    return paths
+
+
+cdef bint _semi_restrictive(GameState state, int corp, int hex, int old, uint32_t old_paths, int tile,
+                            int rotation, uint32_t enterable) noexcept nogil:
+    """The semi-restrictive rule (``check_track_restrictions!``, 1889's
+    ``TRACK_RESTRICTION``): after the lay, the corp's walks must meet a path
+    of the new tile that is new track, or that touches a revenue center whose
+    value changed. A lay where there is no track passes.
+
+    Every 1889 city upgrade changes the city's value, and every path of a
+    city tile touches the city. Such a lay passes whenever its exits meet a
+    side the corp reaches (``_lay_scan`` checks that first): the walks run as
+    before the lay until they first enter the hex at a side the new tile has
+    track on, and there they walk every path at that side. New track off the
+    node fails when none of it ends where a walk could enter the hex
+    (``enterable``). Any other lay is decided by walking with the tile laid
+    (``graph_walks_new_track``)."""
+    cdef uint32_t paths = TILE_MASK[tile][rotation]
+    cdef uint32_t added = paths & ~old_paths
+    if old_paths == 0:
+        return True
+    if TILE_REVENUE[tile] != TILE_REVENUE[old] and paths & ~ENDPOINT_PAIRS[<int>NODE] == 0:
+        return True
+    if not (added & (ENDPOINT_PAIRS[<int>NODE] | enterable)):
+        return False
+    return graph_walks_new_track(state, corp, hex, tile, rotation)
+
+
+cdef int _lay_scan(GameState state, int corp, int hex, LayCandidate* buf, bint first_only) noexcept nogil:
+    """The corp's lay candidates at the hex, or with ``first_only`` whether
+    there is one (0 or 1). Ruby's Track step offers a hex the corp reaches
+    that no private blocks (``tracker_available_hex``), and the tiles in
+    supply of the phase's colors that upgrade it (``upgradeable_tiles``) at
+    rotations whose exits stay on open sides and meet a reached side
+    (``legal_tile_rotation?``). The lay cost must be affordable, and the lay
+    pass the semi-restrictive rule."""
+    cdef int old = hex_tile(state, hex)
+    cdef int k = old * <int>NUM_SIDES + hex_rotation(state, hex)
+    cdef int count = 0
+    cdef int sides, colors, i, tile, rotation, exits
+    cdef uint32_t old_paths, enterable
+    if UPG_START[k] == UPG_START[k + 1] or private_blocks_hex(state, hex):
+        return 0
+    sides = graph_sides(state, corp, hex)
+    if sides == 0 or map_lay_cost(state, hex, corp) > corp_cash(state, corp):
+        return 0
+    colors = PHASE_TILE_COLORS[game_phase(state)]
+    old_paths = hex_paths(state, hex)
+    enterable = _enterable_paths(state, hex) if old_paths else 0
+    for i in range(UPG_START[k], UPG_START[k + 1]):
+        tile = UPG_TILE[i]
+        rotation = UPG_ROT[i]
+        exits = TILE_EXITS[tile][rotation]
+        if (TILE_BLOCKS_LAY[tile] or not (colors >> TILE_COLOR[tile] & 1) or supply_count(state, tile) <= 0
+                or exits & ~HEX_EXIT_MASK[hex] or not (exits & sides)
+                or not _semi_restrictive(state, corp, hex, old, old_paths, tile, rotation, enterable)):
+            continue
+        if first_only:
+            return 1
+        if count == <int>MAX_LAY_CANDIDATES:
+            fprintf(stderr, b"lay_candidates: hex %d has more than MAX_LAY_CANDIDATES %d\n",
+                    hex, <int>MAX_LAY_CANDIDATES)
+            abort()
+        buf[count].tile = tile
+        buf[count].rotation = rotation
+        count += 1
+    return count
+
+
+cdef int lay_candidates(GameState state, int corp, int hex, LayCandidate* buf) noexcept nogil:
+    """Write the corp's lay candidates at the hex to ``buf`` (MAX_LAY_CANDIDATES
+    slots), sorted by (tile, rotation), and return the count."""
+    return _lay_scan(state, corp, hex, buf, False)
+
+
+cdef int enumerate_lay_candidates(GameState state, int hex, LayCandidate* buf) noexcept nogil:
+    """The operating corp's lay candidates at the hex: TILE's ids index them."""
+    return _lay_scan(state, turn_operating_corp(state), hex, buf, False)
+
+
+cdef bint can_lay(GameState state, int corp, int hex) noexcept nogil:
+    return _lay_scan(state, corp, hex, NULL, True) != 0
+
+
+cdef bint can_token(GameState state, int corp, int hex) noexcept nogil:
+    """Whether the corp may token the hex's city now (``Tokener``): it has a
+    token left and can afford the next one's price (``City#tokenable?``), the
+    city has a slot for it, and its walk reaches the city (``connected_nodes``;
+    Ruby's ``reachable_hexes`` then holds too)."""
+    return (corp_tokens_left(state, corp) > 0 and corp_token_price(state, corp) <= corp_cash(state, corp)
+            and map_has_slot_for(state, hex, corp) and graph_node(state, corp, hex))
+
+
+cdef int _enumerate_track(GameState state, uint16_t* ids) noexcept nogil:
+    """Pass, then each hex with a lay candidate."""
+    cdef int corp = turn_operating_corp(state)
+    cdef int count = 1
+    cdef int h
+    ids[0] = TRACK_PASS
+    if corp < 0:
+        return count
+    for h in range(<int>NUM_HEXES):
+        if can_lay(state, corp, h):
+            ids[count] = <uint16_t>(TRACK_HEX + h)
+            count += 1
+    return count
+
+
+cdef int _enumerate_tile(GameState state, uint16_t* ids) noexcept nogil:
+    """An index per candidate at the pending hex."""
+    cdef LayCandidate candidates[15]  # MAX_LAY_CANDIDATES
+    cdef int hex = turn_pending_hex(state)
+    cdef int count = 0
+    cdef int k
+    if hex >= 0 and turn_operating_corp(state) >= 0:
+        count = enumerate_lay_candidates(state, hex, candidates)
+    for k in range(count):
+        ids[k] = <uint16_t>k
+    return count
+
+
+cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
+    """Pass, then each city the corp may token."""
+    cdef int corp = turn_operating_corp(state)
+    cdef int count = 1
+    cdef int h
+    ids[0] = TOKEN_PASS
+    if corp < 0:
+        return count
+    for h in range(<int>NUM_HEXES):
+        if can_token(state, corp, h):
+            ids[count] = <uint16_t>(TOKEN_HEX + h)
+            count += 1
+    return count
+
+
 cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -1 nogil:
     """Write the engine-legal ids of the current decision in a fixed order and
     return the count, 0 at an automated step. The buffer holds MAX_ACTION_SIZE."""
@@ -583,6 +752,12 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
         count = _enumerate_stock(state, action_ids)
     elif phase == DPHASE_PAR:
         count = _enumerate_par(state, action_ids)
+    elif phase == DPHASE_TRACK:
+        count = _enumerate_track(state, action_ids)
+    elif phase == DPHASE_TILE:
+        count = _enumerate_tile(state, action_ids)
+    elif phase == DPHASE_TOKEN:
+        count = _enumerate_token(state, action_ids)
     else:
         count = _unimplemented(phase, b"legal actions")
     if count > <int>MAX_ACTION_SIZE:
@@ -604,8 +779,9 @@ cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except 
         return _filter_auction(state, action_ids, count)
     if phase == DPHASE_BID:
         return _filter_bid(state, count)
-    if phase == DPHASE_RAISE or phase == DPHASE_STOCK or phase == DPHASE_PAR:
-        return count  # no flag restricts these yet
+    if (phase == DPHASE_RAISE or phase == DPHASE_STOCK or phase == DPHASE_PAR or phase == DPHASE_TRACK
+            or phase == DPHASE_TILE or phase == DPHASE_TOKEN):
+        return count  # no flag restricts these
     return _unimplemented(phase, b"policy filter")
 
 
@@ -708,6 +884,34 @@ cpdef bint is_legal_action_py(GameState state, int action_id) except -1:
     return is_legal_action(state, action_id)
 
 
+cdef int _corp_or_operating(GameState state, int corp) except -2:
+    if corp < 0:
+        corp = turn_operating_corp(state)
+    assert 0 <= corp < <int>NUM_CORPS, f"corp {corp} out of range (no operating corp?)"
+    return corp
+
+
+cpdef list lay_candidates_py(GameState state, int hex, int corp=-1):
+    """``(tile, rotation)`` of each lay candidate at ``hex``, in TILE's order,
+    for ``corp`` (the operating corp by default)."""
+    cdef LayCandidate buf[15]  # MAX_LAY_CANDIDATES
+    assert 0 <= hex < <int>NUM_HEXES, f"hex {hex} out of range"
+    cdef int count = lay_candidates(state, _corp_or_operating(state, corp), hex, buf)
+    return [(buf[k].tile, buf[k].rotation) for k in range(count)]
+
+
+cpdef list lay_hexes_py(GameState state, int corp=-1):
+    """The hexes ``corp`` (the operating corp by default) may lay on: TRACK's hexes."""
+    corp = _corp_or_operating(state, corp)
+    return [h for h in range(<int>NUM_HEXES) if can_lay(state, corp, h)]
+
+
+cpdef list token_hexes_py(GameState state, int corp=-1):
+    """The hexes ``corp`` (the operating corp by default) may token: TOKEN's hexes."""
+    corp = _corp_or_operating(state, corp)
+    return [h for h in range(<int>NUM_HEXES) if can_token(state, corp, h)]
+
+
 # Python mirrors: a bare assignment would be shadowed by the cdef names.
 for _name, _member in ActionType.__members__.items():
     globals()[_name] = int(_member)
@@ -718,8 +922,8 @@ del _name, _member
 # IMPORT-TIME CHECKS
 # =============================================================================
 
-# Local id buffers are sized with the literal 102.
-assert <int>MAX_ACTION_SIZE == 102
+# Local id and candidate buffers are sized with the literals 102 and 15.
+assert <int>MAX_ACTION_SIZE == 102 and <int>MAX_LAY_CANDIDATES == 15
 
 
 def _check_round_trip():

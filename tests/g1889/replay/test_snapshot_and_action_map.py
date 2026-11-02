@@ -74,11 +74,23 @@ def test_load_state_rebuilds_every_stock_round_snapshot():
     assert (count, turns) == (522, 179)  # 179 mid-turn: after a purchase or a sale
 
 
-def test_load_state_defers_operating_rounds():
-    records = load_fixture_extract('314')['records']
-    snap = next(r['state'] for r in records if r['state']['game']['round'] == 'OR')
-    with pytest.raises(NotImplementedError, match='OR'):
-        load(snap)
+def test_load_state_rebuilds_every_operating_round_snapshot():
+    """Including Ruby's network oracles, which compare checks in ORs. At a
+    DiscardTrain snapshot Ruby's current entity is the crowded corp, whose
+    discard DISCARD models with 6.7; the engine names the operating corp."""
+    count = discards = 0
+    for fixture in FIXTURES:
+        for record in load_fixture_extract(fixture)['records']:
+            snap = record['state']
+            if snap['game']['round'] != 'OR' or snap['game']['finished']:
+                continue
+            diffs = compare(load(snap, max_players=D.MAX_PLAYERS), snap)
+            if snap['game']['step'] == 'DiscardTrain':
+                discards += 1
+                diffs = [d for d in diffs if not d.startswith('game.current_entity')]
+            assert diffs == [], (fixture, record['index'])
+            count += 1
+    assert (count, discards) == (444, 2)
 
 
 def test_load_state_checks_cash():

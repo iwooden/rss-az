@@ -51,6 +51,14 @@ cdef int turn_pending_corp(GameState state) noexcept nogil:
     return _get(state, GLOBALS.pending_corp)
 
 
+cdef int turn_pending_hex(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.pending_hex)
+
+
+cdef int turn_operating_corp(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.operating_corp)
+
+
 cdef int turn_turn(GameState state) noexcept nogil:
     return _get(state, GLOBALS.turn)
 
@@ -201,7 +209,7 @@ cdef class TurnState:
     # Operating round
 
     cpdef int operating_corp(self, GameState state):
-        return _get(state, GLOBALS.operating_corp)
+        return turn_operating_corp(state)
 
     cpdef void set_operating_corp(self, GameState state, int value):
         _check(value, -1, <int>NUM_CORPS, 'operating_corp')
@@ -231,7 +239,7 @@ cdef class TurnState:
     # Pending choice
 
     cpdef int pending_hex(self, GameState state):
-        return _get(state, GLOBALS.pending_hex)
+        return turn_pending_hex(state)
 
     cpdef void set_pending_hex(self, GameState state, int value):
         _check(value, -1, <int>NUM_HEXES, 'pending_hex')

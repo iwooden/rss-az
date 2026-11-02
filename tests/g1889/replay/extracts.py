@@ -198,7 +198,37 @@ Snapshot (``state``)
 ``operating``
     None outside ORs, else ``operator``; ``routes_revenue``, the revenue of
     this turn's routes once run, else None; ``ebuy_sold`` (corporations the
-    president has sold in this emergency) and ``ebuy_last_share_price``.
+    president has sold in this emergency) and ``ebuy_last_share_price``; and
+    three oracles (schema 3), keyed by every corporation with a placed token
+    and computed on a fresh ``Graph`` so the game's own graph caches stay
+    untouched:
+
+    ``graph``
+        ``{corporation: {hexes, nodes, route}}``: ``hexes``, Ruby's
+        ``connected_hexes`` (``{hex: [edges reached]}``, where a lay's exits
+        must meet the edges); ``nodes``, the hexes of ``connected_nodes``
+        (cities, towns, and offboards reached, which tokens need); ``route``,
+        ``route_info``'s ``route_train_purchase`` (some token's walk reaches
+        two revenue centers).
+    ``tokens``
+        ``{corporation: [hex]}``: the cities its Token step would accept now,
+        whoever's turn it is: ``City#tokenable?`` (a token left at an
+        affordable price, a free or own reserved slot, no own token on the
+        hex), ``reachable_hexes``, and ``connected_nodes``.
+    ``lays``
+        None unless the active step is ``Track`` and the turn has not laid
+        (Ruby keeps ``Track`` open after the lay while the president owns MF,
+        for its port tile), else ``{corporation: [[hex,
+        tile, rotation, cost, ok], ...]}``: every lay its Track step offers,
+        whoever's turn it is. Hexes are those ``available_hex`` accepts
+        (reached, not blocked by a player-owned private); tiles and rotations
+        are ``upgradeable_tiles`` with each legal rotation as Ruby numbers it
+        (not canonical). ``cost`` is what ``lay_tile`` charges (``upgrade_cost``
+        then ``tile_cost_with_discount``), legal when at most the
+        corporation's cash. ``ok`` is ``check_track_restrictions!`` (the
+        semi-restrictive rule), which ``Game.load`` skips; the extractor runs
+        it by laying the tile with ``Hex#lay`` on a fresh graph and taking it
+        back up, and fails if the hex then differs.
 ``round_state``
     Ruby's round state variables, converted generically. Diagnostics only:
     its keys vary with the round, so compare the fields above instead.
@@ -219,7 +249,7 @@ from typing import Any
 
 import pytest
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
@@ -249,7 +279,9 @@ PRIVATE_KEYS = frozenset({'owner', 'closed', 'value', 'revenue', 'discount', 'ab
 HEX_KEYS = frozenset({'tile', 'rotation', 'tokens', 'reserved'})
 AUCTION_KEYS = frozenset({'companies', 'auctioning', 'min_bids'})
 STOCK_KEYS = frozenset({'sold', 'current_actions', 'bought_from_ipo', 'last_to_act', 'pass_order', 'legal'})
-OPERATING_KEYS = frozenset({'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price'})
+OPERATING_KEYS = frozenset({
+    'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'graph', 'tokens', 'lays',
+})
 
 PRE_KEYS = frozenset({
     'type', 'round', 'round_num', 'turn', 'step', 'handler', 'current_entity', 'active_players',
@@ -322,6 +354,27 @@ def load_game_extract(label: str, game: dict[str, Any]) -> Extract:
         with os.fdopen(fd, 'wb') as f:
             f.write(inputs)
         return _load(f'game-{label}', [tmp], inputs)
+    finally:
+        os.unlink(tmp)
+
+
+def load_graph_extract(label: str, specs: list[dict[str, Any]]) -> Extract:
+    """Ruby's ``Graph`` on hand-built maps (``extract_states.rb --graphs``).
+    Each spec's ``ops`` run in order on a new 4-player game: ``['lay', hex,
+    tile, rotation]`` lays a supply tile, and ``['token', corporation, hex]``
+    places the corporation's next token free. An optional ``probe``,
+    ``{corporation: [[hex, tile, rotation], ...]}``, lists lays to check.
+    The extract's ``graphs`` holds, per spec, ``graph``, ``{corporation:
+    {hexes, nodes, route}}`` as in ``operating.graph`` for every corporation
+    with a token, and ``restrictions``, ``{corporation: [ok, ...]}``, whether
+    ``check_track_restrictions!`` accepts each probed lay."""
+    inputs = json.dumps(specs, sort_keys=True).encode()
+    CACHE_DIR.mkdir(exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix='.graphs.json')
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(inputs)
+        return _load(f'graphs-{label}', ['--graphs', tmp], inputs)
     finally:
         os.unlink(tmp)
 

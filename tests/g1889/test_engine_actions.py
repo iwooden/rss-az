@@ -11,8 +11,9 @@ from g1889.entities.turn import TURN
 from g1889.state import GameState
 
 EXACT_PHASES = (K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_TRAIN_PRICE, K.DPHASE_PRIVATE_PRICE)
-# Phases whose enumerators have landed; tests/g1889/phases/ covers them.
-IMPLEMENTED_PHASES = (K.DPHASE_AUCTION, K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_STOCK, K.DPHASE_PAR)
+# Phases whose enumerators have landed; tests/g1889/phases/ and test_track_and_tokens.py cover them.
+IMPLEMENTED_PHASES = (K.DPHASE_AUCTION, K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_STOCK, K.DPHASE_PAR,
+                      K.DPHASE_TRACK, K.DPHASE_TILE, K.DPHASE_TOKEN)
 SAMPLED_AMOUNTS = (0, 1, 5, 65, 100, 150, 165, 360, 370, 450, 1100, 4000)
 
 

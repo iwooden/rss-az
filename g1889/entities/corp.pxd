@@ -2,8 +2,9 @@
 
 MARKET owns ``market_row``/``market_col``/``market_stamp`` and TRAINS the
 train counts. ``route_cache`` and ``route_available`` are caches behind the
-global ``route_dirty`` and ``conn_dirty`` masks; their accessors arrive with
-GRAPH and the route solver.
+global ``route_dirty`` and ``conn_dirty`` masks: GRAPH fills and reads
+``route_available`` (``GRAPH.route_available``), and the route solver owns
+``route_cache``.
 
 Shares are 10% units, and the President's Certificate counts 2. Ruby moves
 certificates in a presidency change, but each holder's units stay the same
@@ -24,6 +25,8 @@ cdef int corp_cash(GameState state, int corp) noexcept nogil
 cdef int corp_ipo_shares(GameState state, int corp) noexcept nogil
 cdef int corp_pool_shares(GameState state, int corp) noexcept nogil
 cdef int corp_president(GameState state, int corp) noexcept nogil
+cdef int corp_tokens_left(GameState state, int corp) noexcept nogil
+cdef int corp_token_price(GameState state, int corp) noexcept nogil
 
 # Share rules (rules §6.3, §6.5)
 cdef int corp_successor(GameState state, int corp) noexcept nogil
@@ -50,6 +53,7 @@ cdef class Corporation:
     cpdef void set_president(self, GameState state, int player)
     cpdef int tokens_left(self, GameState state)
     cpdef void set_tokens_left(self, GameState state, int tokens)
+    cpdef int token_price(self, GameState state)
     cpdef int last_revenue(self, GameState state)
     cpdef void set_last_revenue(self, GameState state, int revenue)
     cpdef bint route_dirty(self, GameState state)

@@ -29,7 +29,9 @@ Sides
     ``neighbors[s]`` is the hex across side s, or -1 off the map. ``exit_mask``
     has bit s set when track may leave through side s: the side is on the map
     and does not face a gray or red hex side without track (Ruby
-    ``Hex#neighbors``).
+    ``Hex#neighbors``). ``ruby_order`` is the hex's place in Ruby's
+    ``Game#hexes``, the order in which its graph walks a corporation's tokens
+    (``HEX_WALK_ORDER``).
 
 Endpoints and paths
     Endpoints 0-5 are the sides and 6 (``NODE``) is the hex's revenue node.
@@ -40,7 +42,9 @@ Endpoints and paths
     path. Paths are stored raw, without transitive closure: crossings (16, 19,
     20) join no tracks, and a route cannot pass from one branch of a junction
     tile (23-29, 39-47) into another, because it would reverse at the shared
-    side.
+    side. A tile's ``paths`` keep Ruby's order (``Tile#paths``), which its
+    path walk follows; ``TILE_PATHS`` holds them as pair indices by rotation,
+    padded with 255.
 
 Tiles
     Ids 0-39 are the supply tiles in Ruby ``Tile#<=>`` order (color, then

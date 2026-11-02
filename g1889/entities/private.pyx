@@ -4,8 +4,8 @@ from libc.stdint cimport int16_t
 
 from g1889.constants cimport OWNER_CORP, OWNER_NOT_IN_PLAY, OWNER_PLAYER, OWNER_UNSOLD
 from g1889.data.tables cimport (
-    MIN_BID_INCREMENT, NUM_CORPS, NUM_PRIVATES, PRIVATE_REVENUE, PRIVATE_TR, PRIVATE_UTF, PRIVATE_VALUE,
-    UTF_LATE_PHASE, UTF_LATE_REVENUE,
+    HEX_BLOCKER, MIN_BID_INCREMENT, NUM_CORPS, NUM_PRIVATES, PRIVATE_REVENUE, PRIVATE_TR, PRIVATE_UTF,
+    PRIVATE_VALUE, UTF_LATE_PHASE, UTF_LATE_REVENUE,
 )
 from g1889.entities.bank cimport BANK_ACCOUNT, Bank
 from g1889.entities.player cimport Player, player_bid
@@ -34,6 +34,18 @@ cdef int private_revenue(GameState state, int private) noexcept nogil:
             and state._data[LAYOUT.global_offset + GLOBALS.game_phase] >= <int>UTF_LATE_PHASE):
         return <int>UTF_LATE_REVENUE
     return PRIVATE_REVENUE[private]
+
+
+cdef bint private_blocks_hex(GameState state, int hex) noexcept nogil:
+    """Whether the hex's blocker private keeps it from being laid on: TR
+    blocks K4 and ER blocks C4 while a player owns them (``blocks_hexes`` with
+    ``owner_type: player``; ``Tracker#ability_blocking_hex``)."""
+    cdef int private = HEX_BLOCKER[hex]
+    cdef int owner
+    if private < 0:
+        return False
+    owner = private_owner(state, private)
+    return <int>OWNER_PLAYER <= owner < <int>OWNER_CORP
 
 
 # =============================================================================
@@ -121,6 +133,10 @@ cdef class Private:
 
     cpdef int revenue(self, GameState state):
         return private_revenue(state, self.private_id)
+
+    cpdef bint blocks_hex(self, GameState state, int hex):
+        """Whether this private blocks lays on ``hex`` now."""
+        return HEX_BLOCKER[hex] == self.private_id and private_blocks_hex(state, hex)
 
     cpdef int price(self, GameState state):
         return private_price(state, self.private_id)

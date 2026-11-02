@@ -49,6 +49,12 @@ cpdef enum ActionType:
     ACTION_PORT_LAY = 24            # PORT: the port tile on ``hex`` at rotation ``count``
 
 
+# A tile lay at the chosen hex: a supply tile at a canonical rotation.
+cdef struct LayCandidate:
+    int tile
+    int rotation
+
+
 # Fields that do not apply are -1.
 cdef struct ActionInfo:
     int phase
@@ -72,6 +78,12 @@ cdef int price_amount(GameState state, const ActionInfo* info) noexcept nogil
 cdef bint has_exact(int phase) noexcept nogil
 cdef bint wide_amount_range(GameState state, int phase) except -1 nogil
 
+# Track and token legality (§5.4): lay candidates sorted by (tile, rotation).
+cdef int lay_candidates(GameState state, int corp, int hex, LayCandidate* buf) noexcept nogil
+cdef int enumerate_lay_candidates(GameState state, int hex, LayCandidate* buf) noexcept nogil
+cdef bint can_lay(GameState state, int corp, int hex) noexcept nogil
+cdef bint can_token(GameState state, int corp, int hex) noexcept nogil
+
 cpdef bint has_exact_amounts(int phase)
 cpdef object decode_action_py(int phase, int action_id)
 cpdef int encode_action_py(object info) except -1
@@ -79,3 +91,6 @@ cpdef int get_decision_phase_py(GameState state)
 cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids) except -1
 cpdef int enumerate_policy_actions_py(GameState state, cnp.ndarray action_ids) except -1
 cpdef bint is_legal_action_py(GameState state, int action_id) except -1
+cpdef list lay_candidates_py(GameState state, int hex, int corp=*)
+cpdef list lay_hexes_py(GameState state, int corp=*)
+cpdef list token_hexes_py(GameState state, int corp=*)

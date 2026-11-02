@@ -23,12 +23,20 @@ form than Ruby; ``compare`` treats these as equal (``EQUIVALENT:`` below):
 - ``last_revenue``: Ruby's None before a corp operates is the engine's 0;
 - the SR turn: Ruby lists this turn's actions (``current_actions``) and marks
   this turn's sales ``'now'``; the engine keeps ``sr_bought``,
-  ``sr_sold_then_bought``, and the turn player's ``sr_sold_mask``.
+  ``sr_sold_then_bought``, and the turn player's ``sr_sold_mask``;
+- lays: Ruby lists every legal rotation with its cost and its
+  semi-restrictive verdict, the engine one canonical rotation per candidate,
+  legal only if affordable and passing the rule.
 
 At a STOCK decision, ``compare`` also checks the engine's legal ids against
 Ruby's ``stock.legal``: the pass (absent on a must-sell turn), each IPO and
 pool buy, each par, and each sellable block. PAR is not checked there; it
-lies inside one Ruby ``par``.
+lies inside one Ruby ``par``. In an OR it checks Ruby's network oracles for
+every corp with a token (``operating.graph``, ``tokens``, and ``lays``):
+GRAPH's sides and nodes reached and ``route_available``, the cities the corp
+may token, and its lay candidates with their costs. They do not depend on
+whose turn it is; the oracle tests also check the operating corp's TRACK,
+TILE, and TOKEN ids.
 
 Not compared, because the engine does not model them (or not yet): player
 ``value`` and the game ``result`` (``final_scores``, 6.8); a corporation's
@@ -54,6 +62,7 @@ import g1889.data.tables as D
 from g1889.data import COLORS
 from g1889.entities.bank import BANK, BANK_ACCOUNT
 from g1889.entities.corp import CORPS
+from g1889.entities.graph import GRAPH
 from g1889.entities.hexmap import MAP
 from g1889.entities.market import MARKET
 from g1889.entities.phase import PHASE
@@ -82,6 +91,13 @@ RUBY_STEPS = {
     K.STEP_PAR: 'BuySellParShares', K.STEP_TRACK: 'Track', K.STEP_TILE: 'Track', K.STEP_TOKEN: 'Token',
     K.STEP_DIVIDEND: 'Dividend', K.STEP_BUY_TRAIN: 'BuyTrain', K.STEP_TRAIN_PRICE: 'BuyTrain',
     K.STEP_DISCARD: 'DiscardTrain', K.STEP_BUY_PRIVATE: 'BuyCompany', K.STEP_ER_BONUS: 'SpecialTrack',
+    K.STEP_ROUTE: 'Route',  # automated: the engine rests there only at the development stop or from load_state
+}
+# The engine step each Ruby OR step loads as.
+OR_STEPS = {
+    'Track': K.STEP_TRACK, 'Token': K.STEP_TOKEN, 'Route': K.STEP_ROUTE, 'Dividend': K.STEP_DIVIDEND,
+    'BuyTrain': K.STEP_BUY_TRAIN, 'DiscardTrain': K.STEP_DISCARD, 'BuyCompany': K.STEP_BUY_PRIVATE,
+    'SpecialTrack': K.STEP_ER_BONUS,
 }
 # Ruby applies the auction discount only to the cheapest private, A.
 DISCOUNTED_PRIVATE = 0
@@ -304,6 +320,7 @@ def _compare_rounds(state, snap, ids, check) -> None:
             check('operating.routes_revenue', TURN.route_revenue(state), operating['routes_revenue'])
         check('operating.ebuy_sold', _bits(TURN.ebuy_sold_mask(state), D.CORP_SYMS),
               sorted(operating['ebuy_sold'], key=CORP.__getitem__))
+        _compare_network(state, operating, check)
 
 
 def _turn_purchases(current_actions: list[str]) -> tuple[bool, bool]:
@@ -311,6 +328,38 @@ def _turn_purchases(current_actions: list[str]) -> tuple[bool, bool]:
     purchases = [i for i, kind in enumerate(current_actions) if kind in ('buy_shares', 'par')]
     sales = [i for i, kind in enumerate(current_actions) if kind == 'sell_shares']
     return bool(purchases), bool(purchases and sales and sales[0] < purchases[-1])
+
+
+def ruby_lays(lays: list, cash: int) -> set[tuple[str, str, int]]:
+    """Ruby's legal lays for one corp as (hex, tile, canonical rotation): the
+    affordable ones that pass the semi-restrictive rule."""
+    return {(hex_id, tile, D.TILE_CANON_ROT[TILE[tile]][rotation])
+            for hex_id, tile, rotation, cost, ok in lays if ok and cost <= cash}
+
+
+def engine_lays(state: GameState, corp: int) -> set[tuple[str, str, int]]:
+    return {(D.HEX_IDS[h], D.TILE_NAMES[tile], rotation)
+            for h in range(D.NUM_HEXES) for tile, rotation in A.lay_candidates_py(state, h, corp)}
+
+
+def _compare_network(state, operating, check) -> None:
+    """GRAPH, token, and lay legality against Ruby's oracles (``extracts.py``)."""
+    for sym, ruby in operating['graph'].items():
+        c, path = CORP[sym], f'operating.graph.{sym}'
+        check(f'{path}.hexes', {D.HEX_IDS[h]: _bits(GRAPH.sides_reached(state, c, h), range(D.NUM_SIDES))
+                                for h in range(D.NUM_HEXES) if GRAPH.sides_reached(state, c, h)}, ruby['hexes'])
+        check(f'{path}.nodes', sorted(D.HEX_IDS[h] for h in range(D.NUM_HEXES) if GRAPH.node_reached(state, c, h)),
+              ruby['nodes'])
+        check(f'{path}.route', GRAPH.route_available(state, c), ruby['route'])
+    for sym, ruby in operating['tokens'].items():
+        check(f'operating.tokens.{sym}', sorted(D.HEX_IDS[h] for h in A.token_hexes_py(state, CORP[sym])), ruby)
+    for sym, lays in (operating['lays'] or {}).items():
+        c, path = CORP[sym], f'operating.lays.{sym}'
+        ours, theirs = engine_lays(state, c), ruby_lays(lays, CORPS[c].cash(state))
+        check(f'{path} (engine only)', sorted(ours - theirs), [])
+        check(f'{path} (ruby only)', sorted(theirs - ours), [])
+        for hex_id, cost in sorted({(hex_id, cost) for hex_id, _, _, cost, _ in lays}):
+            check(f'{path}.cost.{hex_id}', MAP.lay_cost(state, HEX[hex_id], c), cost)
 
 
 def _compare_stock_legal(state, legal, check) -> None:
@@ -340,8 +389,8 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
     """A GameState equal to ``snap`` under ``compare``, built through the entity
     APIs. Cash starts in the bank and moves with ``BANK.transfer``; every cache
     is left dirty. ``auction_pass_payouts`` has no Ruby counterpart and loads
-    as 0. Auction, SR, and finished snapshots load fully; OR turn fields raise
-    NotImplementedError until 6.5 defines them.
+    as 0. Auction, SR, OR, and finished snapshots load fully; another SR step
+    (MF's port lay) raises NotImplementedError.
     """
     ids = [p['id'] for p in snap['players']]
     assert len(ids) == num_players, f'snapshot has {len(ids)} players, not {num_players}'
@@ -419,9 +468,10 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
         TURN.set_active_player(state, ids.index(g['active_players'][0]))
     elif g['round'] == 'SR' and g['step'] == 'BuySellParShares':
         _load_stock(state, snap['stock'], ids, ids.index(g['active_players'][0]))
+    elif g['round'] == 'OR':
+        _load_operating(state, snap, ids)
     else:
-        raise NotImplementedError(f"load_state: {g['round']} turn fields at step {g['step']} land with "
-                                  f"{'6.5' if g['round'] == 'OR' else 'a later sub-step'}")
+        raise NotImplementedError(f"load_state: {g['round']} turn fields at step {g['step']} land later")
     return state
 
 
@@ -442,3 +492,23 @@ def _load_stock(state: GameState, stock: dict, ids: list, active: int) -> None:
     TURN.set_sr_sold_mask(state, now)
     TURN.set_sr_bought(state, bought)
     TURN.set_sr_sold_then_bought(state, sold_then_bought)
+
+
+def _load_operating(state: GameState, snap: Snapshot, ids: list) -> None:
+    """An OR turn: the operating order and index, the operating corp and the
+    player Ruby waits on, Ruby's step, this turn's route revenue once run, and
+    the emergency sales. A Track or Token snapshot opens its step, with the
+    turn's lay or token still to come, except a Track snapshot after the lay,
+    which Ruby keeps open for MF's port tile (engine-design §10.2) and which
+    loads at TRACK all the same."""
+    g, operating = snap['game'], snap['operating']
+    TURN.set_round(state, K.ROUND_OPERATING)
+    TURN.set_step(state, OR_STEPS[g['step']])
+    for i, sym in enumerate(g['round_entities']):
+        TURN.set_or_order(state, i, CORP[sym])
+    TURN.set_or_index(state, g['entity_index'])
+    TURN.set_operating_corp(state, CORP[operating['operator']])
+    TURN.set_active_player(state, ids.index(g['active_players'][0]))
+    if operating['routes_revenue'] is not None:
+        TURN.set_route_revenue(state, operating['routes_revenue'])
+    TURN.set_ebuy_sold_mask(state, sum(1 << CORP[sym] for sym in operating['ebuy_sold']))

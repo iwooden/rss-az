@@ -72,21 +72,25 @@ constants are a `cpdef enum`. Python mirrors are set through `globals()`
 
 | Group | Names (C type, shape) |
 |---|---|
-| Dimensions | `NUM_HEXES` 52, `NUM_RCS` 25, `NUM_SUPPLY_TILES` 40, `NUM_TILES` 92, `NUM_CORPS` 7, `NUM_PRIVATES` 7, `NUM_TRAIN_TYPES` 6, `NUM_GAME_PHASES` 6, `MARKET_ROWS` 11, `MARKET_COLS` 15, `NUM_PAR_PRICES` 6, `NUM_PAIRS` 21, `NODE` 6, `NUM_PORTS` 4, `MAX_CITY_SLOTS` 3, `MAX_LAY_CANDIDATES` 15, `MAX_ROUTE_HEXES` 104 |
+| Dimensions | `NUM_HEXES` 52, `NUM_RCS` 25, `NUM_SUPPLY_TILES` 40, `NUM_TILES` 92, `NUM_CORPS` 7, `NUM_PRIVATES` 7, `NUM_TRAIN_TYPES` 6, `NUM_GAME_PHASES` 6, `MARKET_ROWS` 11, `MARKET_COLS` 15, `NUM_PAR_PRICES` 6, `NUM_PAIRS` 21, `NODE` 6, `NUM_PORTS` 4, `MAX_CITY_SLOTS` 3, `MAX_LAY_CANDIDATES` 15, `MAX_ROUTE_HEXES` 104, `MAX_TILE_PATHS` 6 |
 | Rules | `BANK_CASH`, `MIN_BID_INCREMENT`, `MARKET_SHARE_LIMIT`, `MAX_OWNERSHIP_PERCENT`, `FLOAT_PERCENT` |
-| Hexes | `HEX_NEIGHBOR` int8[52][6], `HEX_EXIT_MASK` uint8[52], `HEX_RC`, `HEX_HOME_CORP`, `HEX_BLOCKER` int8[52] |
+| Hexes | `HEX_NEIGHBOR` int8[52][6], `HEX_EXIT_MASK` uint8[52], `HEX_RC`, `HEX_HOME_CORP`, `HEX_BLOCKER` int8[52]; derived `HEX_WALK_ORDER` int8[52] (Ruby's `Game#hexes` order) |
 | Revenue centers | `RC_HEX`, `RC_TYPE`, `RC_PORT` int8[25]; `RC_REVENUE` int16[25][6]; `RC_D_REVENUE` int16[25] |
-| Tiles | `TILE_COLOR`, `TILE_LABEL`, `TILE_RC`, `TILE_SLOTS`, `TILE_TERRAIN`, `TILE_BLOCKS_LAY` uint8[92]; `TILE_COUNT`, `TILE_REVENUE`, `TILE_COST` int16[92]; `TILE_MASK` uint32[92][6]; derived `TILE_EXITS` and `TILE_CANON_ROT` (the lowest rotation with an equal mask) uint8[92][6] |
+| Tiles | `TILE_COLOR`, `TILE_LABEL`, `TILE_RC`, `TILE_SLOTS`, `TILE_TERRAIN`, `TILE_BLOCKS_LAY` uint8[92]; `TILE_COUNT`, `TILE_REVENUE`, `TILE_COST` int16[92]; `TILE_MASK` uint32[92][6]; derived `TILE_EXITS` and `TILE_CANON_ROT` (the lowest rotation with an equal mask) uint8[92][6], `TILE_PATH_COUNT` uint8[92], and `TILE_PATHS` uint8[92][6][6] (each path's pair index by rotation, in Ruby's `Tile#paths` order) |
 | Upgrades | CSR over `tile·6 + rotation`, canonical targets only: `UPG_START` int16[553]; `UPG_TILE`, `UPG_ROT` uint8[~1,200] |
 | Corps, privates | `CORP_HOME`, `CORP_TOKENS` int8[7]; `CORP_TOKEN_PRICE` int16[7][3]; `PRIVATE_VALUE`, `PRIVATE_REVENUE` int16[7]; `MF_PORT_HEX` int8[4]; `ER_TILE` int8[6]; `UTF_LATE_REVENUE`, `SMR_DISCOUNT` |
 | Players | `START_CASH`, `CERT_LIMIT` int16[7]; `PRIVATES_IN_PLAY` uint8[7], indexed by player count |
 | Trains | `TRAIN_DISTANCE`, `TRAIN_PRICE`, `TRAIN_COUNT`, `TRAIN_RUSTS_ON`, `TRAIN_AVAILABLE_ON` int16[6]; `TRAIN_TRADE_IN` int16[6][6] |
-| Phases, market | `PHASE_ON_TRAIN`, `PHASE_TRAIN_LIMIT`, `PHASE_TILE_COLORS`, `PHASE_ORS`, `PHASE_CAN_BUY_PRIVATES` int8[6]; `MARKET_PRICE` int16[11][15] (0 = no cell), `MARKET_TYPE` uint8[11][15], `MARKET_ROW_LEN`; `PAR_ROW`, `PAR_COL`, `PAR_PRICE`; `PAIR_A`, `PAIR_B` uint8[21] |
+| Phases, market | `PHASE_ON_TRAIN`, `PHASE_TRAIN_LIMIT`, `PHASE_TILE_COLORS`, `PHASE_ORS`, `PHASE_CAN_BUY_PRIVATES` int8[6]; `MARKET_PRICE` int16[11][15] (0 = no cell), `MARKET_TYPE` uint8[11][15], `MARKET_ROW_LEN`; `PAR_ROW`, `PAR_COL`, `PAR_PRICE`; `PAIR_A`, `PAIR_B` uint8[21]; derived `ENDPOINT_PAIRS` uint32[7] (the pairs at each endpoint) |
 
 `MAX_LAY_CANDIDATES` is the largest number of distinct-mask lay targets any
 hex state allows once exit masks are applied. It is 15 today: the empty plain
 and city hexes reach it, and symmetric duplicates would make it 18. The
-generator computes it, and `actions` asserts it.
+generator computes it, and `actions` aborts if a scan would exceed it.
+
+`tables.json` keeps each tile's paths in Ruby's order and each hex's
+`ruby_order`, because the graph walk replays Ruby's visiting order
+(Section 4); the masks ignore both.
 
 **Test:** extend `tests/g1889/test_data_vs_ruby.py:36` so a fresh Ruby dump
 reproduces all three files byte for byte. A Ruby-free test regenerates the
@@ -128,7 +132,7 @@ exceeds it, the value moves to two slots behind the same API.
 | Hexes | 52 × 3 | `tile` (0-39 supply, 40+h printed), `rotation` (canonical), `tokens` (7-bit corp mask) |
 | Tile supply | 40 | copies left |
 | Trains | 12 | `depot[6]` (D: −1, unlimited), `pool[6]` |
-| Graph cache | 7 × 52 | per (corp, hex): bits 0-5 sides reached, bit 6 node reached |
+| Graph cache | 7 × 52 | per (corp, hex): bits 0-5 sides reached (Ruby's `connected_hexes`), bit 6 node reached (`connected_nodes`) |
 | Players (last) | 18 × capacity | `cash`, `shares[7]` (10% units; the President's Certificate counts 2), `sold_mask` (sold this SR), `bids[7]`, `passed`, `bankrupt` |
 
 | Global group | Fields |
@@ -167,13 +171,13 @@ handlers and tests (`entities/corp.pxd:31-56`).
 |---|---|---|
 | `BANK` | `bank_cash`, `bank_broken` | `transfer(state, src, dst, amount)` is the only code that changes cash. The bank breaks permanently when a payment would take it below zero (`bank.rb:26-39`) |
 | `PLAYERS[i]` | player block | `cash`, `shares(c)`, `cert_count` (privates count, zone shares don't), `can_gain(c)` (60% cap unless orange zone; cert limit), `net_worth`, `bid`, `committed`, `clear_bids`, `passed`, `sold_mask`, `bankrupt` |
-| `CORPS[c]` | corp block | `par`, `float_if_ready` (pays 10 × par at 5 IO shares left), `buy_share(player, source)`, `sell_shares(player, n)` with presidency recompute (as `entities/corp.pxd:178`), cached `route_revenue` and `route_available` |
+| `CORPS[c]` | corp block | `par`, `float_if_ready` (pays 10 × par at 5 IO shares left), `buy_share(player, source)`, `sell_shares(player, n)` with presidency recompute (as `entities/corp.pxd:178`), `token_price` (the next charter token's), cached `route_revenue`; `route_available` is GRAPH's |
 | `PRIVATES[p]` | private block | `owner`, `revenue` (UTF pays ¥50 from phase 5), `sell_to_corp`, `close`, `blocks_hex(h)` (TR blocks K4 and ER blocks C4 while a player owns them), `exchange_dr`, the MF flag |
 | `MARKET` | market fields | 2D moves with edge rules (rules §6.7), zone tests, `order_key`, `sort_by_price(mask)` |
 | `TRAINS` | trains block, corp `trains` | `depot_types` (the lowest rank, plus D from phase 6), buys from the depot, pool, or a corp, `trade_in_for_d`, `discard`, `rust`, `limit`, `crowded`, `cheapest_price` |
 | `PHASE` | `game_phase` | `advance` on the first train of a rank: rusting, private closing, UTF revenue, the new limit, D availability |
-| `MAP` | hexes, supply | `lay(h, tile, rot)` (returns the old tile to supply and stores the canonical rotation), `place_token`, `free_slots`, `blocked_for(h, c)`, `revenue(h, phase, is_d)` |
-| `GRAPH` | graph block | `refresh(c)` (nogil), `sides_reached(c, h)`, `node_reached(c, h)`; it also fills `route_available` |
+| `MAP` | hexes, supply | `lay(h, tile, rot)` (returns the old tile to supply, stores the canonical rotation, keeps tokens, asserts the upgrade table), `lay_track(c, h, tile, rot)` (pays `lay_cost` first), `place_token(h, c)` (`tokens_left` − 1), `buy_token(h, c)` (pays the next token's price first: ¥0 for the home token), `free_slots`, `has_slot_for(h, c)`, `blocked_for(h, c)`, `revenue(h, phase, is_d)`, `lay_cost(h, c)` (terrain or upgrade cost, less SMR's ¥80 on pure mountain) |
+| `GRAPH` | graph block | `refresh(c)` (nogil), `sides_reached(c, h)`, `node_reached(c, h)`, `route_available(c)`, `walks_new_track(c, h, tile, rot)` (the semi-restrictive walk, below) |
 | `TURN` | global block | round and step transitions, counters, players, OR order, pending fields |
 
 **Dirty caches** follow `entities/corp.pyx:81-108`: one bit per corp in the
@@ -187,17 +191,39 @@ cert counts, and crowding are cheap enough to compute on demand.
 | connectivity, `route_available` | `conn_dirty` | `MAP.lay` and `MAP.place_token`, for all corps | search from the corp's token nodes |
 | `route_cache` | `route_dirty` | the same, plus the corp's train changes, rusting, and phase changes | the route solver (Section 8) |
 
-**Connectivity** follows `Graph#compute` (`graph.rb:193`). A tokened hex
-reaches all its passable sides. A walk follows paths, never reverses at a
-shared edge, passes towns, and may enter but not pass an offboard or a city
-blocked for the corp (`part/city.rb:37`). `route_available` is Ruby's
-`route_train_purchase`: some token's walk reaches two or more revenue
-centers. The engine searches directed path states, a superset of Ruby's walk
-(Ruby marks each path visited once per source, so it can drop a junction
-branch first reached from the wrong end). A superset only makes more lays
-legal, so replay stays safe. **Test:** compare with `connected_hexes` and
-`connected_nodes` on fixture and random states; on a mismatch, replicate
-Ruby's walk order and drop the path sort at `generate.py:42`.
+**Connectivity** is `Graph#compute` (`graph.rb:193`), replayed step for step
+(`entities/graph.pyx`). A tokened hex reaches all its open sides. Each token
+walks in Ruby's hex order, with the other token cities marked visited. A walk
+follows paths in Ruby's tile order, never reverses at an edge (it takes only
+the paths across it), passes towns, and may enter but not pass an offboard or
+a city blocked for the corp (`part/city.rb:37`). `route_available` is Ruby's
+`route_train_purchase`: one token's walk meets paths, unseen by earlier
+walks, that touch two or more revenue centers.
+
+**Order matters.** Ruby marks each path and node visited for the rest of a
+token's walk (`part/path.rb`, `part/node.rb`), so a path in a loop is walked
+from whichever end the walk meets first, and the loop is followed one way
+round. The marks backtrack only past a "converging" exit, a side two paths of
+the exited tile share (`Tile#converging_exit?`), and the walk also refuses a
+path whose edge is on its stack (the edge counter). The first design, a search
+over directed path states, reached more than Ruby on both fixtures: straights
+in loops entered from both ends, and lays Ruby rejects under the
+semi-restrictive rule (314 record 252, H3; 962 records 270-437). Replaying
+Ruby's walk closes the gap; it costs a median 0.5 µs per refresh (2.8 µs at
+most on the fixtures).
+
+**Measured:** connectivity, token cities, and lay sets equal Ruby's at every
+OR snapshot of all four fixtures, for every corp with a token, and GRAPH and
+the semi-restrictive verdicts equal Ruby's on 150 random grown networks
+(`tests/g1889/replay/test_network_oracles.py`). Those networks are denser in
+junctions than real games (phase D colors, ample cash), and there the
+converging walks backtrack more: a refresh takes a median 1.8 µs, a p99 of
+34 µs, and 78 µs at most. **Test:** profile on random playouts at 6.9.
+
+**Ruby quirk, for 6.7.** The game's own graph keeps `route_train_purchase`
+once it is true: `Graph#clear` keeps such routes, so `must_buy_train?` can
+read a stale true after the corp's route is cut. The extractor's oracles use
+a fresh graph, as GRAPH does.
 
 ## 5. Decision phases and actions
 
@@ -296,6 +322,38 @@ index the candidates with a compact list.
   from candidate token rows, the plan already made for outcome features
   (blueprint §9, pipeline-refactor §5). `enumerate_lay_candidates(state, hex,
   buf)` (nogil) gives step 7 the same list.
+
+**Legality** (`actions.pyx`, as 6.5 built it). `lay_candidates(state, corp,
+hex, buf)` (nogil; `enumerate_lay_candidates` for the operating corp) keeps
+an upgrade-table target when Ruby's Track step would offer it:
+
+- the hex is reached (`sides_reached` ≠ 0) and no player-owned TR or ER
+  blocks it (`PRIVATES.blocks_hex`);
+- the corp can afford `MAP.lay_cost`;
+- the tile is in supply, of a phase color, and not `blocks_lay`;
+- its exits stay on open sides and meet a reached side
+  (`legal_tile_rotation?`);
+- the semi-restrictive rule holds (`check_track_restrictions!`): after the
+  lay, the corp's walks meet a path of the new tile that is new track, or
+  that touches a revenue center whose value changed.
+
+Most lays settle that rule without a walk:
+
+- A lay where there is no track passes.
+- A city upgrade changes the city's value, and every path of a city tile
+  touches the city. So it passes once its exits meet a reached side: the
+  walks run as before the lay until they first enter the hex at a side the
+  new tile has track on, and there they walk every path at that side.
+- New track that ends only at sides no walk can enter (the hex across has no
+  track facing them) fails.
+
+Any other lay, a plain-track upgrade, is decided by `GRAPH.walks_new_track`:
+Ruby's walk with the tile in place, stopped at the first new path. TRACK is
+pass plus each hex with a candidate (the scan stops at the first), TILE
+indexes the pending hex's candidates, and TOKEN is pass plus each city with a
+slot for the corp, reached (`node_reached`), and an affordable next token.
+**Measured:** a full TRACK enumeration takes a median 1.5 µs on fixture Track
+states, 29 µs at most (late 962, with many plain-track upgrades to walk).
 
 ### 5.5 Every fixture move is expressible
 
@@ -515,7 +573,12 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    - **Oracles,** added by the sub-steps that need them: legal lays at Track
      steps (`upgradeable_tiles` with `legal_tile_rotations`, blockers, cost),
      token cities at Token steps, `must_buy_train?`, `connected_hexes`, and
-     `AutoRouter` revenue.
+     `AutoRouter` revenue. Schema 3 (6.5) records `connected_hexes`,
+     `connected_nodes`, `route_train_purchase`, token cities, and lays with
+     cost and the semi-restrictive verdict for every corp with a token, at
+     every OR snapshot (lays at Track snapshots only), on a fresh `Graph`.
+     `extract_states.rb --graphs` answers the same graph queries, and the
+     semi-restrictive verdicts, for hand-built maps.
    - **`snapshot.py`** provides `compare(state, snap)` and
      `load_state(snap)`. `load_state` builds the state through entity APIs,
      so oracle tests don't depend on replaying up to that point.
@@ -535,6 +598,13 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
      - **Bankruptcy (6.8).** A bankrupt player keeps shares that can't be
        sold: in 314 player 639 ends with KO 40%, TR 20%, and KU 20% as
        president, at ¥0 cash.
+     - **Track after the lay (6.5b, 6.8).** Ruby keeps the Track step open
+       after the corp's lay while its president owns MF
+       (`tile_lay_abilities_should_block?`), for the port tile; 314 records
+       22, 47, and 93 rest there. The corp cannot lay again, and the engine
+       has moved on to TOKEN, so the replay needs an equivalence there.
+       `load_state` loads such a snapshot at TRACK; the extractor records no
+       lays for it.
      - **Programmed actions.** In the `hs_*` fixtures, programmed buys ride
        as `auto_actions` on another player's pass, alongside
        `program_disable` and `program_share_pass` entries that the mapper
@@ -544,9 +614,17 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
 3. **Differential replay** (`test_replay.py`): all four fixtures, compared
    after every action, including the final results. **Test:** can Ruby's
    `check_track_restrictions!` (`step/tracker.rb:326`, skipped while loading)
-   run cheaply per candidate on a cloned game? If not, the lay oracle
-   compares the set before that filter, and unit tests cover the
-   semi-restrictive rule.
+   run cheaply per candidate on a cloned game? **Answer (6.5): yes, and no
+   clone is needed.** The extractor lays each candidate in place with
+   `Hex#lay` (which moves tokens and reservations across), swaps in a fresh
+   `Graph`, turns loading off, runs the check, and lays the old tile back,
+   failing if the hex's snapshot changed. A probe costs about 0.15 ms, and
+   the fixtures' final results are unchanged. With every corp's lays probed
+   at every Track snapshot, cold extraction takes 3.1 s for 314 (1.0 s
+   before), 8.4 s for 962 (1.3 s), and 0.5 s for each `hs_*` fixture. The
+   rule rejects 1,091 of 314's probed rotations and 3,670 of 962's, so the
+   lay oracle compares the set after the filter; unit tests pin the rule
+   too.
 4. **Random playouts** (`test_random_game.py`, like
    `tests/test_random_game.py`): many seeds at 3-5 players, plus smoke tests
    at 2 and 6, with flags on and off. After every step and history
