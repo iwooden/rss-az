@@ -217,7 +217,8 @@ def test_turn_fields_round_trip(state):
 
 @pytest.mark.parametrize('name, value', [
     ('round', K.NUM_ROUNDS), ('step', K.NUM_STEPS), ('return_step', -2), ('active_player', 4),
-    ('priority_player', -1), ('auction_turn', 4), ('auction_private', D.NUM_PRIVATES),
+    ('priority_player', -1), ('end_reason', K.NUM_END_REASONS), ('auction_turn', 4),
+    ('auction_private', D.NUM_PRIVATES),
     ('operating_corp', D.NUM_CORPS), ('pending_hex', D.NUM_HEXES), ('pending_seller', 4),
 ])
 def test_turn_setters_check_ranges(state, name, value):

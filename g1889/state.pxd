@@ -32,17 +32,17 @@ cdef struct GlobalOffsets:
     int return_step                # step a sub-phase returns to, or -1
     int game_phase
     int turn                       # SR number
-    int or_num
+    int or_num                     # the OR's number in its set; 1 outside ORs (Ruby's round_num)
     int or_count
     int active_player
     int priority_player
     # Bank
     int bank_cash
     int bank_broken                # sticky
-    int end_reason
+    int end_reason                 # EndReason, set when the game ends
     # Auction
     int auction_turn
-    int auction_private
+    int auction_private            # the private in a closed auction (RAISE), else -1
     int auction_discount
     int auction_pass_payouts
     # Stock round

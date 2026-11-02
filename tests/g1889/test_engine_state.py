@@ -180,7 +180,9 @@ def test_initial_state(num_players):
         assert (MAP.tile(state, h), MAP.rotation(state, h), MAP.tokens(state, h)) == (D.NUM_SUPPLY_TILES + h, 0, 0)
 
     assert (TURN.round(state), TURN.step(state)) == (K.ROUND_AUCTION, K.STEP_AUCTION)
-    assert (PHASE.current(state), TURN.turn(state), TURN.or_count(state)) == (D.GAME_PHASE_2, 1, 1)
+    assert PHASE.current(state) == D.GAME_PHASE_2
+    assert (TURN.turn(state), TURN.or_num(state), TURN.or_count(state)) == (1, 1, 1)
+    assert TURN.end_reason(state) == K.END_REASON_NONE
     priority = TURN.priority_player(state)
     assert 0 <= priority < num_players
     assert TURN.active_player(state) == TURN.auction_turn(state) == priority

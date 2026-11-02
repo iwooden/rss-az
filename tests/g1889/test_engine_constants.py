@@ -107,5 +107,6 @@ def test_rounds_owners_and_pass_slots():
     assert [n.removeprefix('ROUND_') for n in names('ROUND_')] == ['AUCTION', 'STOCK', 'OPERATING', 'GAME_OVER']
     assert (K.OWNER_NOT_IN_PLAY, K.OWNER_CLOSED, K.OWNER_UNSOLD, K.OWNER_PLAYER, K.OWNER_CORP) == (-3, -2, -1, 0, 8)
     assert K.OWNER_PLAYER + D.MAX_PLAYERS <= K.OWNER_CORP
+    assert (K.END_REASON_NONE, K.END_REASON_BANKRUPT, K.END_REASON_BANK, K.NUM_END_REASONS) == (0, 1, 2, 3)
     assert K.PHASES_WITH_PASS_SLOT == tuple(getattr(K, f'DPHASE_{name}') for name in (
         'AUCTION', 'RAISE', 'STOCK', 'TRACK', 'TOKEN', 'BUY_TRAIN', 'BUY_PRIVATE', 'ER_BONUS'))

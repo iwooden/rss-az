@@ -77,6 +77,13 @@ cpdef enum Owner:
     OWNER_PLAYER = 0                # + player
     OWNER_CORP = 8                  # + corp
 
+# Why the game ended (Ruby's game_end_reason); NONE until it is over.
+cpdef enum EndReason:
+    END_REASON_NONE = 0
+    END_REASON_BANKRUPT = 1
+    END_REASON_BANK = 2
+    NUM_END_REASONS = 3
+
 # AUCTION: the turn player passes, buys the topmost private at its price, or bids on private p.
 cpdef enum AuctionAction:
     AUCTION_PASS = 0

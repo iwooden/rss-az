@@ -419,10 +419,12 @@ cdef class GameState:
             MAP.set_supply(self, i, TILE_COUNT[i])
         for i in range(<int>NUM_TRAIN_TYPES):
             TRAINS.set_depot(self, i, TRAIN_COUNT[i])
-        # Caches start valid: no tokens and no trains. Phase 2 sets one OR per set.
+        # Caches start valid: no tokens and no trains. Phase 2 sets one OR per set;
+        # or_num is 1 outside ORs, as Ruby's round_num.
         TURN.set_round(self, ROUND_AUCTION)
         TURN.set_step(self, STEP_AUCTION)
         TURN.set_turn(self, 1)
+        TURN.set_or_num(self, 1)
         TURN.set_or_count(self, PHASE_ORS[0])
         TURN.set_priority_player(self, priority_player)
         TURN.set_active_player(self, priority_player)

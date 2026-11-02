@@ -2,7 +2,7 @@
 
 from libc.stdint cimport int16_t
 
-from g1889.constants cimport NUM_ROUNDS, NUM_STEPS
+from g1889.constants cimport NUM_END_REASONS, NUM_ROUNDS, NUM_STEPS
 from g1889.data.tables cimport NUM_CORPS, NUM_HEXES, NUM_PRIVATES
 from g1889.state cimport GameState, GLOBALS, LAYOUT
 
@@ -105,6 +105,7 @@ cdef class TurnState:
         return _get(state, GLOBALS.end_reason)
 
     cpdef void set_end_reason(self, GameState state, int value):
+        _check(value, 0, <int>NUM_END_REASONS, 'end_reason')
         _set(state, GLOBALS.end_reason, value)
 
     # Auction
