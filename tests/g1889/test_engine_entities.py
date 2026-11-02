@@ -1,5 +1,6 @@
 """g1889.entities: cash transfers, bids, private ownership and revenue, the
-turn fields, and the raw accessors' cache invalidation (1889/engine-design.md §4)."""
+auction's queries and sales, the turn fields, and the raw accessors' cache
+invalidation (1889/engine-design.md §4)."""
 
 import pytest
 
@@ -10,8 +11,8 @@ from g1889.entities.corp import CORPS, CORPS_BY_SYM
 from g1889.entities.hexmap import MAP
 from g1889.entities.market import MARKET
 from g1889.entities.phase import PHASE
-from g1889.entities.player import PLAYERS
-from g1889.entities.private import PRIVATES, PRIVATES_BY_SYM
+from g1889.entities.player import PLAYERS, all_passed, clear_passed
+from g1889.entities.private import PRIVATES, PRIVATES_BY_SYM, pay_revenue, topmost
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState
@@ -86,6 +87,28 @@ def test_bids_and_committed_cash(state):
         player.set_bid(state, D.NUM_PRIVATES, 45)
 
 
+def test_available_cash_excludes_other_bids(state):
+    """``max_bid``: a bid may use the player's cash less their bids elsewhere."""
+    player = PLAYERS[2]
+    player.set_bid(state, D.PRIVATE_ER, 45)
+    player.set_bid(state, D.PRIVATE_UTF, 155)
+    assert player.available(state, D.PRIVATE_ER) == 420 - 155
+    assert player.available(state, D.PRIVATE_UTF) == 420 - 45
+    assert player.available(state, D.PRIVATE_SMR) == player.available(state) == 420 - 200
+    player.set_bid(state, D.PRIVATE_UTF, 160)  # raising replaces the bid
+    assert player.committed(state) == 205
+
+
+def test_passed_flags_of_every_player(state):
+    for i in range(3):
+        PLAYERS[i].set_passed(state, True)
+    assert not all_passed(state)
+    PLAYERS[3].set_passed(state, True)
+    assert all_passed(state)
+    clear_passed(state)
+    assert not any(PLAYERS[i].passed(state) for i in range(4))
+
+
 def test_player_flags_and_shares(state):
     player = PLAYERS[1]
     player.set_passed(state, True)
@@ -124,6 +147,73 @@ def test_private_revenue_and_late_utf(state):
     assert utf.revenue(state) == D.UTF_LATE_REVENUE == 50
     utf.set_owner(state, K.OWNER_CORP + D.CORP_AR)
     assert utf.revenue(state) == D.PRIVATE_REVENUE[D.PRIVATE_UTF]
+
+
+# The auction's queries and sales
+
+
+def test_topmost_and_price_follow_the_discount(state):
+    a, mf = PRIVATES[D.PRIVATE_TR], PRIVATES[D.PRIVATE_MF]
+    assert topmost(state) == D.PRIVATE_TR and (a.price(state), a.min_bid(state)) == (20, 20)
+    TURN.set_auction_discount(state, 15)
+    assert (a.price(state), a.min_bid(state), mf.price(state)) == (5, 5, 30)  # only A is discounted
+    a.sell_to_player(state, 1, 5)
+    assert topmost(state) == D.PRIVATE_MF and mf.min_bid(state) == 30
+    for p in range(D.PRIVATE_MF, D.NUM_PRIVATES):
+        PRIVATES[p].sell_to_player(state, 0, 0)
+    assert topmost(state) == -1
+
+
+def test_bid_queries(state):
+    """Without bids the minimum is face + ¥5; with them, the high bid + ¥5. The
+    topmost's minimum is its price, except in its closed auction."""
+    er = PRIVATES[D.PRIVATE_ER]
+    assert (er.high_bid(state), er.bid_count(state), er.lowest_bidder(state), er.min_bid(state)) == (0, 0, -1, 45)
+    for player, amount in ((3, 50), (1, 45), (0, 60)):
+        PLAYERS[player].set_bid(state, D.PRIVATE_ER, amount)
+    assert (er.high_bid(state), er.bid_count(state), er.lowest_bidder(state), er.min_bid(state)) == (60, 3, 1, 65)
+    PRIVATES[D.PRIVATE_TR].sell_to_player(state, 2, 20)
+    PRIVATES[D.PRIVATE_MF].sell_to_player(state, 2, 30)
+    TURN.set_auction_private(state, D.PRIVATE_ER)
+    assert er.min_bid(state) == 65
+    TURN.set_auction_private(state, -1)
+    PLAYERS[0].set_bid(state, D.PRIVATE_ER, 0)
+    PLAYERS[1].set_bid(state, D.PRIVATE_ER, 0)
+    PLAYERS[3].set_bid(state, D.PRIVATE_ER, 0)
+    assert er.min_bid(state) == 40
+
+
+def test_sale_to_a_player_pays_the_bank_and_ends_the_bids(state):
+    sir = PRIVATES[D.PRIVATE_SIR]
+    PLAYERS[1].set_bid(state, D.PRIVATE_SIR, 85)
+    PLAYERS[1].set_bid(state, D.PRIVATE_DR, 65)
+    bank = BANK.cash(state)
+    sir.sell_to_player(state, 1, 85)
+    assert sir.owner(state) == K.OWNER_PLAYER + 1 and BANK.cash(state) == bank + 85
+    assert (PLAYERS[1].cash(state), PLAYERS[1].bid(state, D.PRIVATE_SIR), PLAYERS[1].committed(state)) == (335, 0, 65)
+    with pytest.raises(AssertionError):  # sold
+        sir.sell_to_player(state, 2, 85)
+    PRIVATES[D.PRIVATE_TR].sell_to_player(state, 3, 0)  # the free A moves no cash
+    assert PRIVATES[D.PRIVATE_TR].owner(state) == K.OWNER_PLAYER + 3 and BANK.cash(state) == bank + 85
+    with pytest.raises(AssertionError):  # beyond the player's cash
+        PRIVATES[D.PRIVATE_UTF].sell_to_player(state, 0, 421)
+    assert PRIVATES[D.PRIVATE_UTF].owner(state) == K.OWNER_UNSOLD
+
+
+def test_revenue_goes_to_owners_from_the_bank(state):
+    """Players and corps collect; unsold, closed, and absent privates pay nothing."""
+    PRIVATES[D.PRIVATE_TR].set_owner(state, K.OWNER_PLAYER + 2)
+    PRIVATES[D.PRIVATE_SMR].set_owner(state, K.OWNER_PLAYER + 2)
+    PRIVATES[D.PRIVATE_DR].set_owner(state, corp_account(D.CORP_KO))
+    PRIVATES[D.PRIVATE_ER].set_owner(state, K.OWNER_CLOSED)
+    PRIVATES[D.PRIVATE_SIR].set_owner(state, K.OWNER_NOT_IN_PLAY)
+    bank = BANK.cash(state)
+    pay_revenue(state)
+    assert PLAYERS[2].cash(state) == 420 + 5 + 15 and CORPS[D.CORP_KO].cash(state) == 15
+    assert BANK.cash(state) == bank - 35 and PLAYERS[0].cash(state) == 420
+    BANK.transfer(state, BANK_ACCOUNT, corp_account(D.CORP_AR), BANK.cash(state) - 10)
+    pay_revenue(state)  # the bank breaks and still pays
+    assert BANK.cash(state) == -25 and BANK.broken(state)
 
 
 def test_symbols_follow_the_tables():
@@ -218,7 +308,8 @@ def test_turn_fields_round_trip(state):
 @pytest.mark.parametrize('name, value', [
     ('round', K.NUM_ROUNDS), ('step', K.NUM_STEPS), ('return_step', -2), ('active_player', 4),
     ('priority_player', -1), ('end_reason', K.NUM_END_REASONS), ('auction_turn', 4),
-    ('auction_private', D.NUM_PRIVATES),
+    ('auction_private', D.NUM_PRIVATES), ('auction_discount', -5), ('auction_discount', 25),
+    ('auction_pass_payouts', -1),
     ('operating_corp', D.NUM_CORPS), ('pending_hex', D.NUM_HEXES), ('pending_seller', 4),
 ])
 def test_turn_setters_check_ranges(state, name, value):

@@ -32,8 +32,8 @@ from tests.g1889.replay.action_map import Decision, ReplayEnd, UnsupportedAction
 from tests.g1889.replay.extracts import Extract, FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import compare
 
-# Sub-step 6.2: only the initial snapshot.
-REPLAY_FLOOR = {fixture: 0 for fixture in FIXTURES}
+# Sub-step 6.3: through the auction, whose last record opens the first SR.
+REPLAY_FLOOR = {'314': 6, '962': 8, 'hs_jmmljkbw_17502': 10, 'hs_lhglbbiz_17502': 10}
 
 
 @dataclass
@@ -98,9 +98,12 @@ def _apply(state: GameState, decisions: list[Decision], pending: list[Decision])
 
 
 def replay(fixture: str) -> Progress:
-    extract = load_fixture_extract(fixture)
+    return replay_extract(fixture, load_fixture_extract(fixture))
+
+
+def replay_extract(name: str, extract: Extract) -> Progress:
     records = extract['records']
-    progress = Progress(fixture, len(records))
+    progress = Progress(name, len(records))
     state = new_game(extract)
     pending: list[Decision] = []   # forced decisions applied since the last sync
     deferred = None                # the record whose snapshot waits for them

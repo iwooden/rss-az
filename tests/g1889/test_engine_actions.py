@@ -11,6 +11,8 @@ from g1889.entities.turn import TURN
 from g1889.state import GameState
 
 EXACT_PHASES = (K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_TRAIN_PRICE, K.DPHASE_PRIVATE_PRICE)
+# Phases whose enumerators have landed; tests/g1889/phases/ covers them.
+IMPLEMENTED_PHASES = (K.DPHASE_AUCTION, K.DPHASE_BID, K.DPHASE_RAISE)
 SAMPLED_AMOUNTS = (0, 1, 5, 65, 100, 150, 165, 360, 370, 450, 1100, 4000)
 
 
@@ -129,6 +131,8 @@ def test_decision_phase_follows_the_step(state, step):
         assert A.enumerate_legal_actions_py(state, ids) == 0
         assert A.enumerate_policy_actions_py(state, ids) == 0
         assert not A.is_legal_action_py(state, 0)
+        return
+    if phase in IMPLEMENTED_PHASES:
         return
     # Each phase's enumerator lands with its sub-step; until then the call fails loudly.
     name = K.DecisionPhase(phase).name.removeprefix('DPHASE_')

@@ -31,12 +31,23 @@ cdef int player_committed(GameState state, int player) noexcept nogil:
     return total
 
 
+cdef int player_available(GameState state, int player, int private) noexcept nogil:
+    """Cash the player may bid or spend on ``private``: cash less their bids on
+    other privates (``max_bid``). ``private`` -1 subtracts every bid."""
+    cdef int own = player_bid(state, player, private) if private >= 0 else 0
+    return player_cash(state, player) - player_committed(state, player) + own
+
+
 cdef bint player_passed(GameState state, int player) noexcept nogil:
     return state._data[_slot(player, PLAYER_FIELDS.passed)] != 0
 
 
+cdef inline int _num_players(GameState state) noexcept nogil:
+    return <int>state._data[LAYOUT.global_offset + GLOBALS.num_players]
+
+
 cdef int _write_slot(GameState state, int player, int field) except -1:
-    cdef int num_players = <int>state._data[LAYOUT.global_offset + GLOBALS.num_players]
+    cdef int num_players = _num_players(state)
     assert player < num_players, f"player {player} not in a {num_players}-player game"
     return _slot(player, field)
 
@@ -75,6 +86,10 @@ cdef class Player:
     cpdef int committed(self, GameState state):
         return player_committed(state, self.player_id)
 
+    cpdef int available(self, GameState state, int private=-1):
+        assert -1 <= private < <int>NUM_PRIVATES, f"private {private} out of range"
+        return player_available(state, self.player_id, private)
+
     cpdef void clear_bids(self, GameState state):
         cdef int base = _write_slot(state, self.player_id, PLAYER_FIELDS.bids)
         cdef int p
@@ -92,6 +107,21 @@ cdef class Player:
 
     cpdef void set_bankrupt(self, GameState state, bint bankrupt):
         state._data[_write_slot(state, self.player_id, PLAYER_FIELDS.bankrupt)] = bankrupt
+
+
+cpdef bint all_passed(GameState state):
+    """Whether every player's passed flag is set (``entities.all?(&:passed?)``)."""
+    cdef int i
+    for i in range(_num_players(state)):
+        if not player_passed(state, i):
+            return False
+    return True
+
+
+cpdef void clear_passed(GameState state):
+    cdef int i
+    for i in range(_num_players(state)):
+        state._data[_slot(i, PLAYER_FIELDS.passed)] = 0
 
 
 PLAYERS = [Player(i) for i in range(<int>MAX_PLAYERS)]

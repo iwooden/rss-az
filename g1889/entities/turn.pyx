@@ -1,9 +1,9 @@
 """TURN entity; see turn.pxd."""
 
-from libc.stdint cimport int16_t
+from libc.stdint cimport INT16_MAX, int16_t
 
 from g1889.constants cimport NUM_END_REASONS, NUM_ROUNDS, NUM_STEPS
-from g1889.data.tables cimport NUM_CORPS, NUM_HEXES, NUM_PRIVATES
+from g1889.data.tables cimport NUM_CORPS, NUM_HEXES, NUM_PRIVATES, PRIVATE_TR, PRIVATE_VALUE
 from g1889.state cimport GameState, GLOBALS, LAYOUT
 
 
@@ -29,6 +29,22 @@ cdef int turn_step(GameState state) noexcept nogil:
 
 cdef int turn_active_player(GameState state) noexcept nogil:
     return _get(state, GLOBALS.active_player)
+
+
+cdef int turn_auction_private(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.auction_private)
+
+
+cdef int turn_auction_discount(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.auction_discount)
+
+
+cdef int turn_auction_pass_payouts(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.auction_pass_payouts)
+
+
+cdef int turn_pending_private(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.pending_private)
 
 
 cdef inline int _check(int value, int lo, int hi, str name) except -1:
@@ -118,22 +134,25 @@ cdef class TurnState:
         _set(state, GLOBALS.auction_turn, value)
 
     cpdef int auction_private(self, GameState state):
-        return _get(state, GLOBALS.auction_private)
+        return turn_auction_private(state)
 
     cpdef void set_auction_private(self, GameState state, int value):
         _check(value, -1, <int>NUM_PRIVATES, 'auction_private')
         _set(state, GLOBALS.auction_private, value)
 
     cpdef int auction_discount(self, GameState state):
-        return _get(state, GLOBALS.auction_discount)
+        return turn_auction_discount(state)
 
     cpdef void set_auction_discount(self, GameState state, int value):
+        """Private A's discount (Ruby discounts only A, ``all_passed!``)."""
+        _check(value, 0, PRIVATE_VALUE[<int>PRIVATE_TR] + 1, 'auction_discount')
         _set(state, GLOBALS.auction_discount, value)
 
     cpdef int auction_pass_payouts(self, GameState state):
-        return _get(state, GLOBALS.auction_pass_payouts)
+        return turn_auction_pass_payouts(state)
 
     cpdef void set_auction_pass_payouts(self, GameState state, int value):
+        _check(value, 0, INT16_MAX + 1, 'auction_pass_payouts')
         _set(state, GLOBALS.auction_pass_payouts, value)
 
     # Stock round
@@ -203,7 +222,7 @@ cdef class TurnState:
         _set(state, GLOBALS.pending_corp, value)
 
     cpdef int pending_private(self, GameState state):
-        return _get(state, GLOBALS.pending_private)
+        return turn_pending_private(state)
 
     cpdef void set_pending_private(self, GameState state, int value):
         _check(value, -1, <int>NUM_PRIVATES, 'pending_private')

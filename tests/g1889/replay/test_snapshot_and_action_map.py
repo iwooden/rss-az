@@ -147,9 +147,12 @@ def _expected(kind, pre, decoded):
     """The decoded decisions agree with the annotation."""
     last = decoded[-1]
     if kind == 'bid':
-        if pre['purchase']:
+        if pre['purchase'] and pre['price'] == pre['min_bid']:
             return last.type == A.ACTION_BUY_TOPMOST
-        return last.amount == pre['price'] and (pre['auctioning'] or decoded[0].private == PRIVATE[pre['company']])
+        # Grid point k bids the minimum + ¥5k.
+        point = pre['min_bid'] + D.MIN_BID_INCREMENT * last.count
+        amount = last.amount if last.type == A.ACTION_EXACT_PRICE else point
+        return amount == pre['price'] and (pre['auctioning'] or decoded[0].private == PRIVATE[pre['company']])
     if kind == 'par':
         return decoded[0].corp == CORP[pre['corporation']] and last.amount == pre['par_price']
     if kind == 'buy_shares':

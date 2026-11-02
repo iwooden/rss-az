@@ -84,6 +84,10 @@ cpdef enum EndReason:
     END_REASON_BANK = 2
     NUM_END_REASONS = 3
 
+# A round of passes with A unsold takes this much off A's price (``all_passed!``).
+cpdef enum AuctionRules:
+    AUCTION_DISCOUNT_STEP = 5
+
 # AUCTION: the turn player passes, buys the topmost private at its price, or bids on private p.
 cpdef enum AuctionAction:
     AUCTION_PASS = 0

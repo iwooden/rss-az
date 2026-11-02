@@ -330,8 +330,11 @@ phase, id)` before each mutation and `(row, −1, step)` for automated steps
 action**, where RSS counts engine-legal actions (`core/driver.pyx:113-122`).
 Replay runs with every flag off, where the two sets coincide. In self-play, a
 decision whose alternatives are all restricted is applied instead of becoming
-a one-child search node. Amount ranges with two or more values always yield
-two or more policy points, so no exact amount hides behind a forced point.
+a one-child search node. Amount ranges with two or more values usually
+yield two or more policy points. The exception (6.3): after a human's
+off-grid bid, a BID range narrower than ¥5 has one grid point, and forcing
+it would hide the exact amounts above it. So a decision with exact amounts
+is forced only when its legal range has one value (fixed in 6.4).
 
 ### 6.1 Rounds and steps
 
@@ -413,7 +416,7 @@ policy-restricted. Search roots copied from it turn them on, as in self-play.
 |---|---|---|
 | `private_sale_same_president` | True | a corp buys only privates its own president owns |
 | `train_sale_same_president` | True | corp-to-corp train sales only between corps with the same president |
-| `auction_pass_payout_cap` | 1 (0 = off) | after this many all-pass payouts, a player who can buy the topmost private may not pass |
+| `auction_pass_payout_cap` | 1 (0 = off) | after this many all-pass payouts, a player who can buy the topmost private may neither pass nor bid in a way that leaves them unable to buy it |
 
 - **Same-president flags.** These settle blueprint §4.4 and rules §12.11.
   18xx.games enforces no consent (`depot.rb:118-126`,
@@ -423,7 +426,11 @@ policy-restricted. Search roots copied from it turn them on, as in self-play.
   itself. An `ACQ_OFFER`-style accept phase would serve a move that strong
   players rarely make.
 - **Pass cap.** It ends rules §12.9's endless all-pass auction; players who
-  can't afford the topmost private may still pass. **Config:** a
+  can't afford the topmost private may still pass. Capping passes alone
+  isn't enough (6.3): in random 2-3 player auctions, players outbid
+  themselves on later privates, never afford the topmost, and the payouts
+  never stop. So once capped, the policy also drops bids that would leave
+  the bidder unable to buy the topmost, which makes the auction terminate. **Config:** a
   `TrainingConfig` "1889 engine options" block, read by `games/g1889.py` and
   rejected unless `game == "1889"` (pipeline-refactor §3.4).
 

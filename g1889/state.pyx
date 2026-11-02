@@ -362,7 +362,8 @@ cdef class GameState:
     @property
     def auction_pass_payout_cap(self):
         """All-pass payouts after which a player who can buy the topmost private
-        may not pass (policy only); 0 disables the cap."""
+        may not pass, nor bid themselves out of buying it (policy only); 0
+        disables the cap."""
         return self._auction_pass_payout_cap
 
     @auction_pass_payout_cap.setter

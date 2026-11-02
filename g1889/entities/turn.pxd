@@ -11,6 +11,10 @@ cdef int turn_num_players(GameState state) noexcept nogil
 cdef int turn_round(GameState state) noexcept nogil
 cdef int turn_step(GameState state) noexcept nogil
 cdef int turn_active_player(GameState state) noexcept nogil
+cdef int turn_auction_private(GameState state) noexcept nogil
+cdef int turn_auction_discount(GameState state) noexcept nogil
+cdef int turn_auction_pass_payouts(GameState state) noexcept nogil
+cdef int turn_pending_private(GameState state) noexcept nogil
 
 
 cdef class TurnState:

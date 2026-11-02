@@ -18,9 +18,9 @@ submodule. A cached extract is reused only while its key and the engine both
 match:
 
 - The file name carries a hash of the schema version, the extractor's source,
-  and the input (the fixture's bytes, or the ``--new-game`` arguments). Editing
-  the extractor or the fixture therefore makes a new extract, and the stale
-  file is deleted when the new one is written.
+  and the input (the fixture's bytes, the ``--new-game`` arguments, or a test's
+  game JSON). Editing the extractor or the input therefore makes a new
+  extract, and the stale file is deleted when the new one is written.
 - The extract must be newer than every engine Ruby file the 1889 game can load:
   ``lib/engine.rb`` and ``lib/engine/**/*.rb``, except other titles'
   ``game/g_*`` code. A submodule update or local edit rewrites those files, so
@@ -305,6 +305,20 @@ def load_new_game_extract(num_players: int, seed: int = 1, player_ids: Sequence[
         args += ['--players', ','.join(str(p) for p in player_ids)]
     inputs = ' '.join(args).encode()
     return _load(f'new-game-{num_players}-{hashlib.sha256(inputs).hexdigest()[:8]}', args, inputs)
+
+
+def load_game_extract(label: str, game: dict[str, Any]) -> Extract:
+    """The extract of a game JSON built by a test, such as a scripted auction,
+    cached under ``label`` like a fixture's."""
+    inputs = json.dumps(game, sort_keys=True).encode()
+    CACHE_DIR.mkdir(exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix='.game.json')
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(inputs)
+        return _load(f'game-{label}', [tmp], inputs)
+    finally:
+        os.unlink(tmp)
 
 
 def _load(label: str, args: list[str], inputs: bytes) -> Extract:

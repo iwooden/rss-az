@@ -38,5 +38,7 @@ def test_automated_steps_reject_actions(state):
 
 
 def test_unimplemented_phases_fail_loudly(state):
-    with pytest.raises(NotImplementedError, match='AUCTION'):
-        Dr.DRIVER.apply_action(state, K.AUCTION_PASS)
+    TURN.set_round(state, K.ROUND_STOCK)
+    TURN.set_step(state, K.STEP_STOCK)
+    with pytest.raises(NotImplementedError, match='STOCK'):
+        Dr.DRIVER.apply_action(state, K.STOCK_PASS)

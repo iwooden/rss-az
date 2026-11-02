@@ -49,9 +49,10 @@ _init_tables()
 
 # Python mirrors: a bare assignment would be shadowed by the cdef names.
 for _enum in (
-    Round, Step, DecisionPhase, Owner, EndReason, AuctionAction, BidAction, RaiseAction, StockAction, ParAction,
-    TrackAction, TileAction, TokenAction, DividendAction, DiscardAction, BuyTrainAction,
-    TrainPriceAction, BuyPrivateAction, PrivatePriceAction, ErBonusAction, PortAction, PolicyDims,
+    Round, Step, DecisionPhase, Owner, EndReason, AuctionRules, AuctionAction, BidAction, RaiseAction,
+    StockAction, ParAction, TrackAction, TileAction, TokenAction, DividendAction, DiscardAction,
+    BuyTrainAction, TrainPriceAction, BuyPrivateAction, PrivatePriceAction, ErBonusAction, PortAction,
+    PolicyDims,
 ):
     for _name, _member in _enum.__members__.items():
         globals()[_name] = int(_member)

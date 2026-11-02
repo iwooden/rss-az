@@ -9,23 +9,28 @@ from libc.stdio cimport fprintf, stderr
 from libc.stdlib cimport abort
 
 from g1889.constants cimport (
-    ACTION_SIZE_RAISE, AUCTION_BID, AUCTION_BUY, AUCTION_PASS, BUY_PRIVATE_DONE, BUY_PRIVATE_DR,
-    BUY_PRIVATE_PRIVATE, BUY_TRAIN_BANKRUPT, BUY_TRAIN_BUY_PRIVATE, BUY_TRAIN_CORP, BUY_TRAIN_DEPOT,
-    BUY_TRAIN_DR, BUY_TRAIN_PASS, BUY_TRAIN_POOL, BUY_TRAIN_SELL, BUY_TRAIN_TRADE_IN,
-    DIVIDEND_BUY_PRIVATE, DIVIDEND_DR, DIVIDEND_PAYOUT, DIVIDEND_WITHHOLD, DPHASE_AUCTION, DPHASE_BID,
-    DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND, DPHASE_ER_BONUS, DPHASE_PAR,
-    DPHASE_PORT, DPHASE_PRIVATE_PRICE, DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN,
-    DPHASE_TRACK, DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE,
-    MAX_SALE_SHARES, NUM_DECISION_PHASES, NUM_STEPS, PHASE_ACTION_SIZE, PORT_LAY, RAISE_DROP,
-    RAISE_POINT, STEP_TO_DECISION_PHASE, STOCK_DR, STOCK_IPO, STOCK_MF, STOCK_PAR, STOCK_PASS,
-    STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR, TOKEN_HEX, TOKEN_PASS, TRACK_BUY_PRIVATE,
-    TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS,
+    ACTION_SIZE_RAISE, AUCTION_BID, AUCTION_BUY, AUCTION_PASS, BID_POINT, BID_POINTS,
+    BUY_PRIVATE_DONE, BUY_PRIVATE_DR, BUY_PRIVATE_PRIVATE, BUY_TRAIN_BANKRUPT,
+    BUY_TRAIN_BUY_PRIVATE, BUY_TRAIN_CORP, BUY_TRAIN_DEPOT, BUY_TRAIN_DR, BUY_TRAIN_PASS,
+    BUY_TRAIN_POOL, BUY_TRAIN_SELL, BUY_TRAIN_TRADE_IN, DIVIDEND_BUY_PRIVATE, DIVIDEND_DR,
+    DIVIDEND_PAYOUT, DIVIDEND_WITHHOLD, DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE,
+    DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT,
+    DPHASE_PRIVATE_PRICE, DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
+    DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE, MAX_SALE_SHARES,
+    NUM_DECISION_PHASES, NUM_STEPS, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY, RAISE_DROP,
+    RAISE_POINT, RAISE_POINTS, STEP_TO_DECISION_PHASE, STOCK_DR, STOCK_IPO, STOCK_MF, STOCK_PAR,
+    STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR, TOKEN_HEX, TOKEN_PASS,
+    TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS,
 )
 from g1889.data.tables cimport (
-    MF_PORT_HEX, NUM_CORPS, NUM_HEXES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRADE_IN_TYPES,
-    NUM_TRAIN_TYPES, PAR_PRICE, TRADE_IN_TYPE,
+    MF_PORT_HEX, MIN_BID_INCREMENT, NUM_CORPS, NUM_HEXES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES,
+    NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE, TRADE_IN_TYPE,
 )
-from g1889.entities.turn cimport turn_step
+from g1889.entities.player cimport player_available
+from g1889.entities.private cimport private_min_bid, private_owner, private_price, topmost_private
+from g1889.entities.turn cimport (
+    turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_pending_private, turn_step,
+)
 from g1889.state cimport GameState
 
 from g1889.constants import DecisionPhase
@@ -348,6 +353,118 @@ cdef inline bint _has_exact(int phase) noexcept nogil:
             or phase == DPHASE_PRIVATE_PRICE)
 
 
+# =============================================================================
+# AUCTION, BID, RAISE
+# =============================================================================
+#
+# A bid on private p ranges from its minimum bid (``private_min_bid``) to the
+# bidder's cash less their other bids (``player_available``). Grid point k is
+# the minimum + ¥5k; points past the range are not offered.
+
+cdef inline int _bid_private(GameState state, int phase) noexcept nogil:
+    """The private a BID or RAISE amount is for."""
+    return turn_pending_private(state) if phase == DPHASE_BID else turn_auction_private(state)
+
+
+cdef int price_amount(GameState state, const ActionInfo* info) noexcept nogil:
+    """The yen of a BID or RAISE decision: its exact amount, or grid point ``count``."""
+    if info.type == ACTION_EXACT_PRICE:
+        return info.amount
+    return private_min_bid(state, _bid_private(state, info.phase)) + <int>MIN_BID_INCREMENT * info.count
+
+
+cdef inline bint _amount_in_range(GameState state, int phase, int amount) noexcept nogil:
+    cdef int p = _bid_private(state, phase)
+    return private_min_bid(state, p) <= amount <= player_available(state, turn_active_player(state), p)
+
+
+cdef int _bid_points(GameState state, int phase, uint16_t* ids, int count, int first_id,
+                     int num_points) noexcept nogil:
+    """Append the grid points of the actor's bid in ``phase``, from ``first_id``."""
+    cdef int p = _bid_private(state, phase)
+    cdef int low = private_min_bid(state, p)
+    cdef int high = player_available(state, turn_active_player(state), p)
+    cdef int k
+    for k in range(num_points):
+        if low + <int>MIN_BID_INCREMENT * k > high:
+            break
+        ids[count] = <uint16_t>(first_id + k)
+        count += 1
+    return count
+
+
+cdef int _enumerate_auction(GameState state, uint16_t* ids) noexcept nogil:
+    """Pass; buy the topmost private at its price; select each unsold private
+    whose minimum bid the player can cover. On the topmost, BID's amount buys it."""
+    cdef int player = turn_active_player(state)
+    cdef int top = topmost_private(state)
+    cdef int count = 1
+    cdef int p
+    ids[0] = AUCTION_PASS
+    if private_price(state, top) <= player_available(state, player, top):
+        ids[count] = AUCTION_BUY
+        count += 1
+    for p in range(top, <int>NUM_PRIVATES):
+        if (private_owner(state, p) == <int>OWNER_UNSOLD
+                and private_min_bid(state, p) <= player_available(state, player, p)):
+            ids[count] = <uint16_t>(AUCTION_BID + p)
+            count += 1
+    return count
+
+
+# The pass cap (§7). Once ``auction_pass_payout_cap`` rounds of passes have paid
+# out, a player who can buy the topmost private may not pass, nor bid so much
+# that they no longer could. The second half closes rules §12.9's loop for
+# good: without it, players who outbid themselves on later privates never
+# afford the topmost, so the cap never binds and payouts go on forever. Once
+# capped, a player who cannot buy may only pass, and one who can must buy
+# within finitely many bids.
+
+cdef inline bint _capped(GameState state) noexcept nogil:
+    cdef int cap = state._auction_pass_payout_cap
+    return cap > 0 and turn_auction_pass_payouts(state) >= cap
+
+
+cdef inline int _capped_bid_limit(GameState state, int private) noexcept nogil:
+    """The most the actor may bid on ``private`` and still afford the topmost."""
+    return (player_available(state, turn_active_player(state), private)
+            - private_price(state, topmost_private(state)))
+
+
+cdef int _filter_auction(GameState state, uint16_t* ids, int count) noexcept nogil:
+    """Drop the bid on the topmost private, which buying it at its price
+    dominates (§5.1), and apply the pass cap."""
+    cdef int top = topmost_private(state)
+    cdef bint capped = _capped(state)
+    cdef bint can_buy = count > 1 and ids[1] == AUCTION_BUY
+    cdef int i, p
+    cdef int kept = 0
+    for i in range(count):
+        if ids[i] == AUCTION_PASS and capped and can_buy:
+            continue
+        if ids[i] >= AUCTION_BID:
+            p = ids[i] - AUCTION_BID
+            if p == top or (capped and private_min_bid(state, p) > _capped_bid_limit(state, p)):
+                continue
+        ids[kept] = ids[i]
+        kept += 1
+    return kept
+
+
+cdef int _filter_bid(GameState state, int count) noexcept nogil:
+    """Once capped, keep the points (ids 0, 1, ...) that leave the bidder able
+    to buy the topmost; keep all of them if none does, which only a selection
+    outside the policy can bring about."""
+    cdef int p = turn_pending_private(state)
+    cdef int room
+    if not _capped(state) or p == topmost_private(state):
+        return count
+    room = _capped_bid_limit(state, p) - private_min_bid(state, p)
+    if room < 0:
+        return count
+    return min(count, room // <int>MIN_BID_INCREMENT + 1)
+
+
 cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -1 nogil:
     """Write the engine-legal ids of the current decision in a fixed order and
     return the count, 0 at an automated step. The buffer holds MAX_ACTION_SIZE."""
@@ -356,7 +473,15 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
     if phase < 0:
         return 0
     # Each phase's _enumerate_<phase> joins this dispatch in its sub-step.
-    count = _unimplemented(phase, b"legal actions")
+    if phase == DPHASE_AUCTION:
+        count = _enumerate_auction(state, action_ids)
+    elif phase == DPHASE_BID:
+        count = _bid_points(state, phase, action_ids, 0, BID_POINT, BID_POINTS)
+    elif phase == DPHASE_RAISE:
+        action_ids[0] = RAISE_DROP
+        count = _bid_points(state, phase, action_ids, 1, RAISE_POINT, RAISE_POINTS)
+    else:
+        count = _unimplemented(phase, b"legal actions")
     if count > <int>MAX_ACTION_SIZE:
         fprintf(stderr, b"enumerate_legal_actions: %d ids exceed MAX_ACTION_SIZE %d\n",
                 count, <int>MAX_ACTION_SIZE)
@@ -367,10 +492,18 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
 cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except -1 nogil:
     """The legal ids minus the flag restrictions and permanent filters (§5.1, §7)."""
     cdef int count = enumerate_legal_actions(state, action_ids)
+    cdef int phase
     if count == 0:
         return 0
     # Each phase's policy filter lands with its enumerator.
-    return _unimplemented(get_decision_phase(state), b"policy filter")
+    phase = get_decision_phase(state)
+    if phase == DPHASE_AUCTION:
+        return _filter_auction(state, action_ids, count)
+    if phase == DPHASE_BID:
+        return _filter_bid(state, count)
+    if phase == DPHASE_RAISE:
+        return count
+    return _unimplemented(phase, b"policy filter")
 
 
 cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
@@ -385,6 +518,8 @@ cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
         if not _has_exact(phase) or action_id > MAX_ACTION_ID:
             return False
         # Each amount phase's range check lands with its enumerator.
+        if phase == DPHASE_BID or phase == DPHASE_RAISE:
+            return _amount_in_range(state, phase, action_id - PHASE_ACTION_SIZE[phase])
         return _unimplemented(phase, b"exact amounts")
     count = enumerate_legal_actions(state, ids)
     for i in range(count):

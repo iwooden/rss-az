@@ -1,16 +1,23 @@
 """GameDriver for the 1889 engine; see driver.pxd.
 
-Handlers are ``cdef void apply_<phase>(GameState, ActionInfo*)`` in
-``g1889/phases/`` and assume legal actions. Each joins ``_dispatch`` or
-``_run_automated_step`` in its sub-step (engine-design.md §11); until then the
-driver raises NotImplementedError on reaching it.
+Handlers are ``cdef void apply_<phase>(GameState, const ActionInfo*) except *``
+in ``g1889/phases/`` and assume legal actions; ``except *`` lets an entity
+assertion reach the caller. Each joins ``_dispatch`` or ``_run_automated_step``
+in its sub-step (engine-design.md §11); until then the driver raises
+NotImplementedError on reaching it.
 """
 
 from libc.stdint cimport uint16_t
 
-from g1889.actions cimport enumerate_policy_actions, get_decision_phase, is_legal_action
-from g1889.constants cimport NUM_STEPS, ROUND_GAME_OVER, STEP_GAME_OVER, STEP_TO_DECISION_PHASE
+from g1889.actions cimport (
+    ActionInfo, decode_action, enumerate_policy_actions, get_decision_phase, is_legal_action,
+)
+from g1889.constants cimport (
+    DPHASE_AUCTION, DPHASE_BID, DPHASE_RAISE, NUM_STEPS, ROUND_GAME_OVER, STEP_GAME_OVER,
+    STEP_TO_DECISION_PHASE,
+)
 from g1889.entities.turn cimport turn_round, turn_step
+from g1889.phases.auction cimport apply_auction, apply_bid, apply_raise
 from g1889.state cimport GameState
 
 from g1889.actions import decode_action_py
@@ -35,8 +42,17 @@ cdef class GameDriver:
     cdef int _dispatch(self, GameState state, int phase, int action_id, object history) except -1:
         if history is not None:
             history.append((state._array.copy(), phase, action_id))
-        raise NotImplementedError(
-            f"1889 {DecisionPhase(phase).name} handler not implemented yet: {decode_action_py(phase, action_id)}")
+        cdef ActionInfo info = decode_action(phase, action_id)
+        if phase == DPHASE_AUCTION:
+            apply_auction(state, &info)
+        elif phase == DPHASE_BID:
+            apply_bid(state, &info)
+        elif phase == DPHASE_RAISE:
+            apply_raise(state, &info)
+        else:
+            raise NotImplementedError(
+                f"1889 {DecisionPhase(phase).name} handler not implemented yet: {decode_action_py(phase, action_id)}")
+        return 0
 
     cdef int _run_automated_step(self, GameState state, int step, object history) except -1:
         if not 0 <= step < <int>NUM_STEPS or STEP_TO_DECISION_PHASE[step] >= 0 or step == STEP_GAME_OVER:
@@ -55,7 +71,12 @@ cdef class GameDriver:
             if phase < 0:
                 self._run_automated_step(state, step, history)
                 continue
-            action_id = self._forced_action(state)
+            try:
+                action_id = self._forced_action(state)
+            except NotImplementedError:
+                # A decision from a later sub-step (§11), such as the SR after the
+                # auction: rest there, and the next apply_action fails loudly.
+                return STATUS_OK
             if action_id < 0:
                 return STATUS_OK
             self._dispatch(state, phase, action_id, history)

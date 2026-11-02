@@ -5,7 +5,8 @@ or one of its ``auto_actions``) into the engine decisions that perform it: a
 list of ``(decision phase, phase-local id)``, starting in ``phase``. It reads
 the extractor's ``pre`` annotation for what the log entry leaves implicit (a
 bid's purchase or closed auction, a share's source, a token's hex, a train's
-owner). Prices are exact ids, so any price a human chose is expressible.
+owner). Prices are exact ids, so any price a human chose is expressible;
+bids that land on the BID or RAISE grid use the grid point instead.
 
 Actions with no engine decision map to ``[]``: ``message``, ``program_*``,
 and ``run_routes`` whose revenue the engine's ROUTE step already matches.
@@ -59,15 +60,26 @@ def _slot(table: dict[int, int], phase: int, what: str) -> int:
     return table[phase]
 
 
+def _bid_id(first_point: int, points: int, exact: int, minimum: int, price: int) -> int:
+    """A grid point when the price lands on one, else an exact id. Forced
+    decisions are always grid points, so the sync rule can match them."""
+    k, off = divmod(price - minimum, D.MIN_BID_INCREMENT)
+    return first_point + k if off == 0 and 0 <= k < points else exact + price
+
+
 def _bid(action, pre, phase, state) -> list[Decision]:
-    price = pre['price']
+    price, minimum = pre['price'], pre['min_bid']
     if pre['auctioning'] is not None:
-        return [(K.DPHASE_RAISE, K.RAISE_EXACT + price)]
-    if pre['purchase']:
-        if price != pre['min_bid']:
-            raise UnsupportedAction(f"bid: the topmost private bought for {price}, not its price {pre['min_bid']}")
+        if pre['company'] != pre['auctioning']:  # Ruby takes it as a bid outside the closed auction
+            raise UnsupportedAction(f"bid on {pre['company']} during the closed auction for {pre['auctioning']}")
+        return [(K.DPHASE_RAISE, _bid_id(K.RAISE_POINT, K.RAISE_POINTS, K.RAISE_EXACT, minimum, price))]
+    if pre['purchase'] and price < minimum:  # Ruby does not check a purchase's price
+        raise UnsupportedAction(f'bid: the topmost private bought for {price}, below its price {minimum}')
+    if pre['purchase'] and price == minimum:
         return [(K.DPHASE_AUCTION, K.AUCTION_BUY)]
-    return [(K.DPHASE_AUCTION, K.AUCTION_BID + PRIVATE[pre['company']]), (K.DPHASE_BID, K.BID_EXACT + price)]
+    # A bid on another private, or on the topmost above its price: a purchase at the bid.
+    return [(K.DPHASE_AUCTION, K.AUCTION_BID + PRIVATE[pre['company']]),
+            (K.DPHASE_BID, _bid_id(K.BID_POINT, K.BID_POINTS, K.BID_EXACT, minimum, price))]
 
 
 def _pass(action, pre, phase, state) -> list[Decision]:
