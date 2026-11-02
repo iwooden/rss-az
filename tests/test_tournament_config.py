@@ -31,7 +31,7 @@ from train.tournament import (
 V2_CONFIG = TrainingConfig(num_players=0, min_players=3, max_players=5)
 V3_CONFIG = TrainingConfig(
     num_players=0, min_players=3, max_players=5,
-    v3_behavior=True, acq_same_president=False,
+    v3_behavior=True, acq_same_president=False, max_acq_price_actions=8,
 )
 
 
@@ -159,8 +159,9 @@ def test_search_rules_stay_within_training_and_game_rules() -> None:
     v3 = EngineRules.from_config(V3_CONFIG)
 
     assert _search_rules(v3_game, v2) == legacy_game
-    assert _search_rules(v3_game, v3) == v3_game
-    assert _search_rules(legacy_game, v3) == legacy_game
+    # Each checkpoint searches under its own ACQ price cap.
+    assert _search_rules(v3_game, v3) == EngineRules(True, False, 8)
+    assert _search_rules(legacy_game, v3) == EngineRules(False, True, 8)
     # Legacy rules lack v3's cross-president price floors, so a legacy model
     # trained with cross-president offers keeps the game's v3 behavior.
     assert _search_rules(v3_game, EngineRules(False, False)) == v3_game
@@ -201,7 +202,10 @@ def test_mixed_rule_games_search_each_seat_under_its_training_rules(
         view_legal = _legal_actions(view)
         assert set(view_legal) <= set(_legal_actions(state))
         counts["forced"] += len(view_legal) == 1
-        if TURN.get_phase(state) in (GamePhases.PHASE_INVEST, GamePhases.PHASE_BID):
+        # V3 seats get a view only for their own ACQ price cap.
+        if view.v3_behavior or TURN.get_phase(state) in (
+            GamePhases.PHASE_INVEST, GamePhases.PHASE_BID,
+        ):
             assert _trade_history(view, n) == _trade_history(state, n)
         else:
             assert not any(_trade_history(view, n))
@@ -217,11 +221,12 @@ def test_mixed_rule_games_search_each_seat_under_its_training_rules(
         state_pool: object | None = None,
     ) -> SimpleNamespace:
         del mcts_config, state_pool
+        rules = (state.v3_behavior, state.acq_same_president, state.max_acq_price_actions)
         if evaluator == "v2":
-            assert (state.v3_behavior, state.acq_same_president) == (False, True)
+            assert rules == (False, True, 0)
             counts["cross_offers"] += is_cross_president_acq_offer_state(state)
         else:
-            assert (state.v3_behavior, state.acq_same_president) == (True, False)
+            assert rules == (True, False, 8)
         legal = np.array(_legal_actions(state), dtype=np.uint16)
         return SimpleNamespace(legal_actions=legal, visit_counts=rng.random(len(legal)))
 

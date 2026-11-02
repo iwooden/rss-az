@@ -75,20 +75,24 @@ def test_search_acquisition_price_cap_at_root_and_leaves(evaluator, price_cap):
     from tests.test_actions_width import _state_acq_select_price
 
     state = _state_acq_select_price()
-    config = MCTSConfig(
-        num_simulations=16, search_batch_size=1,
-        dirichlet_epsilon=0, max_acq_price_actions=price_cap,
-    )
+    full_priors, _, _, _, _ = evaluator.evaluate(state)
+    state.max_acq_price_actions = price_cap
+    config = MCTSConfig(num_simulations=16, search_batch_size=1, dirichlet_epsilon=0)
     expected = np.array(
         [0, 1, 2, 3, 47, 48, 49, 50] if price_cap else list(range(51)),
     )
-    priors, _, _, _, _ = evaluator.evaluate(state)
+    priors, _, action_ids, _, _ = evaluator.evaluate(state)
+    np.testing.assert_array_equal(action_ids, expected)
+    # Softmax over the capped mask is the renormalized capped slice of the
+    # full softmax, up to float rounding.
+    np.testing.assert_allclose(
+        priors, full_priors[expected] / full_priors[expected].sum(), rtol=1e-5,
+    )
     captured = []
     root = run_search(state, evaluator, config, root_priors_out=captured)
     np.testing.assert_array_equal(root.legal_actions, expected)
-    expected_priors = priors[expected] / priors[expected].sum() if price_cap else priors
-    np.testing.assert_array_equal(root.priors, expected_priors)
-    np.testing.assert_array_equal(captured[0], expected_priors)
+    np.testing.assert_array_equal(root.priors, priors)
+    np.testing.assert_array_equal(captured[0], priors)
 
     # Start one decision earlier to exercise batched leaf masking and reuse.
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_COMPANY))
@@ -112,10 +116,8 @@ def test_search_cross_president_price_is_forced(evaluator, price_cap, seller_kin
 
     state = negotiation_state(seller_kind=seller_kind)
     select_target(state)
-    config = MCTSConfig(
-        num_simulations=16, search_batch_size=1,
-        dirichlet_epsilon=0, max_acq_price_actions=price_cap,
-    )
+    state.max_acq_price_actions = price_cap
+    config = MCTSConfig(num_simulations=16, search_batch_size=1, dirichlet_epsilon=0)
     root = run_search(state, evaluator, config)
     company = COMPANIES[TARGET]
     np.testing.assert_array_equal(root.legal_actions, [company.get_high_price() - company.get_low_price()])
@@ -144,13 +146,17 @@ def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator, 
         seen.append(state.v3_behavior)
         assert state.v3_behavior is expected_mode
         assert state.acq_same_president is (not expected_mode)
+        assert state.max_acq_price_actions == (8 if expected_mode else 0)
         return DRIVER.apply_action(state, action, **kwargs)
 
     monkeypatch.setattr(search, "DRIVER", SimpleNamespace(apply_action=apply_action))
     pool = StatePool(100, get_layout(3).total_size)
     config = MCTSConfig(num_simulations=8, search_batch_size=1, dirichlet_epsilon=0)
     for expected_mode in (True, False):
-        state = GameState(3, v3_behavior=expected_mode, acq_same_president=not expected_mode)
+        state = GameState(
+            3, v3_behavior=expected_mode, acq_same_president=not expected_mode,
+            max_acq_price_actions=8 if expected_mode else 0,
+        )
         state.initialize_game(3, seed=42)
         root = run_search(state, evaluator, config, state_pool=pool)
         action = next(a for a, child in root.children.items() if not child.is_terminal)
@@ -289,7 +295,6 @@ class TestMCTSConfig:
         assert cfg.num_players == 3
         assert cfg.search_batch_size == 8
         assert cfg.check_nonfinite is True
-        assert cfg.max_acq_price_actions == 0
         assert cfg.forced_playouts_k == 0.0
 
     def test_validation_forced_playouts_k(self):
@@ -316,17 +321,6 @@ class TestMCTSConfig:
     def test_validation_check_nonfinite(self):
         with pytest.raises(ValueError, match="check_nonfinite"):
             MCTSConfig(check_nonfinite="yes")  # type: ignore[arg-type]
-
-    def test_validation_max_acq_price_actions(self):
-        MCTSConfig(max_acq_price_actions=0)
-        MCTSConfig(max_acq_price_actions=10)
-
-        with pytest.raises(ValueError, match="max_acq_price_actions"):
-            MCTSConfig(max_acq_price_actions=-2)
-        with pytest.raises(ValueError, match="divisible by 2"):
-            MCTSConfig(max_acq_price_actions=9)
-        with pytest.raises(ValueError, match="ACTION_SIZE_ACQ_SELECT_PRICE"):
-            MCTSConfig(max_acq_price_actions=52)
 
     def test_validation_num_players(self):
         # NN/MCTS scope is 3-5 players only.

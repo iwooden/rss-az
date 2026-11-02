@@ -29,6 +29,7 @@ from core.actions import (
     decode_action_py,
     get_decision_phase_py,
     enumerate_legal_actions_py,
+    enumerate_policy_actions_py,
 )
 from core.data import MAX_ACTION_SIZE, DecisionPhase, GameConstants, GamePhases
 from core.state import GameState
@@ -346,7 +347,7 @@ class NNEvaluator(BaseEvaluator):
 
         # Preallocated scratch — grows lazily via ``_ensure_scratch``.
         self._scratch_cap: int = 0
-        # Persistent uint16 buffer for enumerate_legal_actions_py calls.
+        # Persistent uint16 buffer for enumerate_policy_actions_py calls.
         self._enum_scratch: np.ndarray = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
         # Worker-local LUT mapping (phase_id, phase_local_action_id) to a
         # slot in the unified logit vector. Used in evaluate()/evaluate_batch
@@ -444,13 +445,15 @@ class NNEvaluator(BaseEvaluator):
             - sparse_priors: shape (n_legal,) float32, softmax over legal actions.
             - canonical_values: shape (num_players,) float32, per-player values in
               canonical order (already non-rotated from the model).
-            - action_ids: shape (n_legal,) uint16, phase-local legal action ids.
+            - action_ids: shape (n_legal,) uint16, phase-local legal action ids
+              from ``enumerate_policy_actions_py`` (the state's ACQ price cap
+              applies).
             - n_legal: count of legal actions at this state.
             - phase_id: decision phase id 0-10.
         """
         actual_num_players = self._actual_num_players(state)
         phase_id = get_decision_phase_py(state)
-        n_legal = enumerate_legal_actions_py(state, self._enum_scratch)
+        n_legal = enumerate_policy_actions_py(state, self._enum_scratch)
 
         # Fill preallocated scratch row 0.
         self._ensure_scratch(1)
@@ -514,7 +517,7 @@ class NNEvaluator(BaseEvaluator):
         all_action_ids = np.empty((n, MAX_ACTION_SIZE), dtype=np.uint16)
         for i, s in enumerate(states):
             phase_ids[i] = get_decision_phase_py(s)
-            nl = enumerate_legal_actions_py(s, self._enum_scratch)
+            nl = enumerate_policy_actions_py(s, self._enum_scratch)
             n_legals[i] = nl
             all_action_ids[i, :nl] = self._enum_scratch[:nl]
             self._build_mask_row(i, phase_ids[i], self._enum_scratch[:nl])

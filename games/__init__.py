@@ -66,13 +66,11 @@ class Game:
     active_player: Callable[[Any], int]
     is_terminal: Callable[[Any], bool]
     decision_phase: Callable[[Any], int]
-    # (state, uint16 buf of policy.max_action_size) -> count. The searched set:
-    # search expansion, self-play, and replay masks and targets.
+    # (state, uint16 buf of policy.max_action_size) -> count. The searched set,
+    # a subset of what the driver accepts: evaluator priors, search expansion,
+    # self-play, and replay masks and targets. Restrictions come from the
+    # state's runtime flags.
     enumerate_policy_actions: Callable[[Any, np.ndarray], int]
-    # Same, over the engine-legal superset the driver accepts. Single-state
-    # evaluator paths use it until the RSS ACQ price cap moves into the engine
-    # (pipeline-refactor.md 4.1).
-    enumerate_legal_actions: Callable[[Any, np.ndarray], int]
     final_scores: Callable[[Any], list[int]]  # one per player; feeds terminal values
 
     # Model inputs: dense planes for trainer/NNEvaluator, sparse records for

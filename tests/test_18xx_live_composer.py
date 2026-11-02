@@ -1289,12 +1289,14 @@ def test_prepare_live_decision_state_restores_model_acquisition_rules(
     state = GameState(3, acq_same_president=not acq_same_president)
     state.initialize_game(3, seed=42)
     state.acq_offer_limits = False
+    state.max_acq_price_actions = 8
     state.allow_positive_income_closing = True
 
     prepare_live_decision_state(state, acq_same_president=acq_same_president)
 
     assert state.acq_same_president is acq_same_president
     assert state.acq_offer_limits is True
+    assert state.max_acq_price_actions == 0
     assert state.allow_positive_income_closing is False
 
 

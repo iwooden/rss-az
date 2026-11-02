@@ -123,10 +123,14 @@ class EngineRules:
     """Engine rule flags (runtime-only; not stored in the raw state array)."""
     v3_behavior: bool
     acq_same_president: bool
+    # Policy/search only; game legality never depends on it.
+    max_acq_price_actions: int = 0
 
     @classmethod
     def from_config(cls, config: TrainingConfig) -> EngineRules:
-        return cls(config.v3_behavior, config.acq_same_president)
+        return cls(
+            config.v3_behavior, config.acq_same_president, config.max_acq_price_actions,
+        )
 
     def describe(self) -> str:
         mode = "v3" if self.v3_behavior else "legacy"
@@ -157,12 +161,13 @@ def _search_rules(game: EngineRules, trained: EngineRules) -> EngineRules:
     behavior drops v3's cross-president price floors, so it is used only with
     same-president search; there it differs from v3 only in trade-history
     lifetime (the rejection floor never applies to a player that makes no
-    cross-president offers).
+    cross-president offers). Each checkpoint keeps its own ACQ price cap.
     """
     same_president = game.acq_same_president or trained.acq_same_president
     return EngineRules(
         v3_behavior=game.v3_behavior and (trained.v3_behavior or not same_president),
         acq_same_president=same_president,
+        max_acq_price_actions=trained.max_acq_price_actions,
     )
 
 
@@ -175,13 +180,15 @@ def _search_state(
 ) -> GameState:
     """Return ``state`` as seen under ``rules``, copying when they differ."""
     if (rules.v3_behavior == state.v3_behavior
-            and rules.acq_same_president == state.acq_same_president):
+            and rules.acq_same_president == state.acq_same_president
+            and rules.max_acq_price_actions == state.max_acq_price_actions):
         return state
     view = GameState.from_array(
         state._array, num_players, max_players=max_players,
         v3_behavior=rules.v3_behavior,
     )
     view.acq_same_president = rules.acq_same_president
+    view.max_acq_price_actions = rules.max_acq_price_actions
     if (state.v3_behavior and not rules.v3_behavior
             and TURN.get_phase(view) not in _INVEST_ROUND_PHASES):
         # V3 keeps trade history until the next INVEST.
@@ -471,7 +478,7 @@ def run_tournament(
     print(f"  Game rules: {game_rules.describe()}")
     for i, (e, player) in enumerate(zip(entries, players, strict=True)):
         cfg = player.mcts_config
-        price_cap = cfg.max_acq_price_actions or "all"
+        price_cap = player.rules.max_acq_price_actions or "all"
         offer_priors = (
             "; equal cross-president offer priors"
             if isinstance(player.evaluator, CrossPresidentOfferPriorEvaluator) else ""

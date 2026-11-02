@@ -41,7 +41,7 @@ from core.actions import (
     get_decision_phase_py,
     enumerate_policy_actions_py,
 )
-from core.data import DecisionPhase, MAX_ACTION_SIZE, GamePhases
+from core.data import MAX_ACTION_SIZE, GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_INVALID_PY
 from core.state import GameState, get_layout, get_storage_player_capacity
 from entities.turn import TURN
@@ -184,6 +184,7 @@ class StatePool:
         "_v3_behavior",
         "_acq_same_president",
         "_acq_offer_limits",
+        "_max_acq_price_actions",
         "_action_lut_np",
         "_legal_scratch",
         "_pending_action_ids_buf",
@@ -205,6 +206,7 @@ class StatePool:
         self._v3_behavior = False
         self._acq_same_president = True
         self._acq_offer_limits = True
+        self._max_acq_price_actions = 0
         # (phase_id, phase-local action id) → unified-slot LUT. Used both
         # to scatter the dense legal mask per leaf and to gather the sparse
         # prior slice out of the server's dense priors for node.expand.
@@ -305,38 +307,6 @@ def _add_dirichlet_noise(
     assert node.priors is not None
     noise = rng.dirichlet([alpha] * len(node.priors))
     node.priors = ((1 - epsilon) * node.priors + epsilon * noise).astype(np.float32)
-
-
-def _filter_acq_price_root_priors(
-    priors: np.ndarray,
-    action_ids: np.ndarray,
-    n_legal: int,
-    phase_id: int,
-    max_acq_price_actions: int,
-) -> tuple[np.ndarray, np.ndarray, int]:
-    """Apply the ACQ price edge cap to an already-softmaxed root eval."""
-    if (
-        max_acq_price_actions <= 0
-        or phase_id != int(DecisionPhase.DPHASE_ACQ_SELECT_PRICE)
-        or n_legal <= max_acq_price_actions
-    ):
-        return priors, action_ids, n_legal
-
-    edge_count = max_acq_price_actions // 2
-    keep = np.empty(max_acq_price_actions, dtype=np.intp)
-    keep[:edge_count] = np.arange(edge_count, dtype=np.intp)
-    keep[edge_count:] = np.arange(
-        n_legal - edge_count,
-        n_legal,
-        dtype=np.intp,
-    )
-    filtered_priors = priors[keep].astype(np.float32, copy=True)
-    prior_sum = float(filtered_priors.sum())
-    if prior_sum > 0.0:
-        filtered_priors /= prior_sum
-    else:
-        filtered_priors.fill(1.0 / float(max_acq_price_actions))
-    return filtered_priors, action_ids[keep].copy(), max_acq_price_actions
 
 
 # Type alias for a selection path: list of (parent_node, action, array_idx)
@@ -457,6 +427,7 @@ def run_search(
         state_pool._v3_behavior = root_state.v3_behavior
         state_pool._acq_same_president = root_state.acq_same_president
         state_pool._acq_offer_limits = root_state.acq_offer_limits
+        state_pool._max_acq_price_actions = root_state.max_acq_price_actions
 
         # Check if root state is terminal. GameState doesn't expose get_phase
         # directly — the canonical accessor lives on the TURN handle.
@@ -484,33 +455,19 @@ def run_search(
 
         # Evaluate root with NN. Sparse-priors contract:
         #   (sparse_priors, values, action_ids, n_legal, phase_id)
-        priors, root_values, action_ids, n_legal, phase_id = evaluator.evaluate(
+        priors, root_values, action_ids, n_legal, _ = evaluator.evaluate(
             root_state,
         )
         if check_nonfinite:
             _raise_if_nonfinite(
                 priors,
-                name="root_priors.raw",
+                name="root_priors",
                 debug_context=debug_context,
                 extra=f"n_legal={n_legal}",
             )
             _raise_if_nonfinite(
                 root_values,
                 name="root_values",
-                debug_context=debug_context,
-                extra=f"n_legal={n_legal}",
-            )
-        priors, action_ids, n_legal = _filter_acq_price_root_priors(
-            priors,
-            action_ids,
-            n_legal,
-            phase_id,
-            config.max_acq_price_actions,
-        )
-        if check_nonfinite:
-            _raise_if_nonfinite(
-                priors,
-                name="root_priors.filtered",
                 debug_context=debug_context,
                 extra=f"n_legal={n_legal}",
             )
@@ -569,6 +526,7 @@ def run_search(
     )
     scratch_gs.acq_same_president = state_pool._acq_same_president
     scratch_gs.acq_offer_limits = state_pool._acq_offer_limits
+    scratch_gs.max_acq_price_actions = state_pool._max_acq_price_actions
 
     if root_priors_out is not None:
         assert root.priors is not None
@@ -687,11 +645,7 @@ def run_search(
                     # is the slot.
                     phase_id = get_decision_phase_py(scratch_gs)
                     child.pending_phase = phase_id
-                    n = enumerate_policy_actions_py(
-                        scratch_gs,
-                        legal_scratch,
-                        config.max_acq_price_actions,
-                    )
+                    n = enumerate_policy_actions_py(scratch_gs, legal_scratch)
                     child.pending_n = n
                     slot = len(pending)
                     pending_action_ids_buf[slot, :n] = legal_scratch[:n]

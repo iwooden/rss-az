@@ -118,9 +118,7 @@ class Game:
 - Two action sets. Engine legality is what the driver validates against;
   replay and live play need all of it. The policy set is what search expands
   and what masks and targets cover. Policy ⊆ engine-legal. The adapter exposes
-  only the policy set once the ACQ cap moves (Section 4.1). Until then it also
-  has `enumerate_legal_actions`, because the evaluators' single-state paths use
-  the full set today.
+  only the policy set.
 - States expose their raw row as `_array` and their player capacity as
   `max_players`, and `rebind(row, num_players, max_players=)` repoints a state
   at another row without allocating. The pipeline uses these directly; they
@@ -128,12 +126,14 @@ class Game:
 - Model inputs depend only on the row, never on runtime flags: batch
   extractors build flagless states from raw rows.
 - Runtime flags travel with the state. RSS keeps `v3_behavior`,
-  `acq_same_president`, and `acq_offer_limits` as Python attributes outside
-  the `int16` row (`core/state.pyx:746-758`). Search inherits them from the
-  root state, which is how live play and `tournament._search_state` give each
-  search its own rules. The pipeline treats them as opaque: `StatePool` keeps
-  the root state instead of three named flags, and `scratch_state(root, row)`
-  returns a pool-row wrapper that carries them.
+  `acq_same_president`, `acq_offer_limits`, and `max_acq_price_actions` as
+  attributes of the `GameState` object, outside the `int16` row. Search
+  inherits them from the root state, which is how live play and
+  `tournament._search_state` give each search its own rules. The pipeline
+  treats them as opaque: `StatePool` keeps the root state instead of named
+  flags, and `scratch_state(root, row)` returns a pool-row wrapper that carries
+  them. Flags move into the row only if the model must see them, or with the
+  per-player bot/human bits (Section 9).
 
 ### 3.3 Policy layout
 
@@ -169,19 +169,16 @@ game hooks.
   the full engine enumerator. Root priors therefore arrive over the uncapped
   set, and `_filter_acq_price_root_priors` trims and renormalizes them
   (`search.py:503`, `self_play.py:1070`, `analyze_game.py:740`).
-- Fix: make the cap a runtime flag on the RSS state, next to
-  `acq_same_president`, and have the evaluators call
-  `game.enumerate_policy_actions`. Then the filter, `MCTSConfig`'s cap field,
-  and the cap argument all go away. Tournament seats with different caps set
-  them the way they already set their search rules. Middle prices stay
-  engine-legal, so the driver still accepts human ones in replay and live play.
-  - Alternative: bind the cap into the RSS `Game` with `functools.partial`.
-    That needs no `.pxd` change, but tournament then needs one `Game` per seat.
-  - Steps 1-2 bind it this way for now. So from step 2, search expansion
-    reads the cap from the `Game` while the root filter reads
-    `MCTSConfig.max_acq_price_actions`. Callers that build an `MCTSConfig`
-    separately (tournament seats, `analyze_game.py:631`) must build their
-    `Game` from the same cap, or root and leaf action sets diverge.
+- Fix (decided 2026-11-01; lands before step 2): make the cap a runtime flag
+  on the RSS state, next to `acq_same_president`, and have the evaluators call
+  the policy enumerator. Then the filter, `MCTSConfig`'s cap field, and the
+  cap argument all go away. Tournament seats with different caps set them the
+  way they already set their search rules. Middle prices stay engine-legal, so
+  the driver still accepts human ones in replay and live play.
+  - Rejected: binding the cap into the RSS `Game` with `functools.partial`.
+    Tournament seats and analysis tools would each need a `Game` built from
+    the same cap as their `MCTSConfig`, and one process could no longer share
+    one `Game`.
 - Equivalence: both models use the legal mask only to mask logits
   (`nn/transformer-v3.py:1735`, `nn/transformer-v2.py:1567`). Softmax over
   the capped mask therefore equals the renormalized capped slice of the full
@@ -353,8 +350,10 @@ Pipeline track. Each step is a behavior-preserving commit or a short series:
    boundary test. (`config.game` landed in step 1.)
 3. Move game-specific behavior out of the pipeline:
    - the self-play stats hook;
-   - the cross-president adapter, into an RSS module;
-   - then, as its own commit, the ACQ cap into the engine (Section 4.1).
+   - the cross-president adapter, into an RSS module.
+
+   The ACQ cap moved onto the state as its own commit between steps 1 and 2
+   (Section 4.1).
 4. Model loader: `build_model`, `ModelInputSpec.game`, and the checkpoint
    default.
 
@@ -377,8 +376,6 @@ block 1889 only at step 7, so the two tracks can alternate.
 
 ## 9. Open questions
 
-- **Open:** The ACQ cap as a state flag or bound into the RSS `Game`
-  (Section 4.1).
 - **Open:** Names and contents of the RSS-only adapter block.
 - **Open:** Human moves the bot's rules forbid, in live play. Two options:
   - a per-player bot/human flag in the `int16` row, so restrictions apply only

@@ -106,7 +106,8 @@ def test_cross_president_prices_require_full_company_maximum(
     assert [aid for aid, _ in get_legal_actions(state)] == expected
     buf = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
     for cap in (0, 8):
-        count = enumerate_policy_actions_py(state, buf, cap)
+        state.max_acq_price_actions = cap
+        count = enumerate_policy_actions_py(state, buf)
         capped = expected if cap == 0 or len(expected) <= cap else expected[:4] + expected[-4:]
         np.testing.assert_array_equal(buf[:count], capped)
     if restricted and max_offset > 0:

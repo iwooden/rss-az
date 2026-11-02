@@ -52,7 +52,6 @@ class MCTSConfig:
     num_players: int = 3
     search_batch_size: int = 8
     check_nonfinite: bool = True
-    max_acq_price_actions: int = 0
     # KataGo forced playouts: each root child gets at least sqrt(k * P * N)
     # visits. 0 disables. Only self-play sets this.
     forced_playouts_k: float = 0.0
@@ -80,7 +79,6 @@ class MCTSConfig:
             raise ValueError(
                 f"check_nonfinite must be bool, got {self.check_nonfinite!r}"
             )
-        _validate_max_acq_price_actions(self.max_acq_price_actions)
         if not 3 <= self.num_players <= 5:
             raise ValueError(f"num_players must be 3-5, got {self.num_players}")
         if self.c_puct < 0:
@@ -130,6 +128,10 @@ class TrainingConfig:
     # General engine behavior mode; independent of model/input layout.
     v3_behavior: bool = False
     acq_same_president: bool = True
+    # GameState.max_acq_price_actions for self-play states. 0 = full
+    # ACQ_SELECT_PRICE legal set. Positive even values cap policy/search to the
+    # low half and high half of legal acquisition prices.
+    max_acq_price_actions: int = 0
 
     # --- Inference ---
     eval_dtype: str | None = None  # None = no autocast; "bfloat16" or "float16"
@@ -172,9 +174,6 @@ class TrainingConfig:
     policy_target_pruning: str = "none"
     search_batch_size: int = 8
     check_nonfinite_mcts: bool = True
-    # 0 = full ACQ_SELECT_PRICE legal set. Positive even values cap policy/search
-    # to the low half and high half of legal acquisition prices.
-    max_acq_price_actions: int = 0
     num_workers: int = 4
     num_eval_servers: int = 1
     # Optional one-device-per-eval-server mapping, e.g. ["cuda:0", "cuda:1"].
@@ -331,6 +330,7 @@ class TrainingConfig:
             raise ValueError(f"v3_behavior must be bool, got {self.v3_behavior!r}")
         if not isinstance(self.acq_same_president, bool):
             raise ValueError(f"acq_same_president must be bool, got {self.acq_same_president!r}")
+        _validate_max_acq_price_actions(self.max_acq_price_actions)
         if self.model_path is not None:
             if not isinstance(self.model_path, str):
                 raise ValueError(
@@ -412,7 +412,6 @@ class TrainingConfig:
                 "check_nonfinite_mcts must be bool, "
                 f"got {self.check_nonfinite_mcts!r}"
             )
-        _validate_max_acq_price_actions(self.max_acq_price_actions)
         if self.dirichlet_alpha <= 0:
             raise ValueError(
                 f"dirichlet_alpha must be > 0, got {self.dirichlet_alpha}"
@@ -903,7 +902,6 @@ class TrainingConfig:
             num_players=actual_num_players,
             search_batch_size=self.search_batch_size,
             check_nonfinite=self.check_nonfinite_mcts,
-            max_acq_price_actions=self.max_acq_price_actions,
         )
 
     def to_json(self) -> str:

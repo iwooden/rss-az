@@ -45,10 +45,13 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
   `MCTSConfig.forced_playouts_k`; tournament, live play and analysis leave
   it at 0.
 - **ACQ price cap.** `max_acq_price_actions > 0` (v3 config: 8) keeps only the
-  lowest and highest halves of legal `ACQ_SELECT_PRICE` offsets
-  (`enumerate_policy_actions`, `_filter_acq_price_root_priors`). The cap covers
-  search, sampling, replay masks, and targets. Middle prices stay engine-legal
-  but are never played or trained.
+  lowest and highest halves of legal `ACQ_SELECT_PRICE` offsets. It is a
+  runtime flag on `GameState`, outside the `int16` row: self-play states get it
+  from the config, and search copies it from the root to expansion states.
+  `enumerate_policy_actions` applies it, so root and leaf priors are a softmax
+  over the capped set; it covers search, sampling, replay masks, and targets.
+  Middle prices stay engine-legal but are never played or trained. Tournament
+  seats search under their checkpoint's cap; live play uses none.
 
 ## Self-play targets (`train/self_play.py` `play_game`)
 

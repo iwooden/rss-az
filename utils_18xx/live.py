@@ -146,6 +146,8 @@ def prepare_live_decision_state(state, *, acq_same_president: bool) -> None:
     # scope and v3's limits.
     state.acq_same_president = acq_same_president
     state.acq_offer_limits = True
+    # Live search has always considered every legal ACQ price.
+    state.max_acq_price_actions = 0
     state.allow_positive_income_closing = False
 
 
@@ -852,6 +854,7 @@ def _auto_advanced_validation_state(
     )
     validation_state.acq_same_president = state.acq_same_president
     validation_state.acq_offer_limits = state.acq_offer_limits
+    validation_state.max_acq_price_actions = state.max_acq_price_actions
     validation_state.v3_behavior = state.v3_behavior
     validation_state.allow_positive_income_closing = (
         state.allow_positive_income_closing
@@ -1445,6 +1448,7 @@ def _clone_live_state(state, num_players: int, max_players: int):
     clone.v3_behavior = state.v3_behavior
     clone.acq_same_president = state.acq_same_president
     clone.acq_offer_limits = state.acq_offer_limits
+    clone.max_acq_price_actions = state.max_acq_price_actions
     clone.allow_positive_income_closing = state.allow_positive_income_closing
     return clone
 

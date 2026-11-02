@@ -31,6 +31,7 @@ from core.data import (
     MAX_ACTION_SIZE,
     PHASE_ACTION_SIZES,
 )
+from core.driver import DRIVER, STATUS_INVALID_PY
 from core.state import GameState
 from entities.turn import TURN
 from entities.player import PLAYERS
@@ -278,9 +279,25 @@ def test_enumerator_width_within_action_size(phase):
 
 
 def _policy_ids(state, max_acq_price_actions):
+    state.max_acq_price_actions = max_acq_price_actions
     buf = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
-    count = enumerate_policy_actions_py(state, buf, max_acq_price_actions)
+    count = enumerate_policy_actions_py(state, buf)
     return [int(buf[i]) for i in range(count)]
+
+
+def test_acq_price_cap_is_a_validated_runtime_flag():
+    state = _fresh_state()
+    assert state.max_acq_price_actions == 0
+    assert GameState(3, max_acq_price_actions=8).max_acq_price_actions == 8
+    state.max_acq_price_actions = 8
+    state.rebind(state._array.copy(), 3)
+    assert state.max_acq_price_actions == 8
+    for invalid in (-2, 9, 52):
+        with pytest.raises(AssertionError, match="max_acq_price_actions"):
+            state.max_acq_price_actions = invalid
+        with pytest.raises(AssertionError, match="max_acq_price_actions"):
+            GameState(3, max_acq_price_actions=invalid)
+    assert state.max_acq_price_actions == 8
 
 
 def test_policy_actions_default_preserves_acq_select_price_legality():
@@ -295,8 +312,13 @@ def test_policy_actions_can_cap_acq_select_price_to_low_and_high_edges():
     state = _state_acq_select_price()
 
     assert _policy_ids(state, 8) == [0, 1, 2, 3, 47, 48, 49, 50]
-    # The policy cap must not change driver/replay legality.
+    # The policy cap must not change driver/replay legality: replay and live
+    # play apply human middle prices.
     assert _enumerate(state)[1] == list(range(51))
+    state.step_mode = True
+    cash = CORPS[7].get_cash(state)
+    assert DRIVER.apply_action(state, 25) != STATUS_INVALID_PY
+    assert CORPS[7].get_cash(state) == cash - COMPANIES[35].get_low_price() - 25
 
 
 @pytest.mark.parametrize("count", [1, 4, 7, 8])

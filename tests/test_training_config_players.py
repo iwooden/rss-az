@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from games import get_game
 from train.checkpoint import load_checkpoint
 from train.config import TrainingConfig
 from train.logging import _format_player_range
@@ -71,7 +72,8 @@ def test_legacy_num_players_config_validates_with_effective_single_range() -> No
 def test_acquisition_price_cap_config_and_cli_round_trip():
     config = TrainingConfig.from_json('{"max_acq_price_actions": 8}')
     assert TrainingConfig.from_json(config.to_json()).max_acq_price_actions == 8
-    assert config.to_mcts_config().max_acq_price_actions == 8
+    # An engine option: self-play states carry it, not the search config.
+    assert get_game(config).new_game(3, 3, 1).max_acq_price_actions == 8
     for invalid in (-2, 9, 52, True, 8.0, "8"):
         with pytest.raises(ValueError, match="max_acq_price_actions"):
             TrainingConfig(max_acq_price_actions=invalid)  # type: ignore[arg-type]

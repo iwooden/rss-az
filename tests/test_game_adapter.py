@@ -279,15 +279,10 @@ def test_rows_report_player_count_and_capacity(case: Case):
 def test_every_policy_action_applies_on_a_rebound_scratch_state(case: Case):
     # Search expansion: copy the parent row, rebind one scratch state, apply.
     game = case.game
-    legal = np.empty(game.policy.max_action_size, dtype=np.uint16)
     for playout in case.playouts:
         row = playout.rows[0].copy()
         scratch = game.scratch_state(playout.final, row)
         for source, actions in zip(playout.rows, playout.actions, strict=True):
-            row[:] = source
-            scratch.rebind(row, playout.num_players, max_players=playout.max_players)
-            n_legal = game.enumerate_legal_actions(scratch, legal)
-            assert set(actions.tolist()) <= set(legal[:n_legal].tolist())
             for action in actions:
                 row[:] = source
                 scratch.rebind(row, playout.num_players, max_players=playout.max_players)
@@ -408,6 +403,7 @@ def test_rss_engine_calls_match_direct_calls(rss_case: Case):
     adapter_buf = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
     direct_buf = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
     for playout in rss_case.playouts:
+        assert playout.final.max_acq_price_actions == cap
         for row in playout.rows:
             state = game.scratch_state(playout.final, row.copy())
             capacity = row.shape[0]
@@ -417,21 +413,21 @@ def test_rss_engine_calls_match_direct_calls(rss_case: Case):
             assert game.active_player(state) == TURN.get_active_player(state)
             assert not game.is_terminal(state)
             n = game.enumerate_policy_actions(state, adapter_buf)
-            assert n == enumerate_policy_actions_py(state, direct_buf, cap)
+            assert n == enumerate_policy_actions_py(state, direct_buf)
             np.testing.assert_array_equal(adapter_buf[:n], direct_buf[:n])
-            n = game.enumerate_legal_actions(state, adapter_buf)
-            assert n == enumerate_legal_actions_py(state, direct_buf)
-            np.testing.assert_array_equal(adapter_buf[:n], direct_buf[:n])
+            # The policy set is a subset of what the driver accepts.
+            n_legal = enumerate_legal_actions_py(state, direct_buf)
+            assert set(adapter_buf[:n].tolist()) <= set(direct_buf[:n_legal].tolist())
         assert game.is_terminal(playout.final)
         assert TURN.get_phase(playout.final) == GamePhases.PHASE_GAME_OVER
 
-    # Random playouts rarely see a wide ACQ price range; pin the cap on one.
-    state = _state_acq_select_price()
+    # Random playouts rarely see a wide ACQ price range. The config's cap
+    # reaches it through the root's runtime flags.
+    wide = _state_acq_select_price()
+    state = game.scratch_state(rss_case.playouts[0].final, wide._array.copy())
     n_legal = enumerate_legal_actions_py(state, direct_buf)
     assert n_legal > V3_ENGINE_OPTIONS["max_acq_price_actions"]
-    n = game.enumerate_policy_actions(state, adapter_buf)
-    assert n == enumerate_policy_actions_py(state, direct_buf, cap) == (cap or n_legal)
-    np.testing.assert_array_equal(adapter_buf[:n], direct_buf[:n])
+    assert game.enumerate_policy_actions(state, adapter_buf) == (cap or n_legal)
 
 
 def test_rss_final_scores_are_the_net_worths_evaluate_terminal_reads(rss_case: Case):
@@ -494,7 +490,7 @@ def test_rss_new_game_and_scratch_state_match_today_construction(rss_case: Case)
     config, game = rss_case.config, rss_case.game
     flags = (
         "v3_behavior", "acq_same_president", "acq_offer_limits",
-        "allow_positive_income_closing", "step_mode",
+        "max_acq_price_actions", "allow_positive_income_closing", "step_mode",
     )
 
     # train/self_play.py play_game
@@ -502,23 +498,27 @@ def test_rss_new_game_and_scratch_state_match_today_construction(rss_case: Case)
     expected = GameState(
         4, max_players=5, v3_behavior=config.v3_behavior,
         acq_same_president=config.acq_same_president,
+        max_acq_price_actions=config.max_acq_price_actions,
     )
     expected.initialize_game(4, seed=7, max_players=5)
     np.testing.assert_array_equal(state._array, expected._array)
     assert {f: getattr(state, f) for f in flags} == {f: getattr(expected, f) for f in flags}
 
-    # mcts/search.py run_search: the scratch carries the root's three runtime
-    # flags. Flip every flag on the root so each one is observable.
+    # mcts/search.py run_search: the scratch carries the root's four runtime
+    # flags. Change every flag on the root so each one is observable.
     root = GameState.from_array(
         state._array, 4, max_players=5, v3_behavior=not config.v3_behavior,
     )
     for name in flags[1:]:
-        setattr(root, name, not getattr(root, name))
+        if name != "max_acq_price_actions":
+            setattr(root, name, not getattr(root, name))
+    root.max_acq_price_actions = 6  # neither test config's cap
     scratch = game.scratch_state(root, state._array.copy())
     expected = GameState.from_buffer(
         state._array.copy(), 4, max_players=5, v3_behavior=root.v3_behavior,
     )
     expected.acq_same_president = root.acq_same_president
     expected.acq_offer_limits = root.acq_offer_limits
+    expected.max_acq_price_actions = root.max_acq_price_actions
     assert {f: getattr(scratch, f) for f in flags} == {f: getattr(expected, f) for f in flags}
     np.testing.assert_array_equal(scratch._array, state._array)

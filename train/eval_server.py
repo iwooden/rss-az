@@ -97,7 +97,7 @@ import torch
 from torch._dynamo.decorators import mark_unbacked
 
 from core.actions import (
-    enumerate_legal_actions_py,
+    enumerate_policy_actions_py,
     get_decision_phase_py,
 )
 from core.attention_relations import (
@@ -1350,7 +1350,7 @@ class RemoteEvaluator(BaseEvaluator):
         # pre-publish and gather the sparse prior slice post-forward; the
         # dense ``evaluate_leaves`` path bypasses it entirely.
         self._action_lut_np: np.ndarray = build_action_lut().numpy()
-        # Scratch for enumerate_legal_actions_py on the single-state path.
+        # Scratch for enumerate_policy_actions_py on the single-state path.
         self._enum_scratch: np.ndarray = np.empty(
             MAX_ACTION_SIZE, dtype=np.uint16,
         )
@@ -1427,7 +1427,9 @@ class RemoteEvaluator(BaseEvaluator):
             (priors_legal, values_canonical, action_ids_legal, n_legal, phase_id):
             - priors_legal: (n_legal,) float32 softmax over legal actions.
             - values_canonical: (num_players,) float32 in canonical order.
-            - action_ids_legal: (n_legal,) uint16 phase-local legal action ids.
+            - action_ids_legal: (n_legal,) uint16 phase-local legal action ids
+              from ``enumerate_policy_actions_py`` (the state's ACQ price cap
+              applies).
             - n_legal: count of legal actions.
             - phase_id: decision phase id 0-10.
         """
@@ -1443,7 +1445,7 @@ class RemoteEvaluator(BaseEvaluator):
             state, self._in_relation_coords_np[0],
             max_players=self.num_players,
         )
-        n = enumerate_legal_actions_py(state, self._enum_scratch)
+        n = enumerate_policy_actions_py(state, self._enum_scratch)
         self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
         self._request_eval(1)

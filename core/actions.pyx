@@ -1133,13 +1133,13 @@ cdef int _filter_acq_price_edge_actions(
 cdef int enumerate_policy_actions(
     GameState state,
     uint16_t* action_ids,
-    int max_acq_price_actions,
 ) noexcept nogil:
-    """Enumerate legal actions, optionally capping ACQ_SELECT_PRICE to edges.
+    """Enumerate legal actions, capping ACQ_SELECT_PRICE to the state's edges.
 
-    This is a policy/search view only. Engine legality remains owned by
-    ``enumerate_legal_actions`` so direct driver validation and external replay
-    compatibility keep the full game action set.
+    This is a policy/search view only, using ``state.max_acq_price_actions``.
+    Engine legality remains owned by ``enumerate_legal_actions`` so direct
+    driver validation and external replay compatibility keep the full game
+    action set.
     """
     cdef int phase_id = get_decision_phase(state)
     cdef int count = enumerate_legal_actions(state, action_ids)
@@ -1147,7 +1147,7 @@ cdef int enumerate_policy_actions(
         phase_id,
         action_ids,
         count,
-        max_acq_price_actions,
+        state._max_acq_price_actions,
     )
 
 
@@ -1208,33 +1208,15 @@ cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids):
     return enumerate_legal_actions(state, buf_ptr)
 
 
-cpdef int enumerate_policy_actions_py(
-    GameState state,
-    cnp.ndarray action_ids,
-    int max_acq_price_actions=0,
-):
-    """Policy/search legal-action wrapper with optional ACQ price edge cap.
+cpdef int enumerate_policy_actions_py(GameState state, cnp.ndarray action_ids):
+    """Policy/search legal-action wrapper, capped by ``state.max_acq_price_actions``.
 
-    ``max_acq_price_actions=0`` preserves the exact engine legal list. A
-    positive value must be even; when ACQ_SELECT_PRICE would expose more than
-    that many prices, the low half and high half are kept and middle offsets are
-    omitted from the returned policy/search action set.
+    A cap of 0 preserves the exact engine legal list. A positive cap keeps the
+    low half and high half of the legal ACQ_SELECT_PRICE prices when there are
+    more than that many, omitting middle offsets from the policy/search set.
     """
-    cdef uint16_t* buf_ptr
-    assert max_acq_price_actions >= 0, (
-        "max_acq_price_actions must be 0 or a positive even integer, "
-        f"got {max_acq_price_actions}"
-    )
-    assert max_acq_price_actions == 0 or max_acq_price_actions % 2 == 0, (
-        "max_acq_price_actions must be divisible by 2, "
-        f"got {max_acq_price_actions}"
-    )
-    assert max_acq_price_actions <= ACTION_SIZE_ACQ_SELECT_PRICE, (
-        "max_acq_price_actions must be <= ACTION_SIZE_ACQ_SELECT_PRICE "
-        f"({ACTION_SIZE_ACQ_SELECT_PRICE}), got {max_acq_price_actions}"
-    )
-    buf_ptr = <uint16_t*>cnp.PyArray_DATA(action_ids)
-    return enumerate_policy_actions(state, buf_ptr, max_acq_price_actions)
+    cdef uint16_t* buf_ptr = <uint16_t*>cnp.PyArray_DATA(action_ids)
+    return enumerate_policy_actions(state, buf_ptr)
 
 
 # =============================================================================

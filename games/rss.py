@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-from functools import partial
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from core.actions import (
-    enumerate_legal_actions_py,
-    enumerate_policy_actions_py,
-    get_decision_phase_py,
-)
+from core.actions import enumerate_policy_actions_py, get_decision_phase_py
 from core.attention_relations import (
     MAX_ATTENTION_RELATION_EDGES,
     NUM_ATTENTION_RELATIONS,
@@ -84,6 +79,7 @@ def _scratch_state(root: GameState, row: np.ndarray) -> GameState:
     )
     scratch.acq_same_president = root.acq_same_president
     scratch.acq_offer_limits = root.acq_offer_limits
+    scratch.max_acq_price_actions = root.max_acq_price_actions
     return scratch
 
 
@@ -102,11 +98,13 @@ def make_game(config: TrainingConfig) -> Game:
     """Build the RSS adapter for ``config``'s engine options."""
     v3_behavior = config.v3_behavior
     acq_same_president = config.acq_same_president
+    max_acq_price_actions = config.max_acq_price_actions
 
     def new_game(num_players: int, max_players: int, seed: int) -> GameState:
         state = GameState(
             num_players, max_players=max_players, v3_behavior=v3_behavior,
             acq_same_president=acq_same_president,
+            max_acq_price_actions=max_acq_price_actions,
         )
         state.initialize_game(num_players, seed=seed, max_players=max_players)
         return state
@@ -123,13 +121,7 @@ def make_game(config: TrainingConfig) -> Game:
         active_player=TURN.get_active_player,
         is_terminal=_is_terminal,
         decision_phase=get_decision_phase_py,
-        # Bound here until the ACQ price cap's home is settled
-        # (pipeline-refactor.md 4.1).
-        enumerate_policy_actions=partial(
-            enumerate_policy_actions_py,
-            max_acq_price_actions=config.max_acq_price_actions,
-        ),
-        enumerate_legal_actions=enumerate_legal_actions_py,
+        enumerate_policy_actions=enumerate_policy_actions_py,
         final_scores=_final_scores,
         num_tokens=get_num_tokens,
         token_dim=get_token_dim,

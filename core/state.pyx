@@ -42,6 +42,7 @@ import numpy as np
 from collections import namedtuple
 
 from core.data cimport (
+    ACTION_SIZE_ACQ_SELECT_PRICE,
     GameConstants,
     GamePhases,
     CORP_SHARE_COUNT,
@@ -628,6 +629,21 @@ cdef inline int _validate_storage_players(
     return max_players
 
 
+cdef inline int _validate_max_acq_price_actions(int value) except -1:
+    assert value >= 0, (
+        "max_acq_price_actions must be 0 or a positive even integer, "
+        f"got {value}"
+    )
+    assert value % 2 == 0, (
+        f"max_acq_price_actions must be divisible by 2, got {value}"
+    )
+    assert value <= ACTION_SIZE_ACQ_SELECT_PRICE, (
+        "max_acq_price_actions must be <= ACTION_SIZE_ACQ_SELECT_PRICE "
+        f"({ACTION_SIZE_ACQ_SELECT_PRICE}), got {value}"
+    )
+    return value
+
+
 cdef inline int _resolve_storage_players(
     GameState state,
     int num_players,
@@ -745,7 +761,8 @@ cdef class GameState:
     def __cinit__(self, int num_players, bint _alloc=True,
                   bint acq_same_president=True,
                   bint allow_positive_income_closing=False,
-                  int max_players=0, bint v3_behavior=False):
+                  int max_players=0, bint v3_behavior=False,
+                  int max_acq_price_actions=0):
         cdef int storage_players = _validate_storage_players(
             num_players, max_players,
         )
@@ -756,6 +773,9 @@ cdef class GameState:
         self.allow_positive_income_closing = allow_positive_income_closing
         self.v3_behavior = v3_behavior
         self.acq_offer_limits = True
+        self._max_acq_price_actions = _validate_max_acq_price_actions(
+            max_acq_price_actions,
+        )
 
         if not _alloc:
             # Caller will set _array and _data (used by from_buffer). The
@@ -839,6 +859,19 @@ cdef class GameState:
         Engine behavior flags, including v3_behavior, stay on this wrapper.
         """
         _bind_buffer(self, buffer, num_players, max_players)
+
+    @property
+    def max_acq_price_actions(self):
+        """Policy/search cap on ACQ_SELECT_PRICE actions; 0 keeps every price.
+
+        A positive even cap keeps the lowest and highest half of the legal
+        prices. Engine legality is unaffected.
+        """
+        return self._max_acq_price_actions
+
+    @max_acq_price_actions.setter
+    def max_acq_price_actions(self, int value):
+        self._max_acq_price_actions = _validate_max_acq_price_actions(value)
 
     # =========================================================================
     # GAME INITIALIZATION

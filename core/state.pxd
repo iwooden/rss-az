@@ -201,6 +201,10 @@ cdef class GameState:
     # Enforce v3's acquisition offer limits (rejection floors, cross-president
     # maximum price, rejection cap). 18xx.games replay clears it.
     cdef public bint acq_offer_limits
+    # Policy/search cap on ACQ_SELECT_PRICE actions (0 = every legal price);
+    # see enumerate_policy_actions. Set through the validating
+    # ``max_acq_price_actions`` property.
+    cdef int _max_acq_price_actions
 
     # Game initialization (note: __cinit__ takes acq_same_president=True)
     cpdef void initialize_game(self, int num_players, int seed=*, int max_players=*)
