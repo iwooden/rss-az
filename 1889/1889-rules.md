@@ -1188,6 +1188,13 @@ ambiguities and contradictions in the rulebook. Points checked against it:
 | Private C bonus | "upgrade Ôzu" | lay a green city tile (#12-#15, #205, #206) on C4, paid by the seller |
 | Private E exchange | timing, IR started, and 60% limit unspecified | allowed at any time, even before IR is started (`available_share` takes any non-President IO share); blocked above 60% (`holding_ok?`); shares of unstarted corporations count ¥0 in `Player#value` |
 | Consent for private and train sales across players | mutual agreement | not enforced by the engine; players coordinate outside it |
+| Selling an unstarted corporation's share | not addressed | not allowed (`game/base.rb:1252`) |
+| Closed auction turn order | clockwise among the bidders | the lowest bidder acts next (`step/waterfall_auction.rb:48-54`) |
+| Bankruptcy | the president's cash goes to the corporation | shares are sold and the president's cash goes to the bank (`step/bankrupt.rb:24-44`); scores come out the same |
+| Emergency share sales | a president above 60% outside the orange zone must sell down to 60%, even past the shortfall (Section 8.9) | no such exception; sales stop once the train is affordable (`step/emergency_money.rb:16-50`) |
+| Private purchases by corporations (phases 3-4) | during the corporation's turn | at any step of its OR turn: the non-blocking BuyCompany step precedes Track (`game/g_1889/game.rb:173-185`) |
+| Private B and E use | Section 12.8 | E at any moment of an SR or OR, B in an SR or at the start of any corporation's turn; neither counts as an SR action or resets passes (`step/exchange.rb:23`) |
+| Discards by several crowded corporations | not addressed | corporation-list order (`game/base.rb:2231`); no effect on the outcome |
 
 ---
 
@@ -1203,14 +1210,21 @@ Decided (2026-10-29):
 4. Tile upgrade legality comes from the preservation rule. The manifest's
    gaps are printing errors (Section 12.3).
 
-Still open:
+Decided (2026-11-01; details in [`engine-design.md`](engine-design.md)):
 
-1. **Consent model** for private sales and train sales between different
-   players' corporations (Section 12.11; `1889.md` §4.4).
-2. **Selling an unstarted corporation's share** (reachable only through
-   private E): it has no market price. 18xx.games's sell check does not
-   obviously exclude it. Check its behavior before implementing.
-3. **Ability timing details** listed in Section 12.8.
+5. **Consent for sales across players** (Section 12.11; `1889.md` §4.4). The
+   engine accepts every sale, as 18xx.games does. In self-play, a
+   corporation buys privates and trains only from corporations or players
+   that share its president: runtime flags restrict the searched moves, not
+   legality (engine-design §7).
+6. **An unstarted corporation's share** cannot be sold, as in 18xx.games.
+7. **Ability timing** (Section 12.8) follows 18xx.games (Section 13). The
+   engine supports private B and E only on the owner's own turn for now;
+   replay fails loudly on out-of-turn use, which no fixture contains. Live
+   play adds an out-of-turn entry point.
+8. **The endless all-pass auction** (Section 12.9) stays legal. Self-play
+   caps it: after one all-pass payout round, a player who can buy the
+   topmost private may not pass.
 
 ---
 
