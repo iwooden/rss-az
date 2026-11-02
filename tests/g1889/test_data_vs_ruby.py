@@ -34,7 +34,10 @@ pytestmark = pytest.mark.skipif(RUBY is None, reason='requires ruby')
 
 
 def test_regenerating_leaves_tables_unchanged():
-    assert generate.render(generate.build(generate.run_dump())) == TABLES_PATH.read_text()
+    text = generate.render(generate.build(generate.run_dump()))
+    assert text == TABLES_PATH.read_text()
+    pxd, pyx = generate.render_cython(json.loads(text))
+    assert (pxd, pyx) == (generate.PXD_PATH.read_text(), generate.PYX_PATH.read_text())
 
 
 @pytest.fixture(scope='module')

@@ -2,8 +2,12 @@
 
 ``tables.json`` holds the map, tiles, upgrade table, and game constants. It is
 generated from the 18xx.games Ruby engine in ``submodules/18xx`` by
-``generate.py``; do not edit it by hand. Regenerate with
-``.venv/bin/python -m g1889.data.generate``. Load it with ``load_tables()``.
+``generate.py``, which then renders it as the C arrays and enums of
+``tables.pxd``/``tables.pyx`` (module ``g1889.data.tables``). Do not edit any
+of the three by hand. Regenerate with ``.venv/bin/python -m g1889.data.generate``,
+or ``--cython-only`` to redo the Cython from the checked-in JSON without Ruby.
+The engine cimports ``g1889.data.tables`` and never reads the JSON; Python
+tests and tools use ``load_tables()``.
 
 Conventions
 -----------
@@ -60,7 +64,10 @@ Upgrades
     ``[tile, rotation]`` that may replace it on a hex whose sides are all
     open. On hex h, a target is legal only if its exits fit ``exit_mask[h]``.
     The table ignores phase colors, supply counts, connectivity, blockers, and
-    cost. ``blocks_lay`` tiles (437) are laid only by a private ability.
+    cost. ``blocks_lay`` tiles (437) are laid only by a private ability. The C
+    tables store it as a CSR over ``6 * tile + rotation`` (``UPG_START``,
+    ``UPG_TILE``, ``UPG_ROT``) with canonical targets only: rotations with equal
+    masks collapse to the lowest (``TILE_CANON_ROT``).
 
 Other conventions
     Corporations, privates (A-G by face value), trains, and phases keep

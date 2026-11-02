@@ -14,7 +14,7 @@ NUM_BUILD_JOBS = os.cpu_count() or 1
 
 # Packages whose .pyx files are compiled. `clean` touches nothing outside
 # these and build/, so reference builds elsewhere (e.g. scratchpad/) survive.
-EXTENSION_DIRS = ('core', 'entities', 'phases', 'mcts')
+EXTENSION_DIRS = ('core', 'entities', 'phases', 'mcts', 'g1889')
 
 
 RELEASE_FLAG = '--release'
@@ -242,7 +242,8 @@ else:
 
 setup(
     name="rss-cython-core",
-    packages=['core', 'entities', 'phases', 'phases.util', 'mcts'],
+    packages=['core', 'entities', 'phases', 'phases.util', 'mcts',
+              'g1889', 'g1889.data', 'g1889.entities', 'g1889.phases', 'g1889.routes'],
     ext_modules=ext_modules,
     cmdclass={
         'clean': CleanCommand,
