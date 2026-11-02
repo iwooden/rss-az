@@ -579,7 +579,7 @@ up to X; the harness reports the first unsupported action.
 | 6.6 | Route solver, the route cache, `ROUTE`, `override_route_revenue` | matches `AutoRouter` at every Route snapshot; at least every human revenue; agrees with brute force; profile recorded |
 | 6.7 | Dividends; BUY_TRAIN from the depot, the pool, and other corps, plus the D trade-in; TRAIN_PRICE; train limits; must-buy funded from the treasury; `PHASE`; DISCARD | `314` and `962` green through the first private buy or emergency; random playouts reach phase D |
 | 6.8 | Buy-private windows, PRIVATE_PRICE, ER_BONUS, PORT, and the DR exchange; emergency money; bankruptcy; game end; `final_scores` | all four fixtures green end to end, including the final results |
-| 6.9 | Full random playouts; flags; profiling; the engine half of `games/g1889.py` | seeds terminate within the cap with the invariants intact; adapter conformance passes the engine checks for 1889; the profile is recorded here |
+| 6.9 | Full random playouts; flags; profiling; the engine half of `games/g1889.py`; remove the driver's development stop (6.3) | seeds terminate within the cap with the invariants intact; the driver no longer catches `NotImplementedError`; adapter conformance passes the engine checks for 1889; the profile is recorded here |
 
 **The `Game` adapter.** `games/g1889.py` is first wired in at 6.9, once a
 full random game runs (pipeline-refactor §6.1). It fills every engine field
