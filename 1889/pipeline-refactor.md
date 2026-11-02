@@ -578,6 +578,25 @@ Known `main` bugs, kept for parity until fixed on `main`:
   the state's cap to 0, and a test pins it. The fix is to set it from the
   checkpoint config there, preferably on `main` first so the branch stays
   aligned.
+- **Eval servers fail without autocast.** Eval servers always send fp16
+  tokens: the warmup builds them at `train/eval_server.py:612`, and serving
+  sets `input_dtype` at `:648`. Neither model casts them. v2's
+  `_project_tokens` (`nn/transformer-v2.py:998`) and v3's first projection
+  (`company_proj`, `nn/transformer-v3.py:834`) are fp32 `Linear`s. So with
+  `eval_dtype` unset (the config default, `train/config.py:150`), or on any
+  CPU eval server, the first forward fails with "mat1 and mat2 must have the
+  same dtype, but got Half and Float". The fingerprint script wraps its CPU
+  eval server in `Fp32TokenInputs` for this reason. Found in the step 4 GPU
+  check (2026-11-02). The fix belongs in `train/eval_server.py` on `main`
+  first: feed fp32 model inputs unless autocast is running, and keep the
+  shared and pinned buffers fp16.
+- **Training hangs for up to 40 minutes when an eval server dies before it is
+  ready.** `train/main.py:1010` waits `wait_ready(timeout=2400.0)` and never
+  checks whether the server process is still alive. Its error message still
+  says 300 s. When the bug above killed the server during warmup, the run sat
+  with idle workers until the timeout. `EvalServer.wait_ready` should
+  also return when the process exits (`_process.is_alive()`), and the
+  message should report the real timeout.
 
 ## 8. Steps
 
@@ -615,6 +634,7 @@ Engine track, independent of the pipeline track:
 7. Feature extraction (milestone 4), the extraction half of
    `games/g1889.py`, and extraction conformance for 1889. The engine half and
    its conformance landed with step 6.
+   Design: [`extraction-design.md`](extraction-design.md).
 
 Then both tracks join:
 
