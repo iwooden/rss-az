@@ -10,10 +10,14 @@ from core.token_data import get_token_data
 from entities.company import COMPANIES
 from entities.player import PLAYERS
 from entities.turn import TURN
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from nn import _load_model_module
 from tests.phases.conftest import get_legal_actions
 from tests.phases.test_bid import _enter_bid_phase, _place_opening_bid
+from train.config import TrainingConfig
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 @pytest.mark.parametrize("num_players", [3, 4, 5])
@@ -59,7 +63,7 @@ def test_bid_features_and_output_slots_match_engine_auctions(num_players):
         model.bid_head[-1].weight.zero_()
         model.bid_head[-1].bias.copy_(torch.arange(int(AUCTION_CAP) + 1) / 10)
     try:
-        outputs = NNEvaluator(model, torch.device("cpu"), 5).evaluate_batch(states)
+        outputs = NNEvaluator(RSS_GAME, model, torch.device("cpu"), 5).evaluate_batch(states)
     finally:
         handle.remove()
     torch.testing.assert_close(seen[0][:, 3 * model.cfg.d_model:], expected.flatten(1))

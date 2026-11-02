@@ -8,8 +8,12 @@ import numpy as np
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import GameState, get_layout, get_turn_fields
 from core.token_data import get_num_tokens
+from games import get_game
 from nn.policy_layout import UNIFIED_LOGIT_DIM
+from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 def _targets(value_width: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -37,6 +41,7 @@ def _add_state(buffer: ReplayBuffer, num_players: int, seed: int) -> None:
 
 def _mixed_buffer(capacity: int = 4) -> ReplayBuffer:
     return ReplayBuffer(
+        RSS_GAME,
         capacity=capacity,
         state_size_int16=get_layout(5).total_size,
         num_players=5,
@@ -122,7 +127,7 @@ def test_replay_buffer_load_skips_old_single_count_metadata(tmp_path: Path) -> N
         )
     )
 
-    buffer = ReplayBuffer(2, state_size, 3)
+    buffer = ReplayBuffer(RSS_GAME, 2, state_size, 3)
 
     assert buffer.load(tmp_path) == 0
     assert len(buffer) == 0

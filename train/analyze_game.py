@@ -31,9 +31,10 @@ import torch
 from core.actions import get_decision_phase_py
 from core.data import GamePhases
 from core.driver import DRIVER, STATUS_GAME_OVER_PY as STATUS_GAME_OVER
-from core.state import GameState, get_layout
+from core.state import GameState
 from entities.player import PLAYERS
 from entities.turn import TURN
+from games import get_game
 from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.node import MCTSNode
 from mcts.search import (
@@ -611,8 +612,9 @@ def analyze_game(
             setup_18xx = _apply_18xx_seed_setup(state, seed_18xx, num_players)
 
     terminal_rank_weight = terminal_blend if terminal_blend is not None else config.terminal_blend
+    game = get_game(config)
     evaluator = NNEvaluator(
-        model, device, num_players=max_players,
+        game, model, device, num_players=max_players,
         terminal_rank_weight=terminal_rank_weight,
         eval_dtype=_resolve_eval_dtype_override(config, eval_dtype),
         input_spec=get_model_input_spec(config),
@@ -633,8 +635,7 @@ def analyze_game(
         check_nonfinite=mcts_config.check_nonfinite,
     )
 
-    layout = get_layout(max_players)
-    state_pool = StatePool(2 * (num_simulations + 1), layout.total_size)
+    state_pool = StatePool(game, 2 * (num_simulations + 1), game.state_size(max_players))
     rng = np.random.default_rng(seed)
 
     lines: list[str] = []
@@ -743,7 +744,7 @@ def analyze_game(
         # MCTS search (reuses subtree from previous move when available)
         search_stats = SearchStats()
         root = run_search(
-            state, evaluator, mcts_config, rng,
+            game, state, evaluator, mcts_config, rng,
             state_pool=state_pool, reuse_root=reuse_root,
             profile=search_stats, debug_context=debug_context,
         )

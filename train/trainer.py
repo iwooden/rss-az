@@ -18,39 +18,25 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.state import get_layout
-from core.token_data import get_token_dim, get_num_tokens, get_token_data_batch
-from nn.policy_layout import (
-    NUM_PHASES,
-    PHASES_WITH_PASS_SLOT,
-    UNIFIED_LOGIT_DIM,
-)
+from games import get_game
 from train.config import TrainingConfig
-from train.policy_metrics import PHASE_NAMES
 from train.replay_buffer import ReplayBuffer
 
-U_DIM = int(UNIFIED_LOGIT_DIM)
-
-# Matches core.data.DecisionPhase order. DPHASE_INVEST..DPHASE_PAR occupy
-# slots 0..8; DPHASE_ACQ_SELECT_COMPANY / DPHASE_ACQ_SELECT_PRICE are
-# appended at slots 9 and 10 after the ACQ split. ACQ_SELECT_CORP at slot 2
-# replaces the old joint ACQUISITION. ACQ_OFFER stays a first-class phase.
-_PHASE_NAMES = PHASE_NAMES
+_PHASE_SAMPLES = "policy_samples_"
 
 
 def average_training_metrics(metrics: dict[str, list[float]]) -> dict[str, float]:
     """Average steps, weighting phase policy diagnostics by sampled rows.
 
     Empty phase buckets are absent from train_step, so the per-phase lists
-    and their sample-count lists align even when a phase is rare.
+    and their sample-count lists align even when a phase is rare. Phases come
+    from the ``policy_samples_<phase>`` keys.
     """
     result = {key: sum(values) / len(values) for key, values in metrics.items()}
-    for phase in PHASE_NAMES:
-        count_key = f"policy_samples_{phase}"
-        if count_key not in metrics:
+    for count_key, counts in metrics.items():
+        if not count_key.startswith(_PHASE_SAMPLES):
             continue
-        counts = metrics[count_key]
+        phase = count_key.removeprefix(_PHASE_SAMPLES)
         total = sum(counts)
         result[count_key] = total
         for metric in ("policy_loss", "policy_target_entropy", "policy_kl"):
@@ -77,14 +63,15 @@ class Trainer:
         self.config = config
         self.device = device
         self._global_step = 0
+        self._game = game = get_game(config)
+        self._policy = game.policy
 
         model_cfg = getattr(self._base_model, "cfg", None)
         self._layout_version = int(getattr(model_cfg, "layout_version", 2))
-        self._token_dim = get_token_dim(self._layout_version)
+        self._token_dim = game.token_dim(self._layout_version)
         self._num_players = config.effective_max_players
-        self._num_tokens = get_num_tokens(self._num_players)
-        layout = get_layout(self._num_players)
-        self._state_size = layout.total_size
+        self._num_tokens = game.num_tokens(self._num_players)
+        self._state_size = game.state_size(self._num_players)
 
         # Lazy pinned host + device scratch (see _ensure_scratch).
         self._scratch_cap: int = 0
@@ -249,10 +236,11 @@ class Trainer:
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
         nt, td = self._num_tokens, self._token_dim
-        nr = NUM_ATTENTION_RELATIONS
+        nr = self._game.num_relations
+        u_dim = self._policy.unified_dim
         N = self._num_players
 
-        # Raw states: CPU-only (consumed by get_token_data), never shipped.
+        # Raw states: CPU-only (consumed by fill_tokens), never shipped.
         self._states_np = np.empty((cap, self._state_size), dtype=np.int16)
 
         # Pinned host (on CUDA). Exposed as numpy for buffer fills.
@@ -268,9 +256,9 @@ class Trainer:
         self._phase_h_np = self._phase_h.numpy()
         self._pc_h = torch.empty(cap, dtype=torch.uint8, pin_memory=pm)
         self._pc_h_np = self._pc_h.numpy()
-        self._mask_h = torch.empty((cap, U_DIM), dtype=torch.uint8, pin_memory=pm)
+        self._mask_h = torch.empty((cap, u_dim), dtype=torch.uint8, pin_memory=pm)
         self._mask_h_np = self._mask_h.numpy()
-        self._pt_h = torch.empty((cap, U_DIM), dtype=torch.float32, pin_memory=pm)
+        self._pt_h = torch.empty((cap, u_dim), dtype=torch.float32, pin_memory=pm)
         self._pt_h_np = self._pt_h.numpy()
         self._vt_h = torch.empty((cap, N), dtype=torch.float32, pin_memory=pm)
         self._vt_h_np = self._vt_h.numpy()
@@ -287,10 +275,10 @@ class Trainer:
             self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._pc_d = torch.empty(cap, dtype=torch.uint8, device=self.device)
             self._mask_d = torch.empty(
-                (cap, U_DIM), dtype=torch.uint8, device=self.device,
+                (cap, u_dim), dtype=torch.uint8, device=self.device,
             )
             self._pt_d = torch.empty(
-                (cap, U_DIM), dtype=torch.float32, device=self.device,
+                (cap, u_dim), dtype=torch.float32, device=self.device,
             )
             self._vt_d = torch.empty((cap, N), dtype=torch.float32, device=self.device)
             self._w_d = torch.empty(cap, dtype=torch.float32, device=self.device)
@@ -327,7 +315,7 @@ class Trainer:
         Cython entry. One Python dispatch for the whole batch; rows are
         filled in a nogil loop with a shared rebindable scratch state.
         """
-        get_token_data_batch(
+        self._game.fill_tokens_batch(
             [self._states_np[i] for i in range(n)],
             self._tok_h_np[:n],
             max_players=self._num_players,
@@ -347,7 +335,7 @@ class Trainer:
             if not isinstance(result, torch.Tensor):
                 raise TypeError("pass_action_logit_abs must return a Tensor")
             return result
-        return policy_logits.new_zeros(2 * len(PHASES_WITH_PASS_SLOT))
+        return policy_logits.new_zeros(2 * len(self._policy.phases_with_pass_slot))
 
     def _capture_raw_values(
         self, module: torch.nn.Module, inputs: Any, output: torch.Tensor,
@@ -439,9 +427,11 @@ class Trainer:
         # Per-phase row counts: needed only to filter empty buckets out of
         # the host-side per-phase loss report. Numpy nonzero on the already-
         # filled host slice; no GPU sync.
+        policy = self._policy
+        num_phases = policy.num_phases
         phase_view = self._phase_h_np[:B]
         phase_counts: list[int] = [
-            int((phase_view == _p).sum()) for _p in range(NUM_PHASES)
+            int((phase_view == _p).sum()) for _p in range(num_phases)
         ]
         player_count_view = self._pc_h_np[:B]
         player_count_values = range(3, self._num_players + 1)
@@ -449,7 +439,7 @@ class Trainer:
             int((player_count_view == n).sum()) for n in player_count_values
         ]
 
-        # --- Forward: dense (B, UNIFIED_LOGIT_DIM) logits + (B, N) values ---
+        # --- Forward: dense (B, unified_dim) logits + (B, N) values ---
         # The model returns logits with illegal slots already masked to
         # -1e9 via ``legal_masks``, so log_softmax normalizes over the
         # legal set only (illegal log-probs are ~-∞ × 0 = 0 in the loss).
@@ -519,16 +509,16 @@ class Trainer:
         )
 
         # Per-phase policy loss: scatter-add weighted rows into a
-        # (NUM_PHASES,) bucket tensor using phase_ids as the index. Single
+        # (num_phases,) bucket tensor using phase_ids as the index. Single
         # fused op replaces the per-phase index_select + mean loop; empty
         # buckets stay zero and are filtered out on the host side using
         # phase_counts.
         row_weights = is_weights.detach()
         per_phase = per_example_policy_loss.detach() * row_weights
         device = per_phase.device
-        per_phase_sums = torch.zeros(NUM_PHASES, device=device, dtype=per_phase.dtype)
+        per_phase_sums = torch.zeros(num_phases, device=device, dtype=per_phase.dtype)
         per_phase_sums.index_add_(0, phase_ids, per_phase)
-        per_phase_counts = torch.zeros(NUM_PHASES, device=device, dtype=per_phase.dtype)
+        per_phase_counts = torch.zeros(num_phases, device=device, dtype=per_phase.dtype)
         per_phase_counts.index_add_(0, phase_ids, row_weights)
         # Empty buckets divide 0 / 1 = 0 — same placeholder behavior the
         # old per-phase mean loop produced, and the host filter drops them.
@@ -581,7 +571,7 @@ class Trainer:
         # *count policy, *count value, *raw value stats, *per-phase target
         # entropy.
         # ``pass_stats`` carries (pass_abs, action_abs) interleaved over the
-        # phases in PHASES_WITH_PASS_SLOT — used to detect logit-scale drift
+        # phases in policy.phases_with_pass_slot — used to detect logit-scale drift
         # between the Linear(d, 1) pass heads and the q·k/√dp scored logits.
         pass_stats = self._pass_action_logit_abs(
             policy_logits, legal_masks, phase_ids,
@@ -639,19 +629,19 @@ class Trainer:
         }
         if self.config.replay_priority_fraction > 0.0:
             result["policy_kl_sampled"] = scalars[5]
-        for phase_idx, name in enumerate(_PHASE_NAMES):
+        for phase_idx, name in enumerate(policy.phase_names):
             if phase_counts[phase_idx] > 0:
                 result[f"policy_loss_{name}"] = scalars[6 + phase_idx]
-                entropy = scalars[-NUM_PHASES + phase_idx]
+                entropy = scalars[-num_phases + phase_idx]
                 result[f"policy_target_entropy_{name}"] = entropy
                 result[f"policy_kl_{name}"] = scalars[6 + phase_idx] - entropy
-                result[f"policy_samples_{name}"] = float(phase_counts[phase_idx])
+                result[f"{_PHASE_SAMPLES}{name}"] = float(phase_counts[phase_idx])
 
-        pass_stats_offset = 6 + NUM_PHASES
-        for i, phase_idx in enumerate(PHASES_WITH_PASS_SLOT):
+        pass_stats_offset = 6 + num_phases
+        for i, phase_idx in enumerate(policy.phases_with_pass_slot):
             if phase_counts[phase_idx] == 0:
                 continue
-            name = _PHASE_NAMES[phase_idx]
+            name = policy.phase_names[phase_idx]
             result[f"pass_logit_abs_{name}"] = scalars[pass_stats_offset + 2 * i]
             result[f"action_logit_abs_{name}"] = scalars[pass_stats_offset + 2 * i + 1]
 

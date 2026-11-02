@@ -11,26 +11,27 @@ Communication uses shared memory (torch tensors with share_memory_()):
 
   Worker → Server (inputs)
       states      : float16 (W, B, num_tokens, token_dim)
-      legal_mask  : uint8   (W, B, UNIFIED_LOGIT_DIM)  — 1=legal slot
+      legal_mask  : uint8   (W, B, unified_dim)  — 1=legal slot
       relation_coords
-                 : uint8   (W, B, MAX_ATTENTION_RELATION_EDGES, 4)
+                 : uint8   (W, B, max_relation_edges, 4)
                     — sparse (relation_id, query_token, key_token, value) records.
                     The model builds per-layer attention bias directly from
                     these sparse coordinates.
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
-      priors  : float32 (W, B, UNIFIED_LOGIT_DIM)  — legal slots sum to 1
+      priors  : float32 (W, B, unified_dim)  — legal slots sum to 1
       values  : float32 (W, B, num_players) — canonical player order
 
-Transformer token buffers are fp16 on the wire (half the shm + pinned + H→D
-bytes of the old fp32 path). Cython's ``get_token_data`` still fills fp32, and
+Dimensions come from the game's adapter (``games.Game``) and its policy
+layout. Transformer token buffers are fp16 on the wire (half the shm + pinned
++ H→D bytes of the old fp32 path). The game's ``fill_tokens`` still fills fp32, and
 the worker casts into fp16 once at the shm boundary (one vectorized numpy
 astype per eval request). Model-side the fp16 input is upcast to bf16 at
 trunk entry, matching the autocast dtype the rest of the forward runs
 under; all token feature values sit in [-1, ~3] post-normalization, so
 fp16 round-trip error is <1e-3 absolute (see scratchpad/fp16_token_precision.py).
 
-The unified policy tensor (width ``UNIFIED_LOGIT_DIM``) is the wire format.
+The unified policy tensor (width ``unified_dim``) is the wire format.
 Workers build a dense legal-mask (via the same ``build_action_lut`` mapping
 the model uses) from the phase-local action ids they already enumerated for
 MCTS, then ship the mask rather than the sparse (phase_id, action_ids,
@@ -42,11 +43,11 @@ that dense row using the same LUT, without any softmax on the worker side.
 
 Wins vs the old sparse IPC protocol (1024-wide sparse action buffers):
   * inbound action_ids/n_legals/phase_ids collapses to a
-    UNIFIED_LOGIT_DIM-wide uint8 mask.
+    unified_dim-wide uint8 mask.
   * outbound priors (1024 f32 = 4096 B/state) shrinks to
-    UNIFIED_LOGIT_DIM f32 values.
+    unified_dim f32 values.
   * on-GPU per-phase gather and n_legals scan drop out of the model
-    forward — torch.compile sees a fully static (B, UNIFIED_LOGIT_DIM)
+    forward — torch.compile sees a fully static (B, unified_dim)
     policy path.
 
 **Signaling protocol:**
@@ -90,40 +91,23 @@ import signal
 import threading
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 from torch._dynamo.decorators import mark_unbacked
 
-from core.actions import (
-    enumerate_policy_actions_py,
-    get_decision_phase_py,
-)
-from core.attention_relations import (
-    ATTENTION_RELATION_COORD_WIDTH,
-    MAX_ATTENTION_RELATION_EDGES,
-    NUM_ATTENTION_RELATIONS,
-)
-from core.data import MAX_ACTION_SIZE, PHASE_ACTION_SIZES
-from core.relations import get_relation_coord_data, get_relation_coord_data_batch
-from core.token_data import (
-    TokenDataSize,
-    get_num_tokens,
-    get_token_data,
-    get_token_dim,
-    get_token_data_batch,
-)
+from games import RELATION_RECORD_WIDTH
 from mcts.evaluator import BaseEvaluator
 from nn.model_contract import (
     ModelInputSpec,
     ModelKind,
     normalize_model_type,
 )
-from nn.policy_layout import NUM_PHASES, UNIFIED_LOGIT_DIM, build_action_lut
 from train.profile_stats import EvalClientStats, EvalServerStats
 
-TOKEN_DIM=int(TokenDataSize.TOKEN_DIM)
+if TYPE_CHECKING:
+    from games import Game
 
 
 @dataclass(frozen=True)
@@ -214,22 +198,26 @@ class SharedEvalBuffers:
 
     Inputs (worker → server):
         states      (W, B, num_tokens, token_dim)       float16
-        legal_mask  (W, B, UNIFIED_LOGIT_DIM)           uint8 (1=legal slot)
+        legal_mask  (W, B, unified_dim)                 uint8 (1=legal slot)
         relation_coords
-                    (W, B, MAX_ATTENTION_RELATION_EDGES, 4)
+                    (W, B, max_relation_edges, 4)
                     uint8 sparse relation records with raw values
 
     Outputs (server → worker):
-        priors  (W, B, UNIFIED_LOGIT_DIM)  float32  (softmaxed over legal slots)
-        values  (W, B, num_players)        float32 (canonical player order)
+        priors  (W, B, unified_dim)  float32  (softmaxed over legal slots)
+        values  (W, B, num_players)  float32 (canonical player order)
 
     The dense unified representation carries legality via a per-slot mask
     — no sparse action-id buffer appears in any shape here. Shared-mem
-    output footprint is ``workers × batch × UNIFIED_LOGIT_DIM × 4`` bytes.
+    output footprint is ``workers × batch × unified_dim × 4`` bytes.
+
+    Sizes come from ``game``. The buffers keep its policy layout, which
+    pickles, but not the game itself: each process builds its own.
     """
 
     def __init__(
         self,
+        game: Game,
         num_workers: int,
         batch_size: int,
         num_players: int,
@@ -238,15 +226,16 @@ class SharedEvalBuffers:
         self.num_workers = num_workers
         self.batch_size = batch_size
         self.num_players = num_players
-        self.unified_dim = UNIFIED_LOGIT_DIM
+        self.policy = game.policy
+        self.unified_dim = game.policy.unified_dim
         if input_spec is None:
             input_spec = ModelInputSpec(
                 model_type=ModelKind.TRANSFORMER.value,
                 num_players=num_players,
-                policy_dim=int(UNIFIED_LOGIT_DIM),
+                policy_dim=self.unified_dim,
                 value_dim=num_players,
-                num_tokens=get_num_tokens(num_players),
-                token_dim=TOKEN_DIM,
+                num_tokens=game.num_tokens(num_players),
+                token_dim=game.token_dim(ModelInputSpec.layout_version),
             )
         model_kind = normalize_model_type(input_spec.model_type)
         if int(input_spec.num_players) != num_players:
@@ -254,10 +243,10 @@ class SharedEvalBuffers:
                 f"input_spec num_players ({input_spec.num_players}) does not "
                 f"match num_players ({num_players})"
             )
-        if int(input_spec.policy_dim) != int(UNIFIED_LOGIT_DIM):
+        if int(input_spec.policy_dim) != self.unified_dim:
             raise ValueError(
                 f"input_spec policy_dim ({input_spec.policy_dim}) does not "
-                f"match UNIFIED_LOGIT_DIM ({int(UNIFIED_LOGIT_DIM)})"
+                f"match the game's unified policy dim ({self.unified_dim})"
             )
         if int(input_spec.value_dim) != num_players:
             raise ValueError(
@@ -269,22 +258,22 @@ class SharedEvalBuffers:
         self.token_dim = int(input_spec.token_dim)
         self.layout_version = input_spec.layout_version
 
-        expected_tokens = get_num_tokens(num_players)
+        expected_tokens = game.num_tokens(num_players)
         if self.num_tokens != expected_tokens:
             raise ValueError(
                 f"Transformer num_tokens ({self.num_tokens}) does not "
-                f"match get_num_tokens({num_players}) ({expected_tokens})"
+                f"match game.num_tokens({num_players}) ({expected_tokens})"
             )
-        expected_dim = get_token_dim(self.layout_version)
+        expected_dim = game.token_dim(self.layout_version)
         if self.token_dim != expected_dim:
             raise ValueError(
                 f"Transformer token_dim ({self.token_dim}) does not "
                 f"match layout {self.layout_version} width ({expected_dim})"
             )
 
-        self.num_relations = NUM_ATTENTION_RELATIONS
-        self.max_relation_edges = MAX_ATTENTION_RELATION_EDGES
-        self.relation_coord_width = ATTENTION_RELATION_COORD_WIDTH
+        self.num_relations = game.num_relations
+        self.max_relation_edges = game.max_relation_edges
+        self.relation_coord_width = RELATION_RECORD_WIDTH
 
         # --- Inputs (worker → server) ---
         # fp16 on the wire halves shared-memory and transfer volume. Cython
@@ -348,7 +337,7 @@ class SharedEvalBuffers:
         return self._states[worker_idx].numpy()
 
     def get_input_legal_mask_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, UNIFIED_LOGIT_DIM) uint8 view into this worker's legal-mask slot."""
+        """(batch, unified_dim) uint8 view into this worker's legal-mask slot."""
         return self._legal_mask[worker_idx].numpy()
 
     def get_input_relation_coords_np(self, worker_idx: int) -> np.ndarray:
@@ -360,7 +349,7 @@ class SharedEvalBuffers:
     # ------------------------------------------------------------------
 
     def get_output_priors_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, UNIFIED_LOGIT_DIM) float32 view of this worker's prior output slot."""
+        """(batch, unified_dim) float32 view of this worker's prior output slot."""
         return self._priors[worker_idx].numpy()
 
     def get_output_values_np(self, worker_idx: int) -> np.ndarray:
@@ -585,7 +574,8 @@ def _eval_server_serve(
         ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
-        lut = build_action_lut()
+        policy = shared_bufs.policy
+        lut = policy.build_action_lut()
         if batch_shape_mode == "dynamic":
             # Warm up with the EXACT call signature the hot path uses —
             # (states, legal_mask, relations). Dynamic-shape strategy (see
@@ -593,7 +583,7 @@ def _eval_server_serve(
             # ``dynamic=True``): the batch dim gets ``mark_unbacked`` so the
             # single compiled graph handles all batch sizes 1..max_batch, and
             # in particular sizes 0 and 1 don't get framework-level specialized.
-            warmup_batches = [NUM_PHASES]
+            warmup_batches = [policy.num_phases]
         else:
             warmup_batches = []
             warmup_n = 1
@@ -626,8 +616,8 @@ def _eval_server_serve(
                     warmup_n, u_dim, dtype=torch.bool, device=device,
                 )
                 for i in range(warmup_n):
-                    phase_id = i % NUM_PHASES
-                    n = PHASE_ACTION_SIZES[phase_id]
+                    phase_id = i % policy.num_phases
+                    n = policy.phase_sizes[phase_id]
                     dummy_mask[i, lut[phase_id, :n].to(device)] = True
                 if batch_shape_mode == "dynamic":
                     for _t in (dummy_s, dummy_mask, dummy_rel):
@@ -1295,7 +1285,7 @@ class RemoteEvaluator(BaseEvaluator):
     interface as NNEvaluator, so it can be used as a drop-in replacement.
 
     Hot path is pure numpy: workers fill transformer token buffers and a dense
-    ``UNIFIED_LOGIT_DIM`` legal mask into shared-memory slots, publish a bitmap
+    ``unified_dim`` legal mask into shared-memory slots, publish a bitmap
     bit, and sleep on the per-server done-condition until a shared-memory done
     flag flips. Returned priors are already masked and softmaxed on the GPU;
     values are in canonical player order.
@@ -1316,6 +1306,7 @@ class RemoteEvaluator(BaseEvaluator):
 
     def __init__(
         self,
+        game: Game,
         num_players: int,
         shared_bufs: SharedEvalBuffers,
         worker_idx: int,
@@ -1323,14 +1314,14 @@ class RemoteEvaluator(BaseEvaluator):
         profile: bool = False,
         terminal_rank_weight: float = 0.5,
     ) -> None:
-        super().__init__(num_players, terminal_rank_weight)
+        super().__init__(game, num_players, terminal_rank_weight)
         self._worker_idx = worker_idx
         normalize_model_type(shared_bufs.model_type)
         self.layout_version = shared_bufs.layout_version
         self.token_dim = shared_bufs.token_dim
 
         # Input views (worker writes these).
-        # ``_in_states_np`` is fp16 on the wire. ``get_token_data`` writes
+        # ``_in_states_np`` is fp16 on the wire. ``fill_tokens`` writes
         # fp32, so keep scratch and cast into the slot at the boundary.
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._in_legal_mask_np = shared_bufs.get_input_legal_mask_np(worker_idx)
@@ -1349,11 +1340,12 @@ class RemoteEvaluator(BaseEvaluator):
         # Used in the single-state ``evaluate`` path to set legal-mask bits
         # pre-publish and gather the sparse prior slice post-forward; the
         # dense ``evaluate_leaves`` path bypasses it entirely.
-        self._action_lut_np: np.ndarray = build_action_lut().numpy()
-        # Scratch for enumerate_policy_actions_py on the single-state path.
+        self._action_lut_np: np.ndarray = game.policy.build_action_lut().numpy()
+        # Scratch for enumerate_policy_actions on the single-state path.
         self._enum_scratch: np.ndarray = np.empty(
-            MAX_ACTION_SIZE, dtype=np.uint16,
+            game.policy.max_action_size, dtype=np.uint16,
         )
+        self._unified_dim = game.policy.unified_dim
 
         self._profile = profile
         self._stats: EvalClientStats | None = EvalClientStats() if profile else None
@@ -1379,7 +1371,7 @@ class RemoteEvaluator(BaseEvaluator):
         """Zero shm mask row ``i``, then flip legal unified slots to 1.
 
         ``action_ids_legal`` is the phase-local id slice; the LUT maps
-        each id into its slot in the ``UNIFIED_LOGIT_DIM``-wide mask.
+        each id into its slot in the ``unified_dim``-wide mask.
         """
         self._in_legal_mask_np[i] = 0
         slots = self._action_lut_np[phase_id, action_ids_legal]
@@ -1428,24 +1420,25 @@ class RemoteEvaluator(BaseEvaluator):
             - priors_legal: (n_legal,) float32 softmax over legal actions.
             - values_canonical: (num_players,) float32 in canonical order.
             - action_ids_legal: (n_legal,) uint16 phase-local legal action ids
-              from ``enumerate_policy_actions_py`` (the state's ACQ price cap
-              applies).
+              from ``game.enumerate_policy_actions`` (the state's runtime
+              flags, such as RSS's ACQ price cap, apply).
             - n_legal: count of legal actions.
-            - phase_id: decision phase id 0-10.
+            - phase_id: decision phase id.
         """
+        game = self.game
         actual_num_players = self._actual_num_players(state)
-        phase_id = get_decision_phase_py(state)
-        get_token_data(
+        phase_id = game.decision_phase(state)
+        game.fill_tokens(
             state, self._states_scratch_fp32[0],
             max_players=self.num_players,
             layout_version=self.layout_version,
         )
         self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
-        get_relation_coord_data(
+        game.fill_relations_sparse(
             state, self._in_relation_coords_np[0],
             max_players=self.num_players,
         )
-        n = enumerate_policy_actions_py(state, self._enum_scratch)
+        n = game.enumerate_policy_actions(state, self._enum_scratch)
         self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
         self._request_eval(1)
@@ -1470,7 +1463,7 @@ class RemoteEvaluator(BaseEvaluator):
         MCTS has already built the dense per-leaf legal mask during
         selection, so we copy model inputs + masks into shared memory and
         submit one batch. The server returns dense priors over unified slots;
-        this method hands them back as a contiguous ``(n, UNIFIED_LOGIT_DIM)``
+        this method hands them back as a contiguous ``(n, unified_dim)``
         view — the caller gathers the sparse legal slice (if needed) via
         whatever LUT they used to build the mask.
 
@@ -1478,11 +1471,11 @@ class RemoteEvaluator(BaseEvaluator):
             state_arrays: Raw int16 state arrays (pool row views), one per
                 leaf. Each ``(total_size,)`` int16.
             legal_mask: Dense legal slot mask, shape
-                ``(n, UNIFIED_LOGIT_DIM)`` uint8 or bool.
+                ``(n, unified_dim)`` uint8 or bool.
 
         Returns:
             ``(priors, values)`` where ``priors`` is
-            ``(n, UNIFIED_LOGIT_DIM)`` float32 (softmaxed on the GPU with
+            ``(n, unified_dim)`` float32 (softmaxed on the GPU with
             illegal slots near zero) and ``values`` is
             ``(n, num_players)`` float32 in canonical order. Both are
             fresh copies — the shared-mem slots are free after return.
@@ -1490,7 +1483,7 @@ class RemoteEvaluator(BaseEvaluator):
         n = len(state_arrays)
         if n == 0:
             return (
-                np.empty((0, UNIFIED_LOGIT_DIM), dtype=np.float32),
+                np.empty((0, self._unified_dim), dtype=np.float32),
                 np.empty((0, self.num_players), dtype=np.float32),
             )
         actual_num_players = self._actual_num_players_for_rows(state_arrays)
@@ -1500,9 +1493,10 @@ class RemoteEvaluator(BaseEvaluator):
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Batched token fill amortizes Python dispatch and GameState wrapper
+        # Batched token fill amortizes Python dispatch and state wrapper
         # construction. Cast the fp32 scratch into the fp16 wire slot once.
-        get_token_data_batch(
+        game = self.game
+        game.fill_tokens_batch(
             state_arrays, self._states_scratch_fp32[:n],
             max_players=self.num_players,
             layout_version=self.layout_version,
@@ -1510,7 +1504,7 @@ class RemoteEvaluator(BaseEvaluator):
         self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(
             np.float16
         )
-        get_relation_coord_data_batch(
+        game.fill_relations_sparse_batch(
             state_arrays, self._in_relation_coords_np[:n],
             max_players=self.num_players,
         )

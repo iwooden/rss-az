@@ -13,11 +13,15 @@ from entities.corp import CORPS
 from entities.market import MARKET
 from entities.player import PLAYERS
 from entities.turn import TURN
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from nn import _load_model_module
 from tests.phases.conftest import float_corp_for_test, get_legal_actions
 from tests.phases.test_dividends import _enter_dividends
+from train.config import TrainingConfig
 from train.debug_trace import format_token_dump
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 @pytest.mark.parametrize("num_players", [3, 4, 5])
@@ -100,6 +104,7 @@ def test_dividend_features_match_payments_and_amount_slots(num_players, cash):
         model.dividend_head[-1].bias.copy_(torch.arange(amounts) / 10)
     try:
         priors, values, ids, count, phase = NNEvaluator(
+            RSS_GAME,
             model, torch.device("cpu"), 5,
         ).evaluate(state)
     finally:

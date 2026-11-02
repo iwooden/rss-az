@@ -1,35 +1,27 @@
 """NN evaluator for MCTS leaf evaluation.
 
-Fills token buffers from compact int16 game states via
-``core.token_data.get_token_data`` plus relation-attention planes via
-``core.relations.get_relation_data``, runs NN inference, and returns sparse
-softmax priors over legal actions plus canonical-order values.
+Fills token buffers and relation-attention planes from compact int16 game
+states through the game's adapter (``games.Game``), runs NN inference, and
+returns sparse softmax priors over the policy action set plus canonical-order
+values.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 import torch
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.relations import get_relation_data, get_relation_data_batch
-from core.state import get_layout, get_turn_fields
-from core.token_data import (
-    get_num_tokens,
-    get_token_dim,
-    TokenDataSize,
-    get_token_data,
-    get_token_data_batch,
-)
+from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
+
+# The cross-president prior adapter below only; it moves to an RSS module in
+# pipeline step 3.
 from core.actions import (
     ACTION_ACQ_OFFER_ACCEPT_PY as ACTION_ACQ_OFFER_ACCEPT,
     ACTION_PASS_PY as ACTION_PASS,
     decode_action_py,
-    get_decision_phase_py,
     enumerate_legal_actions_py,
-    enumerate_policy_actions_py,
 )
 from core.data import MAX_ACTION_SIZE, DecisionPhase, GameConstants, GamePhases
 from core.state import GameState
@@ -37,10 +29,10 @@ from entities.company import COMPANIES, CompanyLocation
 from entities.corp import CORPS
 from entities.player import PLAYERS
 from entities.turn import TURN
-from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
-from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
+from nn.policy_layout import build_action_lut
 
-TOKEN_DIM = int(TokenDataSize.TOKEN_DIM)
+if TYPE_CHECKING:
+    from games import Game
 
 
 def _unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
@@ -48,19 +40,22 @@ def _unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
     return getattr(model, "_orig_mod", model)
 
 
-def _transformer_input_spec(num_players: int, layout_version: int = 2) -> ModelInputSpec:
+def _transformer_input_spec(
+    game: Game, num_players: int, layout_version: int = 2,
+) -> ModelInputSpec:
     return ModelInputSpec(
         model_type=ModelKind.TRANSFORMER.value,
         num_players=num_players,
-        policy_dim=int(UNIFIED_LOGIT_DIM),
+        policy_dim=game.policy.unified_dim,
         value_dim=num_players,
-        num_tokens=get_num_tokens(num_players),
-        token_dim=get_token_dim(layout_version),
+        num_tokens=game.num_tokens(num_players),
+        token_dim=game.token_dim(layout_version),
         layout_version=layout_version,
     )
 
 
 def _infer_model_input_spec(
+    game: Game,
     model: torch.nn.Module,
     num_players: int,
 ) -> ModelInputSpec:
@@ -71,7 +66,7 @@ def _infer_model_input_spec(
     """
     cfg = getattr(_unwrap_compiled_model(model), "cfg", None)
     if cfg is None:
-        return _transformer_input_spec(num_players)
+        return _transformer_input_spec(game, num_players)
 
     model_np = int(getattr(cfg, "num_players", num_players))
     if model_np != num_players:
@@ -80,10 +75,11 @@ def _infer_model_input_spec(
             f"evaluator num_players ({num_players})"
         )
 
-    return _transformer_input_spec(num_players, int(getattr(cfg, "layout_version", 2)))
+    return _transformer_input_spec(game, num_players, int(getattr(cfg, "layout_version", 2)))
 
 
 def _validate_model_input_spec(
+    game: Game,
     input_spec: ModelInputSpec,
     num_players: int,
 ) -> ModelInputSpec:
@@ -94,10 +90,10 @@ def _validate_model_input_spec(
             f"input_spec num_players ({input_spec.num_players}) does not match "
             f"evaluator num_players ({num_players})"
         )
-    if int(input_spec.policy_dim) != int(UNIFIED_LOGIT_DIM):
+    if int(input_spec.policy_dim) != game.policy.unified_dim:
         raise ValueError(
             f"input_spec policy_dim ({input_spec.policy_dim}) does not match "
-            f"UNIFIED_LOGIT_DIM ({int(UNIFIED_LOGIT_DIM)})"
+            f"the game's unified policy dim ({game.policy.unified_dim})"
         )
     if int(input_spec.value_dim) != num_players:
         raise ValueError(
@@ -105,90 +101,18 @@ def _validate_model_input_spec(
             f"num_players ({num_players})"
         )
 
-    if int(input_spec.num_tokens) != get_num_tokens(num_players):
+    if int(input_spec.num_tokens) != game.num_tokens(num_players):
         raise ValueError(
             f"Transformer input_spec.num_tokens ({input_spec.num_tokens}) "
-            f"does not match get_num_tokens({num_players})"
+            f"does not match game.num_tokens({num_players})"
         )
-    expected_dim = get_token_dim(input_spec.layout_version)
+    expected_dim = game.token_dim(input_spec.layout_version)
     if int(input_spec.token_dim) != expected_dim:
         raise ValueError(
             f"Transformer input_spec.token_dim ({input_spec.token_dim}) "
             f"does not match layout {input_spec.layout_version} width ({expected_dim})"
         )
     return input_spec
-
-
-def fill_token_buffer(
-    state: Any,
-    buf2d: np.ndarray,
-    *,
-    max_players: int = 0,
-    layout_version: int = 2,
-) -> None:
-    """Fill a ``(num_tokens, TOKEN_DIM)`` float32 buffer from a GameState.
-
-    Thin wrapper around ``core.token_data.get_token_data`` that isolates
-    the Cython import-site so callers don't need to know where the entry
-    point lives. ``num_players ∉ {3, 4, 5}`` is rejected inside
-    ``get_token_data`` via assert.
-    """
-    get_token_data(state, buf2d, max_players=max_players, layout_version=layout_version)
-
-
-def fill_token_buffer_batch(
-    state_arrays: list[np.ndarray], num_players: int, buf3d: np.ndarray,
-    *, layout_version: int = 2,
-) -> None:
-    """Fill a ``(n, num_tokens, TOKEN_DIM)`` buffer from ``n`` state arrays.
-
-    Thin wrapper around ``core.token_data.get_token_data_batch``. Reuses a
-    single scratch ``GameState`` internally via ``rebind`` — amortizes
-    per-state Python dispatch and wrapper construction into a single
-    Cython entry. Mixed-player batches are not supported (``num_players``
-    is shared across the batch).
-    """
-    get_token_data_batch(state_arrays, num_players, buf3d, layout_version=layout_version)
-
-
-def fill_token_buffer_batch_padded(
-    state_arrays: list[np.ndarray],
-    buf3d: np.ndarray,
-    *,
-    max_players: int,
-    layout_version: int = 2,
-) -> None:
-    """Fill a padded token batch using each row's actual player count."""
-    get_token_data_batch(
-        state_arrays, buf3d, max_players=max_players, layout_version=layout_version,
-    )
-
-
-def fill_relation_buffer(
-    state: Any,
-    buf3d: np.ndarray,
-    *,
-    max_players: int = 0,
-) -> None:
-    """Fill a ``(num_relations, num_tokens, num_tokens)`` uint8 relation buffer."""
-    get_relation_data(state, buf3d, max_players=max_players)
-
-
-def fill_relation_buffer_batch(
-    state_arrays: list[np.ndarray], num_players: int, buf4d: np.ndarray,
-) -> None:
-    """Fill a ``(n, num_relations, num_tokens, num_tokens)`` relation buffer."""
-    get_relation_data_batch(state_arrays, num_players, buf4d)
-
-
-def fill_relation_buffer_batch_padded(
-    state_arrays: list[np.ndarray],
-    buf4d: np.ndarray,
-    *,
-    max_players: int,
-) -> None:
-    """Fill a padded relation batch using each row's actual player count."""
-    get_relation_data_batch(state_arrays, buf4d, max_players=max_players)
 
 
 def compute_terminal_values(
@@ -263,28 +187,24 @@ class BaseEvaluator:
     values.
     """
 
-    def __init__(self, num_players: int, terminal_rank_weight: float = 0.5) -> None:
+    def __init__(
+        self, game: Game, num_players: int, terminal_rank_weight: float = 0.5,
+    ) -> None:
+        self.game = game
         self.num_players = num_players
         self.terminal_rank_weight = terminal_rank_weight
-        self.num_tokens = get_num_tokens(num_players)
-        self.token_dim = TOKEN_DIM
-        layout = get_layout(num_players)
-        turn_fields = get_turn_fields()
-        self._num_players_state_offset = layout.turn_offset + turn_fields.num_players
+        self.num_tokens = game.num_tokens(num_players)
+        self._num_players_from_row = game.num_players_from_row
 
     def _actual_num_players(self, state: Any) -> int:
-        """Read the actual player count from a GameState."""
-        return int(TURN.get_num_players(state))
-
-    def _actual_num_players_from_array(self, state_array: np.ndarray) -> int:
-        """Read the actual player count from a raw compact state row."""
-        return int(state_array[self._num_players_state_offset])
+        """Read the actual player count from a game state."""
+        return self._num_players_from_row(state._array)
 
     def _actual_num_players_for_rows(self, state_arrays: list[np.ndarray]) -> int:
         """Return the shared actual count for a search batch of state rows."""
-        actual = self._actual_num_players_from_array(state_arrays[0])
+        actual = self._num_players_from_row(state_arrays[0])
         for row in state_arrays[1:]:
-            row_actual = self._actual_num_players_from_array(row)
+            row_actual = self._num_players_from_row(row)
             if row_actual != actual:
                 raise ValueError(
                     "evaluate_leaves expects one actual player count per MCTS "
@@ -296,15 +216,14 @@ class BaseEvaluator:
         """Compute terminal values from a game-over state.
 
         Args:
-            state: GameState in GAME_OVER phase.
+            state: Terminal game state.
 
         Returns:
             Canonical values, shape (num_players,).
         """
-        num_players = self._actual_num_players(state)
-        net_worths = [PLAYERS[i].get_net_worth(state) for i in range(num_players)]
+        scores = self.game.final_scores(state)
         return compute_terminal_values(
-            net_worths, num_players, self.terminal_rank_weight
+            scores, len(scores), self.terminal_rank_weight
         )
 
 
@@ -313,9 +232,9 @@ class NNEvaluator(BaseEvaluator):
 
     Used for single-process tests and anything that doesn't go through
     the shared-mem eval server. Fills preallocated pinned-host model input
-    token and relation buffers plus a ``(UNIFIED_LOGIT_DIM,)`` legal mask from
+    token and relation buffers plus a ``(unified_dim,)`` legal mask from
     compact state, async-copies to the device, and runs inference. The model returns dense
-    ``(B, UNIFIED_LOGIT_DIM)`` logits with illegal slots at -1e9; we softmax
+    ``(B, unified_dim)`` logits with illegal slots at -1e9; we softmax
     on-device then gather the per-leaf legal prior slice using the same
     ``action_lut`` the mask was built from.
 
@@ -326,34 +245,37 @@ class NNEvaluator(BaseEvaluator):
 
     _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16}
 
-    def __init__(self, model: torch.nn.Module, device: torch.device,
+    def __init__(self, game: Game, model: torch.nn.Module, device: torch.device,
                  num_players: int = 3, *,
                  terminal_rank_weight: float = 0.5,
                  eval_dtype: str | None = None,
                  input_spec: ModelInputSpec | None = None) -> None:
-        super().__init__(num_players, terminal_rank_weight)
+        super().__init__(game, num_players, terminal_rank_weight)
         self.model = model
         self.device = device
         self._autocast_dtype = self._DTYPE_MAP.get(eval_dtype) if eval_dtype else None
         self.model.eval()
-        inferred_spec = _infer_model_input_spec(model, num_players)
+        inferred_spec = _infer_model_input_spec(game, model, num_players)
         if input_spec is None:
             input_spec = inferred_spec
         elif input_spec != inferred_spec:
             raise ValueError("input_spec does not match the model input contract")
-        self.input_spec = _validate_model_input_spec(input_spec, num_players)
+        self.input_spec = _validate_model_input_spec(game, input_spec, num_players)
         self.token_dim = input_spec.token_dim
         self.layout_version = input_spec.layout_version
+        self._unified_dim = game.policy.unified_dim
 
         # Preallocated scratch — grows lazily via ``_ensure_scratch``.
         self._scratch_cap: int = 0
-        # Persistent uint16 buffer for enumerate_policy_actions_py calls.
-        self._enum_scratch: np.ndarray = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
+        # Persistent uint16 buffer for enumerate_policy_actions calls.
+        self._enum_scratch: np.ndarray = np.empty(
+            game.policy.max_action_size, dtype=np.uint16,
+        )
         # Worker-local LUT mapping (phase_id, phase_local_action_id) to a
         # slot in the unified logit vector. Used in evaluate()/evaluate_batch
         # to set mask bits pre-forward and gather sparse priors post-forward;
         # the dense ``evaluate_leaves`` path bypasses it entirely.
-        self._action_lut_np: np.ndarray = build_action_lut().numpy()
+        self._action_lut_np: np.ndarray = game.policy.build_action_lut().numpy()
 
     # ------------------------------------------------------------------
     # Preallocated scratch
@@ -371,7 +293,8 @@ class NNEvaluator(BaseEvaluator):
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
         nt, td = self.num_tokens, self.token_dim
-        nr = NUM_ATTENTION_RELATIONS
+        nr = self.game.num_relations
+        u_dim = self._unified_dim
 
         # Host (pinned on CUDA): exposed as numpy for the mask scatter.
         # Mask is zero-initialized so ``_build_mask_row`` only touches
@@ -382,7 +305,7 @@ class NNEvaluator(BaseEvaluator):
         self._rel_h = torch.empty((cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm)
         self._rel_h_np = self._rel_h.numpy()
         self._mask_h = torch.zeros(
-            (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, pin_memory=pm,
+            (cap, u_dim), dtype=torch.bool, pin_memory=pm,
         )
         self._mask_h_np = self._mask_h.numpy()
         # Device: separate on CUDA, aliased on CPU (no copy needed).
@@ -394,7 +317,7 @@ class NNEvaluator(BaseEvaluator):
                 (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
             )
             self._mask_d = torch.empty(
-                (cap, UNIFIED_LOGIT_DIM), dtype=torch.bool, device=self.device,
+                (cap, u_dim), dtype=torch.bool, device=self.device,
             )
         else:
             self._tok_d = self._tok_h
@@ -410,7 +333,7 @@ class NNEvaluator(BaseEvaluator):
 
         ``action_ids_legal`` is the phase-local id slice for this leaf;
         ``action_lut[phase_id, action_ids_legal]`` gives the unified
-        ``UNIFIED_LOGIT_DIM``-wide slots to flip to True.
+        policy slots to flip to True.
         """
         self._mask_h_np[row_idx] = False
         slots = self._action_lut_np[phase_id, action_ids_legal]
@@ -438,7 +361,7 @@ class NNEvaluator(BaseEvaluator):
         """Evaluate a single game state with the neural network.
 
         Args:
-            state: GameState object (non-terminal).
+            state: Game state (non-terminal).
 
         Returns:
             Tuple of (sparse_priors, canonical_values, action_ids, n_legal, phase_id):
@@ -446,22 +369,23 @@ class NNEvaluator(BaseEvaluator):
             - canonical_values: shape (num_players,) float32, per-player values in
               canonical order (already non-rotated from the model).
             - action_ids: shape (n_legal,) uint16, phase-local legal action ids
-              from ``enumerate_policy_actions_py`` (the state's ACQ price cap
-              applies).
+              from ``game.enumerate_policy_actions`` (the state's runtime
+              flags, such as RSS's ACQ price cap, apply).
             - n_legal: count of legal actions at this state.
-            - phase_id: decision phase id 0-10.
+            - phase_id: decision phase id.
         """
+        game = self.game
         actual_num_players = self._actual_num_players(state)
-        phase_id = get_decision_phase_py(state)
-        n_legal = enumerate_policy_actions_py(state, self._enum_scratch)
+        phase_id = game.decision_phase(state)
+        n_legal = game.enumerate_policy_actions(state, self._enum_scratch)
 
         # Fill preallocated scratch row 0.
         self._ensure_scratch(1)
-        fill_token_buffer(
+        game.fill_tokens(
             state, self._tok_h_np[0], max_players=self.num_players,
             layout_version=self.layout_version,
         )
-        fill_relation_buffer(
+        game.fill_relations_dense(
             state, self._rel_h_np[0], max_players=self.num_players,
         )
         self._build_mask_row(0, phase_id, self._enum_scratch[:n_legal])
@@ -483,7 +407,7 @@ class NNEvaluator(BaseEvaluator):
         """Evaluate multiple game states in a single NN forward pass.
 
         Args:
-            states: List of GameState objects (non-terminal).
+            states: List of game states (non-terminal).
 
         Returns:
             List of (sparse_priors, canonical_values, action_ids, n_legal,
@@ -497,16 +421,17 @@ class NNEvaluator(BaseEvaluator):
 
         self._ensure_scratch(n)
         # Batched model-input fill — one Cython call amortizes the per-state
-        # dispatch + GameState-rebind work into a single entry. Phase /
+        # dispatch + state-rebind work into a single entry. Phase /
         # legal-action extraction still runs per state since they're
         # Python-side and each state has its own per-phase enumerator.
+        game = self.game
         state_arrays = [s._array for s in states]
-        fill_token_buffer_batch_padded(
+        game.fill_tokens_batch(
             state_arrays, self._tok_h_np[:n],
             max_players=self.num_players,
             layout_version=self.layout_version,
         )
-        fill_relation_buffer_batch_padded(
+        game.fill_relations_dense_batch(
             state_arrays, self._rel_h_np[:n],
             max_players=self.num_players,
         )
@@ -514,10 +439,10 @@ class NNEvaluator(BaseEvaluator):
         n_legals: list[int] = [0] * n
         # Buffer to hold the enumerated ids across rows so we can gather
         # priors after forward without re-enumerating.
-        all_action_ids = np.empty((n, MAX_ACTION_SIZE), dtype=np.uint16)
+        all_action_ids = np.empty((n, self._enum_scratch.shape[0]), dtype=np.uint16)
         for i, s in enumerate(states):
-            phase_ids[i] = get_decision_phase_py(s)
-            nl = enumerate_policy_actions_py(s, self._enum_scratch)
+            phase_ids[i] = game.decision_phase(s)
+            nl = game.enumerate_policy_actions(s, self._enum_scratch)
             n_legals[i] = nl
             all_action_ids[i, :nl] = self._enum_scratch[:nl]
             self._build_mask_row(i, phase_ids[i], self._enum_scratch[:nl])
@@ -546,7 +471,7 @@ class NNEvaluator(BaseEvaluator):
         """Evaluate pre-masked leaf data in a single NN forward pass.
 
         Optimized hot path for MCTS: the caller has already built the dense
-        ``(n, UNIFIED_LOGIT_DIM)`` legal mask during selection, so we just
+        ``(n, unified_dim)`` legal mask during selection, so we just
         fill model input buffers from the raw state arrays, copy the mask
         into device scratch, and forward. Mirrors the eval server's GPU mask
         + softmax, but in-process.
@@ -555,36 +480,37 @@ class NNEvaluator(BaseEvaluator):
             state_arrays: Raw int16 state arrays (pool row views), each
                 ``(total_size,)``.
             legal_mask: Dense legal slot mask, shape
-                ``(n, UNIFIED_LOGIT_DIM)`` uint8 or bool. One row per leaf.
+                ``(n, unified_dim)`` uint8 or bool. One row per leaf.
 
         Returns:
             ``(priors, values)`` where ``priors`` is
-            ``(n, UNIFIED_LOGIT_DIM)`` float32 (softmaxed; illegal slots
+            ``(n, unified_dim)`` float32 (softmaxed; illegal slots
             collapse to ~0) and ``values`` is ``(n, num_players)`` float32
             in canonical order. The caller gathers the per-leaf legal
             prior slice (via whatever LUT they used to build the mask).
         """
         n = len(state_arrays)
+        u_dim = self._unified_dim
         if n == 0:
             return (
-                np.empty((0, UNIFIED_LOGIT_DIM), dtype=np.float32),
+                np.empty((0, u_dim), dtype=np.float32),
                 np.empty((0, self.num_players), dtype=np.float32),
             )
         actual_num_players = self._actual_num_players_for_rows(state_arrays)
-        assert legal_mask.shape == (n, UNIFIED_LOGIT_DIM), \
-            f"legal_mask shape {legal_mask.shape} != ({n}, {UNIFIED_LOGIT_DIM})"
+        assert legal_mask.shape == (n, u_dim), \
+            f"legal_mask shape {legal_mask.shape} != ({n}, {u_dim})"
 
         self._ensure_scratch(n)
         # Fill model input buffers in one batched Cython call — avoids the
         # per-state Python dispatch + wrapper construction that the prior
         # loop incurred. The batched entry reuses a single scratch
-        # GameState internally via rebind.
-        fill_token_buffer_batch_padded(
+        # state internally via rebind.
+        self.game.fill_tokens_batch(
             state_arrays, self._tok_h_np[:n],
             max_players=self.num_players,
             layout_version=self.layout_version,
         )
-        fill_relation_buffer_batch_padded(
+        self.game.fill_relations_dense_batch(
             state_arrays, self._rel_h_np[:n],
             max_players=self.num_players,
         )
@@ -603,7 +529,7 @@ class NNEvaluator(BaseEvaluator):
         """Async-copy host→device, run the model, return (priors, values) as numpy.
 
         Assumes host scratch rows [:n] have been filled with model inputs and
-        legal masks. The model returns dense ``(n, UNIFIED_LOGIT_DIM)``
+        legal masks. The model returns dense ``(n, unified_dim)``
         logits with illegal slots at -1e9; we softmax on-device so illegal
         slots collapse to ~0 and the legal slots carry a proper distribution.
         Callers that need a sparse legal slice pick it out of the returned

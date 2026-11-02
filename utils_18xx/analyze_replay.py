@@ -38,6 +38,7 @@ from core.driver import (
 from core.state import GameState
 from entities.player import PLAYERS
 from entities.turn import TURN
+from games import get_game
 from mcts.evaluator import NNEvaluator, compute_terminal_values
 from nn import create_model, get_model_input_spec
 from train.analyze_game import (
@@ -1600,6 +1601,7 @@ def analyze_replay(
         )
 
     evaluator = NNEvaluator(
+        get_game(config),
         model,
         device,
         num_players=config.effective_max_players,

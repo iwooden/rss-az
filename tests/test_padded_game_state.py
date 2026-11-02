@@ -11,8 +11,12 @@ from core.state import (
 from core.token_data import get_num_tokens
 from entities.player import PLAYERS
 from entities.turn import TURN
+from games import get_game
 from nn.policy_layout import UNIFIED_LOGIT_DIM
+from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 def _padded_player_tail(
@@ -135,6 +139,7 @@ def test_replay_buffer_samples_padded_state_rows_and_relation_scratch() -> None:
     state = GameState(num_players, max_players=max_players)
     state.initialize_game(num_players, seed=42)
     buffer = ReplayBuffer(
+        RSS_GAME,
         capacity=2,
         state_size_int16=get_layout(max_players).total_size,
         num_players=max_players,

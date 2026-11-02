@@ -5,6 +5,13 @@ are from `train/config.py`. Active runs are `train_configs/bigger-multi.json`
 (v2) and `train_configs/v3-09-20-26.json` (v3). Tuned values change, so check
 the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 
+Search, the evaluators, the eval server, replay, the trainer, and `play_game`
+reach the game only through its `games.Game` adapter, which each process
+builds with `get_game(config)`. Dimensions come from the adapter and its
+`policy` layout (`unified_dim`, `max_action_size`, `build_action_lut()`).
+Notes below name RSS's implementations where they matter
+([`1889/pipeline-refactor.md`](../1889/pipeline-refactor.md)).
+
 ## Search (`mcts/search.py`, `mcts/mcts_core.pyx`, `mcts/node.py`)
 
 - **Per-player values, no rotation.** Each model's `value_head` applies tanh
@@ -14,8 +21,9 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
   (`_select_child_impl`). Player tokens stay in canonical order, with no
   negamax sign flip. With v3 `zero_sum_values`, the value head subtracts the
   mean over real players after tanh, so values sum to zero and may exceed ±1.
-- **A tree edge is one multi-choice decision.** `DRIVER.apply_action`
-  (`_auto_chain`) runs automated phases and single-legal-action decisions.
+- **A tree edge is one multi-choice decision.** `game.apply_action` (RSS:
+  `DRIVER.apply_action`'s `_auto_chain`) runs automated phases and
+  single-legal-action decisions.
   Consecutive nodes can have any active player.
 - **Plain PUCT, parent-value FPU.** U is `c_puct * P * sqrt(N_parent) /
   (1 + N)` with no `c_base` term. `N_parent` is `node.visit_count`, which
@@ -47,7 +55,9 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 - **ACQ price cap.** `max_acq_price_actions > 0` (v3 config: 8) keeps only the
   lowest and highest halves of legal `ACQ_SELECT_PRICE` offsets. It is a
   runtime flag on `GameState`, outside the `int16` row: self-play states get it
-  from the config, and search copies it from the root to expansion states.
+  from the config, and search inherits it from the root, as it does every
+  runtime flag: `StatePool` keeps the root state, and `game.scratch_state`
+  builds expansion states that carry its flags.
   `enumerate_policy_actions` applies it, so root and leaf priors are a softmax
   over the capped set; it covers search, sampling, replay masks, and targets.
   Middle prices stay engine-legal but are never played or trained. Tournament
@@ -133,12 +143,15 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 
 ## Inference IPC (`train/eval_server.py`)
 
-- **Wire format.** Workers write fp16 tokens, uint8 `UNIFIED_LOGIT_DIM` legal
-  masks, and uint8 relation records (`MAX_ATTENTION_RELATION_EDGES`, 4). Each
-  record is `(relation_id, query, key, value)`. Workers set a lock-free bitmap
-  bit. The server masks and softmaxes on GPU and returns dense fp32 priors plus
-  canonical values. Workers gather legal slots through `build_action_lut` and
-  run no torch ops on the hot path.
+- **Wire format.** Workers write fp16 tokens, uint8 legal masks over the
+  policy's `unified_dim` slots, and uint8 relation records
+  (`game.max_relation_edges`, 4). Each record is
+  `(relation_id, query, key, value)`. Workers set a lock-free bitmap bit. The
+  server masks and softmaxes on GPU and returns dense fp32 priors plus
+  canonical values. Workers gather legal slots through the policy's
+  `build_action_lut()` and run no torch ops on the hot path.
+  `SharedEvalBuffers` carries the policy layout to the server, never the
+  `Game`: each process builds its own.
 - **Two relation formats.** Model `forward` accepts dense planes (trainer,
   `NNEvaluator`) or sparse records (eval server). It scatters sparse records
   straight into the per-head attention bias; the server never builds dense

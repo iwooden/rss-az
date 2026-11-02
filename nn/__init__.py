@@ -17,9 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch.nn as nn
 
-from core.token_data import get_token_dim, get_num_tokens
+from games import get_game
 from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
-from nn.policy_layout import UNIFIED_LOGIT_DIM
 
 
 _MODEL_IMPL_MODULE_PREFIX = "_rss_model_impl_"
@@ -171,13 +170,14 @@ def get_model_input_spec(config: object) -> ModelInputSpec:
     max_players = _effective_max_players(config)
     module, _ = _model_module(config)
     layout_version = int(getattr(module, "INPUT_LAYOUT_VERSION", 2))
+    game = get_game(config)  # type: ignore[arg-type]
     return ModelInputSpec(
         model_type=model_kind.value,
         num_players=max_players,
-        policy_dim=int(UNIFIED_LOGIT_DIM),
+        policy_dim=game.policy.unified_dim,
         value_dim=max_players,
-        num_tokens=get_num_tokens(max_players),
-        token_dim=get_token_dim(layout_version),
+        num_tokens=game.num_tokens(max_players),
+        token_dim=game.token_dim(layout_version),
         layout_version=layout_version,
     )
 
@@ -226,12 +226,11 @@ def create_model(
         if game != "rss":
             # Every pipeline consumer builds its model here before it plays:
             # training (with its self-play workers and eval servers), analysis,
-            # tournaments, live play, and strategy data. They call the RSS
-            # engine directly until pipeline step 2, and the models are RSS's
-            # until step 4 (1889/pipeline-refactor.md §8).
+            # tournaments, live play, and strategy data. The models are RSS's
+            # until pipeline step 4 (1889/pipeline-refactor.md §8).
             raise ValueError(
-                f"game {game!r} cannot be trained, played, or analyzed yet: the pipeline "
-                "and its models run only RSS until pipeline-refactor steps 2 and 4"
+                f"game {game!r} cannot be trained, played, or analyzed yet: the models "
+                "run only RSS until pipeline-refactor step 4"
             )
         normalize_model_type(
             str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))

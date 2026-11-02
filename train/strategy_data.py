@@ -30,6 +30,7 @@ from core.data import (
 from core.state import get_layout
 from entities.company import COMPANIES
 from entities.corp import CORPS
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from nn import create_model, get_model_input_spec
@@ -243,14 +244,16 @@ def _strategy_data_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     torch.set_num_threads(1)
 
+    game = get_game(config)
     evaluator = RemoteEvaluator(
+        game,
         config.effective_max_players,
         shared_bufs,
         worker_idx,
         terminal_rank_weight=config.terminal_blend,
     )
     total_size = get_layout(config.effective_max_players).total_size
-    state_pool = StatePool(2 * (config.max_simulations + 1), total_size)
+    state_pool = StatePool(game, 2 * (config.max_simulations + 1), total_size)
 
     try:
         while True:
@@ -570,6 +573,7 @@ def _start_eval_stack(
     result_queue.cancel_join_thread()
 
     shared_bufs = SharedEvalBuffers(
+        get_game(config),
         num_workers=config.num_workers,
         batch_size=config.search_batch_size,
         num_players=config.effective_max_players,
@@ -752,7 +756,9 @@ def main() -> None:
                     f"remaining: {remaining}"
                 )
         else:
+            game = get_game(config)
             evaluator = NNEvaluator(
+                game,
                 model,
                 device,
                 num_players=config.effective_max_players,
@@ -761,6 +767,7 @@ def main() -> None:
                 input_spec=model_input_spec,
             )
             state_pool = StatePool(
+                game,
                 2 * (config.max_simulations + 1),
                 get_layout(config.effective_max_players).total_size,
             )

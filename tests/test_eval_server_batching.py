@@ -14,8 +14,10 @@ from core.attention_relations import (
     AttentionRelation,
 )
 from core.state import GameState
+from games import get_game
 from nn.model_contract import ModelKind
 from nn.policy_layout import UNIFIED_LOGIT_DIM
+from train.config import TrainingConfig
 from train.eval_server import (
     EvaluationServer,
     RemoteEvaluator,
@@ -27,6 +29,8 @@ from train.eval_server import (
     _resolve_launch_batch_size,
     _resolve_max_launch_batch_size,
 )
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 NUM_PLAYERS = 3
@@ -157,7 +161,7 @@ def test_partition_request_groups_rejects_request_larger_than_cap() -> None:
 
 def test_evaluation_server_threads_batch_shape_mode_and_max_batch_size_into_process_kwargs() -> None:
     model = torch.nn.Linear(4, 4)
-    shared_bufs = SharedEvalBuffers(num_workers=4, batch_size=8, num_players=3)
+    shared_bufs = SharedEvalBuffers(RSS_GAME, num_workers=4, batch_size=8, num_players=3)
 
     server = EvaluationServer(
         model,
@@ -175,6 +179,7 @@ def test_evaluation_server_sync_weights_updates_remote_eval_outputs() -> None:
     ctx = mp.get_context("spawn")
     model = SyncValueModel()
     shared_bufs = SharedEvalBuffers(
+        RSS_GAME,
         num_workers=1,
         batch_size=1,
         num_players=NUM_PLAYERS,
@@ -195,7 +200,7 @@ def test_evaluation_server_sync_weights_updates_remote_eval_outputs() -> None:
     try:
         server.start()
         assert server.wait_ready(timeout=15.0)
-        evaluator = RemoteEvaluator(NUM_PLAYERS, shared_bufs, worker_idx=0)
+        evaluator = RemoteEvaluator(RSS_GAME, NUM_PLAYERS, shared_bufs, worker_idx=0)
 
         _priors, values = evaluator.evaluate_leaves([state._array], legal_mask)
         np.testing.assert_allclose(
@@ -226,6 +231,7 @@ def test_attention_relation_count_matches_enum_members() -> None:
 
 def test_shared_eval_buffers_allocates_uint8_relation_coords() -> None:
     shared_bufs = SharedEvalBuffers(
+        RSS_GAME,
         num_workers=2,
         batch_size=4,
         num_players=3,

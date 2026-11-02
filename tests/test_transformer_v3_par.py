@@ -12,10 +12,14 @@ from core.token_data import get_token_data
 from entities.corp import CORPS
 from entities.market import MARKET
 from entities.player import PLAYERS
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from nn import _load_model_module
 from tests.phases.conftest import find_legal_action, get_legal_actions
 from tests.phases.test_ipo import _enter_ipo
+from train.config import TrainingConfig
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 def _model():
@@ -72,7 +76,7 @@ def test_par_evaluator_preserves_price_slots_and_all_legality_gates():
     model = _model()
     state = _state(3, 14, cash=4)  # FV20: par20 costs0, par22 costs2, par24 costs4.
     MARKET.set_space_available(state, MARKET.get_index_for_price(22), False)
-    evaluator = NNEvaluator(model, torch.device("cpu"), 5)
+    evaluator = NNEvaluator(RSS_GAME, model, torch.device("cpu"), 5)
     ipo = evaluator.evaluate(state)
     np.testing.assert_array_equal(ipo[2], np.arange(9))  # Pass plus eight charters.
     DRIVER.apply_action(state, find_legal_action(state, action_type=ACTION_IPO_PY, corp_id=1))
@@ -128,7 +132,7 @@ def test_all_ipo_par_heads_receive_outcomes_and_full_market_availability(num_pla
             seen[name] = args[0].detach().clone()
         handles.append(getattr(model, name).register_forward_pre_hook(capture))
     try:
-        NNEvaluator(model, torch.device("cpu"), 5).evaluate(state)
+        NNEvaluator(RSS_GAME, model, torch.device("cpu"), 5).evaluate(state)
     finally:
         for handle in handles:
             handle.remove()

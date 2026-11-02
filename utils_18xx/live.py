@@ -55,6 +55,7 @@ from entities.corp import CORPS
 from entities.deck import DECK
 from entities.market import MARKET
 from entities.turn import TURN
+from games import get_game
 from mcts.evaluator import (
     CrossPresidentOfferPriorEvaluator,
     NNEvaluator,
@@ -2130,7 +2131,9 @@ class _SearchEngine:
         self.max_players = self.config.effective_max_players
         input_spec = get_model_input_spec(self.config)
 
+        self._game = get_game(self.config)
         self._evaluator = NNEvaluator(
+            self._game,
             model,
             device,
             num_players=self.max_players,
@@ -2141,7 +2144,7 @@ class _SearchEngine:
 
         layout = get_layout(self.max_players)
         self._state_pool = StatePool(
-            2 * (num_simulations + 1), layout.total_size,
+            self._game, 2 * (num_simulations + 1), layout.total_size,
         )
         self._rng = np.random.default_rng()
         self._sessions: dict[str, GameSession] = {}
@@ -3037,6 +3040,7 @@ class _SearchEngine:
         search_stats = SearchStats() if collect_stats else None
         t0 = time.monotonic()
         root = run_search(
+            self._game,
             None if reuse_root is not None else state,
             evaluator,
             self._mcts_config_for(num_players),
@@ -3087,6 +3091,7 @@ class _SearchEngine:
         for _ in range(count):
             det_state = DECK.determinize_remaining(state, self._rng)
             root = run_search(
+                self._game,
                 det_state,
                 evaluator,
                 mcts_config,

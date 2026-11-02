@@ -24,10 +24,14 @@ from entities.corp import CORPS
 from entities.company import COMPANIES, CompanyLocation
 from entities.deck import DECK
 from entities.player import PLAYERS
+from games import get_game
 from nn.policy_layout import UNIFIED_LOGIT_DIM
 from nn.model_contract import ModelInputSpec
+from train.config import TrainingConfig
 from train.eval_server import RemoteEvaluator, SharedEvalBuffers
 from train.replay_buffer import ReplayBuffer
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 NUM_PLAYERS = 3
@@ -174,17 +178,17 @@ def test_share_counts_round_trip_through_worker_ipc_and_replay(monkeypatch):
         policy_dim=int(UNIFIED_LOGIT_DIM), num_tokens=get_num_tokens(5),
         token_dim=get_token_dim(3), layout_version=3,
     )
-    shared = SharedEvalBuffers(num_workers=2, batch_size=1, num_players=5, input_spec=spec)
+    shared = SharedEvalBuffers(RSS_GAME, num_workers=2, batch_size=1, num_players=5, input_spec=spec)
     shared.init_bitmap([(0, 1), (1, 1)])
     mask = np.zeros((2, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8)
     mask[:, 0] = 1
     # Each MCTS worker serves one player count; the server combines workers.
     for worker, state in enumerate(states):
-        evaluator = RemoteEvaluator(5, shared, worker_idx=worker)
+        evaluator = RemoteEvaluator(RSS_GAME, 5, shared, worker_idx=worker)
         monkeypatch.setattr(evaluator, "_request_eval", lambda n: None)
         evaluator.evaluate_leaves([state._array], mask[worker:worker + 1])
     wire = np.stack([shared.get_input_relation_coords_np(worker)[0] for worker in range(2)])
-    replay = ReplayBuffer(capacity=2, state_size_int16=get_layout(5).total_size,
+    replay = ReplayBuffer(RSS_GAME, capacity=2, state_size_int16=get_layout(5).total_size,
                           num_players=5, min_players=3, max_players=5)
     replay.add_stacked(
         states=np.stack([s._array for s in states]), phase_ids=np.zeros(2, dtype=np.int8),
@@ -616,9 +620,9 @@ def test_remote_evaluator_evaluate_leaves_populates_relation_buffer(
     corp_id = 3
     company_id = 8
     state = _state_with_corp_company(corp_id, company_id)
-    shared_bufs = SharedEvalBuffers(num_workers=1, batch_size=2, num_players=NUM_PLAYERS)
+    shared_bufs = SharedEvalBuffers(RSS_GAME, num_workers=1, batch_size=2, num_players=NUM_PLAYERS)
     shared_bufs.init_bitmap([(0, 1)])
-    evaluator = RemoteEvaluator(NUM_PLAYERS, shared_bufs, worker_idx=0)
+    evaluator = RemoteEvaluator(RSS_GAME, NUM_PLAYERS, shared_bufs, worker_idx=0)
     monkeypatch.setattr(evaluator, "_request_eval", lambda n: None)
 
     legal_mask = np.zeros((1, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8)
@@ -661,12 +665,13 @@ def test_remote_evaluator_slices_max_width_values_to_actual_players(
     state = GameState(num_players, max_players=max_players)
     state.initialize_game(num_players, seed=777, max_players=max_players)
     shared_bufs = SharedEvalBuffers(
+        RSS_GAME,
         num_workers=1,
         batch_size=2,
         num_players=max_players,
     )
     shared_bufs.init_bitmap([(0, 1)])
-    evaluator = RemoteEvaluator(max_players, shared_bufs, worker_idx=0)
+    evaluator = RemoteEvaluator(RSS_GAME, max_players, shared_bufs, worker_idx=0)
     monkeypatch.setattr(evaluator, "_request_eval", lambda n: None)
 
     shared_bufs.get_output_values_np(0)[0] = np.arange(
@@ -699,6 +704,7 @@ def test_replay_buffer_sample_materializes_relation_planes() -> None:
     company_id = 5
     state = _state_with_corp_company(corp_id, company_id)
     buffer = ReplayBuffer(
+        RSS_GAME,
         capacity=1,
         state_size_int16=get_layout(NUM_PLAYERS).total_size,
         num_players=NUM_PLAYERS,
@@ -749,6 +755,7 @@ def test_replay_buffer_sample_into_fills_relation_scratch() -> None:
     company_id = 10
     state = _state_with_corp_company(corp_id, company_id)
     buffer = ReplayBuffer(
+        RSS_GAME,
         capacity=1,
         state_size_int16=get_layout(NUM_PLAYERS).total_size,
         num_players=NUM_PLAYERS,

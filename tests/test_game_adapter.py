@@ -4,8 +4,8 @@ The generic tests talk only to the adapter. The engine checks run for every
 game; the extraction checks skip a game whose extraction has not landed (1889
 until pipeline step 7), whose adapter raises NotImplementedError for it. The
 RSS migration tests pin the RSS adapter to the direct engine calls that
-consumers make today, so moving them onto the adapter (pipeline-refactor.md
-step 2) changes nothing. The 1889 tests pin its adapter to the g1889 engine.
+consumers made before pipeline-refactor.md step 2 moved them onto the
+adapter. The 1889 tests pin its adapter to the g1889 engine.
 """
 
 from __future__ import annotations
@@ -76,7 +76,6 @@ from games.g1889 import NO_SIZE
 from mcts.evaluator import BaseEvaluator, compute_terminal_values
 from nn import policy_layout as legacy_policy_layout
 from tests.test_actions_width import _state_acq_select_price
-from train.policy_metrics import PHASE_NAMES
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -429,7 +428,7 @@ def test_batch_extraction_matches_single_states(extraction_case: Case):
 
 
 # ---------------------------------------------------------------------------
-# RSS migration: the adapter equals today's direct engine calls
+# RSS migration: the adapter equals the direct engine calls it replaced in step 2
 # ---------------------------------------------------------------------------
 
 
@@ -441,7 +440,11 @@ def test_rss_policy_layout_matches_legacy_constants():
     assert policy.unified_dim == legacy_policy_layout.UNIFIED_LOGIT_DIM
     assert policy.max_action_size == MAX_ACTION_SIZE
     assert policy.phases_with_pass_slot == legacy_policy_layout.PHASES_WITH_PASS_SLOT
-    assert policy.phase_names == PHASE_NAMES
+    # The TensorBoard spellings of per-phase training and self-play metrics.
+    assert policy.phase_names == (
+        "invest", "bid", "acq_corp", "acq_offer", "close", "div", "issue",
+        "ipo", "par", "acq_co", "acq_price",
+    )
     assert torch.equal(policy.build_action_lut(), legacy_policy_layout.build_action_lut())
 
 
@@ -499,7 +502,7 @@ def test_rss_final_scores_are_the_net_worths_evaluate_terminal_reads(rss_case: C
         state = playout.final
         scores = game.final_scores(state)
         assert scores == [PLAYERS[i].get_net_worth(state) for i in range(playout.num_players)]
-        evaluator = BaseEvaluator(playout.max_players, terminal_rank_weight=weight)
+        evaluator = BaseEvaluator(game, playout.max_players, terminal_rank_weight=weight)
         np.testing.assert_array_equal(
             compute_terminal_values(scores, playout.num_players, weight),
             evaluator.evaluate_terminal(state),
@@ -549,14 +552,14 @@ def test_rss_model_inputs_match_direct_extractors(rss_case: Case):
             )
 
 
-def test_rss_new_game_and_scratch_state_match_today_construction(rss_case: Case):
+def test_rss_new_game_and_scratch_state_match_direct_construction(rss_case: Case):
     config, game = rss_case.config, rss_case.game
     flags = (
         "v3_behavior", "acq_same_president", "acq_offer_limits",
         "max_acq_price_actions", "allow_positive_income_closing", "step_mode",
     )
 
-    # train/self_play.py play_game
+    # train/self_play.py play_game before step 2
     state = game.new_game(4, 5, 7)
     expected = GameState(
         4, max_players=5, v3_behavior=config.v3_behavior,
@@ -567,8 +570,8 @@ def test_rss_new_game_and_scratch_state_match_today_construction(rss_case: Case)
     np.testing.assert_array_equal(state._array, expected._array)
     assert {f: getattr(state, f) for f in flags} == {f: getattr(expected, f) for f in flags}
 
-    # mcts/search.py run_search: the scratch carries the root's four runtime
-    # flags. Change every flag on the root so each one is observable.
+    # mcts/search.py run_search before step 2: the scratch carries the root's
+    # four runtime flags. Change every flag on the root so each one is observable.
     root = GameState.from_array(
         state._array, 4, max_players=5, v3_behavior=not config.v3_behavior,
     )

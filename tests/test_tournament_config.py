@@ -97,6 +97,7 @@ def test_tournament_validates_all_checkpoints_support_selected_count() -> None:
 
 def test_play_game_reads_turn_fields_via_entity(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run_search(
+        game: object,
         state: object,
         evaluator: object,
         mcts_config: MCTSConfig,
@@ -104,7 +105,7 @@ def test_play_game_reads_turn_fields_via_entity(monkeypatch: pytest.MonkeyPatch)
         *,
         state_pool: object | None = None,
     ) -> SimpleNamespace:
-        del state, evaluator, mcts_config, rng, state_pool
+        del game, state, evaluator, mcts_config, rng, state_pool
         return SimpleNamespace(
             legal_actions=np.array([0], dtype=np.uint16),
             visit_counts=np.array([1], dtype=np.int32),
@@ -126,6 +127,7 @@ def test_play_game_reads_turn_fields_via_entity(monkeypatch: pytest.MonkeyPatch)
     rules = EngineRules(v3_behavior=False, acq_same_president=True)
     mcts_config = MCTSConfig(num_simulations=1, num_players=4)
     net_worths = tournament._play_game(
+        game=object(),  # type: ignore[arg-type]
         players=[
             ModelPlayer(Mock(spec=NNEvaluator), mcts_config, rules) for _ in range(4)
         ],
@@ -213,6 +215,7 @@ def test_mixed_rule_games_search_each_seat_under_its_training_rules(
         return view
 
     def fake_run_search(
+        game: object,
         state: GameState,
         evaluator: str,
         mcts_config: MCTSConfig,
@@ -220,7 +223,7 @@ def test_mixed_rule_games_search_each_seat_under_its_training_rules(
         *,
         state_pool: object | None = None,
     ) -> SimpleNamespace:
-        del mcts_config, state_pool
+        del game, mcts_config, state_pool
         rules = (state.v3_behavior, state.acq_same_president, state.max_acq_price_actions)
         if evaluator == "v2":
             assert rules == (False, True, 0)
@@ -242,7 +245,7 @@ def test_mixed_rule_games_search_each_seat_under_its_training_rules(
 
     for seed in range(8):
         tournament._play_game(
-            players, [0, 1, 0], num_players, 5, game_rules, seed,
+            object(), players, [0, 1, 0], num_players, 5, game_rules, seed,  # type: ignore[arg-type]
             np.random.default_rng(seed), state_pool=None,  # type: ignore[arg-type]
         )
 

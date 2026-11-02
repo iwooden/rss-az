@@ -86,7 +86,7 @@ def test_engine_options_belong_to_their_game():
 
 def test_rss_only_consumers_reject_1889_configs():
     """Training, self-play, evaluation, and analysis build their model first,
-    and they run only RSS until pipeline steps 2 and 4."""
+    and the models run only RSS until pipeline step 4."""
     with pytest.raises(ValueError, match="game '1889' cannot be trained, played, or analyzed yet"):
         create_model(TrainingConfig(game="1889"))
 

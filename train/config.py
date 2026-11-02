@@ -20,7 +20,7 @@ _ENGINE_OPTIONS = {
 
 
 def _validate_max_acq_price_actions(value: int) -> None:
-    from core.data import ActionSize
+    from games.rss import ACQ_SELECT_PRICE_ACTIONS
 
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(
@@ -37,11 +37,10 @@ def _validate_max_acq_price_actions(value: int) -> None:
             "max_acq_price_actions must be divisible by 2, "
             f"got {value}"
         )
-    acq_price_width = int(ActionSize.ACTION_SIZE_ACQ_SELECT_PRICE)
-    if value > acq_price_width:
+    if value > ACQ_SELECT_PRICE_ACTIONS:
         raise ValueError(
             "max_acq_price_actions must be <= "
-            f"ACTION_SIZE_ACQ_SELECT_PRICE ({acq_price_width}), got {value}"
+            f"ACTION_SIZE_ACQ_SELECT_PRICE ({ACQ_SELECT_PRICE_ACTIONS}), got {value}"
         )
 
 
@@ -61,16 +60,8 @@ class MCTSConfig:
     # KataGo forced playouts: each root child gets at least sqrt(k * P * N)
     # visits. 0 disables. Only self-play sets this.
     forced_playouts_k: float = 0.0
-    action_dim: int = field(init=False)
 
     def __post_init__(self) -> None:
-        from core.data import MAX_ACTION_SIZE
-
-        # Post-refactor: action space is per-phase sparse with a fixed dense
-        # pad width (MAX_ACTION_SIZE, max over all phases — currently INVEST
-        # at 53 after the ACQ split) that doesn't vary with player count.
-        # get_action_probabilities returns a (MAX_ACTION_SIZE,) dense distribution.
-        self.action_dim = int(MAX_ACTION_SIZE)
         self.validate()
 
     def validate(self) -> None:
@@ -325,9 +316,6 @@ class TrainingConfig:
     # --- Profiling (operational, not checkpointed) ---
     profile: bool = False
 
-    # --- Computed ---
-    action_dim: int = field(init=False)
-
     def __post_init__(self) -> None:
         self.validate()
 
@@ -336,13 +324,6 @@ class TrainingConfig:
 
         Called from __post_init__ and after CLI/JSON overrides.
         """
-        from core.data import MAX_ACTION_SIZE
-
-        # Post-refactor: dense action pad width is player-count independent.
-        # The transformer eval buffer is keyed off core.token_data's
-        # (num_tokens, token_dim) — there is no flat state width.
-        self.action_dim = int(MAX_ACTION_SIZE)
-
         self.model_type = normalize_model_type(self.model_type).value
         if self.game not in GAME_NAMES:
             raise ValueError(f"game must be one of {GAME_NAMES}, got {self.game!r}")
@@ -938,10 +919,7 @@ class TrainingConfig:
 
     def to_json(self) -> str:
         """Serialize to JSON for checkpoint storage."""
-        d = asdict(self)
-        # Remove computed fields — they'll be recomputed on load
-        d.pop("action_dim", None)
-        return json.dumps(d, indent=2)
+        return json.dumps(asdict(self), indent=2)
 
     @staticmethod
     def _normalize_json(d: dict[str, Any]) -> dict[str, Any]:

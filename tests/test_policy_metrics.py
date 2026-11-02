@@ -8,7 +8,7 @@ import pytest
 from train.policy_metrics import PolicyMetrics
 
 
-def observe(metrics, prior, visits, target=None, phase=0, move=0):
+def observe(metrics, prior, visits, target=None, phase="invest", move=0):
     visits = np.asarray(visits, dtype=np.int32)
     if target is None:
         target = visits / visits.sum()
@@ -41,7 +41,7 @@ def test_confidence_search_changes_and_kl_partition():
 
 def test_forced_moves_ties_and_empty_conditional_populations():
     stats = PolicyMetrics()
-    observe(stats, [1.], [10], phase=1)
+    observe(stats, [1.], [10], phase="bid")
     # Neither a uniform prior nor a tied visit winner is an overturn.
     observe(stats, [.5, .5], [1, 9])
     observe(stats, [.1, .9], [5, 5])
@@ -74,7 +74,7 @@ def test_pruned_visit_fraction_is_decision_weighted():
     stats = PolicyMetrics()
     observe(stats, [.6, .4], [6, 4])
     stats.observe(
-        np.array([.6, .4]), np.array([6, 4]), np.array([1., 0.]), 0, 0, (2, 4),
+        np.array([.6, .4]), np.array([6, 4]), np.array([1., 0.]), "invest", 0, (2, 4),
         target_counts=np.array([6., 0.]),
     )
     s = stats.scalars()
@@ -89,10 +89,10 @@ def test_epoch_aggregation_weights_decisions_and_survives_worker_serialization(t
     from train.main import _SelfPlayMetricAccumulator, _build_epoch_self_play_scalars
 
     first = _fake_record(3, [100, 200, 300])
-    observe(first.policy_metrics, [.6, .4], [6, 4], phase=0)
+    observe(first.policy_metrics, [.6, .4], [6, 4], phase="invest")
     second = _fake_record(5, [100, 200, 300, 400, 500])
     for _ in range(3):
-        observe(second.policy_metrics, [.99, .01], [1, 9], phase=1, move=5)
+        observe(second.policy_metrics, [.99, .01], [1, 9], phase="bid", move=5)
     accumulator = _SelfPlayMetricAccumulator()
     accumulator.add_record(pickle.loads(pickle.dumps(first)))
     accumulator.add_record(pickle.loads(pickle.dumps(second)))
@@ -118,6 +118,7 @@ def test_prior_capture_preserves_fresh_and_reused_search_without_extra_evaluatio
     from core.state import GameState, get_layout
     from mcts.evaluator import NNEvaluator
     from mcts.search import StatePool, prepare_reuse_root, run_search
+    from games import get_game
     from nn import create_model
     from train.config import TrainingConfig
 
@@ -128,6 +129,7 @@ def test_prior_capture_preserves_fresh_and_reused_search_without_extra_evaluatio
     )
     torch.manual_seed(2)
     model = create_model(config).eval()
+    game = get_game(config)
 
     class CountingEvaluator(NNEvaluator):
         calls = 0
@@ -142,8 +144,8 @@ def test_prior_capture_preserves_fresh_and_reused_search_without_extra_evaluatio
 
     state = GameState(3)
     state.initialize_game(3, seed=17)
-    evaluators = [CountingEvaluator(model, torch.device("cpu"), 3) for _ in range(2)]
-    pools = [StatePool(100, get_layout(3).total_size) for _ in range(2)]
+    evaluators = [CountingEvaluator(game, model, torch.device("cpu"), 3) for _ in range(2)]
+    pools = [StatePool(game, 100, get_layout(3).total_size) for _ in range(2)]
     rngs = [np.random.default_rng(8) for _ in range(2)]
     captured = []
     roots = [None, None]
@@ -152,6 +154,7 @@ def test_prior_capture_preserves_fresh_and_reused_search_without_extra_evaluatio
     for step in range(2):
         for i in range(2):
             roots[i] = run_search(
+                game,
                 state if step == 0 else None, evaluators[i], config.to_mcts_config(),
                 rng=rngs[i], state_pool=pools[i], reuse_root=roots[i],
                 root_priors_out=captured if i else None,

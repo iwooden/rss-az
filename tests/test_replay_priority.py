@@ -9,17 +9,20 @@ import pytest
 import torch
 
 from core.state import GameState, get_layout
+from games import get_game
 from nn.policy_layout import PHASE_OFFSETS, UNIFIED_LOGIT_DIM
 from train.config import TrainingConfig
 from train.policy_metrics import kl_to_prior
 from train.replay_buffer import ReplayBuffer
 from train.trainer import Trainer
 
+RSS_GAME = get_game(TrainingConfig())
+
 U_DIM = int(UNIFIED_LOGIT_DIM)
 
 
 def _buffer(capacity: int, **kwargs) -> ReplayBuffer:
-    return ReplayBuffer(capacity, get_layout(3).total_size, 3, **kwargs)
+    return ReplayBuffer(RSS_GAME, capacity, get_layout(3).total_size, 3, **kwargs)
 
 
 def _add_rows(

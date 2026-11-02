@@ -13,11 +13,15 @@ from entities.company import COMPANIES
 from entities.corp import CORPS
 from entities.player import PLAYERS
 from entities.turn import TURN
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from nn import _load_model_module
 from phases.acq_select_corp import setup_acquisition_phase_py
 from tests.phases.conftest import find_legal_action, float_corp_for_test, get_legal_actions
 from tests.phases.helpers.ownership import give_company_to_corp, give_company_to_player
+from train.config import TrainingConfig
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 @pytest.mark.parametrize("num_players", [3, 4, 5])
@@ -91,7 +95,7 @@ def test_acquisition_price_features_match_buyer_and_seller_balances(num_players,
     assert TURN.get_phase(state) == int(GamePhases.PHASE_ACQ_SELECT_COMPANY)
     if seller_kind == "corp":
         CORPS[1].set_acquisition_proceeds(state, 9)
-    evaluator = NNEvaluator(model, torch.device("cpu"), 5)
+    evaluator = NNEvaluator(RSS_GAME, model, torch.device("cpu"), 5)
 
     raw = np.empty((1, model.cfg.num_tokens, model.cfg.token_dim), np.float32)
     get_token_data(state, raw[0], max_players=5, layout_version=3)

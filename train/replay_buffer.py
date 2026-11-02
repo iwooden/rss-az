@@ -2,8 +2,8 @@
 
 Dense unified-slot schema — mirrors ``train.self_play.GameRecord``: raw
 compact int16 game states, per-row ``phase_id`` kept purely for per-phase
-TB reporting, dense ``legal_mask`` + ``policy_target`` rows over
-``UNIFIED_LOGIT_DIM`` unified logit slots, and canonical-order per-player
+TB reporting, dense ``legal_mask`` + ``policy_target`` rows over the game's
+``policy.unified_dim`` unified logit slots, and canonical-order per-player
 ``value_target``. Each row also carries a sampling priority,
 KL(policy target || unnoised prior), used when prioritized replay is on.
 
@@ -16,16 +16,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import torch
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.relations import get_relation_data_batch
-from core.state import get_layout
-from core.token_data import get_num_tokens
-from nn.policy_layout import UNIFIED_LOGIT_DIM
+if TYPE_CHECKING:
+    from games import Game
 
 
 class TrainingExample(NamedTuple):
@@ -36,8 +33,8 @@ class TrainingExample(NamedTuple):
 
     state: np.ndarray  # (state_size_int16,) int16 — raw compact state
     phase_id: int  # decision phase 0-10 (TB reporting only)
-    legal_mask: np.ndarray  # (UNIFIED_LOGIT_DIM,) uint8 — 1 = legal slot
-    policy_target: np.ndarray  # (UNIFIED_LOGIT_DIM,) f32 — zero on illegal
+    legal_mask: np.ndarray  # (unified_dim,) uint8 — 1 = legal slot
+    policy_target: np.ndarray  # (unified_dim,) f32 — zero on illegal
     value_target: np.ndarray  # (num_players,) f32 — canonical outcome/A0GB blend
     player_count: int  # actual player count for this state
 
@@ -51,6 +48,7 @@ class ReplayBuffer:
 
     def __init__(
         self,
+        game: Game,
         capacity: int,
         state_size_int16: int,
         num_players: int,
@@ -87,16 +85,17 @@ class ReplayBuffer:
                 "ReplayBuffer player range must be within 3-5 and min <= max; "
                 f"got {self._min_players}-{self._max_players}"
             )
-        expected_state_size = get_layout(self._max_players).total_size
+        expected_state_size = game.state_size(self._max_players)
         if state_size_int16 != expected_state_size:
             raise ValueError(
                 f"state_size_int16 {state_size_int16} does not match "
-                f"get_layout({self._max_players}).total_size "
+                f"game.state_size({self._max_players}) "
                 f"({expected_state_size})"
             )
-        self._unified_dim = int(UNIFIED_LOGIT_DIM)
-        self._num_tokens = get_num_tokens(self._max_players)
-        self._num_relations = NUM_ATTENTION_RELATIONS
+        self._unified_dim = game.policy.unified_dim
+        self._num_tokens = game.num_tokens(self._max_players)
+        self._num_relations = game.num_relations
+        self._fill_relations_dense_batch = game.fill_relations_dense_batch
         self._size = 0
         self._index = 0
 
@@ -132,7 +131,7 @@ class ReplayBuffer:
         """Add pre-stacked arrays directly into the ring buffer.
 
         All arrays share a leading axis of length ``n``. ``legal_masks``
-        and ``policy_targets`` are dense over ``UNIFIED_LOGIT_DIM`` slots;
+        and ``policy_targets`` are dense over ``unified_dim`` slots;
         ``policy_target`` is already zero on slots outside the legal set.
         ``value_targets`` may be actual-width ``(n, num_players)`` or
         max-width ``(n, max_players)``. Padded player slots are zeroed.
@@ -362,7 +361,7 @@ class ReplayBuffer:
             ),
             dtype=np.uint8,
         )
-        get_relation_data_batch(
+        self._fill_relations_dense_batch(
             [states[i] for i in range(batch_size)],
             relations,
             max_players=self._max_players,
@@ -417,7 +416,7 @@ class ReplayBuffer:
         policy_targets_out[:] = self._policy_targets[indices]
         value_targets_out[:] = self._value_targets[indices]
         if relations_out is not None:
-            get_relation_data_batch(
+            self._fill_relations_dense_batch(
                 [states_out[i] for i in range(batch_size)],
                 relations_out,
                 max_players=self._max_players,

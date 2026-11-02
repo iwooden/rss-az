@@ -8,6 +8,7 @@ import torch
 
 from core.state import GameState, get_layout
 from entities.player import PLAYERS
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from nn import get_model_input_spec
@@ -26,6 +27,8 @@ from train.self_play import (
     self_play_worker,
 )
 from train.trainer import Trainer
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 MAX_PLAYERS = 5
@@ -92,6 +95,7 @@ def _smoke_config(*, num_workers: int) -> TrainingConfig:
 def _replay_buffer_for(config: TrainingConfig) -> ReplayBuffer:
     max_players = config.effective_max_players
     return ReplayBuffer(
+        RSS_GAME,
         config.buffer_capacity,
         get_layout(max_players).total_size,
         max_players,
@@ -109,6 +113,7 @@ def test_local_mixed_mini_epoch_runs_one_game_per_count_and_trains() -> None:
     model = SmokeTransformerModel().to(device)
     input_spec = get_model_input_spec(config)
     evaluator = NNEvaluator(
+        RSS_GAME,
         model,
         device,
         num_players=MAX_PLAYERS,
@@ -116,6 +121,7 @@ def test_local_mixed_mini_epoch_runs_one_game_per_count_and_trains() -> None:
         terminal_rank_weight=config.terminal_blend,
     )
     state_pool = StatePool(
+        RSS_GAME,
         2 * (config.max_simulations + 1),
         get_layout(MAX_PLAYERS).total_size,
     )
@@ -203,6 +209,7 @@ def test_eval_server_worker_runs_mixed_player_count_games() -> None:
     torch.manual_seed(1)
     model = SmokeTransformerModel()
     shared_bufs = SharedEvalBuffers(
+        RSS_GAME,
         num_workers=config.num_workers,
         batch_size=config.search_batch_size,
         num_players=MAX_PLAYERS,

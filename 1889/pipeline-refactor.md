@@ -1,8 +1,9 @@
 # Pipeline Refactor for Shikoku 1889
 
-Status: steps 0, 1, and 5 and the ACQ cap commit done (2026-11-01), and
+Status: steps 0, 1, and 5 and the ACQ cap commit done (2026-11-01);
 step 6, the 1889 engine with the engine half of `games/g1889.py`
-(2026-11-02, [`engine-design.md`](engine-design.md) §11); the rest is plan.
+(2026-11-02, [`engine-design.md`](engine-design.md) §11); and step 2, the
+consumers on the adapter (2026-11-02). The rest is plan.
 This expands Section 11
 of the model blueprint, [`1889.md`](1889.md). The rules are in
 [`1889-rules.md`](1889-rules.md).
@@ -33,26 +34,25 @@ of the model blueprint, [`1889.md`](1889.md). The rules are in
   Moving them under `rss/` would rewrite the imports of about 70 Cython files
   and gain nothing. New shared code does not go in `core/`.
 
-## 2. Where the pipeline touches RSS today
+## 2. Where the pipeline touches RSS
 
-| Module | RSS coupling |
-|---|---|
-| `mcts/mcts_core.pyx`, `mcts/node.py` | None. |
-| `mcts/search.py` | Engine calls in `run_search` root setup (`:436-466`) and expansion (`:671-694`). RSS runtime flags copied onto `StatePool` (`:457-459`, `:566-571`). ACQ root-prior filter (`:310`, called at `:503`). |
-| `mcts/evaluator.py` | Single-state paths enumerate the full engine-legal set (`:453`, `:517`). Terminal values read RSS net worth (`:294-307`). The cross-president prior adapter (`:626-773`) is used only by tournament and live play. |
-| `train/eval_server.py` | Imports extractors and dimensions (`:99-124`). The single-state path enumerates the full legal set (`:1446`). No rules logic. |
-| `train/replay_buffer.py`, `train/trainer.py` | Dimensions, the two extractors, phase names. |
-| `train/self_play.py` | The `play_game` loop is generic. RSS-only: `AcquisitionStats` (`:199`), `_StrategyTraceBuilder` (`:469`), end-of-game share and company stats, the trace path's ACQ filter (`:1070`), and `GameState` construction with RSS flags. |
-| `train/config.py` | RSS engine flags (`:128-129`), the ACQ cap and its validation (`:15-37`, `:174`). |
-| `nn/policy_layout.py`, `train/policy_metrics.py` | Phase sizes, names, and pass-slot phases from `core.data`, bound at import. |
-| `nn/__init__.py` | Imports `core.token_data` and loads `transformer-v2.py` at import. Requires `RSSTransformerNet`, `TransformerConfig`, and a fixed list of RSS keyword arguments. |
+Step 2 moved search, the evaluators, the eval server, replay, the trainer,
+`play_game`, and `train/main.py` onto the adapter: their engine calls, the
+import-time constants (`UNIFIED_LOGIT_DIM`, `MAX_ACTION_SIZE`,
+`NUM_ATTENTION_RELATIONS`, `TOKEN_DIM`, `build_action_lut`, `get_layout`,
+`get_num_tokens`, `PHASE_NAMES`, and module globals such as `U_DIM`), and the
+RSS runtime flags `StatePool` used to copy. What remains, with the boundary
+test's allowlist (Section 6.4):
 
-The widest problem is import-time constants. `UNIFIED_LOGIT_DIM`,
-`MAX_ACTION_SIZE`, `NUM_ATTENTION_RELATIONS`, `TOKEN_DIM`, `build_action_lut`,
-`get_layout`, `get_num_tokens`, `PHASE_NAMES`, and similar appear about 150
-times across 13 pipeline modules, some as module globals in hot code (`U_DIM`,
-`eval_server.py:126`). Each becomes an attribute of the adapter or its policy
-layout. The change is mechanical but wide.
+| Module | RSS coupling | Removed in |
+|---|---|---|
+| `mcts/mcts_core.pyx`, `mcts/node.py`, `mcts/search.py` | None. | |
+| `mcts/evaluator.py` | The cross-president prior adapter and its predicates, used only by tournament and live play. | Step 3 |
+| `train/eval_server.py`, `train/replay_buffer.py`, `train/trainer.py`, `train/policy_metrics.py`, `train/main.py` | None. `main.py` logs the RSS self-play stats that `play_game` returns. | Step 3 |
+| `train/self_play.py` | The `play_game` loop is generic. RSS-only: `AcquisitionStats`, `_StrategyTraceBuilder`, and the end-of-game share and company stats. | Step 3 |
+| `train/config.py` | RSS engine flags and the ACQ cap. The cap's bound comes from `games/rss.py`. | |
+| `nn/policy_layout.py` | RSS's layout under its legacy module names (`NUM_PHASES`, `PHASE_OFFSETS`, `UNIFIED_LOGIT_DIM`, `PHASES_WITH_PASS_SLOT`, `build_action_lut`), from `core.data`, for the v2 and v3 model files. Resolving them through `games/rss.py` instead is an import cycle while `nn` loads v2 at import (`games.rss` → `nn.policy_layout` → `nn/__init__.py` → v2 → `games.rss`). | Step 4 |
+| `nn/__init__.py` | Loads `transformer-v2.py` at import. Requires `RSSTransformerNet`, `TransformerConfig`, and a fixed list of RSS keyword arguments. `get_model_input_spec` takes its dimensions from the config's `Game`. | Step 4 |
 
 ## 3. The adapter
 
@@ -339,6 +339,14 @@ never import `core`, `entities`, `phases`, or `g1889`; only `games/` does. RSS
 tooling and model files are exempt. Together with RSS conformance, this covers
 what a toy test game would. 1889 then becomes the second real implementation.
 
+As built (step 2): `tests/test_pipeline_boundary.py`. The training core is
+every `train/` module except the four RSS tools of Section 1, and every
+import counts, including function-level and type-checking ones. Its allowlist
+names each remaining import by module and imported names, with the step that
+removes it: step 3's in `mcts/evaluator.py` and `train/self_play.py`, and
+`nn/policy_layout.py`'s `core.data` (step 4, Section 2). The test also fails
+on an allowlisted import that is gone, so entries leave with their imports.
+
 ## 7. Guarding RSS behavior
 
 - `tests/test_v2_parity.py` passes with its existing fixture at every step.
@@ -376,6 +384,41 @@ introduced it. Add to this list whenever a step changes RSS behavior.
 - **Tournament** (6713d2b). A seat whose cap differs from the game state's
   searches a copy of the state. Speed only.
 
+- **Consumer APIs take a `Game`** (step 2), as their first argument:
+  `run_search(game, root_state, ...)`, `StatePool(game, capacity,
+  state_size)`, `NNEvaluator(game, model, device, ...)`,
+  `RemoteEvaluator(game, num_players, shared_bufs, worker_idx, ...)`,
+  `BaseEvaluator(game, num_players, ...)`, `SharedEvalBuffers(game,
+  num_workers, ...)`, and `ReplayBuffer(game, capacity, ...)`.
+  `play_game`, `Trainer`, and `get_model_input_spec` build theirs from the
+  config. `SharedEvalBuffers` keeps the game's `policy`, which pickles, not the
+  `Game`. Tournament's `_play_game` and `_build_players` take the game too.
+- **Search inherits runtime flags from the root state object** (step 2).
+  `StatePool` keeps the last fresh search's root state instead of copies of
+  its four RSS flags, and reuse searches build their scratch state from it,
+  so a caller that changed the root's flags between a fresh search and its
+  reuse searches would now see the change. No caller does. A reuse search on
+  a pool that never ran a fresh search raises `ValueError` instead of
+  searching with default flags.
+- **Removed constants and wrappers** (step 2). `MCTSConfig.action_dim` and
+  `TrainingConfig.action_dim` (unused; `game.policy.max_action_size`);
+  `train.policy_metrics.PHASE_NAMES` (`game.policy.phase_names`); the
+  `fill_token_buffer*` and `fill_relation_buffer*` wrappers in
+  `mcts.evaluator` (the game's `fill_*` fields); and the `TOKEN_DIM` and
+  `U_DIM` module constants of `mcts.evaluator`, `mcts.search`,
+  `train.eval_server`, and `train.trainer`. `nn.policy_layout` keeps its RSS
+  constants for the model files (Section 2).
+- **Small signature changes** (step 2). `get_action_probabilities(root,
+  temperature, max_action_size)` takes the dense width.
+  `PolicyMetrics.observe` takes the phase name instead of its id.
+  `average_training_metrics` finds phases from its `policy_samples_<phase>`
+  keys; its output is unchanged.
+- **Non-RSS configs reach their own adapter** (step 2).
+  `get_model_input_spec` and the evaluators size inputs from the config's
+  game, so a 1889 config raises the adapter's `NotImplementedError` (until
+  step 7) instead of getting RSS's sizes. `nn.create_model` still rejects it
+  first (until step 4).
+
 Known `main` bugs, kept for parity until fixed on `main`:
 
 - **Live play ignores the ACQ price cap.** `_mcts_config_for`
@@ -398,9 +441,10 @@ Pipeline track. Each step is a behavior-preserving commit or a short series:
    trainer, `play_game`, and `train/main.py`. `StatePool` keeps the root state
    instead of three named flags, since search builds its scratch state through
    `scratch_state`. Update RSS tooling call sites mechanically, and add the
-   boundary test. (`config.game` landed in step 1.) Until steps 2 and 4,
+   boundary test. (`config.game` landed in step 1.) Until step 4,
    `nn.create_model` rejects a config whose game is not RSS: every consumer
-   builds its model there before it plays (step 6).
+   builds its model there before it plays (step 6). Done 2026-11-02; the
+   remaining RSS couplings are in Section 2.
 3. Move game-specific behavior out of the pipeline:
    - the self-play stats hook;
    - the cross-president adapter, into an RSS module.

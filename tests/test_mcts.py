@@ -18,6 +18,8 @@ All tests here target 3-player games, within the NN/MCTS/training scope of 3-5p.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 import torch
@@ -31,7 +33,8 @@ from core.driver import DRIVER
 from core.state import GameState, get_layout, get_turn_fields
 from entities.player import PLAYERS
 from entities.turn import TURN
-from mcts.evaluator import NNEvaluator, compute_terminal_values, fill_token_buffer
+from games import get_game
+from mcts.evaluator import NNEvaluator, compute_terminal_values
 from mcts.mcts_core import (
     DESCEND_NEED_NEW_CHILD,
     backup,
@@ -64,7 +67,9 @@ from mcts.search import (
 )
 from nn import RSSTransformerNet, TransformerConfig
 from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
-from train.config import MCTSConfig
+from train.config import MCTSConfig, TrainingConfig
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 NUM_PLAYERS = 3
@@ -89,20 +94,21 @@ def test_search_acquisition_price_cap_at_root_and_leaves(evaluator, price_cap):
         priors, full_priors[expected] / full_priors[expected].sum(), rtol=1e-5,
     )
     captured = []
-    root = run_search(state, evaluator, config, root_priors_out=captured)
+    root = run_search(RSS_GAME, state, evaluator, config, root_priors_out=captured)
     np.testing.assert_array_equal(root.legal_actions, expected)
     np.testing.assert_array_equal(root.priors, priors)
     np.testing.assert_array_equal(captured[0], priors)
 
     # Start one decision earlier to exercise batched leaf masking and reuse.
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_COMPANY))
-    pool = StatePool(100, get_layout(3).total_size)
-    root = run_search(state, evaluator, config, state_pool=pool)
+    pool = StatePool(RSS_GAME, 100, get_layout(3).total_size)
+    root = run_search(RSS_GAME, state, evaluator, config, state_pool=pool)
     price_child = root.children[35]
     np.testing.assert_array_equal(price_child.legal_actions, expected)
     reused = prepare_reuse_root(root, 35, pool)
     DRIVER.apply_action(state, 35)
     root = run_search(
+        RSS_GAME,
         state, evaluator, config, state_pool=pool, reuse_root=reused,
     )
     np.testing.assert_array_equal(root.legal_actions, expected)
@@ -118,15 +124,15 @@ def test_search_cross_president_price_is_forced(evaluator, price_cap, seller_kin
     select_target(state)
     state.max_acq_price_actions = price_cap
     config = MCTSConfig(num_simulations=16, search_batch_size=1, dirichlet_epsilon=0)
-    root = run_search(state, evaluator, config)
+    root = run_search(RSS_GAME, state, evaluator, config)
     company = COMPANIES[TARGET]
     np.testing.assert_array_equal(root.legal_actions, [company.get_high_price() - company.get_low_price()])
     np.testing.assert_array_equal(root.priors, [1.0])
 
     # Within search, selecting the company skips the forced price decision.
     TURN.set_phase(state, int(GamePhases.PHASE_ACQ_SELECT_COMPANY))
-    pool = StatePool(100, get_layout(3).total_size)
-    root = run_search(state, evaluator, config, state_pool=pool)
+    pool = StatePool(RSS_GAME, 100, get_layout(3).total_size)
+    root = run_search(RSS_GAME, state, evaluator, config, state_pool=pool)
     offer_child = root.children[TARGET]
     offer_state = GameState.from_array(pool.states[offer_child.state_idx], 3, v3_behavior=True)
     assert TURN.get_phase(offer_state) == int(GamePhases.PHASE_ACQ_OFFER)
@@ -135,10 +141,7 @@ def test_search_cross_president_price_is_forced(evaluator, price_cap, seller_kin
     np.testing.assert_array_equal(offer_child.legal_actions, [0, 1])
 
 
-def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator, monkeypatch):
-    import mcts.search as search
-    from types import SimpleNamespace
-
+def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator):
     seen = []
     expected_mode = False
 
@@ -149,8 +152,8 @@ def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator, 
         assert state.max_acq_price_actions == (8 if expected_mode else 0)
         return DRIVER.apply_action(state, action, **kwargs)
 
-    monkeypatch.setattr(search, "DRIVER", SimpleNamespace(apply_action=apply_action))
-    pool = StatePool(100, get_layout(3).total_size)
+    game = dataclasses.replace(RSS_GAME, apply_action=apply_action)
+    pool = StatePool(game, 100, get_layout(3).total_size)
     config = MCTSConfig(num_simulations=8, search_batch_size=1, dirichlet_epsilon=0)
     for expected_mode in (True, False):
         state = GameState(
@@ -158,12 +161,12 @@ def test_search_preserves_engine_mode_through_subtree_and_pool_reuse(evaluator, 
             max_acq_price_actions=8 if expected_mode else 0,
         )
         state.initialize_game(3, seed=42)
-        root = run_search(state, evaluator, config, state_pool=pool)
+        root = run_search(game, state, evaluator, config, state_pool=pool)
         action = next(a for a, child in root.children.items() if not child.is_terminal)
         reused = prepare_reuse_root(root, action, pool)
         assert reused is not None
         seen.clear()
-        run_search(None, evaluator, config, state_pool=pool, reuse_root=reused)
+        run_search(game, None, evaluator, config, state_pool=pool, reuse_root=reused)
         assert seen and all(mode is expected_mode for mode in seen)
 
 
@@ -191,14 +194,14 @@ def model():
 @pytest.fixture(scope="session")
 def evaluator(model):
     """In-process NNEvaluator wrapped around the shared model."""
-    return NNEvaluator(model, torch.device("cpu"), num_players=NUM_PLAYERS)
+    return NNEvaluator(RSS_GAME, model, torch.device("cpu"), num_players=NUM_PLAYERS)
 
 
 @pytest.fixture
 def search_root(game_state, evaluator):
     """Root node after 20 sims — shared fixture for post-search probing."""
     config = MCTSConfig(num_simulations=20, num_players=NUM_PLAYERS)
-    root = run_search(game_state, evaluator, config)
+    root = run_search(RSS_GAME, game_state, evaluator, config)
     return root, config
 
 
@@ -206,7 +209,7 @@ def search_root(game_state, evaluator):
 def search_root_deep(game_state, evaluator):
     """Deeper root (100 sims) for A0GB traversal sanity."""
     config = MCTSConfig(num_simulations=100, num_players=NUM_PLAYERS)
-    root = run_search(game_state, evaluator, config)
+    root = run_search(RSS_GAME, game_state, evaluator, config)
     return root, config
 
 
@@ -300,13 +303,6 @@ class TestMCTSConfig:
     def test_validation_forced_playouts_k(self):
         with pytest.raises(ValueError, match="forced_playouts_k"):
             MCTSConfig(forced_playouts_k=-1.0)
-
-    def test_action_dim_is_max_action_size(self):
-        """Post-refactor: dense pad width is player-count independent."""
-        cfg3 = MCTSConfig(num_players=3)
-        cfg5 = MCTSConfig(num_players=5)
-        assert cfg3.action_dim == int(MAX_ACTION_SIZE)
-        assert cfg5.action_dim == int(MAX_ACTION_SIZE)
 
     def test_validation_num_simulations(self):
         with pytest.raises(ValueError, match="num_simulations"):
@@ -885,7 +881,7 @@ class TestForcedPlayouts:
                 num_simulations=400, search_batch_size=1, dirichlet_epsilon=0,
                 num_players=NUM_PLAYERS, forced_playouts_k=forced_k,
             )
-            root = run_search(game_state, _PeakedRootEvaluator(), config)
+            root = run_search(RSS_GAME, game_state, _PeakedRootEvaluator(), config)
             assert root.priors is not None and root.visit_counts is not None
             allotment = np.sqrt(k * root.priors * root.visit_count)
             if forced_k == 0.0:
@@ -902,14 +898,14 @@ class TestForcedPlayouts:
             num_simulations=64, search_batch_size=bs, num_players=NUM_PLAYERS,
             forced_playouts_k=2.0,
         )
-        pool = StatePool(2 * (config.num_simulations + 1), get_layout(NUM_PLAYERS).total_size)
-        root = run_search(game_state, evaluator, config, state_pool=pool)
+        pool = StatePool(RSS_GAME, 2 * (config.num_simulations + 1), get_layout(NUM_PLAYERS).total_size)
+        root = run_search(RSS_GAME, game_state, evaluator, config, state_pool=pool)
         assert root.legal_actions is not None and root.visit_counts is not None
         action = int(root.legal_actions[np.argmax(root.visit_counts)])
         reused = prepare_reuse_root(root, action, pool)
         assert reused is not None
         DRIVER.apply_action(game_state, action)
-        root = run_search(None, evaluator, config, state_pool=pool, reuse_root=reused)
+        root = run_search(RSS_GAME, None, evaluator, config, state_pool=pool, reuse_root=reused)
         assert root.visit_counts is not None
         assert root.visit_count == 1 + config.num_simulations
         assert root.visit_count == 1 + int(root.visit_counts.sum())
@@ -1178,7 +1174,7 @@ class TestVirtualBackup:
 class TestStatePool:
     def test_alloc_stores_and_returns_index(self):
         total_size = get_layout(3).total_size
-        pool = StatePool(8, total_size)
+        pool = StatePool(RSS_GAME, 8, total_size)
         src = np.arange(total_size, dtype=np.int16)
         idx = pool.alloc(src)
         assert idx == 0
@@ -1188,7 +1184,7 @@ class TestStatePool:
     def test_alloc_from_row_copies_existing(self):
         """alloc_from_row copies an existing pool row to a new slot."""
         total_size = get_layout(3).total_size
-        pool = StatePool(8, total_size)
+        pool = StatePool(RSS_GAME, 8, total_size)
         src = np.arange(total_size, dtype=np.int16)
         pool.alloc(src)
         idx = pool.alloc_from_row(0)
@@ -1197,7 +1193,7 @@ class TestStatePool:
 
     def test_reset_zeros_cursor(self):
         total_size = get_layout(3).total_size
-        pool = StatePool(8, total_size)
+        pool = StatePool(RSS_GAME, 8, total_size)
         pool.alloc(np.zeros(total_size, dtype=np.int16))
         pool.reset()
         assert pool._next == 0
@@ -1205,7 +1201,7 @@ class TestStatePool:
     def test_row_returns_view(self):
         """row() returns a view, not a copy — writes are visible."""
         total_size = get_layout(3).total_size
-        pool = StatePool(8, total_size)
+        pool = StatePool(RSS_GAME, 8, total_size)
         pool.alloc(np.zeros(total_size, dtype=np.int16))
         view = pool.row(0)
         view[3] = 123
@@ -1213,7 +1209,7 @@ class TestStatePool:
 
     def test_compact_preserves_data_and_updates_indices(self):
         total_size = get_layout(3).total_size
-        pool = StatePool(8, total_size)
+        pool = StatePool(RSS_GAME, 8, total_size)
         nodes = []
         for i in range(5):
             node = MCTSNode(num_players=3)
@@ -1234,7 +1230,7 @@ class TestStatePool:
 
     def test_compact_noop_when_already_contiguous(self):
         total_size = get_layout(3).total_size
-        pool = StatePool(8, total_size)
+        pool = StatePool(RSS_GAME, 8, total_size)
         nodes = []
         for i in range(3):
             node = MCTSNode(num_players=3)
@@ -1251,7 +1247,7 @@ class TestStatePool:
 
     def test_ensure_pending_bufs_grows_on_demand(self):
         total_size = get_layout(3).total_size
-        pool = StatePool(4, total_size)
+        pool = StatePool(RSS_GAME, 4, total_size)
         assert pool._pending_action_ids_buf is None
         assert pool._saved_values_buf is None
         assert pool._path_pool is None
@@ -1291,6 +1287,7 @@ class TestStatePool:
         state = GameState(num_players, max_players=max_players)
         state.initialize_game(num_players, seed=42)
         pool = StatePool(
+            RSS_GAME,
             2 * (4 + 1),
             get_layout(max_players).total_size,
         )
@@ -1302,6 +1299,7 @@ class TestStatePool:
         )
 
         root = run_search(
+            RSS_GAME,
             state, evaluator, cfg, rng=np.random.default_rng(123),
             state_pool=pool,
         )
@@ -1326,9 +1324,10 @@ class TestStatePool:
             TransformerConfig(num_players=max_players),
         ).to(torch.device("cpu"))
         evaluator = NNEvaluator(
+            RSS_GAME,
             model, torch.device("cpu"), num_players=max_players,
         )
-        pool = StatePool(2 * (4 + 1), get_layout(max_players).total_size)
+        pool = StatePool(RSS_GAME, 2 * (4 + 1), get_layout(max_players).total_size)
 
         for num_players in (5, 3, 4):
             state = GameState(num_players, max_players=max_players)
@@ -1344,6 +1343,7 @@ class TestStatePool:
             )
 
             root = run_search(
+                RSS_GAME,
                 state,
                 evaluator,
                 cfg,
@@ -1462,6 +1462,7 @@ class TestNNEvaluator:
             TransformerConfig(num_players=max_players),
         ).to(torch.device("cpu"))
         evaluator = NNEvaluator(
+            RSS_GAME,
             model, torch.device("cpu"), num_players=max_players,
         )
 
@@ -1490,20 +1491,20 @@ class TestNNEvaluator:
         """Evaluator-model num_players mismatch raises at construction."""
         # model is 3p; request 4p — must fail early
         with pytest.raises(ValueError, match="num_players"):
-            NNEvaluator(model, torch.device("cpu"), num_players=4)
+            NNEvaluator(RSS_GAME, model, torch.device("cpu"), num_players=4)
 
 
 # ---------------------------------------------------------------------------
-# fill_token_buffer
+# fill_tokens
 # ---------------------------------------------------------------------------
 
 class TestFillTokenBuffer:
     def test_buffer_matches_expected_shape(self, game_state, evaluator):
-        """fill_token_buffer writes (num_tokens, token_dim) into its arg."""
+        """The game's fill_tokens writes (num_tokens, token_dim) into its arg."""
         buf = np.zeros(
             (evaluator.num_tokens, evaluator.token_dim), dtype=np.float32,
         )
-        fill_token_buffer(game_state, buf)
+        RSS_GAME.fill_tokens(game_state, buf)
         # Not all-zero — the initialized state has populated tokens.
         assert np.any(buf != 0)
 
@@ -1522,14 +1523,14 @@ class TestMCTSSearch:
 
     def test_probabilities_sum_to_one_and_nonneg(self, search_root):
         root, _ = search_root
-        probs = get_action_probabilities(root, temperature=1.0)
+        probs = get_action_probabilities(root, temperature=1.0, max_action_size=MAX_ACTION_SIZE)
         assert probs.shape == (int(MAX_ACTION_SIZE),)
         assert probs.sum() == pytest.approx(1.0, abs=1e-5)
         assert (probs >= 0).all()
 
     def test_probabilities_greedy_puts_all_mass_on_one_action(self, search_root):
         root, _ = search_root
-        probs = get_action_probabilities(root, temperature=0.0)
+        probs = get_action_probabilities(root, temperature=0.0, max_action_size=MAX_ACTION_SIZE)
         assert probs.shape == (int(MAX_ACTION_SIZE),)
         assert probs.sum() == pytest.approx(1.0)
         assert (probs == 1.0).sum() == 1
@@ -1549,7 +1550,7 @@ class TestMCTSSearch:
             num_actions=4,
             visit_counts=counts.astype(np.int32),
         )
-        dense_probs = get_action_probabilities(root, temperature=0.01)
+        dense_probs = get_action_probabilities(root, temperature=0.01, max_action_size=MAX_ACTION_SIZE)
 
         assert np.isfinite(dense_probs).all()
         assert dense_probs.sum() == pytest.approx(1.0, abs=1e-6)
@@ -1558,7 +1559,7 @@ class TestMCTSSearch:
     def test_probabilities_zero_on_illegal_actions(self, search_root):
         """Dense probs vector has mass only at sparse legal ids."""
         root, _ = search_root
-        probs = get_action_probabilities(root, temperature=1.0)
+        probs = get_action_probabilities(root, temperature=1.0, max_action_size=MAX_ACTION_SIZE)
         assert root.legal_actions is not None
         legal_mask = np.zeros(int(MAX_ACTION_SIZE), dtype=bool)
         legal_mask[root.legal_actions] = True
@@ -1648,7 +1649,7 @@ class TestMCTSSearch:
         PLAYERS[2].set_net_worth(state, 100)
 
         config = MCTSConfig(num_simulations=100, num_players=NUM_PLAYERS)
-        root = run_search(state, evaluator, config)
+        root = run_search(RSS_GAME, state, evaluator, config)
 
         assert root.is_terminal
         assert not root.expanded()
@@ -1662,7 +1663,7 @@ class TestMCTSSearch:
         """Fresh search with no root_state and no reuse raises."""
         config = MCTSConfig(num_simulations=5, num_players=NUM_PLAYERS)
         with pytest.raises(ValueError, match="root_state"):
-            run_search(None, evaluator, config)
+            run_search(RSS_GAME, None, evaluator, config)
 
     def test_run_search_requires_pool_with_reuse(self, game_state, evaluator):
         """reuse_root without a state_pool should fail fast."""
@@ -1670,6 +1671,7 @@ class TestMCTSSearch:
         dummy = MCTSNode(num_players=NUM_PLAYERS)
         with pytest.raises(ValueError, match="state_pool"):
             run_search(
+                RSS_GAME,
                 game_state, evaluator, config, reuse_root=dummy,
                 state_pool=None,
             )
@@ -1686,6 +1688,7 @@ class TestMCTSSearch:
 
         with pytest.raises(MCTSNonFiniteError) as exc:
             run_search(
+                RSS_GAME,
                 game_state,
                 _FiniteRootNanLeafEvaluator(),
                 config,
@@ -1715,11 +1718,13 @@ class TestMCTSSearch:
             dirichlet_epsilon=0.0,
             num_players=NUM_PLAYERS,
         )
-        pool = StatePool(2, get_layout(NUM_PLAYERS).total_size)
+        pool = StatePool(RSS_GAME, 2, get_layout(NUM_PLAYERS).total_size)
         root.state_idx = pool.alloc(game_state._array)
+        pool._root_state = game_state  # as the search root came from
 
         with pytest.raises(MCTSNonFiniteError) as exc:
             run_search(
+                RSS_GAME,
                 None,
                 object(),
                 config,
@@ -1745,6 +1750,7 @@ class TestMCTSSearch:
         )
 
         root = run_search(
+            RSS_GAME,
             game_state,
             _FiniteRootNanLeafEvaluator(),
             config,
@@ -1766,15 +1772,15 @@ class TestBatchedSearch:
         config = MCTSConfig(
             num_simulations=20, search_batch_size=bs, num_players=NUM_PLAYERS,
         )
-        root = run_search(game_state, evaluator, config)
+        root = run_search(RSS_GAME, game_state, evaluator, config)
         assert root.visit_count == 21
 
     def test_batched_action_probs_valid(self, game_state, evaluator):
         config = MCTSConfig(
             num_simulations=20, search_batch_size=4, num_players=NUM_PLAYERS,
         )
-        root = run_search(game_state, evaluator, config)
-        probs = get_action_probabilities(root, temperature=1.0)
+        root = run_search(RSS_GAME, game_state, evaluator, config)
+        probs = get_action_probabilities(root, temperature=1.0, max_action_size=MAX_ACTION_SIZE)
         assert probs.sum() == pytest.approx(1.0, abs=1e-5)
         assert (probs >= 0).all()
 
@@ -1783,7 +1789,7 @@ class TestBatchedSearch:
         config = MCTSConfig(
             num_simulations=5, search_batch_size=16, num_players=NUM_PLAYERS,
         )
-        root = run_search(game_state, evaluator, config)
+        root = run_search(RSS_GAME, game_state, evaluator, config)
         assert root.visit_count == 6
 
     def test_should_stop_ends_search_between_batches(
@@ -1799,6 +1805,7 @@ class TestBatchedSearch:
             return len(polls) > 2
 
         root = run_search(
+            RSS_GAME,
             game_state, evaluator, config, should_stop=should_stop,
         )
         # Two batches ran and were fully backed up before the stop.
@@ -1814,7 +1821,7 @@ class TestBatchedSearch:
                 num_simulations=40, search_batch_size=bs,
                 num_players=NUM_PLAYERS,
             )
-            root = run_search(game_state, evaluator, config)
+            root = run_search(RSS_GAME, game_state, evaluator, config)
             assert root.visit_count == 41
 
             def check(node):
@@ -1855,7 +1862,7 @@ class TestBatchedSearch:
             num_simulations=40, search_batch_size=16,
             dirichlet_epsilon=0.0, num_players=NUM_PLAYERS,
         )
-        run_search(game_state, tracker, config)
+        run_search(RSS_GAME, game_state, tracker, config)
         assert not tracker.found_dup, "Duplicate leaf in a batch"
 
     def test_leaf_lock_caps_first_batch_to_root_frontier(self, game_state, evaluator):
@@ -1887,7 +1894,7 @@ class TestBatchedSearch:
             search_batch_size=legal_count + 16,
             dirichlet_epsilon=0.0, num_players=NUM_PLAYERS,
         )
-        run_search(game_state, tracker, config)
+        run_search(RSS_GAME, game_state, tracker, config)
         assert len(tracker.sizes) >= 1
         # First batch fills up to the frontier size; propagation locks the
         # root and the batch ships.
@@ -2054,7 +2061,7 @@ class TestPropagationLock:
         config = MCTSConfig(
             num_simulations=50, search_batch_size=8, num_players=NUM_PLAYERS,
         )
-        root = run_search(game_state, evaluator, config)
+        root = run_search(RSS_GAME, game_state, evaluator, config)
 
         stack = [root]
         while stack:
@@ -2070,7 +2077,7 @@ class TestPropagationLock:
 class TestSubtreeReuse:
     def test_collect_subtree_nodes_sorted_by_state_idx(self, game_state, evaluator):
         config = MCTSConfig(num_simulations=30, num_players=NUM_PLAYERS)
-        root = run_search(game_state, evaluator, config)
+        root = run_search(RSS_GAME, game_state, evaluator, config)
         nodes = _collect_subtree_nodes(root)
         for n in nodes:
             assert n.state_idx >= 0
@@ -2119,8 +2126,8 @@ class TestSubtreeReuse:
     def test_prepare_reuse_root_none_for_missing_action(self, game_state, evaluator):
         config = MCTSConfig(num_simulations=5, num_players=NUM_PLAYERS)
         total_size = get_layout(3).total_size
-        pool = StatePool(2 * (config.num_simulations + 1), total_size)
-        root = run_search(game_state, evaluator, config, state_pool=pool)
+        pool = StatePool(RSS_GAME, 2 * (config.num_simulations + 1), total_size)
+        root = run_search(RSS_GAME, game_state, evaluator, config, state_pool=pool)
         assert prepare_reuse_root(root, 99999, pool) is None
 
     def test_prepare_reuse_root_returns_child_with_reset_stats(
@@ -2128,8 +2135,8 @@ class TestSubtreeReuse:
     ):
         config = MCTSConfig(num_simulations=50, num_players=NUM_PLAYERS)
         total_size = get_layout(3).total_size
-        pool = StatePool(2 * (config.num_simulations + 1), total_size)
-        root = run_search(game_state, evaluator, config, state_pool=pool)
+        pool = StatePool(RSS_GAME, 2 * (config.num_simulations + 1), total_size)
+        root = run_search(RSS_GAME, game_state, evaluator, config, state_pool=pool)
 
         assert root.visit_counts is not None and root.legal_actions is not None
         best_idx = int(np.argmax(root.visit_counts))
@@ -2151,7 +2158,7 @@ class TestSubtreeReuse:
     def test_prepare_reuse_root_none_for_terminal_child(self, game_state):
         """If the chosen child is terminal, no reuse is possible."""
         total_size = get_layout(3).total_size
-        pool = StatePool(4, total_size)
+        pool = StatePool(RSS_GAME, 4, total_size)
 
         root = MCTSNode(num_players=NUM_PLAYERS)
         root.state_idx = pool.alloc(game_state._array)
@@ -2174,8 +2181,8 @@ class TestSubtreeReuse:
         """End-to-end: search, reuse, search again, check new root."""
         total_size = get_layout(3).total_size
         config = MCTSConfig(num_simulations=100, num_players=NUM_PLAYERS)
-        pool = StatePool(2 * (config.num_simulations + 1), total_size)
-        root = run_search(game_state, evaluator, config, state_pool=pool)
+        pool = StatePool(RSS_GAME, 2 * (config.num_simulations + 1), total_size)
+        root = run_search(RSS_GAME, game_state, evaluator, config, state_pool=pool)
 
         assert root.visit_counts is not None and root.legal_actions is not None
         best_idx = int(np.argmax(root.visit_counts))
@@ -2188,13 +2195,14 @@ class TestSubtreeReuse:
         DRIVER.apply_action(next_state, best_action)
 
         root2 = run_search(
+            RSS_GAME,
             next_state, evaluator, config, state_pool=pool, reuse_root=reuse,
         )
         assert root2 is reuse
         # Full sim budget after reset (virtual backups + real search)
         assert root2.visit_count >= config.num_simulations
 
-        probs = get_action_probabilities(root2, temperature=1.0)
+        probs = get_action_probabilities(root2, temperature=1.0, max_action_size=MAX_ACTION_SIZE)
         assert probs.sum() == pytest.approx(1.0, abs=1e-5)
         val = get_greedy_leaf_value(root2, num_players=NUM_PLAYERS)
         assert val.shape == (NUM_PLAYERS,)
@@ -2227,8 +2235,8 @@ class TestSubtreeReuse:
 
         # Fresh baseline
         counter_fresh = EvalCounter(evaluator)
-        pool = StatePool(2 * (config.num_simulations + 1), total_size)
-        root = run_search(game_state, counter_fresh, config, state_pool=pool)
+        pool = StatePool(RSS_GAME, 2 * (config.num_simulations + 1), total_size)
+        root = run_search(RSS_GAME, game_state, counter_fresh, config, state_pool=pool)
         fresh_evals = counter_fresh.count
 
         # Reuse
@@ -2242,6 +2250,7 @@ class TestSubtreeReuse:
 
         counter_reuse = EvalCounter(evaluator)
         run_search(
+            RSS_GAME,
             next_state, counter_reuse, config, state_pool=pool, reuse_root=reuse,
         )
         assert counter_reuse.count < fresh_evals, (
@@ -2254,8 +2263,8 @@ class TestSubtreeReuse:
         config = MCTSConfig(
             num_simulations=50, search_batch_size=4, num_players=NUM_PLAYERS,
         )
-        pool = StatePool(2 * (config.num_simulations + 1), total_size)
-        root = run_search(game_state, evaluator, config, state_pool=pool)
+        pool = StatePool(RSS_GAME, 2 * (config.num_simulations + 1), total_size)
+        root = run_search(RSS_GAME, game_state, evaluator, config, state_pool=pool)
 
         assert root.visit_counts is not None and root.legal_actions is not None
         best_idx = int(np.argmax(root.visit_counts))
@@ -2266,6 +2275,7 @@ class TestSubtreeReuse:
         next_state = GameState.from_array(game_state._array, NUM_PLAYERS)
         DRIVER.apply_action(next_state, best_action)
         root2 = run_search(
+            RSS_GAME,
             next_state, evaluator, config, state_pool=pool, reuse_root=reuse,
         )
         assert root2.visit_count >= config.num_simulations
@@ -2275,7 +2285,7 @@ class TestSubtreeReuse:
         total_size = get_layout(3).total_size
         config = MCTSConfig(num_simulations=50, num_players=NUM_PLAYERS)
         # 2*(num_sims+1) is the minimum safe pool size under reuse
-        pool = StatePool(2 * (config.num_simulations + 1), total_size)
+        pool = StatePool(RSS_GAME, 2 * (config.num_simulations + 1), total_size)
         rng = np.random.default_rng(42)
 
         state = GameState.from_array(game_state._array, NUM_PLAYERS)
@@ -2283,10 +2293,11 @@ class TestSubtreeReuse:
         moves_played = 0
         for _ in range(5):
             root = run_search(
+                RSS_GAME,
                 state, evaluator, config, rng=rng,
                 state_pool=pool, reuse_root=reuse_root,
             )
-            probs = get_action_probabilities(root, temperature=1.0)
+            probs = get_action_probabilities(root, temperature=1.0, max_action_size=MAX_ACTION_SIZE)
             action = int(rng.choice(int(MAX_ACTION_SIZE), p=probs))
             status = DRIVER.apply_action(state, action)
             moves_played += 1
@@ -2302,8 +2313,8 @@ class TestSubtreeReuse:
         """After reuse, root Q for caught-up actions should match child Q."""
         total_size = get_layout(3).total_size
         config = MCTSConfig(num_simulations=100, num_players=NUM_PLAYERS)
-        pool = StatePool(2 * (config.num_simulations + 1), total_size)
-        root = run_search(game_state, evaluator, config, state_pool=pool)
+        pool = StatePool(RSS_GAME, 2 * (config.num_simulations + 1), total_size)
+        root = run_search(RSS_GAME, game_state, evaluator, config, state_pool=pool)
 
         assert root.visit_counts is not None and root.legal_actions is not None
         best_idx = int(np.argmax(root.visit_counts))
@@ -2320,6 +2331,7 @@ class TestSubtreeReuse:
         next_state = GameState.from_array(game_state._array, NUM_PLAYERS)
         DRIVER.apply_action(next_state, best_action)
         root2 = run_search(
+            RSS_GAME,
             next_state, evaluator, config, state_pool=pool, reuse_root=reuse,
         )
         assert root2.visit_counts is not None and root2.value_sums is not None
@@ -2344,9 +2356,11 @@ class TestSubtreeReuse:
         dists = []
         for seed in (42, 123):
             pool = StatePool(
+                RSS_GAME,
                 2 * (config.num_simulations + 1), total_size,
             )
             root = run_search(
+                RSS_GAME,
                 game_state, evaluator, config, state_pool=pool,
                 rng=np.random.default_rng(seed),
             )
@@ -2359,10 +2373,11 @@ class TestSubtreeReuse:
             next_state = GameState.from_array(game_state._array, NUM_PLAYERS)
             DRIVER.apply_action(next_state, best_action)
             root2 = run_search(
+                RSS_GAME,
                 next_state, evaluator, config, state_pool=pool,
                 reuse_root=reuse, rng=np.random.default_rng(seed + 1000),
             )
-            dists.append(get_action_probabilities(root2, temperature=1.0))
+            dists.append(get_action_probabilities(root2, temperature=1.0, max_action_size=MAX_ACTION_SIZE))
 
         l1 = np.abs(dists[0] - dists[1]).sum()
         assert l1 > 0.05, f"Reuse should see different noise (L1={l1:.4f})"

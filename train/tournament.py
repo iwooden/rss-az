@@ -50,9 +50,10 @@ from core.driver import (
     STATUS_GAME_OVER_PY as STATUS_GAME_OVER,
     STATUS_INVALID_PY as STATUS_INVALID,
 )
-from core.state import GameState, get_layout
+from core.state import GameState
 from entities.player import PLAYERS
 from entities.turn import TURN
+from games import Game, get_game
 from mcts.evaluator import CrossPresidentOfferPriorEvaluator, NNEvaluator
 from mcts.search import StatePool, run_search
 from nn import get_model_input_spec
@@ -210,6 +211,7 @@ class ModelPlayer:
 # ---------------------------------------------------------------------------
 
 def _play_game(
+    game: Game,
     players: list[ModelPlayer],
     seat_to_model: list[int],
     num_players: int,
@@ -236,7 +238,7 @@ def _play_game(
             action = int(legal[0])
         else:
             # Fresh search each move (no subtree reuse — different models)
-            root = run_search(search_state, player.evaluator, player.mcts_config,
+            root = run_search(game, search_state, player.evaluator, player.mcts_config,
                               rng, state_pool=state_pool)
             assert root.legal_actions is not None and root.visit_counts is not None
             action = int(root.legal_actions[np.argmax(root.visit_counts)])
@@ -416,6 +418,7 @@ def _format_report(
 # ---------------------------------------------------------------------------
 
 def _build_players(
+    game: Game,
     entries: list[ModelEntry],
     device: torch.device,
     num_players: int,
@@ -431,6 +434,7 @@ def _build_players(
     ):
         input_spec = get_model_input_spec(e.config)
         evaluator: Any = NNEvaluator(
+            game,
             e.model,
             device,
             num_players=input_spec.num_players,
@@ -460,14 +464,15 @@ def run_tournament(
     game_rules: EngineRules,
 ) -> tuple[list[GameResult], float]:
     """Run the full tournament. Returns (results, elapsed_seconds)."""
+    # Every checkpoint plays RSS; each seat's rules travel on its search state.
+    game = get_game(entries[0].config)
     players = _build_players(
-        entries, device, num_players, max_players, game_rules,
+        game, entries, device, num_players, max_players, game_rules,
         mcts_configs, terminal_rank_weights,
     )
 
-    layout = get_layout(max_players)
     max_sims = max(c.num_simulations for c in mcts_configs)
-    state_pool = StatePool(2 * (max_sims + 1), layout.total_size)
+    state_pool = StatePool(game, 2 * (max_sims + 1), game.state_size(max_players))
     rng = np.random.default_rng(base_seed)
 
     schedule = _generate_schedule(len(entries), min_games_per_pair, num_players)
@@ -502,7 +507,7 @@ def run_tournament(
 
             t_game = time.perf_counter()
             net_worths = _play_game(
-                players, seat_to_model, num_players, max_players,
+                game, players, seat_to_model, num_players, max_players,
                 game_rules, int(game_seed), rng, state_pool,
             )
             ranks = _rank_players(net_worths)

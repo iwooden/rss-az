@@ -9,12 +9,6 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
-# Matches core.data.DecisionPhase; shared with trainer reporting.
-PHASE_NAMES = (
-    "invest", "bid", "acq_corp", "acq_offer", "close", "div", "issue",
-    "ipo", "par", "acq_co", "acq_price",
-)
-
 _COUNTS = (
     "decision_count", "forced_count", "search_changed_count",
     "prior_above_95_count", "prior_above_98_count",
@@ -71,7 +65,7 @@ class PolicyMetrics:
         priors: np.ndarray,
         visits: np.ndarray,
         target: np.ndarray,
-        phase_id: int,
+        phase: str,
         move_count: int,
         anneal_window: tuple[int, int],
         target_counts: np.ndarray | None = None,
@@ -140,7 +134,7 @@ class PolicyMetrics:
             }
             for key, value in values.items():
                 row[_INDEX[key]] = value
-        for group in ("all", f"phase/{PHASE_NAMES[phase_id]}", f"stage/{stage}"):
+        for group in ("all", f"phase/{phase}", f"stage/{stage}"):
             if group not in self.sums:
                 self.sums[group] = row.copy()
             else:

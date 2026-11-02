@@ -82,6 +82,7 @@ def _determinized_engine(monkeypatch, count):
     engine.determinization_count = count
     engine.model_output = False
     engine.num_simulations = 7
+    monkeypatch.setattr(engine, "_game", object(), raising=False)
     monkeypatch.setattr(engine, "_evaluator", object(), raising=False)
     engine._rng = np.random.default_rng(123)
     monkeypatch.setattr(engine, "_state_pool", object(), raising=False)
@@ -120,6 +121,7 @@ def test_determinized_live_search_sums_root_visits(monkeypatch):
     calls = []
 
     def fake_run_search(
+        game,
         root_state,
         evaluator,
         config,
@@ -130,7 +132,7 @@ def test_determinized_live_search_sums_root_visits(monkeypatch):
         profile=None,
         should_stop=None,
     ):
-        del evaluator, rng, state_pool, profile, should_stop
+        del game, evaluator, rng, state_pool, profile, should_stop
         assert root_state is state
         assert config.num_simulations == 7
         assert reuse_root is None
@@ -168,9 +170,9 @@ def test_determinized_live_search_stops_when_game_changes(monkeypatch):
             del rng
             return source_state
 
-    def fake_run_search(root_state, evaluator, config, rng, *, state_pool=None,
+    def fake_run_search(game, root_state, evaluator, config, rng, *, state_pool=None,
                         reuse_root=None, profile=None, should_stop=None):
-        del root_state, evaluator, config, rng, state_pool, reuse_root, profile
+        del game, root_state, evaluator, config, rng, state_pool, reuse_root, profile
         searches.append(should_stop)
         return _search_root([10, 20], [2, 5])
 

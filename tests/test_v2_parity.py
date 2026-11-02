@@ -42,6 +42,7 @@ from core.actions import enumerate_legal_actions_py, get_decision_phase_py
 from core.data import MAX_ACTION_SIZE, DecisionPhase
 from core.driver import DRIVER, STATUS_GAME_OVER_PY, STATUS_OK_PY
 from core.state import GameState
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from nn import create_model, get_model_input_spec
 from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
@@ -50,6 +51,8 @@ from tests.test_relations import _materialize_relation_coords_np
 from train.checkpoint import Checkpoint, load_checkpoint, load_model_from_checkpoint
 from train.config import TrainingConfig
 from train.eval_server import RemoteEvaluator, SharedEvalBuffers
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 FIXTURE_DIR = Path(__file__).with_name("v2_parity")
@@ -146,7 +149,7 @@ def replay_games(
 
     Stops a game at the first recorded action the engine rejects.
     """
-    evaluator = NNEvaluator(model, torch.device("cpu"), MAX_PLAYERS)
+    evaluator = NNEvaluator(RSS_GAME, model, torch.device("cpu"), MAX_PLAYERS)
     io = _ModelIO(model)
     replay = Replay()
     try:
@@ -321,7 +324,7 @@ def test_batched_leaf_evaluation_matches(
     model: torch.nn.Module, observations: list[Observation], expected: Any,
 ) -> None:
     """MCTS's batched path extracts from raw state arrays."""
-    evaluator = NNEvaluator(model, torch.device("cpu"), MAX_PLAYERS)
+    evaluator = NNEvaluator(RSS_GAME, model, torch.device("cpu"), MAX_PLAYERS)
     io = _ModelIO(model)
     try:
         for g, rows in _game_batches(observations).items():
@@ -347,10 +350,11 @@ def test_eval_server_wire_inputs_and_sparse_forward_match(
     model, config = checkpoint
     batches = _game_batches(observations)
     shared = SharedEvalBuffers(
+        RSS_GAME,
         1, max(map(len, batches.values())), MAX_PLAYERS, input_spec=get_model_input_spec(config),
     )
     shared.init_bitmap([(0, 1)])
-    worker = RemoteEvaluator(MAX_PLAYERS, shared, 0)
+    worker = RemoteEvaluator(RSS_GAME, MAX_PLAYERS, shared, 0)
     setattr(worker, "_request_eval", lambda _n: None)
     for g, rows in batches.items():
         n = len(rows)

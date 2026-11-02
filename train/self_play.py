@@ -21,6 +21,24 @@ from typing import Any, TypedDict
 import numpy as np
 import torch
 
+from games import STATUS_GAME_OVER, get_game
+from mcts.evaluator import compute_terminal_values
+from mcts.search import (
+    StatePool,
+    get_greedy_leaf_depth,
+    get_greedy_leaf_value,
+    policy_target_visits,
+    prepare_reuse_root,
+    run_search,
+    scale_visit_counts_by_temperature,
+)
+from train.config import EpochConfig, TrainingConfig
+from train.eval_server import RemoteEvaluator
+from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
+from train.policy_metrics import PolicyMetrics, kl_to_prior
+
+# RSS-only self-play diagnostics below (AcquisitionStats, the strategy trace,
+# and the end-of-game stats); they move behind a game hook in pipeline step 3.
 from core.actions import (
     ACTION_ACQ_OFFER_ACCEPT_PY,
     ACTION_ACQ_PRICE_PY,
@@ -33,12 +51,9 @@ from core.actions import (
     ACTION_RAISE_PY,
     ACTION_SELL_SHARE_PY,
     decode_action_py,
-    enumerate_policy_actions_py,
-    get_decision_phase_py,
 )
-from core.data import ALL_PAR_PRICES, CorpIndices, GameConstants, GamePhases, MAX_ACTION_SIZE
-from core.driver import DRIVER, STATUS_GAME_OVER_PY
-from core.state import GameState, get_layout
+from core.data import ALL_PAR_PRICES, CorpIndices, GameConstants, GamePhases
+from core.state import GameState
 from entities.company import (
     COMPANIES,
     CompanyLocation,
@@ -46,24 +61,10 @@ from entities.company import (
 from entities.corp import CORPS
 from entities.player import PLAYERS
 from entities.turn import TURN
-from mcts.evaluator import compute_terminal_values
-from mcts.search import (
-    StatePool,
-    get_greedy_leaf_depth,
-    get_greedy_leaf_value,
-    policy_target_visits,
-    prepare_reuse_root,
-    run_search,
-    scale_visit_counts_by_temperature,
-)
-from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
-from train.config import EpochConfig, TrainingConfig
-from train.eval_server import RemoteEvaluator
-from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
-from train.policy_metrics import PolicyMetrics, kl_to_prior
+from nn.policy_layout import UNIFIED_LOGIT_DIM
 
 
-U_DIM = int(UNIFIED_LOGIT_DIM)
+U_DIM = int(UNIFIED_LOGIT_DIM)  # the strategy trace's dense RSS policy rows
 LOC_AUCTION_INT = int(CompanyLocation.LOC_AUCTION)
 LOC_CORP_INT = int(CompanyLocation.LOC_CORP)
 LOC_CORP_ACQ_INT = int(CompanyLocation.LOC_CORP_ACQ)
@@ -119,9 +120,9 @@ class SelfPlayExample:
     """
 
     state: np.ndarray  # (total_int16_size,), int16 — raw compact state
-    phase_id: int  # decision phase id 0-10 (TB reporting only)
-    legal_mask: np.ndarray  # (UNIFIED_LOGIT_DIM,), uint8 — 1 = legal slot
-    policy_target: np.ndarray  # (UNIFIED_LOGIT_DIM,), float32 — MCTS visit probs
+    phase_id: int  # decision phase id (TB reporting only)
+    legal_mask: np.ndarray  # (unified_dim,), uint8 — 1 = legal slot
+    policy_target: np.ndarray  # (unified_dim,), float32 — MCTS visit probs
     value_target: np.ndarray  # (num_players,), float32 — canonical A0GB
     policy_priority: float  # KL(policy target || unnoised prior), replay priority
 
@@ -289,14 +290,14 @@ class GameRecord:
     Training data is pre-stacked into one contiguous array per field
     (instead of per-example arrays) so that pickling through mp.Queue is a
     fast memcpy rather than per-object serialization. ``legal_masks`` and
-    ``policy_targets`` are dense over ``UNIFIED_LOGIT_DIM`` unified
-    slots; illegal slots carry 0 in both.
+    ``policy_targets`` are dense over the game's ``policy.unified_dim``
+    unified slots; illegal slots carry 0 in both.
     """
 
     states: np.ndarray  # (num_examples, total_int16_size), int16
     phase_ids: np.ndarray  # (num_examples,), int8 — TB reporting only
-    legal_masks: np.ndarray  # (num_examples, UNIFIED_LOGIT_DIM), uint8
-    policy_targets: np.ndarray  # (num_examples, UNIFIED_LOGIT_DIM), float32
+    legal_masks: np.ndarray  # (num_examples, unified_dim), uint8
+    policy_targets: np.ndarray  # (num_examples, unified_dim), float32
     value_targets: np.ndarray  # (num_examples, num_players), float32
     policy_priorities: np.ndarray  # (num_examples,), float32 — replay priority
     num_players: int  # Actual player count for this game
@@ -995,16 +996,15 @@ def play_game(
 
     num_players = _resolve_game_num_players(config, num_players)
     max_players = config.effective_max_players
-    state = GameState(num_players, max_players=max_players, v3_behavior=config.v3_behavior,
-                      acq_same_president=config.acq_same_president,
-                      max_acq_price_actions=config.max_acq_price_actions)
-    state.initialize_game(num_players, seed=game_seed, max_players=max_players)
+    game = get_game(config)
+    policy = game.policy
+    state = game.new_game(num_players, max_players, game_seed)
 
-    total_int16_size = get_layout(max_players).total_size
+    total_int16_size = game.state_size(max_players)
 
     # Ensure state pool exists for subtree reuse across searches
     if state_pool is None:
-        state_pool = StatePool(2 * (config.max_simulations + 1), total_int16_size)
+        state_pool = StatePool(game, 2 * (config.max_simulations + 1), total_int16_size)
     elif state_pool.states.shape[1] != total_int16_size:
         raise ValueError(
             f"state_pool row width {state_pool.states.shape[1]} does not match "
@@ -1045,18 +1045,22 @@ def play_game(
 
     # Scratch buffer for enumerating legal actions at each decision point.
     # Copied-out per move so the buffer is free to be reused.
-    legal_scratch = np.empty(MAX_ACTION_SIZE, dtype=np.uint16)
+    legal_scratch = np.empty(policy.max_action_size, dtype=np.uint16)
     # Static LUT mapping (phase_id, phase-local action id) → unified slot.
     # Used once per decision to scatter the sparse visit distribution and
-    # legal set into dense (UNIFIED_LOGIT_DIM,) rows for the trainer.
-    action_lut_np = build_action_lut().numpy()
+    # legal set into dense (unified_dim,) rows for the trainer.
+    action_lut_np = policy.build_action_lut().numpy()
+    u_dim = policy.unified_dim
+    apply_action = game.apply_action
+    decision_phase = game.decision_phase
+    enumerate_policy_actions = game.enumerate_policy_actions
     trace_builder = (
         _StrategyTraceBuilder(num_players) if collect_strategy_trace else None
     )
 
     while True:
-        phase_id = get_decision_phase_py(state)
-        n_legal = enumerate_policy_actions_py(state, legal_scratch)
+        phase_id = decision_phase(state)
+        n_legal = enumerate_policy_actions(state, legal_scratch)
         legal_actions = legal_scratch[:n_legal].copy()
         slots = action_lut_np[phase_id, legal_actions]
 
@@ -1083,7 +1087,7 @@ def play_game(
         # The root's own enumerate inside run_search is deterministic against
         # the same state, so root.visit_counts aligns with legal_actions.
         root = run_search(
-            state, evaluator, mcts_config, rng,
+            game, state, evaluator, mcts_config, rng,
             state_pool=state_pool, reuse_root=reuse_root,
             profile=search_stats,
             root_priors_out=root_priors,
@@ -1108,8 +1112,9 @@ def play_game(
             target_counts, target_temperature,
         )
         policy_metrics.observe(
-            root_priors[0], counts, policy_target_sparse, phase_id,
-            move_count, target_anneal_window, target_counts=target_counts,
+            root_priors[0], counts, policy_target_sparse,
+            policy.phase_names[phase_id], move_count, target_anneal_window,
+            target_counts=target_counts,
         )
 
         # A0GB value target — already canonical (no np.roll).
@@ -1134,9 +1139,9 @@ def play_game(
         # Scatter sparse visit probs + legal set into dense unified-slot
         # rows. The same LUT the model uses to collapse its dense forward
         # back to phase-local ids gives us the inverse mapping here.
-        dense_legal_mask = np.zeros(U_DIM, dtype=np.uint8)
+        dense_legal_mask = np.zeros(u_dim, dtype=np.uint8)
         dense_legal_mask[slots] = 1
-        dense_policy_target = np.zeros(U_DIM, dtype=np.float32)
+        dense_policy_target = np.zeros(u_dim, dtype=np.float32)
         dense_policy_target[slots] = policy_target_sparse
 
         examples.append(
@@ -1167,7 +1172,7 @@ def play_game(
                 target_temperature=target_temperature,
                 sample_temperature=temperature,
             )
-            status = DRIVER.apply_action(state, action_idx)
+            status = apply_action(state, action_idx)
             assert trace_pre_summary is not None
             trace_builder.append_action_events(
                 trace_pre_summary,
@@ -1177,10 +1182,10 @@ def play_game(
                 action_info=action_info,
             )
         else:
-            status = DRIVER.apply_action(state, action_idx)
+            status = apply_action(state, action_idx)
         move_count += 1
 
-        if status == STATUS_GAME_OVER_PY:
+        if status == STATUS_GAME_OVER:
             break
 
         # Extract chosen child's subtree for reuse in next search
@@ -1249,13 +1254,13 @@ def play_game(
 
     # Pre-stack training data into contiguous arrays (5 large arrays instead
     # of N×5 small ones) so pickle through mp.Queue is a fast memcpy. Rows
-    # are dense over UNIFIED_LOGIT_DIM; illegal slots are zero in both the
+    # are dense over unified_dim; illegal slots are zero in both the
     # mask and the policy target.
     n_examples = len(examples)
     stacked_states = np.empty((n_examples, total_int16_size), dtype=np.int16)
     stacked_phase_ids = np.empty(n_examples, dtype=np.int8)
-    stacked_legal_masks = np.empty((n_examples, U_DIM), dtype=np.uint8)
-    stacked_policy_targets = np.empty((n_examples, U_DIM), dtype=np.float32)
+    stacked_legal_masks = np.empty((n_examples, u_dim), dtype=np.uint8)
+    stacked_policy_targets = np.empty((n_examples, u_dim), dtype=np.float32)
     stacked_value_targets = np.empty((n_examples, num_players), dtype=np.float32)
     stacked_policy_priorities = np.empty(n_examples, dtype=np.float32)
     for i, ex in enumerate(examples):
@@ -1272,7 +1277,7 @@ def play_game(
     if blend_alpha < 1.0:
         rank_weight = getattr(evaluator, "terminal_rank_weight", 0.5)
         terminal_values = compute_terminal_values(
-            net_worths, num_players, rank_weight
+            game.final_scores(state), num_players, rank_weight
         )
         stacked_value_targets = (
             blend_alpha * stacked_value_targets
@@ -1352,14 +1357,15 @@ def self_play_worker(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     torch.set_num_threads(1)  # Prevent OpenMP oversubscription with many workers
 
+    game = get_game(config)
     evaluator = RemoteEvaluator(
-        config.effective_max_players, shared_bufs, worker_idx,
+        game, config.effective_max_players, shared_bufs, worker_idx,
         profile=config.profile,
         terminal_rank_weight=config.terminal_blend,
     )
 
-    total_size = get_layout(config.effective_max_players).total_size
-    state_pool = StatePool(2 * (config.max_simulations + 1), total_size)
+    total_size = game.state_size(config.effective_max_players)
+    state_pool = StatePool(game, 2 * (config.max_simulations + 1), total_size)
 
     try:
         while True:

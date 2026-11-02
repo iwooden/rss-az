@@ -11,7 +11,7 @@ from core.attention_relations import (
     MAX_ATTENTION_RELATION_EDGES,
     NUM_ATTENTION_RELATIONS,
 )
-from core.data import PHASE_ACTION_SIZES, DecisionPhase, GamePhases
+from core.data import PHASE_ACTION_SIZES, ActionSize, DecisionPhase, GamePhases
 from core.driver import DRIVER
 from core.relations import (
     get_relation_coord_data,
@@ -55,6 +55,9 @@ POLICY_LAYOUT = PolicyLayout(
         DecisionPhase.DPHASE_IPO,
     )),
 )
+
+# The ACQ price cap's upper bound; train/config.py validates the RSS option.
+ACQ_SELECT_PRICE_ACTIONS = int(ActionSize.ACTION_SIZE_ACQ_SELECT_PRICE)
 
 # Only total_size depends on the player count.
 _NUM_PLAYERS_OFFSET = get_layout(0).turn_offset + get_turn_fields().num_players

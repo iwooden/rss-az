@@ -17,16 +17,8 @@ import torch
 import torch.multiprocessing as mp
 from torch._dynamo.decorators import mark_unbacked
 
-from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.data import PHASE_ACTION_SIZES
-from core.state import get_layout
-from core.token_data import get_num_tokens
+from games import get_game
 from nn import create_model, get_model_input_spec
-from nn.policy_layout import (
-    NUM_PHASES,
-    UNIFIED_LOGIT_DIM,
-    build_action_lut,
-)
 from train.checkpoint import (
     Checkpoint,
     cleanup_checkpoints,
@@ -997,13 +989,15 @@ def main() -> None:
         start_epoch = cp["epoch"] + 1  # type: ignore[operator]
 
     # --- Components (model-independent) ---
-    # Compact int16 state — replay buffer stores raw GameState rows, the
-    # trainer builds token buffers per-batch via core.token_data.
+    # Compact int16 state — replay buffer stores raw state rows, the
+    # trainer builds token buffers per-batch through the game's adapter.
+    game = get_game(config)
     max_players = config.effective_max_players
-    state_size_int16 = get_layout(max_players).total_size
-    num_tokens = get_num_tokens(max_players)
+    state_size_int16 = game.state_size(max_players)
+    num_tokens = game.num_tokens(max_players)
     token_dim = model_input_spec.token_dim
     buffer = ReplayBuffer(
+        game,
         config.buffer_capacity,
         state_size_int16,
         max_players,
@@ -1045,6 +1039,7 @@ def main() -> None:
         result_queue.cancel_join_thread()
 
         shared_bufs = SharedEvalBuffers(
+            game,
             num_workers=config.num_workers,
             batch_size=config.search_batch_size,
             num_players=max_players,
@@ -1177,27 +1172,28 @@ def main() -> None:
             model = cast(torch.nn.Module, torch.compile(model, **sp_compile_kwargs))  # type: ignore[call-overload]
             model.train()
             # Warmup mirrors train/eval_server.py for transformer inputs:
-            # NUM_PHASES rows so every per-row policy head is traced against
+            # one row per phase so every per-row policy head is traced against
             # a real legal mask, and
             # ``mark_unbacked`` on every model input so the batch dim stays
             # symbolic. If any input is left unmarked, Dynamo bakes a static
             # guard on that input's shape and recompiles on the first
             # batch != warmup_n; warming up at batch=1 also wastes a
             # specialization that the runtime never reuses.
-            warmup_n = NUM_PHASES
-            lut = build_action_lut()
+            policy = game.policy
+            warmup_n = policy.num_phases
+            lut = policy.build_action_lut()
             with torch.inference_mode():
                 dummy_mask = torch.zeros(
-                    warmup_n, UNIFIED_LOGIT_DIM, dtype=torch.bool, device=device,
+                    warmup_n, policy.unified_dim, dtype=torch.bool, device=device,
                 )
                 for i in range(warmup_n):
-                    n = PHASE_ACTION_SIZES[i]
+                    n = policy.phase_sizes[i]
                     dummy_mask[i, lut[i, :n].to(device)] = True
                 dummy_tokens = torch.randn(
                     warmup_n, num_tokens, token_dim, device=device,
                 )
                 dummy_relations = torch.zeros(
-                    warmup_n, NUM_ATTENTION_RELATIONS, num_tokens, num_tokens,
+                    warmup_n, game.num_relations, num_tokens, num_tokens,
                     dtype=torch.uint8, device=device,
                 )
                 for _t in (dummy_tokens, dummy_mask, dummy_relations):
@@ -1225,13 +1221,13 @@ def main() -> None:
 
     if config.num_workers == 0:
         evaluator = NNEvaluator(
-            model, device, num_players=max_players,
+            game, model, device, num_players=max_players,
             terminal_rank_weight=config.terminal_blend,
             eval_dtype=config.eval_dtype,
             input_spec=model_input_spec,
         )
         state_pool = StatePool(
-            2 * (config.max_simulations + 1), state_size_int16,
+            game, 2 * (config.max_simulations + 1), state_size_int16,
         )
 
     # --- Training loop ---

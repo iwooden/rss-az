@@ -21,6 +21,7 @@ from core.data import DecisionPhase
 from core.state import GameState, get_layout
 from entities.company import COMPANIES
 from entities.player import PLAYERS
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, prepare_reuse_root, run_search
 from nn import RSSTransformerNet, TransformerConfig, create_model, get_model_input_spec
@@ -33,6 +34,8 @@ from train.self_play import (
     build_epoch_player_count_schedule,
     play_game,
 )
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 U_DIM = int(UNIFIED_LOGIT_DIM)
@@ -50,7 +53,7 @@ def model():
 @pytest.fixture(scope="module")
 def evaluator(model):
     """In-process NNEvaluator — bypasses the shared-mem eval server path."""
-    return NNEvaluator(model, torch.device("cpu"), num_players=NUM_PLAYERS)
+    return NNEvaluator(RSS_GAME, model, torch.device("cpu"), num_players=NUM_PLAYERS)
 
 
 def _assert_dense_policy_invariants(record) -> None:
@@ -136,7 +139,7 @@ def test_v3_cross_player_self_play_completes_with_valid_training_examples(price_
         max_acq_price_actions=price_cap,
     )
     model = create_model(config).eval()
-    evaluator = NNEvaluator(model, torch.device("cpu"), 3)
+    evaluator = NNEvaluator(RSS_GAME, model, torch.device("cpu"), 3)
     record = play_game(
         evaluator, config, game_seed=42, rng=np.random.default_rng(17),
         collect_strategy_trace=True,
@@ -351,12 +354,14 @@ def test_play_game_mixed_config_runs_3p_4p_5p_with_one_max_pool():
     )
     model = create_model(config).to(torch.device("cpu"))
     evaluator = NNEvaluator(
+        RSS_GAME,
         model,
         torch.device("cpu"),
         num_players=max_players,
         input_spec=get_model_input_spec(config),
     )
     state_pool = StatePool(
+        RSS_GAME,
         2 * (config.max_simulations + 1),
         get_layout(max_players).total_size,
     )
@@ -402,12 +407,13 @@ def test_play_game_subtree_reuse_produces_sensible_q_after_move_1(evaluator):
     config = TrainingConfig(num_players=NUM_PLAYERS, num_simulations=64)
     mcts_cfg = config.to_mcts_config()
     total_size = get_layout(NUM_PLAYERS).total_size
-    pool = StatePool(2 * (mcts_cfg.num_simulations + 1), total_size)
+    pool = StatePool(RSS_GAME, 2 * (mcts_cfg.num_simulations + 1), total_size)
 
     state = GameState(NUM_PLAYERS)
     state.initialize_game(NUM_PLAYERS, seed=0)
 
     root = run_search(
+        RSS_GAME,
         state, evaluator, mcts_cfg,
         rng=np.random.default_rng(0), state_pool=pool,
     )
@@ -440,6 +446,7 @@ def test_play_game_subtree_reuse_produces_sensible_q_after_move_1(evaluator):
     # Apply the chosen action on the real state and run search again with reuse.
     DRIVER.apply_action(state, best_action)
     root2 = run_search(
+        RSS_GAME,
         state, evaluator, mcts_cfg,
         rng=np.random.default_rng(1), state_pool=pool, reuse_root=reuse,
     )

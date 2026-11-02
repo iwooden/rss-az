@@ -8,10 +8,13 @@ from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import GameState, get_layout
 from core.token_data import TokenDataSize, get_num_tokens
 from entities.turn import TURN
+from games import get_game
 from nn.policy_layout import PHASES_WITH_PASS_SLOT, UNIFIED_LOGIT_DIM
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
 from train.trainer import Trainer, average_training_metrics
+
+RSS_GAME = get_game(TrainingConfig())
 
 NUM_PLAYERS = 3
 
@@ -40,7 +43,7 @@ def test_phase_policy_entropy_kl_counts_and_gradients(device):
     config = TrainingConfig(num_players=3, optimizer="adamw", value_loss_weight=0, grad_clip=0)
     model = FixedPolicy().to(device)
     trainer = Trainer(model, config, torch.device(device))
-    buffer = ReplayBuffer(3, get_layout(3).total_size, 3)
+    buffer = ReplayBuffer(RSS_GAME, 3, get_layout(3).total_size, 3)
     for phase in (0, 0, 1):
         mask = np.zeros(int(UNIFIED_LOGIT_DIM), dtype=np.uint8)
         target = np.zeros(int(UNIFIED_LOGIT_DIM), dtype=np.float32)
@@ -184,7 +187,7 @@ def test_train_step_value_loss_uses_mean_over_player_dimension() -> None:
     trainer = Trainer(model, cfg, torch.device("cpu"))
 
     layout = get_layout(NUM_PLAYERS)
-    buffer = ReplayBuffer(1, layout.total_size, NUM_PLAYERS)
+    buffer = ReplayBuffer(RSS_GAME, 1, layout.total_size, NUM_PLAYERS)
 
     state = _make_initialized_state(NUM_PLAYERS)
     legal_mask, policy_target = _one_hot_policy_targets()
@@ -219,6 +222,7 @@ def test_train_step_value_loss_ignores_padded_player_slots() -> None:
     trainer = Trainer(model, cfg, torch.device("cpu"))
 
     buffer = ReplayBuffer(
+        RSS_GAME,
         1,
         get_layout(5).total_size,
         5,
@@ -259,6 +263,7 @@ def test_train_step_mixed_batch_uses_masked_value_mse_and_max_width_inputs() -> 
     trainer = Trainer(model, cfg, torch.device("cpu"))
 
     buffer = ReplayBuffer(
+        RSS_GAME,
         2,
         get_layout(5).total_size,
         5,

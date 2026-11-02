@@ -17,6 +17,7 @@ from core.token_data import TokenWidth, get_num_tokens, get_token_data, get_toke
 from entities.player import PLAYERS
 from entities.company import COMPANIES
 from entities.turn import TURN
+from games import get_game
 from mcts.evaluator import NNEvaluator
 from nn import create_model, get_model_input_spec
 from nn.policy_layout import UNIFIED_LOGIT_DIM
@@ -28,6 +29,8 @@ from train.debug_trace import TokenNormalizationAccumulator, format_token_dump
 from train.eval_server import EvaluationServer, RemoteEvaluator, SharedEvalBuffers
 from train.replay_buffer import ReplayBuffer
 from train.trainer import Trainer
+
+RSS_GAME = get_game(TrainingConfig())
 
 
 def _config(version, **kwargs):
@@ -215,10 +218,10 @@ def test_checkpoint_evaluator_and_trainer_use_model_layout(
         assert getattr(loaded, "cfg").relation_input_mixing is relation_input_mixing
     else:
         assert not hasattr(getattr(loaded, "cfg"), "relation_input_mixing")
-    evaluator = NNEvaluator(loaded, torch.device("cpu"), 5, input_spec=spec)
+    evaluator = NNEvaluator(RSS_GAME, loaded, torch.device("cpu"), 5, input_spec=spec)
     states = [_state(n) for n in (3, 4, 5)]
     outputs = evaluator.evaluate_batch(states)
-    reference = NNEvaluator(model, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
+    reference = NNEvaluator(RSS_GAME, model, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
     for actual, expected in zip(outputs, reference):
         np.testing.assert_array_equal(actual[0], expected[0])
         np.testing.assert_array_equal(actual[1], expected[1])
@@ -229,7 +232,7 @@ def test_checkpoint_evaluator_and_trainer_use_model_layout(
     evaluator.evaluate(states[0])
     np.testing.assert_array_equal(evaluator._tok_h_np[0], _tokens(states[0], version))
 
-    replay = ReplayBuffer(3, get_layout(5).total_size, 5, min_players=3, max_players=5)
+    replay = ReplayBuffer(RSS_GAME, 3, get_layout(5).total_size, 5, min_players=3, max_players=5)
     masks = np.zeros((3, UNIFIED_LOGIT_DIM), np.uint8)
     masks[:, 0] = 1
     replay.add_stacked(
@@ -246,15 +249,15 @@ def test_checkpoint_evaluator_and_trainer_use_model_layout(
 
     wrong = replace(spec, layout_version=5 - version, token_dim=get_token_dim(5 - version))
     with pytest.raises(ValueError, match="model input contract"):
-        NNEvaluator(loaded, torch.device("cpu"), 5, input_spec=wrong)
+        NNEvaluator(RSS_GAME, loaded, torch.device("cpu"), 5, input_spec=wrong)
 
 
 @pytest.mark.parametrize("version", [2, 3])
 def test_remote_evaluator_sends_selected_layout(version, monkeypatch):
     spec = get_model_input_spec(_config(version, num_players=5))
-    shared = SharedEvalBuffers(1, 2, 5, input_spec=spec)
+    shared = SharedEvalBuffers(RSS_GAME, 1, 2, 5, input_spec=spec)
     shared.init_bitmap([(0, 1)])
-    evaluator = RemoteEvaluator(5, shared, 0)
+    evaluator = RemoteEvaluator(RSS_GAME, 5, shared, 0)
     monkeypatch.setattr(evaluator, "_request_eval", lambda n: None)
     state = _state()
     evaluator.evaluate(state)
@@ -280,7 +283,7 @@ def test_v3_eval_server_matches_local_evaluation(monkeypatch):
     monkeypatch.setattr(RemoteEvaluator, "_EVAL_TIMEOUT", 15.0)
     config = _config(3, num_players=5)
     model = create_model(config)
-    shared = SharedEvalBuffers(1, 2, 5, input_spec=get_model_input_spec(config))
+    shared = SharedEvalBuffers(RSS_GAME, 1, 2, 5, input_spec=get_model_input_spec(config))
     ctx = mp.get_context("spawn")
     shared.init_bitmap([(0, 1)], mp_context=ctx)
     # CPU serving has no autocast: match the existing fp16 wire dtype.
@@ -289,11 +292,11 @@ def test_v3_eval_server_matches_local_evaluation(monkeypatch):
         mp_context=ctx, no_compile=True,
     )
     state = _state()
-    expected = NNEvaluator(model, torch.device("cpu"), 5).evaluate(state)
+    expected = NNEvaluator(RSS_GAME, model, torch.device("cpu"), 5).evaluate(state)
     try:
         server.start()
         assert server.wait_ready(timeout=15)
-        actual = RemoteEvaluator(5, shared, 0).evaluate(state)
+        actual = RemoteEvaluator(RSS_GAME, 5, shared, 0).evaluate(state)
         # IPC quantizes token features to fp16, local evaluation uses fp32.
         np.testing.assert_allclose(actual[0], expected[0], rtol=0.01, atol=1e-4)
         np.testing.assert_allclose(actual[1], expected[1], rtol=0.01, atol=1e-4)
@@ -311,7 +314,7 @@ def test_unsupported_layout_fails_before_extraction():
 def test_v3_cuda_forward_backward():
     config = _config(3, num_players=5)
     model = create_model(config).cuda()
-    evaluator = NNEvaluator(model, torch.device("cuda"), 5)
+    evaluator = NNEvaluator(RSS_GAME, model, torch.device("cuda"), 5)
     state = _state()
     priors, values, *_ = evaluator.evaluate(state)
     assert np.isfinite(priors).all() and np.isfinite(values).all()
@@ -354,8 +357,8 @@ def test_v3_zero_sum_values_through_checkpoint_evaluator_and_trainer(tmp_path):
 
     spec = get_model_input_spec(config)
     states = [_state(n) for n in (3, 4, 5)]
-    centered = NNEvaluator(loaded, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
-    uncentered = NNEvaluator(raw, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
+    centered = NNEvaluator(RSS_GAME, loaded, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
+    uncentered = NNEvaluator(RSS_GAME, raw, torch.device("cpu"), 5, input_spec=spec).evaluate_batch(states)
     raw_sums = []
     for i, (actual, reference) in enumerate(zip(centered, uncentered)):
         values, raw_values = actual[1], reference[1]
@@ -368,7 +371,7 @@ def test_v3_zero_sum_values_through_checkpoint_evaluator_and_trainer(tmp_path):
 
     # Identical 3p rows make the sampled batch known and leave two padded
     # value slots that the raw-value diagnostics must ignore.
-    replay = ReplayBuffer(3, get_layout(5).total_size, 5, min_players=3, max_players=5)
+    replay = ReplayBuffer(RSS_GAME, 3, get_layout(5).total_size, 5, min_players=3, max_players=5)
     masks = np.zeros((3, UNIFIED_LOGIT_DIM), np.uint8)
     masks[:, 0] = 1
     replay.add_stacked(

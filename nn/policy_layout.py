@@ -62,7 +62,8 @@ class PolicyLayout:
         return lut
 
 
-# RSS layout as module constants, for consumers not yet using ``Game.policy``.
+# RSS's layout under its legacy names, for the v2 and v3 model files, which stay
+# untouched (1889/pipeline-refactor.md §5). The pipeline uses ``Game.policy``.
 NUM_PHASES = int(GameConstants.NUM_DECISION_PHASES)
 
 _phase_offsets = [0]
