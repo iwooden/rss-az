@@ -568,35 +568,46 @@ introduced it. Add to this list whenever a step changes RSS behavior.
   `"game"`, and `load` skips another game's buffer with a warning. Buffers
   saved on `main` load as RSS, and `main` ignores the new key.
 
-Known `main` bugs, kept for parity until fixed on `main`:
+- **Live ACQ price cap on the state** (merge of `main`, 2026-11-02).
+  `prepare_live_decision_state` takes `max_acq_price_actions` and sets it on
+  the decision state, where `main` sets the cap on the live `MCTSConfig`. Live
+  search therefore matches `main`.
 
-- **Live play ignores the ACQ price cap.** `_mcts_config_for`
-  (`utils_18xx/live.py`) rebuilds `MCTSConfig` from eight fields of
-  `to_mcts_config()` and drops `max_acq_price_actions`, so the live v3 bot
-  searches every legal price, including the middle prices its checkpoint was
-  never trained on. The branch keeps this: `prepare_live_decision_state` sets
-  the state's cap to 0, and a test pins it. The fix is to set it from the
-  checkpoint config there, preferably on `main` first so the branch stays
-  aligned.
-- **Eval servers fail without autocast.** Eval servers always send fp16
-  tokens: the warmup builds them at `train/eval_server.py:612`, and serving
-  sets `input_dtype` at `:648`. Neither model casts them. v2's
-  `_project_tokens` (`nn/transformer-v2.py:998`) and v3's first projection
-  (`company_proj`, `nn/transformer-v3.py:834`) are fp32 `Linear`s. So with
-  `eval_dtype` unset (the config default, `train/config.py:150`), or on any
-  CPU eval server, the first forward fails with "mat1 and mat2 must have the
-  same dtype, but got Half and Float". The fingerprint script wraps its CPU
-  eval server in `Fp32TokenInputs` for this reason. Found in the step 4 GPU
-  check (2026-11-02). The fix belongs in `train/eval_server.py` on `main`
-  first: feed fp32 model inputs unless autocast is running, and keep the
-  shared and pinned buffers fp16.
-- **Training hangs for up to 40 minutes when an eval server dies before it is
-  ready.** `train/main.py:1010` waits `wait_ready(timeout=2400.0)` and never
-  checks whether the server process is still alive. Its error message still
-  says 300 s. When the bug above killed the server during warmup, the run sat
-  with idle workers until the timeout. `EvalServer.wait_ready` should
-  also return when the process exits (`_process.is_alive()`), and the
-  message should report the real timeout.
+Known `main` bugs. All four are fixed on `main` (2026-11-02) and merged into
+the branch; the branch no longer keeps them for parity:
+
+- **Live play ignored the ACQ price cap** (fixed in 2e0b412).
+  `_mcts_config_for` (`utils_18xx/live.py`) rebuilt `MCTSConfig` from eight
+  fields of `to_mcts_config()` and dropped `max_acq_price_actions`, so the
+  live v3 bot searched every legal price, including the middle prices its
+  checkpoint was never trained on. Live play now searches under the
+  checkpoint's cap, and the live server's `--max-acq-price-actions` overrides
+  it (0 searches every price). `main` copies the whole `to_mcts_config()`,
+  which also carries `check_nonfinite_mcts`. The branch no longer pins the cap
+  to 0: `prepare_live_decision_state` sets the resolved cap on the state (see
+  above). This deliberately changes live behavior for capped (v3) checkpoints.
+- **Eval servers failed without autocast** (fixed in 3e2beac). Eval servers
+  fed the model the fp16 wire tokens, and neither model casts them: v2's
+  `_project_tokens` and v3's `company_proj` are fp32 `Linear`s. So with
+  `eval_dtype` unset (the config default), or on any CPU eval server, the
+  first forward failed with "mat1 and mat2 must have the same dtype". Found in
+  the step 4 GPU check. The server now copies the tokens into an fp32 device
+  buffer unless CUDA autocast is in effect; the shared and pinned buffers and
+  the wire format stay fp16. The fingerprint script's `Fp32TokenInputs`
+  wrapper is now a no-op, and the fingerprint still matches exactly.
+- **Training waited up to 40 minutes on an eval server that died before it
+  was ready** (fixed in f2b7ba2). `EvaluationServer.wait_ready` now polls the
+  process and returns as soon as it exits. `train/main.py` and
+  `train/strategy_data.py` then raise through the new `check_alive()`, which
+  reports the exit code; a server that fails now exits with code 1, not 0.
+  The timeout message states the real timeout (2400 s, not 300 s).
+- **Training hung when an eval server died after it was ready** (fixed in
+  cc4ebdb). Uncompiled servers signal ready before their first forward, so a
+  failing forward left every worker blocked for
+  `RemoteEvaluator._EVAL_TIMEOUT` (1200 s). `train/main.py` and
+  `train/strategy_data.py` now wait on the result queue through
+  `get_worker_result`, which checks the servers between 1 s waits and raises
+  with the dead server's exit code.
 
 ## 8. Steps
 

@@ -1,10 +1,14 @@
 import numpy as np
 import pytest
+import torch
 
 from core.actions import get_decision_phase_py
 from core.state import GameState
 from mcts.node import MCTSNode
-from train.config import MCTSConfig
+from nn import create_model
+from tests.test_actions_width import _state_acq_select_price
+from train.checkpoint import save_checkpoint
+from train.config import MCTSConfig, TrainingConfig
 from train.profile_stats import SearchStats
 from utils_18xx import live
 from utils_18xx.action_parser import get_legal_actions
@@ -13,7 +17,9 @@ from utils_18xx.live import (
     _format_live_model_output,
     _nonnegative_int,
     _player_names_from_game_data,
+    prepare_live_decision_state,
     _resolve_live_eval_dtype,
+    _resolve_live_max_acq_price_actions,
     _resolve_live_search_batch_size,
 )
 
@@ -49,6 +55,54 @@ def test_live_eval_dtype_defaults_to_checkpoint_config_and_allows_fp32_override(
     assert _resolve_live_eval_dtype(_Config(), None) == "bfloat16"
     assert _resolve_live_eval_dtype(_Config(), "float16") == "float16"
     assert _resolve_live_eval_dtype(_Config(), "float32") is None
+
+
+def test_live_acq_price_cap_defaults_to_checkpoint_config():
+    class _Config:
+        max_acq_price_actions = 8
+
+    assert _resolve_live_max_acq_price_actions(_Config(), None) == 8
+    assert _resolve_live_max_acq_price_actions(_Config(), 0) == 0
+    with pytest.raises(ValueError, match="max_acq_price_actions"):
+        _resolve_live_max_acq_price_actions(_Config(), 7)
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_cap", "override", "expected"),
+    [
+        (8, None, [0, 1, 2, 3, 47, 48, 49, 50]),
+        (0, None, list(range(51))),
+        (8, 0, list(range(51))),
+    ],
+)
+def test_live_search_uses_checkpoint_acq_price_cap(
+    tmp_path, checkpoint_cap, override, expected,
+):
+    config = TrainingConfig(
+        d_model=32, d_proj=8, num_heads=4, num_layers=1,
+        max_acq_price_actions=checkpoint_cap,
+    )
+    path = tmp_path / "checkpoint.pt"
+    save_checkpoint(path, 0, create_model(config), {}, config, {}, {})
+    engine = _SearchEngine(
+        path,
+        torch.device("cpu"),
+        num_simulations=16,
+        search_batch_size=1,
+        max_acq_price_actions=override,
+    )
+
+    # All 51 offsets are legal here. process_turn and evaluate_turn prepare
+    # the synced state the same way before searching.
+    state = _state_acq_select_price()
+    prepare_live_decision_state(
+        state,
+        acq_same_president=engine.config.acq_same_president,
+        max_acq_price_actions=engine.max_acq_price_actions,
+    )
+    _, root, _, _ = engine._search(state, 3)
+
+    np.testing.assert_array_equal(root.legal_actions, expected)
 
 
 def test_nonnegative_int_rejects_negative_values():

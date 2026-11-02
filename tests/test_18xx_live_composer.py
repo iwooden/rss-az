@@ -70,6 +70,7 @@ IPO_UNPARABLE_COMPANY = FIXTURES / "ipo_unparable_company.json"
 def _bare_search_engine() -> _SearchEngine:
     engine = _SearchEngine.__new__(_SearchEngine)
     engine.config = TrainingConfig()
+    engine.max_acq_price_actions = 0
     return engine
 
 
@@ -1282,21 +1283,27 @@ def test_composer_uses_user_id_override_for_engine_player_index():
     assert composer.finish()[0]["entity"] == 202
 
 
-@pytest.mark.parametrize("acq_same_president", [True, False])
+@pytest.mark.parametrize(
+    ("acq_same_president", "max_acq_price_actions"), [(True, 8), (False, 0)],
+)
 def test_prepare_live_decision_state_restores_model_acquisition_rules(
-    acq_same_president,
+    acq_same_president, max_acq_price_actions,
 ):
     state = GameState(3, acq_same_president=not acq_same_president)
     state.initialize_game(3, seed=42)
     state.acq_offer_limits = False
-    state.max_acq_price_actions = 8
+    state.max_acq_price_actions = 8 - max_acq_price_actions
     state.allow_positive_income_closing = True
 
-    prepare_live_decision_state(state, acq_same_president=acq_same_president)
+    prepare_live_decision_state(
+        state,
+        acq_same_president=acq_same_president,
+        max_acq_price_actions=max_acq_price_actions,
+    )
 
     assert state.acq_same_president is acq_same_president
     assert state.acq_offer_limits is True
-    assert state.max_acq_price_actions == 0
+    assert state.max_acq_price_actions == max_acq_price_actions
     assert state.allow_positive_income_closing is False
 
 
@@ -1485,6 +1492,7 @@ def _fixture_search_engine(
     """Search engine for fixture games whose search replays recorded picks."""
     engine = _bare_search_engine()
     engine.config = config
+    engine.max_acq_price_actions = config.max_acq_price_actions
     engine.min_players, engine.max_players = 3, 5
     engine.model_output = False
     engine.allow_cross_president_offers = not config.acq_same_president

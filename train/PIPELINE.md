@@ -61,7 +61,8 @@ Notes below name RSS's implementations where they matter
   `enumerate_policy_actions` applies it, so root and leaf priors are a softmax
   over the capped set; it covers search, sampling, replay masks, and targets.
   Middle prices stay engine-legal but are never played or trained. Tournament
-  seats search under their checkpoint's cap; live play uses none.
+  seats and live play search under their checkpoint's cap; the live server's
+  `--max-acq-price-actions` overrides it.
 
 ## Self-play targets (`train/self_play.py` `play_game`)
 
@@ -159,8 +160,10 @@ Notes below name RSS's implementations where they matter
   relations and scales edges by value. Keep both formats in parity.
 - **Precision and weights.** Eval servers keep autocast (`eval_dtype`) open
   with `cache_enabled=False`, because same-device servers share trainer
-  parameters through CUDA IPC. After training, every server reloads a CPU
-  snapshot (`_sync_eval_servers`). `bucketed` mode pads launches to powers of 2.
+  parameters through CUDA IPC. Without autocast (no `eval_dtype`, or a CPU
+  server) the server upcasts the fp16 wire tokens to fp32 on the device. After
+  training, every server reloads a CPU snapshot (`_sync_eval_servers`).
+  `bucketed` mode pads launches to powers of 2.
 
 ## Operations (`train/main.py`)
 

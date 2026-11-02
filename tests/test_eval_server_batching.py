@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+from time import perf_counter
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -28,6 +30,7 @@ from train.eval_server import (
     _resolve_actual_launch_cap,
     _resolve_launch_batch_size,
     _resolve_max_launch_batch_size,
+    get_worker_result,
 )
 
 RSS_GAME = get_game(TrainingConfig())
@@ -60,6 +63,45 @@ class SyncValueModel(torch.nn.Module):
         logits = logits.masked_fill(~legal, -1e9)
         values = self.values.to(legal.device).expand(legal.shape[0], -1)
         return logits, values
+
+
+class StartupFailureModel(SyncValueModel):
+    """Fails when the server process moves it to its device."""
+
+    def to(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("model failed to load")
+
+
+class ForwardFailureModel(SyncValueModel):
+    """Fails on its first forward, after an uncompiled server is ready."""
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        legal_mask: torch.Tensor,
+        relations: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        raise RuntimeError("forward failed")
+
+
+def _cpu_server(model: torch.nn.Module) -> tuple[EvaluationServer, SharedEvalBuffers]:
+    """An unstarted one-worker CPU eval server."""
+    ctx = mp.get_context("spawn")
+    shared_bufs = SharedEvalBuffers(
+        RSS_GAME,
+        num_workers=1,
+        batch_size=1,
+        num_players=NUM_PLAYERS,
+    )
+    shared_bufs.init_bitmap([(0, 1)], ctx)
+    server = EvaluationServer(
+        model,
+        torch.device("cpu"),
+        shared_bufs,
+        mp_context=ctx,
+        no_compile=True,
+    )
+    return server, shared_bufs
 
 
 def test_next_power_of_two_rounds_up() -> None:
@@ -221,6 +263,48 @@ def test_evaluation_server_sync_weights_updates_remote_eval_outputs() -> None:
             values,
             np.array([[0.25, -0.5, 0.75]], dtype=np.float32),
         )
+    finally:
+        server.stop()
+
+
+def test_wait_ready_returns_when_server_dies_during_startup() -> None:
+    server, _shared_bufs = _cpu_server(StartupFailureModel())
+    try:
+        server.start()
+        started = perf_counter()
+        assert not server.wait_ready(timeout=600.0)
+        assert perf_counter() - started < 60.0
+        assert not server.is_alive()
+        with pytest.raises(RuntimeError, match="exited with code 1"):
+            server.check_alive()
+    finally:
+        server.stop()
+
+
+def test_worker_result_wait_fails_fast_when_server_dies_after_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RemoteEvaluator, "_EVAL_TIMEOUT", 2.0)
+    server, shared_bufs = _cpu_server(ForwardFailureModel())
+    state = GameState(NUM_PLAYERS)
+    state.initialize_game(NUM_PLAYERS, seed=123)
+    legal_mask = np.zeros((1, U_DIM), dtype=np.uint8)
+    legal_mask[0, 0] = 1
+
+    try:
+        server.start()
+        assert server.wait_ready(timeout=60.0)
+        evaluator = RemoteEvaluator(RSS_GAME, NUM_PLAYERS, shared_bufs, worker_idx=0)
+        # The forward kills the server; its worker only times out.
+        with pytest.raises(RuntimeError, match="did not respond"):
+            evaluator.evaluate_leaves([state._array], legal_mask)
+
+        started = perf_counter()
+        with pytest.raises(RuntimeError, match="exited with code 1"):
+            get_worker_result(
+                mp.get_context("spawn").Queue(), [server], timeout=600.0,
+            )
+        assert perf_counter() - started < 30.0
     finally:
         server.stop()
 

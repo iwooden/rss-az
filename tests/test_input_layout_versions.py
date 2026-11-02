@@ -1,6 +1,5 @@
 """Versioned observations of one shared game, including replay and IPC paths."""
 
-from copy import deepcopy
 from dataclasses import replace
 import multiprocessing as mp
 
@@ -279,17 +278,18 @@ def test_v3_token_diagnostics_label_and_denormalize_history():
     assert list(accumulator._iter_field_stats())
 
 
-def test_v3_eval_server_matches_local_evaluation(monkeypatch):
+@pytest.mark.parametrize("version", [2, 3])
+def test_eval_server_matches_local_evaluation(version, monkeypatch):
     monkeypatch.setattr(RemoteEvaluator, "_EVAL_TIMEOUT", 15.0)
-    config = _config(3, num_players=5)
+    config = _config(version, num_players=5)
     model = create_model(config)
     shared = SharedEvalBuffers(RSS_GAME, 1, 2, 5, input_spec=get_model_input_spec(config))
     ctx = mp.get_context("spawn")
     shared.init_bitmap([(0, 1)], mp_context=ctx)
-    # CPU serving has no autocast: match the existing fp16 wire dtype.
+    # CPU servers run without autocast: the fp32 model must get fp32 inputs.
     server = EvaluationServer(
-        deepcopy(model).half(), torch.device("cpu"), shared,
-        mp_context=ctx, no_compile=True,
+        model, torch.device("cpu"), shared,
+        mp_context=ctx, no_compile=True, eval_dtype=None,
     )
     state = _state()
     expected = NNEvaluator(RSS_GAME, model, torch.device("cpu"), 5).evaluate(state)

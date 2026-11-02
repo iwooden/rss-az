@@ -26,10 +26,12 @@ Dimensions come from the game's adapter (``games.Game``) and its policy
 layout. Transformer token buffers are fp16 on the wire (half the shm + pinned
 + H→D bytes of the old fp32 path). The game's ``fill_tokens`` still fills fp32, and
 the worker casts into fp16 once at the shm boundary (one vectorized numpy
-astype per eval request). Model-side the fp16 input is upcast to bf16 at
-trunk entry, matching the autocast dtype the rest of the forward runs
-under; all token feature values sit in [-1, ~3] post-normalization, so
-fp16 round-trip error is <1e-3 absolute (see scratchpad/fp16_token_precision.py).
+astype per eval request). Under CUDA autocast (``eval_dtype``) the model
+takes the fp16 tokens as they are; otherwise (no ``eval_dtype``, or a CPU
+server) the server copies them into an fp32 device buffer, because the
+models' fp32 weights do not cast their inputs. All token feature values sit
+in [-1, ~3] post-normalization, so fp16 round-trip error is <1e-3 absolute
+(see scratchpad/fp16_token_precision.py).
 
 The unified policy tensor (width ``unified_dim``) is the wire format.
 Workers build a dense legal-mask (via the same ``build_action_lut`` mapping
@@ -108,6 +110,9 @@ from train.profile_stats import EvalClientStats, EvalServerStats
 
 if TYPE_CHECKING:
     from games import Game
+
+# Seconds between server liveness checks while the parent waits on a server.
+_LIVENESS_POLL_SECS = 1.0
 
 
 @dataclass(frozen=True)
@@ -495,6 +500,8 @@ def _eval_server_main(
     except Exception:
         import traceback
         traceback.print_exc()
+        # A nonzero exit code tells the parent the server failed.
+        raise SystemExit(1)
 
 
 def _eval_server_serve(
@@ -553,8 +560,15 @@ def _eval_server_serve(
         from train.gpu import GpuConfig
         GpuConfig(vendor=gpu_vendor).apply_optimizations()
 
+    # Autocast runs only on CUDA. Without it the models' fp32 weights need
+    # fp32 inputs, so the device token buffer upcasts the fp16 wire.
     _dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
-    eval_autocast_dtype: torch.dtype | None = _dtype_map.get(eval_dtype) if eval_dtype else None
+    eval_autocast_dtype: torch.dtype | None = (
+        _dtype_map.get(eval_dtype) if use_cuda and eval_dtype else None
+    )
+    model_input_dtype = (
+        torch.float16 if eval_autocast_dtype is not None else torch.float32
+    )
 
     partition_size = worker_end - worker_start
     max_batch = partition_size * shared_bufs.batch_size
@@ -609,7 +623,7 @@ def _eval_server_serve(
             for warmup_n in warmup_batches:
                 dummy_s = torch.randn(
                     warmup_n, num_tokens, token_dim, device=device,
-                    dtype=torch.float16,
+                    dtype=model_input_dtype,
                 )
                 dummy_rel = torch.zeros(
                     warmup_n, shared_bufs.max_relation_edges,
@@ -658,7 +672,7 @@ def _eval_server_serve(
         p.reshape(alloc_batch, input_flat_width).view(np.int8)
         for p in pin_s_np_list
     ]
-    gpu_s = torch.empty(*input_shape, dtype=input_dtype, device=device)
+    gpu_s = torch.empty(*input_shape, dtype=model_input_dtype, device=device)
 
     max_relation_edges = shared_bufs.max_relation_edges
     relation_coord_width = shared_bufs.relation_coord_width
@@ -1213,9 +1227,31 @@ class EvaluationServer:
     def wait_ready(self, timeout: float = 120.0) -> bool:
         """Block until the server has finished compilation and warmup.
 
-        Returns True if the server signaled ready, False on timeout.
+        Returns True if the server signaled ready. Returns False on timeout,
+        or as soon as the server process exits without signaling;
+        ``check_alive`` then reports the exit code.
         """
-        return self._ready_event.wait(timeout=timeout)
+        deadline = perf_counter() + timeout
+        while True:
+            remaining = deadline - perf_counter()
+            if self._ready_event.wait(
+                timeout=max(0.0, min(_LIVENESS_POLL_SECS, remaining))
+            ):
+                return True
+            if remaining <= 0 or not self.is_alive():
+                return self._ready_event.is_set()
+
+    def is_alive(self) -> bool:
+        """Whether the server process has started and not exited."""
+        return self._process is not None and self._process.is_alive()
+
+    def check_alive(self) -> None:
+        """Raise RuntimeError if the started server process has exited."""
+        if self._process is not None and not self._process.is_alive():
+            raise RuntimeError(
+                f"eval server {self._server_id} exited with code "
+                f"{self._process.exitcode} (check stderr)"
+            )
 
     def stop(self) -> None:
         """Signal the server to stop and wait for it."""
@@ -1282,6 +1318,32 @@ class EvaluationServer:
                     self._stats_queue.get_nowait()
                 except _queue.Empty:
                     break
+
+
+def get_worker_result(
+    result_queue: Any,
+    eval_servers: list[EvaluationServer],
+    *,
+    timeout: float,
+) -> Any:
+    """Return the next worker result, raising if an eval server dies first.
+
+    Workers waiting on a dead server block until
+    ``RemoteEvaluator._EVAL_TIMEOUT``, so the parent checks the servers
+    between short waits on the queue. Raises ``queue.Empty`` after
+    ``timeout`` seconds, like ``Queue.get``.
+    """
+    deadline = perf_counter() + timeout
+    while True:
+        for server in eval_servers:
+            server.check_alive()
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            raise _queue.Empty
+        try:
+            return result_queue.get(timeout=min(_LIVENESS_POLL_SECS, remaining))
+        except _queue.Empty:
+            pass
 
 
 class RemoteEvaluator(BaseEvaluator):
