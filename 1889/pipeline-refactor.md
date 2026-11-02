@@ -1,6 +1,7 @@
 # Pipeline Refactor for Shikoku 1889
 
-Status: steps 0-1 done (2026-10-31); the rest is plan. This expands Section 11
+Status: steps 0, 1, and 5 and the ACQ cap commit done (2026-11-01); the
+rest is plan. This expands Section 11
 of the model blueprint, [`1889.md`](1889.md). The rules are in
 [`1889-rules.md`](1889-rules.md).
 
@@ -271,6 +272,16 @@ game hooks.
 - Order: rules and driver first, tested without the pipeline. Feature
   extraction comes later (blueprint milestone 4). The adapter can be wired in
   once a full random game runs.
+- Static data (step 5) is in `g1889/data/` (`tables.json`, conventions in
+  its `__init__.py`). Findings the rules step must handle:
+  - Port tile 437 matches every white town in the upgrade table, including
+    the non-port J5. Enforce `blocks_lay` and Mitsubishi Ferry's hex list.
+  - Symmetric tiles have rotations with identical masks, and Ruby accepts all
+    of them. Dedupe lay candidates by mask.
+  - Ruby's `legal_tile_rotation?` also requires a new exit on a side the
+    corporation reaches. That needs game state, so the table leaves it out.
+  - 18xx actions name a tile copy (`57-1`), so the action mapping picks a
+    copy index.
 
 ### 6.2 Engine tests (`tests/g1889/`)
 
