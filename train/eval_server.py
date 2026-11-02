@@ -25,10 +25,12 @@ Communication uses shared memory (torch tensors with share_memory_()):
 Transformer token buffers are fp16 on the wire (half the shm + pinned + H→D
 bytes of the old fp32 path). Cython's ``get_token_data`` still fills fp32, and
 the worker casts into fp16 once at the shm boundary (one vectorized numpy
-astype per eval request). Model-side the fp16 input is upcast to bf16 at
-trunk entry, matching the autocast dtype the rest of the forward runs
-under; all token feature values sit in [-1, ~3] post-normalization, so
-fp16 round-trip error is <1e-3 absolute (see scratchpad/fp16_token_precision.py).
+astype per eval request). Under CUDA autocast (``eval_dtype``) the model
+takes the fp16 tokens as they are; otherwise (no ``eval_dtype``, or a CPU
+server) the server copies them into an fp32 device buffer, because the
+models' fp32 weights do not cast their inputs. All token feature values sit
+in [-1, ~3] post-normalization, so fp16 round-trip error is <1e-3 absolute
+(see scratchpad/fp16_token_precision.py).
 
 The unified policy tensor (width ``UNIFIED_LOGIT_DIM``) is the wire format.
 Workers build a dense legal-mask (via the same ``build_action_lut`` mapping
@@ -558,8 +560,15 @@ def _eval_server_serve(
         from train.gpu import GpuConfig
         GpuConfig(vendor=gpu_vendor).apply_optimizations()
 
+    # Autocast runs only on CUDA. Without it the models' fp32 weights need
+    # fp32 inputs, so the device token buffer upcasts the fp16 wire.
     _dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
-    eval_autocast_dtype: torch.dtype | None = _dtype_map.get(eval_dtype) if eval_dtype else None
+    eval_autocast_dtype: torch.dtype | None = (
+        _dtype_map.get(eval_dtype) if use_cuda and eval_dtype else None
+    )
+    model_input_dtype = (
+        torch.float16 if eval_autocast_dtype is not None else torch.float32
+    )
 
     partition_size = worker_end - worker_start
     max_batch = partition_size * shared_bufs.batch_size
@@ -613,7 +622,7 @@ def _eval_server_serve(
             for warmup_n in warmup_batches:
                 dummy_s = torch.randn(
                     warmup_n, num_tokens, token_dim, device=device,
-                    dtype=torch.float16,
+                    dtype=model_input_dtype,
                 )
                 dummy_rel = torch.zeros(
                     warmup_n, shared_bufs.max_relation_edges,
@@ -662,7 +671,7 @@ def _eval_server_serve(
         p.reshape(alloc_batch, input_flat_width).view(np.int8)
         for p in pin_s_np_list
     ]
-    gpu_s = torch.empty(*input_shape, dtype=input_dtype, device=device)
+    gpu_s = torch.empty(*input_shape, dtype=model_input_dtype, device=device)
 
     max_relation_edges = shared_bufs.max_relation_edges
     relation_coord_width = shared_bufs.relation_coord_width

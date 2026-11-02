@@ -143,8 +143,10 @@ the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
   relations and scales edges by value. Keep both formats in parity.
 - **Precision and weights.** Eval servers keep autocast (`eval_dtype`) open
   with `cache_enabled=False`, because same-device servers share trainer
-  parameters through CUDA IPC. After training, every server reloads a CPU
-  snapshot (`_sync_eval_servers`). `bucketed` mode pads launches to powers of 2.
+  parameters through CUDA IPC. Without autocast (no `eval_dtype`, or a CPU
+  server) the server upcasts the fp16 wire tokens to fp32 on the device. After
+  training, every server reloads a CPU snapshot (`_sync_eval_servers`).
+  `bucketed` mode pads launches to powers of 2.
 
 ## Operations (`train/main.py`)
 
