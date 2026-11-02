@@ -3,7 +3,8 @@
 ``apply_action`` checks engine legality, applies the action, then runs
 automated steps and forced decisions until a decision with two or more policy
 actions, or the end of the game. A decision is forced when its *policy* set
-has one action.
+has one action, unless that action is the only legal grid point of an amount
+decision with exact amounts above it (§6).
 
 History, when a list is passed, gets ``(row copy, decision phase, id)`` before
 each decision and ``(row copy, -1, step)`` before each automated step.

@@ -10,14 +10,16 @@ NotImplementedError on reaching it.
 from libc.stdint cimport uint16_t
 
 from g1889.actions cimport (
-    ActionInfo, decode_action, enumerate_policy_actions, get_decision_phase, is_legal_action,
+    ActionInfo, decode_action, enumerate_legal_actions, enumerate_policy_actions, get_decision_phase, has_exact,
+    is_legal_action, wide_amount_range,
 )
 from g1889.constants cimport (
-    DPHASE_AUCTION, DPHASE_BID, DPHASE_RAISE, NUM_STEPS, ROUND_GAME_OVER, STEP_GAME_OVER,
-    STEP_TO_DECISION_PHASE,
+    DPHASE_AUCTION, DPHASE_BID, DPHASE_PAR, DPHASE_RAISE, DPHASE_STOCK, NUM_STEPS, ROUND_GAME_OVER,
+    STEP_GAME_OVER, STEP_SR_END, STEP_TO_DECISION_PHASE,
 )
 from g1889.entities.turn cimport turn_round, turn_step
 from g1889.phases.auction cimport apply_auction, apply_bid, apply_raise
+from g1889.phases.stock cimport apply_par, apply_stock, run_sr_end
 from g1889.state cimport GameState
 
 from g1889.actions import decode_action_py
@@ -32,12 +34,24 @@ cdef class GameDriver:
     """Stateless driver singleton."""
 
     cdef int _forced_action(self, GameState state) except -2:
-        """The only policy action of the current decision, or -1 if there are more."""
+        """The only policy action of the current decision, or -1 if there is a
+        choice. An amount decision whose one legal grid point has exact amounts
+        above it is a choice (§6): forcing it would hide them from a human whose
+        off-grid bid left a range narrower than a grid step. When the policy
+        drops legal grid points (the pass cap), self-play never uses exact
+        amounts, so its one point is forced."""
         cdef uint16_t ids[102]  # MAX_ACTION_SIZE
         cdef int count = enumerate_policy_actions(state, ids)
+        cdef int action_id = ids[0]
+        cdef int phase
         if count == 0:
             raise RuntimeError(f"no policy actions at step {Step(turn_step(state)).name}")
-        return ids[0] if count == 1 else -1
+        if count > 1:
+            return -1
+        phase = get_decision_phase(state)
+        if has_exact(phase) and enumerate_legal_actions(state, ids) == 1 and wide_amount_range(state, phase):
+            return -1
+        return action_id
 
     cdef int _dispatch(self, GameState state, int phase, int action_id, object history) except -1:
         if history is not None:
@@ -49,17 +63,26 @@ cdef class GameDriver:
             apply_bid(state, &info)
         elif phase == DPHASE_RAISE:
             apply_raise(state, &info)
+        elif phase == DPHASE_STOCK:
+            apply_stock(state, &info)
+        elif phase == DPHASE_PAR:
+            apply_par(state, &info)
         else:
             raise NotImplementedError(
                 f"1889 {DecisionPhase(phase).name} handler not implemented yet: {decode_action_py(phase, action_id)}")
         return 0
 
     cdef int _run_automated_step(self, GameState state, int step, object history) except -1:
+        """Run one automated step. A step from a later sub-step raises
+        NotImplementedError before touching the state or the history."""
         if not 0 <= step < <int>NUM_STEPS or STEP_TO_DECISION_PHASE[step] >= 0 or step == STEP_GAME_OVER:
             raise RuntimeError(f"step {step} is not an automated step")
+        if step != STEP_SR_END:
+            raise NotImplementedError(f"1889 automated step {Step(step).name} not implemented yet")
         if history is not None:
             history.append((state._array.copy(), -1, step))
-        raise NotImplementedError(f"1889 automated step {Step(step).name} not implemented yet")
+        run_sr_end(state)
+        return 0
 
     cdef int _auto_chain(self, GameState state, object history) except -1:
         cdef int i, step, phase, action_id
@@ -68,14 +91,17 @@ cdef class GameDriver:
                 return STATUS_GAME_OVER
             step = turn_step(state)
             phase = get_decision_phase(state)
-            if phase < 0:
-                self._run_automated_step(state, step, history)
-                continue
             try:
+                if phase < 0:
+                    self._run_automated_step(state, step, history)
+                    continue
                 action_id = self._forced_action(state)
             except NotImplementedError:
-                # A decision from a later sub-step (§11), such as the SR after the
-                # auction: rest there, and the next apply_action fails loudly.
+                # TEMPORARY development stop, removed at 6.9 (§11): rest at a
+                # decision or automated step from a later sub-step, such as
+                # OR_START after the SR, so replay can compare the state there.
+                # The next apply_action fails loudly: NotImplementedError at a
+                # decision, STATUS_INVALID at an automated step.
                 return STATUS_OK
             if action_id < 0:
                 return STATUS_OK
@@ -95,6 +121,10 @@ cdef class GameDriver:
             return STATUS_INVALID
         self._dispatch(state, phase, action_id, history)
         return self._auto_chain(state, history)
+
+    def forced_action_py(self, GameState state):
+        """The id the driver would apply by itself at the current decision, or -1."""
+        return self._forced_action(state)
 
 
 DRIVER = GameDriver()

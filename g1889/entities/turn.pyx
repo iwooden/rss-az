@@ -47,6 +47,26 @@ cdef int turn_pending_private(GameState state) noexcept nogil:
     return _get(state, GLOBALS.pending_private)
 
 
+cdef int turn_pending_corp(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.pending_corp)
+
+
+cdef int turn_turn(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.turn)
+
+
+cdef bint turn_sr_bought(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.sr_bought) != 0
+
+
+cdef int turn_sr_sold_mask(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.sr_sold_mask)
+
+
+cdef bint turn_sr_sold_then_bought(GameState state) noexcept nogil:
+    return _get(state, GLOBALS.sr_sold_then_bought) != 0
+
+
 cdef inline int _check(int value, int lo, int hi, str name) except -1:
     assert lo <= value < hi, f"{name} {value} out of range [{lo}, {hi})"
     return 0
@@ -161,18 +181,21 @@ cdef class TurnState:
         return _get(state, GLOBALS.sr_bought)
 
     cpdef void set_sr_bought(self, GameState state, int value):
+        _check(value, 0, 2, 'sr_bought')
         _set(state, GLOBALS.sr_bought, value)
 
     cpdef int sr_sold_mask(self, GameState state):
-        return _get(state, GLOBALS.sr_sold_mask)
+        return turn_sr_sold_mask(state)
 
     cpdef void set_sr_sold_mask(self, GameState state, int value):
+        _check(value, 0, 1 << <int>NUM_CORPS, 'sr_sold_mask')
         _set(state, GLOBALS.sr_sold_mask, value)
 
     cpdef int sr_sold_then_bought(self, GameState state):
         return _get(state, GLOBALS.sr_sold_then_bought)
 
     cpdef void set_sr_sold_then_bought(self, GameState state, int value):
+        _check(value, 0, 2, 'sr_sold_then_bought')
         _set(state, GLOBALS.sr_sold_then_bought, value)
 
     # Operating round
@@ -215,7 +238,7 @@ cdef class TurnState:
         _set(state, GLOBALS.pending_hex, value)
 
     cpdef int pending_corp(self, GameState state):
-        return _get(state, GLOBALS.pending_corp)
+        return turn_pending_corp(state)
 
     cpdef void set_pending_corp(self, GameState state, int value):
         _check(value, -1, <int>NUM_CORPS, 'pending_corp')

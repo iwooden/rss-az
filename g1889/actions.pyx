@@ -23,13 +23,18 @@ from g1889.constants cimport (
     TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS,
 )
 from g1889.data.tables cimport (
-    MF_PORT_HEX, MIN_BID_INCREMENT, NUM_CORPS, NUM_HEXES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES,
-    NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE, TRADE_IN_TYPE,
+    CERT_LIMIT, MAX_OWNERSHIP_PERCENT, MF_PORT_HEX, MIN_BID_INCREMENT, NUM_CORPS, NUM_HEXES, NUM_PAR_PRICES,
+    NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE, TRADE_IN_TYPE,
 )
-from g1889.entities.player cimport player_available
+from g1889.entities.corp cimport corp_ipo_shares, corp_max_sale, corp_par_index, corp_par_price, corp_pool_shares
+from g1889.entities.market cimport market_price, market_unlimited
+from g1889.entities.player cimport (
+    player_available, player_can_gain, player_cash, player_cert_count, player_shares, player_sold_mask,
+)
 from g1889.entities.private cimport private_min_bid, private_owner, private_price, topmost_private
 from g1889.entities.turn cimport (
-    turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_pending_private, turn_step,
+    turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_num_players, turn_pending_private,
+    turn_sr_bought, turn_sr_sold_mask, turn_sr_sold_then_bought, turn_step, turn_turn,
 )
 from g1889.state cimport GameState
 
@@ -465,6 +470,100 @@ cdef int _filter_bid(GameState state, int count) noexcept nogil:
     return min(count, room // <int>MIN_BID_INCREMENT + 1)
 
 
+# =============================================================================
+# STOCK, PAR
+# =============================================================================
+#
+# Ruby's BuySellParShares (step/buy_sell_par_shares.rb). On a turn the player
+# buys at most one certificate (a share, or a par through PAR) and sells any
+# number of blocks, one per corp, until a purchase follows a sale
+# (SELL_BUY_ORDER = :sell_buy_or_buy_sell). Nothing is sold in the first SR
+# (SELL_AFTER = :first), and nothing sold this SR is bought back. A player
+# over a limit with something to sell has a must-sell turn: sales only, no
+# pass. Slot 0 passes before acting and is "done" after; it is legal at every
+# other turn, so a player with nothing else to do passes through the forced
+# rule, as Ruby skips them. DR (STOCK_DR) and MF (STOCK_MF) arrive with 6.8.
+
+cdef inline bint _can_buy(GameState state, int player, int corp, int price) noexcept nogil:
+    """A 10% share at ``price`` (``can_buy?``): not sold this SR, affordable, and
+    within the holding and certificate limits."""
+    return (not (player_sold_mask(state, player) >> corp & 1) and price <= player_cash(state, player)
+            and player_can_gain(state, player, corp, 1))
+
+
+cdef inline bint _can_par(GameState state, int player, int corp) noexcept nogil:
+    """Par an unparred corp: the President's Certificate at the lowest par must
+    be affordable (Ruby prices it at ``min_price``) and within the limits."""
+    return (corp_par_index(state, corp) < 0 and 2 * PAR_PRICE[0] <= player_cash(state, player)
+            and player_can_gain(state, player, corp, 2))
+
+
+cdef inline int _sale_limit(GameState state, int player, int corp) noexcept nogil:
+    """The largest block of ``corp`` the player may sell now; 0 for none. Each
+    corp sells as one block per turn (MUST_SELL_IN_BLOCKS)."""
+    if (turn_turn(state) <= 1 or turn_sr_sold_then_bought(state)
+            or turn_sr_sold_mask(state) >> corp & 1):
+        return 0
+    return corp_max_sale(state, player, corp)
+
+
+cdef bint _must_sell(GameState state, int player) noexcept nogil:
+    """``must_sell?``: the player can sell, and is over the certificate limit or
+    holds more than 60% of a corp they can sell outside the orange zone."""
+    cdef bint can_sell = False
+    cdef int c
+    for c in range(<int>NUM_CORPS):
+        if _sale_limit(state, player, c) == 0:
+            continue
+        can_sell = True
+        if 10 * player_shares(state, player, c) > <int>MAX_OWNERSHIP_PERCENT and not market_unlimited(state, c):
+            return True
+    return can_sell and player_cert_count(state, player) > CERT_LIMIT[turn_num_players(state)]
+
+
+cdef int _enumerate_stock(GameState state, uint16_t* ids) noexcept nogil:
+    """Pass; buys from the IPO, from the pool, and pars, unless the turn has
+    bought; then every legal block of every corp. A must-sell turn offers only
+    the sales."""
+    cdef int player = turn_active_player(state)
+    cdef int count = 0
+    cdef int c, n
+    if not _must_sell(state, player):
+        ids[count] = STOCK_PASS
+        count += 1
+        if not turn_sr_bought(state):
+            for c in range(<int>NUM_CORPS):
+                if (corp_par_index(state, c) >= 0 and corp_ipo_shares(state, c) > 0
+                        and _can_buy(state, player, c, corp_par_price(state, c))):
+                    ids[count] = <uint16_t>(STOCK_IPO + c)
+                    count += 1
+            for c in range(<int>NUM_CORPS):
+                if corp_pool_shares(state, c) > 0 and _can_buy(state, player, c, market_price(state, c)):
+                    ids[count] = <uint16_t>(STOCK_POOL + c)
+                    count += 1
+            for c in range(<int>NUM_CORPS):
+                if _can_par(state, player, c):
+                    ids[count] = <uint16_t>(STOCK_PAR + c)
+                    count += 1
+    for c in range(<int>NUM_CORPS):
+        for n in range(_sale_limit(state, player, c)):
+            ids[count] = <uint16_t>(STOCK_SELL + <int>MAX_SALE_SHARES * c + n)
+            count += 1
+    return count
+
+
+cdef int _enumerate_par(GameState state, uint16_t* ids) noexcept nogil:
+    """The par prices whose President's Certificate (twice the par) the player can afford."""
+    cdef int cash = player_cash(state, turn_active_player(state))
+    cdef int count = 0
+    cdef int k
+    for k in range(<int>NUM_PAR_PRICES):
+        if 2 * PAR_PRICE[k] <= cash:
+            ids[count] = <uint16_t>k
+            count += 1
+    return count
+
+
 cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -1 nogil:
     """Write the engine-legal ids of the current decision in a fixed order and
     return the count, 0 at an automated step. The buffer holds MAX_ACTION_SIZE."""
@@ -480,6 +579,10 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
     elif phase == DPHASE_RAISE:
         action_ids[0] = RAISE_DROP
         count = _bid_points(state, phase, action_ids, 1, RAISE_POINT, RAISE_POINTS)
+    elif phase == DPHASE_STOCK:
+        count = _enumerate_stock(state, action_ids)
+    elif phase == DPHASE_PAR:
+        count = _enumerate_par(state, action_ids)
     else:
         count = _unimplemented(phase, b"legal actions")
     if count > <int>MAX_ACTION_SIZE:
@@ -501,8 +604,8 @@ cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except 
         return _filter_auction(state, action_ids, count)
     if phase == DPHASE_BID:
         return _filter_bid(state, count)
-    if phase == DPHASE_RAISE:
-        return count
+    if phase == DPHASE_RAISE or phase == DPHASE_STOCK or phase == DPHASE_PAR:
+        return count  # no flag restricts these yet
     return _unimplemented(phase, b"policy filter")
 
 
@@ -526,6 +629,20 @@ cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
         if ids[i] == action_id:
             return True
     return False
+
+
+cdef bint has_exact(int phase) noexcept nogil:
+    return _has_exact(phase)
+
+
+cdef bint wide_amount_range(GameState state, int phase) except -1 nogil:
+    """Whether the current amount decision's legal range holds more than one
+    amount, so exact amounts may lie beyond its grid points."""
+    cdef int p
+    if phase == DPHASE_BID or phase == DPHASE_RAISE:
+        p = _bid_private(state, phase)
+        return player_available(state, turn_active_player(state), p) > private_min_bid(state, p)
+    return _unimplemented(phase, b"exact amounts")
 
 
 # =============================================================================

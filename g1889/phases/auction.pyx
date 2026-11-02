@@ -24,10 +24,7 @@ Fields:
 """
 
 from g1889.actions cimport ACTION_BUY_TOPMOST, ACTION_PASS, ACTION_SELECT_BID, ActionInfo, price_amount
-from g1889.constants cimport (
-    AUCTION_DISCOUNT_STEP, OWNER_UNSOLD, ROUND_AUCTION, ROUND_STOCK, STEP_AUCTION, STEP_BID, STEP_RAISE,
-    STEP_STOCK,
-)
+from g1889.constants cimport AUCTION_DISCOUNT_STEP, OWNER_UNSOLD, ROUND_AUCTION, STEP_AUCTION, STEP_BID, STEP_RAISE
 from g1889.data.tables cimport PRIVATE_TR
 from g1889.entities.player cimport Player, all_passed, clear_passed, player_bid
 from g1889.entities.private cimport (
@@ -35,6 +32,7 @@ from g1889.entities.private cimport (
     topmost_private,
 )
 from g1889.entities.turn cimport TurnState, turn_active_player, turn_auction_private, turn_pending_private
+from g1889.phases.stock cimport start_stock_round
 from g1889.state cimport GameState
 
 from g1889.entities import player as _player, private as _private, turn as _turn
@@ -63,9 +61,7 @@ cdef void _end_auction(GameState state) except *:
     TURN.set_auction_private(state, -1)
     clear_passed(state)
     TURN.set_priority_player(state, first)
-    TURN.set_round(state, ROUND_STOCK)
-    TURN.set_step(state, STEP_STOCK)
-    TURN.set_active_player(state, first)
+    start_stock_round(state)
 
 
 cdef void _resolve(GameState state) except *:

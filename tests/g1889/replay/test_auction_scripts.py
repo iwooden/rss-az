@@ -72,8 +72,7 @@ SCRIPTS = {
         (2, 'ER', 40), (0, 'SMR', 50), (1, 'DR', 60), (2, 'SIR', 80),
     ]),
     # Seat 0 commits all of its cash, so its later turns are forced passes,
-    # one of which completes a round of passes. (The SR must not open with
-    # seat 0: Ruby's SR skips a player with no action, which is 6.4's.)
+    # one of which completes a round of passes.
     'all_cash_committed': (5, [
         (0, 'UTF', 155), *_passes(1, 2, 3, 4),
         (0, 'SIR', 85), *_passes(1, 2, 3, 4),

@@ -253,6 +253,179 @@ def test_market_positions_stack_by_arrival(state):
             MARKET.set_position(state, D.CORP_SR, bad_row, bad_col)
 
 
+@pytest.mark.parametrize('cell, down, up', [
+    ((5, 3), (6, 3), (4, 3)),
+    ((10, 3), (10, 3), (9, 3)),       # the bottom of a column: no move down
+    ((4, 7), (4, 7), (3, 7)),         # row 5 stops at column 6, so (4, 7) is a column's bottom
+    ((0, 14), (1, 14), (0, 14)),      # the top row: no move up
+    ((10, 0), (10, 0), (9, 0)),
+])
+def test_market_moves_stop_at_the_edges(state, cell, down, up):
+    for move, target in ((MARKET.move_down, down), (MARKET.move_up, up)):
+        MARKET.set_position(state, D.CORP_IR, *cell)
+        stamp = MARKET.stamp(state, D.CORP_IR)
+        move(state, D.CORP_IR)
+        assert (MARKET.row(state, D.CORP_IR), MARKET.col(state, D.CORP_IR)) == target
+        # A move goes to the bottom of its new cell; a blocked one keeps its place.
+        assert (MARKET.stamp(state, D.CORP_IR) == stamp) == (target == cell)
+
+
+def test_market_moves_join_the_bottom_of_a_stack(state):
+    MARKET.set_position(state, D.CORP_KO, 5, 3)
+    MARKET.set_position(state, D.CORP_AR, 4, 3)
+    MARKET.set_position(state, D.CORP_IR, 4, 3)
+    MARKET.move_up(state, D.CORP_KO)
+    MARKET.move_down(state, D.CORP_AR)
+    MARKET.move_up(state, D.CORP_AR)
+    assert MARKET.sort_by_price(state, ALL_CORPS) == [D.CORP_IR, D.CORP_KO, D.CORP_AR]
+
+
+def test_stock_price_order(state):
+    """Higher price, then farther right, then higher in the stack (rules §6.7)."""
+    for corp, cell in ((D.CORP_AR, (5, 3)), (D.CORP_IR, (2, 1)), (D.CORP_SR, (3, 0)), (D.CORP_KO, (5, 3)),
+                       (D.CORP_TR, (0, 0)), (D.CORP_UR, (2, 0))):
+        MARKET.set_position(state, corp, *cell)
+    # ¥75 (TR), ¥70 (IR), three at ¥65 (AR over KO in column 3, then UR in column 0), ¥60 (SR).
+    assert MARKET.sort_by_price(state, ALL_CORPS) == [D.CORP_TR, D.CORP_IR, D.CORP_AR, D.CORP_KO, D.CORP_UR,
+                                                    D.CORP_SR]
+    assert MARKET.sort_by_price(state, 1 << D.CORP_KO | 1 << D.CORP_AR | 1 << D.CORP_KU) == [D.CORP_AR, D.CORP_KO]
+    keys = sorted(MARKET.order_key(state, c) for c in (D.CORP_AR, D.CORP_KO))
+    assert keys[0] == MARKET.order_key(state, D.CORP_AR)
+    MARKET.set_position(state, D.CORP_KU, 4, 2)  # ¥65 again, but farther left than (5, 3)
+    assert MARKET.sort_by_price(state, 1 << D.CORP_KO | 1 << D.CORP_KU) == [D.CORP_KO, D.CORP_KU]
+
+
+@pytest.mark.parametrize('cell, counts, unlimited', [
+    ((5, 3), True, False), ((5, 0), False, False), ((8, 3), False, False), ((8, 0), False, True),
+    ((10, 2), False, True), ((10, 3), False, False), ((4, 0), True, False),
+])
+def test_market_zones(state, cell, counts, unlimited):
+    assert MARKET.counts_for_limit(state, D.CORP_IR) and not MARKET.unlimited(state, D.CORP_IR)  # unparred
+    MARKET.set_position(state, D.CORP_IR, *cell)
+    assert (MARKET.counts_for_limit(state, D.CORP_IR), MARKET.unlimited(state, D.CORP_IR)) == (counts, unlimited)
+
+
+# Share operations
+
+
+def _parred(state, corp=D.CORP_IR, player=0, par_index=0):
+    CORPS[corp].par(state, player, par_index)
+    return CORPS[corp]
+
+
+def test_par_buys_the_certificate_and_places_the_token(state):
+    corp = _parred(state, par_index=2)  # ¥75
+    assert (corp.par_price(state), corp.president(state), corp.ipo_shares(state)) == (75, 0, 8)
+    assert PLAYERS[0].shares(state, D.CORP_IR) == 2 and PLAYERS[0].cash(state) == 420 - 150
+    assert (MARKET.row(state, D.CORP_IR), MARKET.col(state, D.CORP_IR)) == (D.PAR_ROW[2], D.PAR_COL[2])
+    with pytest.raises(AssertionError):
+        corp.par(state, 1, 0)  # parred once
+
+
+def test_buys_pay_the_bank_and_float_at_half(state):
+    corp = _parred(state)
+    corp.buy_share(state, 1, False)
+    corp.buy_share(state, 2, False)
+    assert not corp.floated(state) and corp.cash(state) == 0
+    corp.buy_share(state, 3, False)
+    assert corp.floated(state) and corp.cash(state) == 650 and corp.ipo_shares(state) == 5
+    assert [PLAYERS[i].cash(state) for i in range(4)] == [290, 355, 355, 355]
+    assert not corp.float_if_ready(state)  # once
+
+
+def test_pool_buys_cost_the_market_price(state):
+    corp = _parred(state)
+    corp.buy_share(state, 1, False)
+    corp.buy_share(state, 1, False)
+    MARKET.set_position(state, D.CORP_IR, 7, 3)  # ¥55
+    corp.sell_shares(state, 1, 2)
+    assert PLAYERS[1].cash(state) == 420 - 130 + 110 and corp.pool_shares(state) == 2
+    assert (MARKET.row(state, D.CORP_IR), MARKET.price(state, D.CORP_IR)) == (9, 45)
+    corp.buy_share(state, 2, True)
+    assert PLAYERS[2].cash(state) == 420 - 45 and corp.pool_shares(state) == 1
+
+
+def test_presidency_follows_the_largest_holding(state):
+    corp = _parred(state)
+    for player in (1, 1):
+        corp.buy_share(state, player, False)
+    assert corp.president(state) == 0  # 2 to 2
+    corp.buy_share(state, 1, False)
+    assert corp.president(state) == 1  # 3 beats 2
+    corp.buy_share(state, 0, False)
+    corp.buy_share(state, 0, False)
+    assert corp.president(state) == 0  # 4 beats 3
+    corp.sell_shares(state, 0, 2)
+    assert corp.president(state) == 1 and [PLAYERS[i].shares(state, D.CORP_IR) for i in range(2)] == [2, 3]
+
+
+def test_successor_ties_break_clockwise_from_the_president(state):
+    corp = _parred(state, player=2)
+    for player in (2, 3, 3, 1, 1):
+        corp.buy_share(state, player, False)
+    corp.sell_shares(state, 2, 2)  # seats 3 and 1 hold two each; 3 is first clockwise from 2
+    assert corp.president(state) == 3
+
+
+def test_max_sale(state):
+    corp = _parred(state)
+    corp.buy_share(state, 0, False)
+    corp.buy_share(state, 1, False)
+    assert corp.max_sale(state, 0) == 1  # the certificate needs a two-share holder
+    assert corp.max_sale(state, 1) == 1
+    corp.buy_share(state, 1, False)
+    assert corp.max_sale(state, 0) == 3
+    corp.sell_shares(state, 1, 2)
+    assert corp.max_sale(state, 0) == 1 and corp.pool_shares(state) == 2  # nobody holds two now
+    CORPS[D.CORP_KO].set_ipo_shares(state, 9)
+    PLAYERS[2].set_shares(state, D.CORP_KO, 1)
+    assert CORPS[D.CORP_KO].max_sale(state, 2) == 0  # unparred
+
+
+def test_sold_out(state):
+    corp = _parred(state)
+    for i in range(8):
+        corp.buy_share(state, 1 + i % 3, False)
+    assert corp.sold_out(state)
+    corp.sell_shares(state, 1, 1)
+    assert not corp.sold_out(state)
+
+
+# Certificates and limits
+
+
+def test_cert_count_counts_privates_and_one_per_certificate(state):
+    PRIVATES[D.PRIVATE_ER].set_owner(state, K.OWNER_PLAYER)
+    PRIVATES[D.PRIVATE_MF].set_owner(state, K.OWNER_CORP)
+    corp = _parred(state)
+    corp.buy_share(state, 0, False)
+    assert PLAYERS[0].cert_count(state) == 1 + 2  # ER, the certificate, one share
+    MARKET.set_position(state, D.CORP_IR, 7, 1)  # yellow
+    assert PLAYERS[0].cert_count(state) == 1
+
+
+def test_can_gain_checks_sixty_percent_and_the_limit(state):
+    corp = _parred(state)
+    for _ in range(3):
+        corp.buy_share(state, 0, False)
+    assert PLAYERS[0].can_gain(state, D.CORP_IR) and not PLAYERS[0].can_gain(state, D.CORP_IR, 2)
+    corp.buy_share(state, 0, False)
+    assert not PLAYERS[0].can_gain(state, D.CORP_IR)  # 60% held
+    MARKET.set_position(state, D.CORP_IR, 8, 0)  # orange
+    assert PLAYERS[0].can_gain(state, D.CORP_IR)
+    for p in range(D.NUM_PRIVATES):
+        PRIVATES[p].set_owner(state, K.OWNER_PLAYER + 1)
+    BANK.transfer(state, BANK_ACCOUNT, 1, 200)
+    for c in (D.CORP_KO, D.CORP_SR):
+        _parred(state, c, player=1)
+        for _ in range(2):
+            CORPS[c].buy_share(state, 1, False)
+    assert PLAYERS[1].cert_count(state) == 13 and PLAYERS[1].can_gain(state, D.CORP_UR)
+    CORPS[D.CORP_KO].buy_share(state, 1, False)
+    assert PLAYERS[1].cert_count(state) == D.CERT_LIMIT[4] and not PLAYERS[1].can_gain(state, D.CORP_UR)
+    assert PLAYERS[1].can_gain(state, D.CORP_IR)  # orange shares do not count
+
+
 def test_map_writes_canonicalize_and_invalidate(state):
     tile = next(t for t in range(D.NUM_SUPPLY_TILES) if D.TILE_CANON_ROT[t][3] == 0)
     MAP.set_tile(state, 10, tile, 3)
@@ -309,7 +482,7 @@ def test_turn_fields_round_trip(state):
     ('round', K.NUM_ROUNDS), ('step', K.NUM_STEPS), ('return_step', -2), ('active_player', 4),
     ('priority_player', -1), ('end_reason', K.NUM_END_REASONS), ('auction_turn', 4),
     ('auction_private', D.NUM_PRIVATES), ('auction_discount', -5), ('auction_discount', 25),
-    ('auction_pass_payouts', -1),
+    ('auction_pass_payouts', -1), ('sr_bought', 2), ('sr_sold_mask', 1 << D.NUM_CORPS), ('sr_sold_then_bought', -1),
     ('operating_corp', D.NUM_CORPS), ('pending_hex', D.NUM_HEXES), ('pending_seller', 4),
 ])
 def test_turn_setters_check_ranges(state, name, value):

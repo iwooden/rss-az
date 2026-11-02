@@ -2,8 +2,14 @@
 
 from libc.stdint cimport int16_t
 
-from g1889.data.tables cimport MAX_PLAYERS, NUM_CORPS, NUM_PRIVATES
-from g1889.state cimport GLOBALS, LAYOUT, PLAYER_FIELDS, GameState
+from g1889.constants cimport OWNER_PLAYER
+from g1889.data.tables cimport CERT_LIMIT, MAX_OWNERSHIP_PERCENT, MAX_PLAYERS, NUM_CORPS, NUM_PRIVATES
+from g1889.entities.market cimport market_counts_for_limit, market_unlimited
+from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, PRIVATE_FIELDS, GameState
+
+# Holdings are counted in 10% shares.
+cdef enum:
+    SHARE_PERCENT = 10
 
 
 cdef inline int _slot(int player, int field) noexcept nogil:
@@ -42,8 +48,44 @@ cdef bint player_passed(GameState state, int player) noexcept nogil:
     return state._data[_slot(player, PLAYER_FIELDS.passed)] != 0
 
 
+cdef int player_sold_mask(GameState state, int player) noexcept nogil:
+    """Corps the player has sold this SR (Ruby's ``players_sold``)."""
+    return <int>state._data[_slot(player, PLAYER_FIELDS.sold_mask)]
+
+
 cdef inline int _num_players(GameState state) noexcept nogil:
     return <int>state._data[LAYOUT.global_offset + GLOBALS.num_players]
+
+
+# The corp president and private owner fields are read raw here: CORPS and
+# PRIVATES cimport this module, so it cannot cimport theirs.
+
+cdef int player_cert_count(GameState state, int player) noexcept nogil:
+    """Certificates toward the limit (``num_certs``): each private the player
+    owns, and their certificates of every corp outside the yellow and orange
+    zones, where the President's Certificate counts once."""
+    cdef int count = 0
+    cdef int c, p, shares
+    for p in range(<int>NUM_PRIVATES):
+        count += state._data[LAYOUT.privates_offset + p * PRIVATE_FIELDS.size + PRIVATE_FIELDS.owner] == \
+            <int>OWNER_PLAYER + player
+    for c in range(<int>NUM_CORPS):
+        shares = player_shares(state, player, c)
+        if shares and market_counts_for_limit(state, c):
+            count += shares - (state._data[LAYOUT.corps_offset + c * CORP_FIELDS.size + CORP_FIELDS.president]
+                               == player)
+    return count
+
+
+cdef bint player_can_gain(GameState state, int player, int corp, int shares) noexcept nogil:
+    """Whether the player may take ``shares`` more of ``corp`` (``can_gain?``):
+    at most 60% outside the orange zone, and while below the certificate limit
+    unless the corp's shares do not count toward it."""
+    if (not market_unlimited(state, corp)
+            and SHARE_PERCENT * (player_shares(state, player, corp) + shares) > <int>MAX_OWNERSHIP_PERCENT):
+        return False
+    return (not market_counts_for_limit(state, corp)
+            or player_cert_count(state, player) < CERT_LIMIT[_num_players(state)])
 
 
 cdef int _write_slot(GameState state, int player, int field) except -1:
@@ -73,7 +115,15 @@ cdef class Player:
         return <int>state._data[_slot(self.player_id, PLAYER_FIELDS.sold_mask)]
 
     cpdef void set_sold_mask(self, GameState state, int mask):
+        assert 0 <= mask < 1 << <int>NUM_CORPS, f"sold mask {mask:#x}"
         state._data[_write_slot(state, self.player_id, PLAYER_FIELDS.sold_mask)] = <int16_t>mask
+
+    cpdef int cert_count(self, GameState state):
+        return player_cert_count(state, self.player_id)
+
+    cpdef bint can_gain(self, GameState state, int corp, int shares=1):
+        assert 0 <= corp < <int>NUM_CORPS and shares > 0, f"{shares} shares of corp {corp}"
+        return player_can_gain(state, self.player_id, corp, shares)
 
     cpdef int bid(self, GameState state, int private):
         assert 0 <= private < <int>NUM_PRIVATES, f"private {private} out of range"

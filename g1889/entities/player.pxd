@@ -1,4 +1,8 @@
-"""PLAYERS: the player blocks. Cash moves only through ``BANK.transfer``."""
+"""PLAYERS: the player blocks. Cash moves only through ``BANK.transfer``.
+
+Holdings are in 10% shares, the President's Certificate counting 2; it is one
+certificate toward the limit.
+"""
 
 from g1889.state cimport GameState
 
@@ -8,6 +12,11 @@ cdef int player_bid(GameState state, int player, int private) noexcept nogil
 cdef int player_committed(GameState state, int player) noexcept nogil
 cdef int player_available(GameState state, int player, int private) noexcept nogil
 cdef bint player_passed(GameState state, int player) noexcept nogil
+cdef int player_sold_mask(GameState state, int player) noexcept nogil
+
+# Stock round limits (rules §6.2, §6.8)
+cdef int player_cert_count(GameState state, int player) noexcept nogil
+cdef bint player_can_gain(GameState state, int player, int corp, int shares) noexcept nogil
 
 
 cdef class Player:
@@ -18,6 +27,8 @@ cdef class Player:
     cpdef void set_shares(self, GameState state, int corp, int shares)
     cpdef int sold_mask(self, GameState state)
     cpdef void set_sold_mask(self, GameState state, int mask)
+    cpdef int cert_count(self, GameState state)
+    cpdef bint can_gain(self, GameState state, int corp, int shares=*)
 
     # Auction bids, at most one per private; 0 when none
     cpdef int bid(self, GameState state, int private)

@@ -197,6 +197,28 @@ def test_annotations_agree_with_the_states(case):
                 assert pre['revenue'] == old['operating']['routes_revenue']
 
 
+def test_stock_legality_allows_each_logged_move(case):
+    """``stock.legal`` admits every SR action the next record logs, and a
+    must-sell turn (sales only) never logs a pass."""
+    records = case[2]['records']
+    checked = 0
+    for before, record in zip(records, records[1:]):
+        legal, action, pre = (before['state']['stock'] or {}).get('legal'), record['action'], record['pre']
+        if legal is None or action.get('auto_actions') or action['entity_type'] != 'player':
+            continue
+        kind = action['type']
+        assert kind in legal['actions'] or kind in ('message', 'end_game') or kind.startswith('program_')
+        if kind == 'buy_shares':
+            assert pre['corporation'] in legal['buy_ipo' if pre['source'] == 'ipo' else 'buy_pool']
+        elif kind == 'par':
+            assert pre['corporation'] in legal['par']
+        elif kind == 'sell_shares':
+            assert pre['percent'] in legal['sell'][pre['corporation']]
+        assert ('pass' in legal['actions']) == (legal['actions'] != ['sell_shares'])
+        checked += 1
+    assert checked > 20
+
+
 def test_logged_revenue_exceeds_ruby_max_only_where_known():
     # Ruby pays logged route revenue unchecked. 314's 367 logs ¥400 for IR, whose
     # 3-train route I4-I2-J3-K4 passes through I2, which SR and AR fill; the

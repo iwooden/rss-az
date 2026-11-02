@@ -61,11 +61,23 @@ def test_load_state_rebuilds_every_auction_snapshot():
     assert count == 34
 
 
-@pytest.mark.parametrize('round_name', ['SR', 'OR'])
-def test_load_state_defers_stock_and_operating_rounds(round_name):
+def test_load_state_rebuilds_every_stock_round_snapshot():
+    count = turns = 0
+    for fixture in FIXTURES:
+        for record in load_fixture_extract(fixture)['records']:
+            snap = record['state']
+            if snap['game']['round'] == 'SR' and snap['game']['step'] == 'BuySellParShares':
+                state = load(snap, max_players=D.MAX_PLAYERS)
+                assert compare(state, snap) == [], (fixture, record['index'])
+                count += 1
+                turns += bool(snap['stock']['current_actions'])
+    assert (count, turns) == (522, 179)  # 179 mid-turn: after a purchase or a sale
+
+
+def test_load_state_defers_operating_rounds():
     records = load_fixture_extract('314')['records']
-    snap = next(r['state'] for r in records if r['state']['game']['round'] == round_name)
-    with pytest.raises(NotImplementedError, match=round_name):
+    snap = next(r['state'] for r in records if r['state']['game']['round'] == 'OR')
+    with pytest.raises(NotImplementedError, match='OR'):
         load(snap)
 
 
@@ -96,6 +108,34 @@ def test_compare_reports_each_difference():
         'privates.SIR.owner', 'players[0].privates', 'tiles', 'depot', 'auction.companies', 'auction.auctioning',
         'auction.min_bids',
     }
+
+
+def _mid_turn_snapshot():
+    """314 record 104: player 90 bought SR from the IPO, then sold one SR."""
+    snap = load_fixture_extract('314')['records'][104]['state']
+    assert snap['stock']['current_actions'] == ['buy_shares', 'sell_shares']
+    return snap
+
+
+def test_compare_checks_the_stock_turn():
+    snap = _mid_turn_snapshot()
+    state = load(snap)
+    assert (TURN.sr_bought(state), TURN.sr_sold_mask(state), TURN.sr_sold_then_bought(state)) == \
+        (1, 1 << D.CORP_SR, 0)
+    TURN.set_sr_sold_then_bought(state, 1)
+    TURN.set_sr_sold_mask(state, 1 << D.CORP_UR)
+    paths = {diff.split(':')[0] for diff in compare(state, snap)}
+    assert paths == {'stock.sold_now.90', 'stock.current_actions (sold, then bought)', 'stock.legal.sell'}
+
+
+def test_compare_checks_legality_against_ruby():
+    snap = _mid_turn_snapshot()
+    state = load(snap)
+    for key, value in (('actions', ['sell_shares']), ('buy_pool', ['UR']), ('sell', {'SR': [10]})):
+        wrong = copy.deepcopy(snap)
+        wrong['stock']['legal'][key] = value
+        assert [d.split(':')[0] for d in compare(state, wrong)] == \
+            [{'actions': 'stock.legal.pass', 'buy_pool': 'stock.legal.buy_pool', 'sell': 'stock.legal.sell'}[key]]
 
 
 def _with_tokens_and_market(snap, tokens, stacks):

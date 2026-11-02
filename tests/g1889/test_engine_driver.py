@@ -1,5 +1,7 @@
 """g1889.driver ahead of the phases (1889/engine-design.md §6): status codes,
-terminal and automated states, and loud failures at unimplemented phases."""
+terminal and automated states, and loud failures at unimplemented phases.
+tests/g1889/phases/test_stock_round.py covers the forced rule and the
+development stop."""
 
 import numpy as np
 import pytest
@@ -38,7 +40,7 @@ def test_automated_steps_reject_actions(state):
 
 
 def test_unimplemented_phases_fail_loudly(state):
-    TURN.set_round(state, K.ROUND_STOCK)
-    TURN.set_step(state, K.STEP_STOCK)
-    with pytest.raises(NotImplementedError, match='STOCK'):
-        Dr.DRIVER.apply_action(state, K.STOCK_PASS)
+    TURN.set_round(state, K.ROUND_OPERATING)
+    TURN.set_step(state, K.STEP_TRACK)
+    with pytest.raises(NotImplementedError, match='TRACK'):
+        Dr.DRIVER.apply_action(state, K.TRACK_PASS)

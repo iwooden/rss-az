@@ -333,8 +333,11 @@ decision whose alternatives are all restricted is applied instead of becoming
 a one-child search node. Amount ranges with two or more values usually
 yield two or more policy points. The exception (6.3): after a human's
 off-grid bid, a BID range narrower than ¥5 has one grid point, and forcing
-it would hide the exact amounts above it. So a decision with exact amounts
-is forced only when its legal range has one value (fixed in 6.4).
+it would hide the exact amounts above it. So since 6.4, a decision with
+exact amounts whose one policy point is also its only engine-legal grid point
+is forced only when its legal range has one value. When a flag drops legal
+grid points (the auction pass cap), the one remaining policy point is still
+forced: only self-play sets flags, and it never plays exact amounts.
 
 ### 6.1 Rounds and steps
 
@@ -344,7 +347,7 @@ is forced only when its legal range has one value (fixed in 6.4).
 | Steps | Kind | Notes |
 |---|---|---|
 | `AUCTION`, `BID`, `RAISE` | decisions | See the auction notes below |
-| `STOCK`, `PAR`, `PORT` | decisions | A pass without acting sets `passed`; "done" after acting clears it (`step/buy_sell_par_shares.rb:202`). A must-sell turn offers only sales (`:106`) |
+| `STOCK`, `PAR`, `PORT` | decisions | A pass without acting sets `passed`; "done" after acting clears it (`step/buy_sell_par_shares.rb:202`). A must-sell turn offers only sales, and any legal sale counts, as in Ruby (`:106`). Buying and then selling the same corp in one turn is legal. Priority follows Ruby's `priority_deal_player`: the player after the last to buy or sell. A player with nothing to do gets only slot 0, which the forced rule applies, as Ruby skips them |
 | `SR_END` | automated | Priority goes to the player after the last passer. Sold-out corps move up in price order (`round/stock.rb:70`). `or_count` is fixed |
 | `OR_START`, `TURN_START` | automated | Pays private revenue in Ruby's order (`game/base.rb:1649`), places home tokens, and orders the floated corps (`game/base.rb:986`) |
 | `TRACK`, `TILE`, `TOKEN` | decisions | One lay and one token per turn |
@@ -574,8 +577,8 @@ up to X; the harness reports the first unsupported action.
 | 6.1 | Stage-2 codegen; package skeleton and `__init__.pxd` files; `setup.py`; `constants` | regeneration is byte-identical with and without Ruby; the mirrors equal the JSON; clean build |
 | 6.2 | `GameState` and the layout; all entities except `GRAPH` and the solver; an actions skeleton (decode/encode for every phase, dispatch, `is_legal_action`); the driver; the extractor, `compare`/`load_state`, a mapper skeleton, and the sync harness | the initial states of all four fixtures, and Ruby's `new_game` at 2-6 players, equal Ruby's; padded rows rebind across capacities; every id round-trips through encode and decode |
 | 6.3 | Auction: AUCTION, BID, and RAISE; resolution chains; all-pass rules; priority; the pass cap | all four fixtures green through the auction; unit tests; random auctions terminate |
-| 6.4 | Stock round: buys, pars, block sales with presidency swaps, must-sell, limits and zones, no buy-back, sell/buy order, floats, `SR_END` | `hs_*` green through their first OR; `314` and `962` green through SR 1; unit tests |
-| 6.5 | OR flow; TRACK and TILE (terrain, SMR, blockers, colors, supply, the semi-restrictive rule); TOKEN; `GRAPH`; zero-revenue DIVIDEND; a pass-only BUY_TRAIN | `hs_*` fully green; lay and token sets equal the Ruby oracles at every Track and Token snapshot of `314` and `962`; connectivity matches, or the gap is measured; unit tests |
+| 6.4 | Stock round: buys, pars, block sales with presidency swaps, must-sell, limits and zones, no buy-back, sell/buy order, floats, `SR_END` | all four fixtures green through SR 1 (`hs_*` through their first OR needs a Track pass and a withhold that moves the price, so it moved to 6.5); every later SR of every fixture replays from `load_state`; unit tests |
+| 6.5 | OR flow; TRACK and TILE (terrain, SMR, blockers, colors, supply, the semi-restrictive rule); TOKEN; `GRAPH`; zero-revenue DIVIDEND; a pass-only BUY_TRAIN | `hs_*` fully green; the replay harness's temporary OR_START workaround (`_before_or_start`) removed; lay and token sets equal the Ruby oracles at every Track and Token snapshot of `314` and `962`; connectivity matches, or the gap is measured; unit tests |
 | 6.6 | Route solver, the route cache, `ROUTE`, `override_route_revenue` | matches `AutoRouter` at every Route snapshot; at least every human revenue; agrees with brute force; profile recorded |
 | 6.7 | Dividends; BUY_TRAIN from the depot, the pool, and other corps, plus the D trade-in; TRAIN_PRICE; train limits; must-buy funded from the treasury; `PHASE`; DISCARD | `314` and `962` green through the first private buy or emergency; random playouts reach phase D |
 | 6.8 | Buy-private windows, PRIVATE_PRICE, ER_BONUS, PORT, and the DR exchange; emergency money; bankruptcy; game end; `final_scores` | all four fixtures green end to end, including the final results |

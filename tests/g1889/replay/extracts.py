@@ -189,7 +189,12 @@ Snapshot (``state``)
     None outside SRs, else ``sold`` (``{str(player id): {corporation: 'now' |
     'prev'}}``, sales this SR, ``'now'`` for this turn), ``current_actions``
     (the action types of this turn), ``bought_from_ipo``, ``last_to_act``,
-    ``pass_order``.
+    ``pass_order``, and ``legal``: the turn player's options in
+    ``BuySellParShares``, or None when another step is active. ``legal`` holds
+    ``actions``, Ruby's action types for the player (``['sell_shares']`` alone
+    on a must-sell turn); ``buy_ipo``, ``buy_pool``, and ``par``, the
+    corporations each can take; and ``sell``, ``{corporation: [percent of
+    each sellable bundle]}``.
 ``operating``
     None outside ORs, else ``operator``; ``routes_revenue``, the revenue of
     this turn's routes once run, else None; ``ebuy_sold`` (corporations the
@@ -214,7 +219,7 @@ from typing import Any
 
 import pytest
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
@@ -243,7 +248,7 @@ CORPORATION_KEYS = frozenset({
 PRIVATE_KEYS = frozenset({'owner', 'closed', 'value', 'revenue', 'discount', 'abilities'})
 HEX_KEYS = frozenset({'tile', 'rotation', 'tokens', 'reserved'})
 AUCTION_KEYS = frozenset({'companies', 'auctioning', 'min_bids'})
-STOCK_KEYS = frozenset({'sold', 'current_actions', 'bought_from_ipo', 'last_to_act', 'pass_order'})
+STOCK_KEYS = frozenset({'sold', 'current_actions', 'bought_from_ipo', 'last_to_act', 'pass_order', 'legal'})
 OPERATING_KEYS = frozenset({'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price'})
 
 PRE_KEYS = frozenset({

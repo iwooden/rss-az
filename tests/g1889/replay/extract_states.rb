@@ -26,7 +26,7 @@ require 'logger'
 
 module G1889Extract
   ROOT = File.expand_path('../../..', __dir__)
-  SCHEMA_VERSION = 1
+  SCHEMA_VERSION = 2
   TITLE = '1889'
 
   module_function
@@ -280,7 +280,43 @@ module G1889Extract
         'bought_from_ipo' => round.bought_from_ipo,
         'last_to_act' => round.last_to_act&.id,
         'pass_order' => round.pass_order.map(&:id),
+        'legal' => stock_legal(round),
       }
+    end
+
+    # What the turn player may do, from BuySellParShares' own checks: its
+    # action types, and the corporations each kind of move can take. It calls
+    # only what step.actions already evaluates for that player, so it inserts
+    # no hash keys Ruby has not.
+    def stock_legal(round)
+      step = round.active_step
+      return nil unless step.is_a?(Engine::Step::BuySellParShares) && (entity = step.current_entity)&.player?
+
+      types = step.actions(entity)
+      corps = @game.corporations
+      buys = types.include?('buy_shares')
+      {
+        'actions' => types,
+        'buy_ipo' => buys ? names(corps.select { |c| c.ipoed && buyable?(step, entity, c.ipo_shares) }) : [],
+        'buy_pool' => buys ? names(corps.select { |c| buyable?(step, entity, held(@game.share_pool, c)) }) : [],
+        'par' => types.include?('par') ? names(corps.select { |c| parable?(step, entity, c) }) : [],
+        'sell' => types.include?('sell_shares') ? corps.to_h do |c|
+          [c.name, @game.bundles_for_corporation(entity, c).select { |b| step.can_sell?(entity, b) }.map(&:percent)]
+        end.reject { |_, percents| percents.empty? } : {},
+      }
+    end
+
+    def parable?(step, entity, corporation)
+      @game.can_par?(corporation, entity) && step.can_buy?(entity, corporation.shares.first&.to_bundle)
+    end
+
+    def buyable?(step, entity, shares)
+      share = shares.select(&:buyable).min_by(&:percent)
+      share && step.can_buy?(entity, share.to_bundle)
+    end
+
+    def names(corporations)
+      corporations.map(&:name)
     end
 
     def operating_snapshot

@@ -69,6 +69,8 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
 cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except -1 nogil
 cdef bint is_legal_action(GameState state, int action_id) except -1 nogil
 cdef int price_amount(GameState state, const ActionInfo* info) noexcept nogil
+cdef bint has_exact(int phase) noexcept nogil
+cdef bint wide_amount_range(GameState state, int phase) except -1 nogil
 
 cpdef bint has_exact_amounts(int phase)
 cpdef object decode_action_py(int phase, int action_id)

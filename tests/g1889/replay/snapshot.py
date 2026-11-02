@@ -20,21 +20,35 @@ form than Ruby; ``compare`` treats these as equal (``EQUIVALENT:`` below):
   ``HEX_HOME_CORP`` and the home corp's token bit;
 - player order: Ruby rotates ``@players`` to put the priority player first,
   the engine keeps seat order and stores ``priority_player``;
-- ``last_revenue``: Ruby's None before a corp operates is the engine's 0.
+- ``last_revenue``: Ruby's None before a corp operates is the engine's 0;
+- the SR turn: Ruby lists this turn's actions (``current_actions``) and marks
+  this turn's sales ``'now'``; the engine keeps ``sr_bought``,
+  ``sr_sold_then_bought``, and the turn player's ``sr_sold_mask``.
+
+At a STOCK decision, ``compare`` also checks the engine's legal ids against
+Ruby's ``stock.legal``: the pass (absent on a must-sell turn), each IPO and
+pool buy, each par, and each sellable block. PAR is not checked there; it
+lies inside one Ruby ``par``.
 
 Not compared, because the engine does not model them (or not yet): player
 ``value`` and the game ``result`` (``final_scores``, 6.8); a corporation's
 ``train_ids``, ``operated``, ``last_dividend``, and ``closed`` (1889
 corporations never close); private abilities other than MF's port lay (6.8);
-the SR's ``'now'``/``'prev'`` sales, ``current_actions``, ``bought_from_ipo``,
-``last_to_act``, and ``pass_order`` (6.4); ``ebuy_last_share_price`` (6.8);
-and ``round_state``, which is diagnostics only.
+the SR's ``bought_from_ipo`` (Ruby uses it only for multiple buys, which 1889
+lacks), ``last_to_act`` (the engine's ``priority_player`` follows it, and
+``game.priority`` is compared), and ``pass_order`` (only the ``passed`` flags
+matter: 1889 orders the next SR after the last to act);
+``ebuy_last_share_price`` (6.8); and ``round_state``, which is diagnostics
+only.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
+import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
 from g1889.data import COLORS
@@ -271,9 +285,18 @@ def _compare_rounds(state, snap, ids, check) -> None:
         check('auction.auctioning', D.PRIVATE_SYMS[private] if private >= 0 else None, auction['auctioning'])
         check('auction.min_bids', _min_bids(state), auction['min_bids'])
     if (stock := snap['stock']) is not None:
+        active = TURN.active_player(state)
         for i, player_id in enumerate(ids):
-            check(f'stock.sold.{player_id}', _bits(PLAYERS[i].sold_mask(state), D.CORP_SYMS),
-                  list(stock['sold'][str(player_id)]))
+            sold = stock['sold'][str(player_id)]
+            check(f'stock.sold.{player_id}', _bits(PLAYERS[i].sold_mask(state), D.CORP_SYMS), list(sold))
+            # EQUIVALENT: 'now' marks the turn player's sales this turn.
+            check(f'stock.sold_now.{player_id}', _bits(TURN.sr_sold_mask(state) if i == active else 0, D.CORP_SYMS),
+                  [sym for sym, when in sold.items() if when == 'now'])
+        bought, sold_then_bought = _turn_purchases(stock['current_actions'])
+        check('stock.current_actions (bought)', bool(TURN.sr_bought(state)), bought)
+        check('stock.current_actions (sold, then bought)', bool(TURN.sr_sold_then_bought(state)), sold_then_bought)
+        if stock['legal'] is not None and TURN.step(state) == K.STEP_STOCK:
+            _compare_stock_legal(state, stock['legal'], check)
     if (operating := snap['operating']) is not None:
         corp = TURN.operating_corp(state)
         check('operating.operator', D.CORP_SYMS[corp] if corp >= 0 else None, operating['operator'])
@@ -281,6 +304,32 @@ def _compare_rounds(state, snap, ids, check) -> None:
             check('operating.routes_revenue', TURN.route_revenue(state), operating['routes_revenue'])
         check('operating.ebuy_sold', _bits(TURN.ebuy_sold_mask(state), D.CORP_SYMS),
               sorted(operating['ebuy_sold'], key=CORP.__getitem__))
+
+
+def _turn_purchases(current_actions: list[str]) -> tuple[bool, bool]:
+    """Whether this turn bought (a share or a par), and bought after selling."""
+    purchases = [i for i, kind in enumerate(current_actions) if kind in ('buy_shares', 'par')]
+    sales = [i for i, kind in enumerate(current_actions) if kind == 'sell_shares']
+    return bool(purchases), bool(purchases and sales and sales[0] < purchases[-1])
+
+
+def _compare_stock_legal(state, legal, check) -> None:
+    """The engine's legal STOCK ids against Ruby's options for the turn player."""
+    ids = np.zeros(K.MAX_ACTION_SIZE, dtype=np.uint16)
+    infos = [A.decode_action_py(K.DPHASE_STOCK, int(i)) for i in ids[:A.enumerate_legal_actions_py(state, ids)]]
+
+    def corps(kind):
+        return [D.CORP_SYMS[info.corp] for info in infos if info.type == kind]
+
+    check('stock.legal.pass', any(info.type == A.ACTION_PASS for info in infos), 'pass' in legal['actions'])
+    check('stock.legal.buy_ipo', corps(A.ACTION_BUY_IPO), legal['buy_ipo'])
+    check('stock.legal.buy_pool', corps(A.ACTION_BUY_POOL), legal['buy_pool'])
+    check('stock.legal.par', corps(A.ACTION_SELECT_PAR), legal['par'])
+    sales: dict[str, list[int]] = {}
+    for info in infos:
+        if info.type == A.ACTION_SELL:
+            sales.setdefault(D.CORP_SYMS[info.corp], []).append(10 * info.count)
+    check('stock.legal.sell', sales, legal['sell'])
 
 
 # =============================================================================
@@ -291,8 +340,8 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
     """A GameState equal to ``snap`` under ``compare``, built through the entity
     APIs. Cash starts in the bank and moves with ``BANK.transfer``; every cache
     is left dirty. ``auction_pass_payouts`` has no Ruby counterpart and loads
-    as 0. Auction and finished snapshots load fully; SR and OR turn fields
-    raise NotImplementedError until their sub-steps define them.
+    as 0. Auction, SR, and finished snapshots load fully; OR turn fields raise
+    NotImplementedError until 6.5 defines them.
     """
     ids = [p['id'] for p in snap['players']]
     assert len(ids) == num_players, f'snapshot has {len(ids)} players, not {num_players}'
@@ -368,7 +417,28 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
         TURN.set_auction_discount(state, snap['privates'][D.PRIVATE_SYMS[DISCOUNTED_PRIVATE]]['discount'])
         TURN.set_auction_turn(state, ids.index(g['round_entities'][g['entity_index']]))
         TURN.set_active_player(state, ids.index(g['active_players'][0]))
+    elif g['round'] == 'SR' and g['step'] == 'BuySellParShares':
+        _load_stock(state, snap['stock'], ids, ids.index(g['active_players'][0]))
     else:
-        raise NotImplementedError(f"load_state: {g['round']} turn fields land with sub-step "
-                                  f"{'6.4' if g['round'] == 'SR' else '6.5'}")
+        raise NotImplementedError(f"load_state: {g['round']} turn fields at step {g['step']} land with "
+                                  f"{'6.5' if g['round'] == 'OR' else 'a later sub-step'}")
     return state
+
+
+def _load_stock(state: GameState, stock: dict, ids: list, active: int) -> None:
+    """An SR turn: the turn player, the SR's sales, and this turn's purchase and sales."""
+    TURN.set_round(state, K.ROUND_STOCK)
+    TURN.set_step(state, K.STEP_STOCK)
+    TURN.set_active_player(state, active)
+    now = 0
+    for i, player_id in enumerate(ids):
+        sold = stock['sold'][str(player_id)]
+        PLAYERS[i].set_sold_mask(state, sum(1 << CORP[sym] for sym in sold))
+        mask = sum(1 << CORP[sym] for sym, when in sold.items() if when == 'now')
+        if mask:
+            assert i == active, f"player {player_id} has this turn's sales on another player's turn"
+            now = mask
+    bought, sold_then_bought = _turn_purchases(stock['current_actions'])
+    TURN.set_sr_sold_mask(state, now)
+    TURN.set_sr_bought(state, bought)
+    TURN.set_sr_sold_then_bought(state, sold_then_bought)

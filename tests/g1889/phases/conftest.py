@@ -9,9 +9,12 @@
   fields (``type``, ``private``, ``count``, ...) match.
 - ``apply_and_verify(state, action_id)``: apply through the driver with
   history, checking ``assert_invariants`` on every intermediate state and the
-  result, and that a returned decision has two or more policy actions.
+  result, and that a returned decision is a choice: two or more policy
+  actions, or an amount decision with exact amounts beyond its one point.
 - ``enter_auction(state, turn_player, sold, bids)``: hand-built auction
   positions through ``setup_auction_py``.
+- ``hold(state, corp, ...)`` and ``enter_stock_round(state, first, turn)``:
+  hand-built SR positions through ``setup_stock_round_py``.
 """
 
 import numpy as np
@@ -22,15 +25,18 @@ import g1889.constants as K
 import g1889.data.tables as D
 from g1889.driver import DRIVER, STATUS_OK
 from g1889.entities.bank import BANK
-from g1889.entities.corp import CORPS
+from g1889.entities.corp import CORPS, PRESIDENT_SHARES, SHARES_PER_CORP
+from g1889.entities.market import MARKET
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES, topmost
 from g1889.entities.turn import TURN
 from g1889.phases.auction import setup_auction_py
+from g1889.phases.stock import setup_stock_round_py
 from g1889.state import GameState
 
-# Decision phases whose handlers have landed (6.3); later phases raise NotImplementedError.
-IMPLEMENTED_PHASES = (K.DPHASE_AUCTION, K.DPHASE_BID, K.DPHASE_RAISE)
+# Decision phases whose handlers have landed (6.4); later phases raise NotImplementedError.
+IMPLEMENTED_PHASES = (K.DPHASE_AUCTION, K.DPHASE_BID, K.DPHASE_RAISE, K.DPHASE_STOCK, K.DPHASE_PAR)
+POOL_LIMIT = D.MARKET_SHARE_LIMIT // 10
 
 
 # =============================================================================
@@ -63,6 +69,42 @@ def enter_auction(state, turn_player, sold=(), bids=()):
         PLAYERS[player].set_bid(state, private, amount)
     setup_auction_py(state, turn_player)
     assert_invariants(state, 'enter_auction')
+
+
+def end_auction(state, owners=()):
+    """Give the privates in play to ``owners`` (a player per private, cycling;
+    seat 0 by default) for free, leaving the auction behind."""
+    owners = list(owners) or [0]
+    in_play = [p for p in range(D.NUM_PRIVATES) if PRIVATES[p].owner(state) == K.OWNER_UNSOLD]
+    for i, p in enumerate(in_play):
+        PRIVATES[p].sell_to_player(state, owners[i % len(owners)], 0)
+
+
+def hold(state, corp, holdings, par=0, cell=None, pool=0, president=None):
+    """Hand-built holdings of a parred ``corp``: ``holdings`` maps players to
+    shares (the president's include the certificate's two), ``par`` is the par
+    index, ``cell`` the market cell (the par cell by default), and the IPO keeps
+    the rest. The president defaults to the first largest holder; the corp
+    floats, with its capital from the bank, once half its shares are out."""
+    c = CORPS[corp]
+    c.set_par_index(state, par)
+    MARKET.set_position(state, corp, *(cell or (D.PAR_ROW[par], D.PAR_COL[par])))
+    for player, shares in holdings.items():
+        PLAYERS[player].set_shares(state, corp, shares)
+    c.set_pool_shares(state, pool)
+    c.set_ipo_shares(state, SHARES_PER_CORP - pool - sum(holdings.values()))
+    if president is None:
+        president = max(holdings, key=lambda p: (holdings[p], -p))
+    c.set_president(state, president)
+    assert holdings[president] >= PRESIDENT_SHARES
+    c.float_if_ready(state)
+
+
+def enter_stock_round(state, first, turn=2):
+    """Open SR ``turn`` at ``first``'s turn on the holdings set up by hand."""
+    TURN.set_turn(state, turn)
+    setup_stock_round_py(state, first)
+    assert_invariants(state, 'enter_stock_round')
 
 
 # =============================================================================
@@ -113,10 +155,24 @@ def exact_id(state, amount):
 
 def assert_invariants(state, msg=''):
     """Money is conserved, bids sit on unsold privates within each player's
-    cash, privates sell top-down, and the auction fields agree with the step."""
+    cash, privates sell top-down, and the auction fields agree with the step.
+    Every corp's ten shares are somewhere, at most five in the pool; a parred
+    corp sits on the market, its president holds the certificate's two shares
+    and no fewer than anyone, and it has floated once half its shares are out."""
     n = TURN.num_players(state)
     total = BANK.cash(state) + sum(PLAYERS[i].cash(state) for i in range(n)) + sum(c.cash(state) for c in CORPS)
     assert total == D.BANK_CASH, f'{msg}: cash totals {total}'
+    for c in CORPS:
+        held = [PLAYERS[i].shares(state, c.corp_id) for i in range(n)]
+        assert c.ipo_shares(state) + c.pool_shares(state) + sum(held) == SHARES_PER_CORP, f'{msg}: {c.sym} shares'
+        assert c.pool_shares(state) <= POOL_LIMIT, f'{msg}: {c.sym} pool over the limit'
+        if c.par_index(state) < 0:
+            assert c.president(state) == -1 and MARKET.row(state, c.corp_id) == -1 and not c.floated(state), msg
+            continue
+        president = c.president(state)
+        assert MARKET.row(state, c.corp_id) >= 0, f'{msg}: {c.sym} parred off the market'
+        assert held[president] >= PRESIDENT_SHARES and held[president] == max(held), f'{msg}: {c.sym} president'
+        assert c.floated(state) == (c.ipo_shares(state) <= SHARES_PER_CORP // 2), f'{msg}: {c.sym} float'
     owners = [p.owner(state) for p in PRIVATES]
     in_play = [o for o in owners if o != K.OWNER_NOT_IN_PLAY]
     unsold_last = sorted(in_play, key=lambda o: o == K.OWNER_UNSOLD)
@@ -133,6 +189,17 @@ def assert_invariants(state, msg=''):
     if TURN.round(state) != K.ROUND_AUCTION:
         assert top == -1 and all(PLAYERS[i].committed(state) == 0 for i in range(n)), f'{msg}: auction left open'
         assert TURN.auction_private(state) == -1 and TURN.pending_private(state) == -1, msg
+        if TURN.round(state) == K.ROUND_STOCK:
+            assert step in (K.STEP_STOCK, K.STEP_PAR, K.STEP_SR_END), f'{msg}: step {step} in the SR'
+            assert (TURN.pending_corp(state) >= 0) == (step == K.STEP_PAR), f'{msg}: pending corp'
+            sold = TURN.sr_sold_mask(state)
+            assert sold & ~PLAYERS[active].sold_mask(state) == 0, f'{msg}: turn sales outside the SR sales'
+            assert not TURN.sr_sold_then_bought(state) or (sold and TURN.sr_bought(state)), msg
+            if TURN.turn(state) == 1:
+                assert all(PLAYERS[i].sold_mask(state) == 0 for i in range(n)), f'{msg}: sales in the first SR'
+        else:  # the SR's fields clear when it ends
+            assert TURN.sr_bought(state) == TURN.sr_sold_mask(state) == TURN.sr_sold_then_bought(state) == 0, msg
+            assert all(PLAYERS[i].sold_mask(state) == 0 for i in range(n)), f'{msg}: SR sales left over'
         return
     assert step in (K.STEP_AUCTION, K.STEP_BID, K.STEP_RAISE), f'{msg}: step {step} in the auction'
     if step == K.STEP_RAISE:
@@ -151,19 +218,45 @@ def assert_action_sets(state, msg=''):
     assert set(policy) <= set(legal) and (policy or not legal), f'{msg}: legal {legal}, policy {policy}'
 
 
+def is_choice(state):
+    """Whether the current decision is one the driver returns rather than
+    applies: two or more policy actions, or an amount decision whose one legal
+    grid point has legal exact amounts above it (engine-design §6)."""
+    policy = get_policy_actions(state)
+    if len(policy) >= 2:
+        return True
+    phase = A.get_decision_phase_py(state)
+    if not A.has_exact_amounts(phase) or len(legal_ids(state)) != 1 or policy[0][1].type != A.ACTION_PRICE_POINT:
+        return False
+    return A.is_legal_action_py(state, exact_id(state, price_of(state, policy[0][1].count) + 1))
+
+
+def price_of(state, point):
+    """The amount of BID or RAISE grid point ``point``."""
+    phase = A.get_decision_phase_py(state)
+    p = TURN.pending_private(state) if phase == K.DPHASE_BID else TURN.auction_private(state)
+    return PRIVATES[p].min_bid(state) + D.MIN_BID_INCREMENT * point
+
+
 # =============================================================================
 # APPLY + VERIFY
 # =============================================================================
 
 class ApplyResult:
-    """``history`` holds ``(row, decision phase, id)`` before each applied decision."""
+    """``history`` holds ``(row, decision phase, id)`` before each applied
+    decision and ``(row, -1, step)`` before each automated step."""
 
     def __init__(self, state, history, status):
         self.state, self.history, self.status = state, history, status
 
     @property
     def decisions(self):
-        return [(phase, action_id) for _, phase, action_id in self.history]
+        return [(phase, action_id) for _, phase, action_id in self.history if phase >= 0]
+
+    @property
+    def steps(self):
+        """The automated steps the driver ran."""
+        return [step for _, phase, step in self.history if phase < 0]
 
     @property
     def forced(self):
@@ -185,10 +278,11 @@ def apply_and_verify(state, action_id, msg='', expected_status=STATUS_OK):
     result = ApplyResult(state, history, status)
     for i in range(len(history)):
         before = result.state_at(i)
-        assert_invariants(before, f'{msg}: before decision {i} {history[i][1:]}')
-        assert_action_sets(before, f'{msg}: before decision {i}')
+        assert_invariants(before, f'{msg}: before entry {i} {history[i][1:]}')
+        if history[i][1] >= 0:
+            assert_action_sets(before, f'{msg}: before decision {i}')
     assert_invariants(state, f'{msg}: after')
     if A.get_decision_phase_py(state) in IMPLEMENTED_PHASES:
         assert_action_sets(state, f'{msg}: after')
-        assert len(policy_ids(state)) >= 2, f'{msg}: returned a forced decision {get_policy_actions(state)}'
+        assert is_choice(state), f'{msg}: returned a forced decision {get_policy_actions(state)}'
     return result

@@ -3,7 +3,7 @@ reaches the stock round within a step cap at 2-6 players, with the policy
 flags on (policy ids only, as in self-play) and off (every legal id, and exact
 amounts in BID and RAISE). ``apply_and_verify`` checks money and the auction
 invariants on every state the driver passes through, forced decisions
-included, and that every returned decision has two or more policy actions.
+included, and that every returned decision is a choice.
 
 Uniform legal play can keep rules §12.9's endless auction going: players who
 outbid themselves on later privates never afford the topmost. Ruby allows
@@ -54,7 +54,16 @@ def test_random_auctions_reach_the_stock_round(num_players, flags):
             apply_and_verify(state, _choose(state, rng, flags), f'seed {seed}')
         else:
             pytest.fail(f'seed {seed}: the auction did not end within {MAX_DECISIONS} decisions')
-        assert (TURN.round(state), TURN.step(state)) == (K.ROUND_STOCK, K.STEP_STOCK)
-        assert TURN.active_player(state) == TURN.priority_player(state) == TURN.auction_turn(state)
+        # The SR opens with the auction's turn player, and the driver passes
+        # for each player who can do nothing else, as Ruby skips them; when
+        # nobody can, the SR ends at once and priority stays.
+        assert TURN.priority_player(state) == TURN.auction_turn(state)
+        if TURN.round(state) == K.ROUND_OPERATING:
+            assert TURN.step(state) == K.STEP_OR_START
+        else:
+            assert (TURN.round(state), TURN.step(state)) == (K.ROUND_STOCK, K.STEP_STOCK)
+            skipped = (TURN.active_player(state) - TURN.priority_player(state)) % num_players
+            assert all(PLAYERS[(TURN.priority_player(state) + k) % num_players].passed(state)
+                       for k in range(skipped))
         owners = [p.owner(state) for p in PRIVATES if p.owner(state) != K.OWNER_NOT_IN_PLAY]
         assert all(K.OWNER_PLAYER <= o < K.OWNER_PLAYER + num_players for o in owners)
