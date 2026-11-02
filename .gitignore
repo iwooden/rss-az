@@ -19,6 +19,7 @@ backups/
 gamelog.md
 *.tar.gz
 tests/games_18xx/data/*.json
+tests/g1889/replay/.extract_cache/
 
 # Codex creates a persistent file for some reason
 .codex

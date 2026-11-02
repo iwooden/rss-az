@@ -459,10 +459,13 @@ result in `route_cache` behind `route_dirty`. Extraction may solve other
 corps in its nogil prologue.
 
 **Replay.** `DRIVER.override_route_revenue(state, revenue)` is legal only at
-the operating corp's DIVIDEND decision, for a multiple of ¥10 from 0 to a
-freshly recomputed `max_route_revenue` (so a tile changed by ER's bonus
-counts). It re-runs the auto-chain, since zero revenue forces the dividend.
-The pipeline never calls it; it exists for human routes below the maximum.
+the operating corp's DIVIDEND decision, for any multiple of ¥10 from 0 up.
+It re-runs the auto-chain, since zero revenue forces the dividend. The
+pipeline never calls it. It exists for human routes, which are usually
+below the maximum (314 actions 250, 361, 435, 446; 962 action 356), but not
+always: Ruby pays logged revenue unchecked, and 314 action 367 pays ¥400
+where the legal maximum is ¥370 (IR's route passes through I2, which SR and
+AR fill). So there is no upper bound.
 
 **Algorithm** (its own sub-step), suggested shape: search from the token
 nodes over precomputed node-to-node segments, giving each train's candidate
@@ -510,6 +513,24 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    - **Sync rule.** A Ruby action that matches a forced action in the driver
      history since the last sync is consumed rather than applied. States are
      compared whenever no auto-applied history is pending.
+   - **Fixture findings** from the extractor (6.2), for the sub-steps that
+     reach them:
+     - **Discard order (6.7).** Ruby accepts a discard from any crowded
+       corp: 314 action 339 discards UR's train while SR is current. Order
+       doesn't change the outcome, so the mapper reorders such discards
+       instead of the engine widening DISCARD.
+     - **Port tile (6.8).** 962 action 39 lays MF's port tile at the start
+       of TR's turn, whose president owns MF, and TR then lays its own tile.
+       The PORT lay doesn't use up the corp's lay.
+     - **Bankruptcy (6.8).** A bankrupt player keeps shares that can't be
+       sold: in 314 player 639 ends with KO 40%, TR 20%, and KU 20% as
+       president, at ¥0 cash.
+     - **Programmed actions.** In the `hs_*` fixtures, programmed buys ride
+       as `auto_actions` on another player's pass, alongside
+       `program_disable` and `program_share_pass` entries that the mapper
+       skips.
+     - **Ids.** Corp TR and private TR share a symbol. Ruby keeps one D
+       train in the depot and clones it per sale; the engine stores −1.
 3. **Differential replay** (`test_replay.py`): all four fixtures, compared
    after every action, including the final results. **Test:** can Ruby's
    `check_track_restrictions!` (`step/tracker.rb:326`, skipped while loading)
