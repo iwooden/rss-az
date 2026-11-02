@@ -133,6 +133,28 @@ cdef int corp_max_sale(GameState state, int player, int corp) noexcept nogil:
     return max(0, min(held, POOL_LIMIT - corp_pool_shares(state, corp)))
 
 
+cdef int corp_emergency_sale(GameState state, int player, int corp) noexcept nogil:
+    """The largest block ``player`` may sell for emergency money
+    (``EmergencyMoney#sellable_bundle?``); every smaller block is legal too.
+    As in an SR, that is their holding up to the pool's room, but no
+    presidency may change, of any corp (``EBUY_PRES_SWAP = false``): a
+    president keeps at least the most another player holds
+    (``causes_president_swap?``), and so never sells the President's
+    Certificate, which goes only to a holder of two shares
+    (``ShareBundle#can_dump?``). An unparred corp's shares cannot be sold."""
+    cdef int held = player_shares(state, player, corp)
+    cdef int keep = 0
+    cdef int i
+    if corp_par_index(state, corp) < 0:
+        return 0
+    if corp_president(state, corp) == player:
+        keep = <int>PRESIDENT_SHARES
+        for i in range(turn_num_players(state)):
+            if i != player:
+                keep = max(keep, player_shares(state, i, corp))
+    return max(0, min(held - keep, POOL_LIMIT - corp_pool_shares(state, corp)))
+
+
 # =============================================================================
 # HANDLES
 # =============================================================================
@@ -296,6 +318,9 @@ cdef class Corporation:
 
     cpdef int max_sale(self, GameState state, int player):
         return corp_max_sale(state, player, self.corp_id)
+
+    cpdef int emergency_sale(self, GameState state, int player):
+        return corp_emergency_sale(state, player, self.corp_id)
 
     cpdef bint sold_out(self, GameState state):
         """Whether players hold every share (``sold_out?``)."""

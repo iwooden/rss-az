@@ -8,6 +8,8 @@ cdef int pool_count(GameState state, int train_type) noexcept nogil
 cdef int corp_train_count(GameState state, int corp, int train_type) noexcept nogil
 cdef int corp_train_total(GameState state, int corp) noexcept nogil
 cdef int trains_depot_types(GameState state) noexcept nogil
+cdef int trains_cheapest_type(GameState state) noexcept nogil
+cdef bint trains_cheapest_in_pool(GameState state) noexcept nogil
 cdef int trains_cheapest_price(GameState state) noexcept nogil
 cdef int trains_limit(GameState state) noexcept nogil
 cdef int trains_first_crowded(GameState state) noexcept nogil
@@ -24,6 +26,8 @@ cdef class Trains:
     cpdef int corp_total(self, GameState state, int corp)
     cpdef int depot_types(self, GameState state)
     cpdef int cheapest_price(self, GameState state)
+    cpdef int cheapest_type(self, GameState state)
+    cpdef bint cheapest_in_pool(self, GameState state)
     cpdef int limit(self, GameState state)
     cpdef bint crowded(self, GameState state, int corp)
     cpdef int first_crowded(self, GameState state)

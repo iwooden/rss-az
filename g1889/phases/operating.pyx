@@ -20,7 +20,8 @@ BuyTrain, then a blocking BuyCompany) are the oracle. An OR runs:
   pass, or the withhold at zero revenue.
 - ``TURN_END`` (``next_entity!``): the next corp, or ``OR_END``.
 - ``OR_END`` (``next_round!``): the set's next OR, or else the next SR,
-  with the SR number up and ``or_num`` back to 1.
+  with the SR number up and ``or_num`` back to 1; after the set's last OR,
+  the game's end if the bank has broken (``GAME_END_CHECK``, ``:full_or``).
 
 Fields:
 
@@ -28,19 +29,22 @@ Fields:
   operating corp's place in it (Ruby's ``entity_index``);
 - ``operating_corp`` is the corp operating, -1 between turns;
 - ``pending_hex`` is TILE's hex while TILE is open;
-- ``route_revenue`` is the turn's revenue, from ROUTE until DIVIDEND.
+- ``route_revenue`` is the turn's revenue, from ROUTE until DIVIDEND;
+- ``ebuy_sold_mask`` and ``ebuy_sold_any`` are the turn's emergency sales
+  (``buy_train.pyx``), cleared at TURN_END.
 
 The step implies the turn's lay and token use (engine-design.md §3). The
-game's end after a broken bank's last OR (6.8b) raises NotImplementedError
-before changing anything, where the driver's development stop rests.
+game ends at OR_END after a broken bank's set, or at once when a president
+goes bankrupt (``buy_train.pyx``); either way the row keeps the last round's
+fields, as Ruby keeps its round, and ``end_reason`` tells which.
 """
 
 from g1889.actions cimport (
     ACTION_PASS, ACTION_PLACE_TOKEN, ACTION_SELECT_HEX, ActionInfo, LayCandidate, enumerate_lay_candidates,
 )
 from g1889.constants cimport (
-    ROUND_OPERATING, STEP_DIVIDEND, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_TILE, STEP_TOKEN, STEP_TRACK,
-    STEP_TURN_START,
+    END_REASON_BANK, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND, STEP_GAME_OVER, STEP_OR_END, STEP_OR_START,
+    STEP_ROUTE, STEP_TILE, STEP_TOKEN, STEP_TRACK, STEP_TURN_START,
 )
 from g1889.data.tables cimport CORP_HOME, NUM_CORPS
 from g1889.entities.bank cimport bank_broken
@@ -101,9 +105,13 @@ cdef void run_turn_start(GameState state) except *:
 
 
 cdef void run_turn_end(GameState state) except *:
-    """``next_entity!``: the next corp in the order operates, or the OR ends."""
+    """``next_entity!``: the next corp in the order operates, or the OR ends.
+    The turn's emergency sales clear (Ruby's BuyTrain ``setup`` clears them
+    as the next corp's turn starts)."""
     cdef int index = TURN.or_index(state) + 1
     TURN.set_operating_corp(state, -1)
+    TURN.set_ebuy_sold_mask(state, 0)
+    TURN.set_ebuy_sold_any(state, 0)
     if index < <int>NUM_CORPS and TURN.or_order(state, index) >= 0:
         TURN.set_or_index(state, index)
         TURN.set_step(state, STEP_TURN_START)
@@ -114,11 +122,12 @@ cdef void run_turn_end(GameState state) except *:
 cdef void run_or_end(GameState state) except *:
     """``next_round!`` after an OR: the set's next OR, else the next SR, which
     the priority player opens (Ruby reorders the players only after an SR).
-    A broken bank ends the game after the set's last OR instead (6.8b)."""
+    After the set's last OR a broken bank ends the game instead, wherever it
+    broke, in an SR or an OR (``end_now?`` with ``:full_or``)."""
     cdef int or_num = TURN.or_num(state)
     if or_num >= TURN.or_count(state) and bank_broken(state):
-        raise NotImplementedError("1889 OR_END: the game end after the bank breaks is not implemented yet "
-                                  "(engine-design.md §11, 6.8b)")
+        end_game(state, <int>END_REASON_BANK)
+        return
     _clear_order(state)
     if or_num < TURN.or_count(state):
         TURN.set_or_num(state, or_num + 1)
@@ -127,6 +136,32 @@ cdef void run_or_end(GameState state) except *:
     TURN.set_turn(state, TURN.turn(state) + 1)
     TURN.set_or_num(state, 1)
     start_stock_round(state)
+
+
+cdef void resort_order(GameState state) except *:
+    """``recalculate_order`` (``round/operating.rb:97``), after an emergency
+    sale or a bankruptcy: the corps yet to run this OR go back into stock
+    price order, behind those that have run, which keep their places."""
+    cdef int[7] order  # NUM_CORPS
+    cdef int index = TURN.or_index(state)
+    cdef int mask = 0
+    cdef int c, i, count
+    for i in range(index + 1, <int>NUM_CORPS):
+        c = TURN.or_order(state, i)
+        if c >= 0:
+            mask |= 1 << c
+    count = market_sort_by_price(state, mask, order)
+    for i in range(count):
+        TURN.set_or_order(state, index + 1 + i, order[i])
+
+
+cdef void end_game(GameState state, int reason) except *:
+    """``end_game!``: the game is over, for ``reason`` (an EndReason). Ruby
+    keeps the last round's fields, and so does the row: the OR's order, and
+    after a bankruptcy its operating corp and the turn's emergency sales."""
+    TURN.set_end_reason(state, reason)
+    TURN.set_round(state, ROUND_GAME_OVER)
+    TURN.set_step(state, STEP_GAME_OVER)
 
 
 # =============================================================================
@@ -192,5 +227,5 @@ def setup_operating_round_py(GameState state, int or_num=1):
     TURN.set_step(state, STEP_OR_START)
 
 
-# run_or_start's buffer for market_sort_by_price is sized with the literal 7.
+# The buffers for market_sort_by_price are sized with the literal 7.
 assert <int>NUM_CORPS == 7

@@ -6,13 +6,14 @@ them (1889/engine-design.md §4-6; rules §8.7-8.9, §9; Ruby's
 Covers the payout and withhold amounts, the price moves at the market's
 edges, the bank breaking on a payout; each BUY_TRAIN source (the depot's
 lowest rank and D from phase 6, the pool, other corps) with the train limit
-and the treasury; the must-buy without a pass, funded from the treasury,
-and its emergency stop; TRAIN_PRICE's grid and exact amounts; the D
-trade-in; each phase's effects (rusting, the pool's too; the limit; the
-privates' closing, UTF's; D's availability); and the discards' order.
-Everything runs through the driver, whose ``apply_and_verify`` also checks
-that every train stays accounted for. ``tests/g1889/replay/`` checks the
-same rules against Ruby at every fixture BuyTrain and DiscardTrain snapshot.
+and the treasury; the must-buy without a pass, funded from the treasury;
+TRAIN_PRICE's grid and exact amounts; the D trade-in; each phase's effects
+(rusting, the pool's too; the limit; the privates' closing, UTF's; D's
+availability); and the discards' order. Everything runs through the driver,
+whose ``apply_and_verify`` also checks that every train stays accounted for.
+``test_emergency.py`` covers a must-buy the treasury cannot fund, and
+``tests/g1889/replay/`` checks the same rules against Ruby at every fixture
+BuyTrain and DiscardTrain snapshot.
 
 KO's home, Takamatsu (K4), has printed track to J3; J3's tile 8 at rotation
 3 joins it to Sakaide & Okayama, a route of ¥50 for a 2-train in phase 2.
@@ -35,7 +36,7 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    apply_and_verify, at_development_stop, at_or, enter_operating_round, enter_phase, exact_id, give_train, hold,
+    apply_and_verify, at_or, enter_operating_round, enter_phase, exact_id, give_train, hold,
     lay, legal_ids, policy_ids, set_cash,
 )
 
@@ -255,9 +256,10 @@ class TestBuyTrain:
         set_cash(state, KO, 100)  # the pool's 2 alone is in reach, and IR's train
         assert legal_ids(state) == [pool(T2), from_corp(IR, T2), *private_buys(state)]
 
-    def test_a_must_buy_the_treasury_cannot_fund_needs_emergency_money(self):
-        """TEMPORARY (6.8b): short of every depot and pool train, the president's
-        cash and the buys from other corps that go with it are emergency money."""
+    def test_a_must_buy_the_treasury_cannot_fund_is_an_emergency(self):
+        """Short of every depot and pool train, KO may buy the cheapest with its
+        president's cash, or another corp's train for ¥1 to its treasury
+        (``test_emergency.py`` has the rest)."""
         state = at_or(3)
         lay(state, 'J3', '8', 3)
         hold(state, KO, {0: 6})
@@ -268,10 +270,8 @@ class TestBuyTrain:
         apply_and_verify(state, K.TRACK_PASS)
         apply_and_verify(state, K.BUY_TRAIN_PASS)  # IR's turn ends
         apply_and_verify(state, K.TRACK_PASS)
-        assert TURN.operating_corp(state) == KO and TURN.step(state) == K.STEP_BUY_TRAIN
-        assert at_development_stop(state)
-        with pytest.raises(NotImplementedError, match='emergency money'):
-            legal_ids(state)
+        assert TURN.operating_corp(state) == KO and A.in_emergency_py(state)
+        assert legal_ids(state) == [depot(T2), from_corp(IR, T2)]
 
 
 # =============================================================================

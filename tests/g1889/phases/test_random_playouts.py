@@ -1,8 +1,7 @@
 """Random play from new games through the auction, SRs, and ORs
 (1889/engine-design.md §10.4): at 2-6 players, with the policy flags on
 (policy ids only) and off (every legal id, and exact amounts in BID, RAISE,
-and TRAIN_PRICE), each game runs until the driver's development stop or a
-decision cap.
+TRAIN_PRICE, and PRIVATE_PRICE), each game runs to its end or a decision cap.
 
 ``apply_and_verify`` checks every state the driver passes through, forced
 decisions and automated steps included: money totals ¥7,000, each corp's ten
@@ -11,11 +10,14 @@ hexes exactly while a player owns them, no corp's private goes back to a
 player, the privates close at phase 5 but a player's UTF, the supply is never
 negative, every charter token is left or placed, every train is in the
 depot, the pool, or a floated corp until its rank rusts, no corp is over the
-limit outside DISCARD, the OR fields agree with the step, and every returned
-decision is a choice. Here every state is also checked for caches that are
-clean but stale (GRAPH and the route solver recomputed from scratch), and
-every returned decision for its legal and policy sets on a rebound copy of
-the row.
+limit outside DISCARD, the OR fields agree with the step, the turn's
+emergency sales stand only from BUY_TRAIN to the turn's end, the game is
+over exactly with an end reason that matches it (one bankrupt player at ¥0,
+or a broken bank), the scores equal Ruby's ``Player#value`` and add up to
+the players' holdings, and every returned decision is a choice. Here every
+state is also checked for caches that are clean but stale (GRAPH and the
+route solver recomputed from scratch), and every returned decision for its
+legal and policy sets on a rebound copy of the row.
 
 The players pass in an SR half the time they may, so rounds end, and a corp
 that can buy from the depot buys its newest offer (a D by trade-in included),
@@ -26,9 +28,10 @@ purchases at up to twice face value drain the treasuries (only 13 of the
 flags-on games reach phase D that way); every other choice is uniform.
 Uniform BUY_TRAIN choices let corps spend their treasuries on each other's
 trains, and the rusting then strands them in emergencies: only 4 of these
-200 games reach phase D that way, against about a fifth with the bias. The
-games run until a corp must buy a train its treasury cannot fund (emergency
-money) or the bank breaks and its OR set ends, both 6.8b's.
+200 games reached phase D that way (6.7), against about a fifth with the
+bias. Every other choice in an emergency is uniform too: the president's
+sales, bankruptcy, and other corps' trains. The games run until a president
+goes bankrupt or the bank breaks and its OR set ends.
 """
 
 from collections import Counter
@@ -45,14 +48,11 @@ from g1889.entities.graph import GRAPH
 from g1889.entities.phase import PHASE
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
-from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.routes.solver import max_route_revenue
 from g1889.state import GameState, get_corp_fields, get_global_fields, get_layout
 
-from tests.g1889.phases.conftest import (
-    apply_and_verify, at_development_stop, exact_id, legal_ids, new_game, policy_ids,
-)
+from tests.g1889.phases.conftest import apply_and_verify, exact_id, legal_ids, new_game, policy_ids
 
 SEEDS = range(20)
 MAX_DECISIONS = 3000
@@ -124,52 +124,56 @@ def _assert_rebound_sets(state, msg):
 
 
 def _play(state, rng, flags, msg, seen):
-    """Random decisions until the development stop. ``seen`` counts the
-    automated steps by name and the decisions by phase and action type."""
+    """Random decisions until the game ends. ``seen`` counts the automated
+    steps by name and the decisions by phase and action type, and
+    ``'emergency'`` the decisions taken in one."""
     for _ in range(MAX_DECISIONS):
         if TURN.round(state) == K.ROUND_AUCTION and TURN.auction_pass_payouts(state) >= UNCAPPED_PAYOUTS:
             state.auction_pass_payout_cap = 1
-        result = apply_and_verify(state, _choose(state, rng, flags), msg)
+        seen['emergency'] += TURN.step(state) == K.STEP_BUY_TRAIN and A.in_emergency_py(state)
+        result = apply_and_verify(state, _choose(state, rng, flags), msg, expected_status=None)
         for i in range(len(result.history)):
             _assert_fresh_caches(result.state_at(i), f'{msg}: before entry {i}')
         _assert_fresh_caches(state, f'{msg}: after')
         for _, phase, action_id in result.history:
             seen[K.Step(action_id).name if phase < 0 else (phase, A.decode_action_py(phase, action_id).type)] += 1
-        if at_development_stop(state):
+        if A.is_terminal_py(state):
             return
         _assert_rebound_sets(state, msg)
-    pytest.fail(f'{msg}: no development stop within {MAX_DECISIONS} decisions')
+    pytest.fail(f'{msg}: no game end within {MAX_DECISIONS} decisions')
 
 
-def _stop(state):
-    """Where a game rests: a must-buy short of every depot and pool train, or
-    the end of a broken bank's OR set."""
-    if TURN.step(state) == K.STEP_OR_END and BANK.broken(state) and TURN.or_num(state) == TURN.or_count(state):
-        return 'bank'
-    corp = TURN.operating_corp(state)
-    assert TURN.step(state) == K.STEP_BUY_TRAIN and A.must_buy_train_py(state), K.Step(TURN.step(state)).name
-    assert CORPS[corp].cash(state) < TRAINS.cheapest_price(state)
-    return 'emergency'
+def _ending(state):
+    """How a game ended: a bankruptcy at once, or the end of the OR set in
+    which the bank broke."""
+    if TURN.end_reason(state) == K.END_REASON_BANKRUPT:  # in the operating corp's emergency
+        corp = TURN.operating_corp(state)
+        assert PLAYERS[CORPS[corp].president(state)].bankrupt(state) and A.must_buy_train_py(state, corp)
+        return 'bankrupt'
+    assert TURN.end_reason(state) == K.END_REASON_BANK and BANK.broken(state)
+    assert TURN.or_num(state) == TURN.or_count(state) and TURN.operating_corp(state) == -1
+    return 'bank'
 
 
 # Of each setting's 100 games, at least this many reach phases 4 and D. As
-# measured (6.8a): phases 4, 5, 6, and D in 99, 70, 39, and 22 games with the
-# flags off, and 99, 80, 33, and 18 with them on; 27 and 49 games end at a
-# broken bank, the rest in emergencies.
+# measured (6.8b): phases 4, 5, 6, and D in 99, 92, 61, and 51 games with the
+# flags off, and 99, 92, 43, and 27 with them on; 63 and 43 games end in a
+# bankruptcy, the rest at a broken bank's OR set, within 1,126 decisions.
 MIN_REACH = {D.GAME_PHASE_4: 90, D.GAME_PHASE_D: 15}
 
 
 @pytest.mark.parametrize('flags', [False, True], ids=['flags_off', 'flags_on'])
-def test_random_games_run_to_the_development_stop(flags):
-    """Every game gets into the ORs, buys trains through the phases, and stops
-    at an emergency or a broken bank's game end (6.8b); about a fifth reach
-    phase D. Between them, the games lay track, place tokens, pay out and
+def test_random_games_run_to_the_end(flags):
+    """Every game gets into the ORs, buys trains through the phases, and
+    ends, at a bankruptcy or a broken bank's OR set; a quarter to a half
+    reach phase D. Between them, the games lay track, place tokens, pay out and
     withhold, buy from the depot, the pool, and each other at grid and exact
-    prices, trade in for Ds, and discard; corps buy privates at every
+    prices, trade in for Ds, and discard; in emergencies the presidents pay
+    toward trains, sell shares, and go bankrupt; corps buy privates at every
     top-level OR decision, at grid and exact prices; ER's sellers lay on C4
     and pass; DR's owners exchange in SRs and ORs, and MF's lay the port tile
     from STOCK and TRACK."""
-    seen, phases = Counter(), Counter()
+    seen, phases, endings = Counter(), Counter(), Counter()
     for num_players in range(D.MIN_PLAYERS, D.MAX_PLAYERS + 1):
         for seed in SEEDS:
             msg = f'{num_players} players, seed {seed}'
@@ -177,10 +181,15 @@ def test_random_games_run_to_the_development_stop(flags):
             state = new_game(num_players, max_players=D.MAX_PLAYERS if seed % 2 else 0, seed=seed,
                              priority_player=-1, auction_pass_payout_cap=1 if flags else 0, same_president=flags)
             _play(state, rng, flags, msg, seen)
-            seen[_stop(state)] += 1
+            endings[_ending(state)] += 1
             phases.update(range(PHASE.current(state) + 1))
+    print(f'flags {flags}: endings {dict(endings)}, phases {dict(sorted(phases.items()))}, '
+          f'emergency decisions {seen["emergency"]}, sales {seen[(K.DPHASE_BUY_TRAIN, A.ACTION_SELL)]}, '
+          f'turns {seen["STEP_TURN_START"]}')
     assert all(phases[phase] >= n for phase, n in MIN_REACH.items()), phases
-    assert seen['bank'] and seen['emergency'] and seen['STEP_OR_END'] and seen['STEP_TURN_END']
+    assert endings['bank'] and endings['bankrupt'] and seen['STEP_OR_END'] and seen['STEP_TURN_END']
+    assert seen['emergency'] and seen[(K.DPHASE_BUY_TRAIN, A.ACTION_SELL)]
+    assert seen[(K.DPHASE_BUY_TRAIN, A.ACTION_BANKRUPT)]
     assert seen[(K.DPHASE_TILE, A.ACTION_LAY_CANDIDATE)] and seen[(K.DPHASE_TOKEN, A.ACTION_PLACE_TOKEN)]
     for kind in (A.ACTION_WITHHOLD, A.ACTION_PAYOUT):
         assert seen[(K.DPHASE_DIVIDEND, kind)]

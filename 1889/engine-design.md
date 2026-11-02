@@ -2,9 +2,10 @@
 
 Status: design for step 6 of [`pipeline-refactor.md`](pipeline-refactor.md),
 dated 2026-11-01; the user accepted every recommendation in Section 12 the
-same day. Nothing is implemented yet. Implementation agents work
-through the sub-steps in Section 11, and each sub-step ends with its
-acceptance criteria green.
+same day. Sub-steps 6.1 through 6.8b are implemented, with "As built"
+notes where the code departs from or refines this design. Implementation
+agents work through the sub-steps in Section 11, and each sub-step ends
+with its acceptance criteria green.
 
 The rules are [`1889-rules.md`](1889-rules.md). Where they are silent or
 disagree with 18xx.games, the engine follows 18xx.games (rules §14,
@@ -518,34 +519,102 @@ forced rule.
 
 **Must buy.** A corp with no trains must buy one when a train is available
 in the depot or pool and `route_available` is set (`game/base.rb:1404`).
-BUY_TRAIN then has no pass. When the treasury covers the cheapest depot or
-pool train (6.7), the corp buys as any other: any depot or pool train it
-affords, or another corp's train for ¥1 up to its cash; Ruby's president may
-contribute only toward the cheapest train (`check_for_cheapest_train`),
-which the treasury covers.
+BUY_TRAIN then has no pass (the corp's actions are `sell_shares` and
+`buy_train`, `step/buy_train.rb:20`). When the treasury covers the cheapest
+depot or pool train (6.7), the corp buys as any other: any depot or pool
+train it affords, or another corp's train for ¥1 up to its cash; Ruby's
+president may contribute only toward the cheapest train
+(`check_for_cheapest_train`, `step/train.rb:289`), which the treasury
+covers.
 
-**Short treasury.** If the treasury can't cover the cheapest train, these
-options are legal (`step/train.rb:156-185`, `EBUY_FROM_OTHERS = :never`):
+**Emergency (as built, 6.8b).** If the treasury can't cover the cheapest
+train, the president must raise the need: that train's price less the
+treasury and their cash (`needed_cash`, `available_cash`,
+`step/train.rb:142-150`). 1889 keeps Ruby's `EBUY_*` defaults
+(`game/base.rb:275-298`) but `EBUY_PRES_SWAP = false` and
+`EBUY_FROM_OTHERS = :never` (`game/g_1889/game.rb:129-130`), with
+`MUST_SELL_IN_BLOCKS = true`. BUY_TRAIN offers, without a pass
+(`_buy_train_emergency` in `actions.pyx`):
 
-- **The cheapest depot or pool train,** with the president paying the
-  shortfall. A depot buy still changes the phase.
-- **Another corp's train,** for ¥1 up to the corp's cash, while the corp has
-  cash and no shares have been sold (`:180`). Until 6.8b the BUY_TRAIN
-  enumerator raises in this case, so the driver rests there. Ruby's
-  non-blocking BuyCompany still offers privates here, which 6.8b must keep.
-- **Sales of the president's shares** (`step/emergency_money.rb:16-50`): no
-  presidency may change anywhere, the pool cap applies, each corp is sold at
-  most once (`ebuy_sold_mask`), and a sale is legal only while the next
-  smaller bundle would still fall short. Ruby has no "sell down to 60%"
-  exception.
-- **Bankruptcy** (slot 93), when everything above together falls short
-  (`game/base.rb:1989`). The largest sellable bundle in each corp is sold,
-  and the president's cash goes to the bank (`step/bankrupt.rb:24-44`). The
-  rulebook sends the cash to the corp instead; the scores come out the same.
+- **The cheapest train,** Ruby's `min_depot_train` (`depot.rb:57`), which
+  `buyable_trains` lists alone (`step/train.rb:160-161`): the pool's when
+  the depot does not sell its type, else the depot's. It is legal while the
+  treasury and the president's cash cover it, and the president pays the
+  rest (`buy_train_action`, `:76-97`; `Spender#spend` refuses more than
+  they hold). A depot buy still changes the phase. Ruby logs the list
+  price and no contribution.
+- **Another corp's train,** for ¥1 up to the treasury (`spend_minmax`,
+  `:247-260`), while the treasury holds ¥1 (`:180`) and the president has
+  sold nothing since the turn's last purchase (`last_share_sold_price`,
+  `:171-177`; the engine's `ebuy_sold_any`). 314 record 350: TR, holding
+  ¥2, buys KO's 3 for ¥2.
+- **The president's sales** (`step/emergency_money.rb:8-57`,
+  `step/train.rb:129-140`), of any corp they hold, the operating corp's
+  included: each corp once a turn (`MUST_SELL_IN_BLOCKS` with
+  `corporations_sold`; `ebuy_sold_mask`), within the pool's room
+  (`fit_in_bank?`), with no presidency changing anywhere: a president keeps
+  as many shares as anyone else holds, and so never sells the President's
+  Certificate (`causes_president_swap?`, `ShareBundle#can_dump?`;
+  `corp_emergency_sale`). And a block sells only while the next smaller one
+  would still fall short (`selling_minimum_shares?`,
+  `EBUY_SELL_MORE_THAN_NEEDED = false`). Ruby has no "sell down to 60%"
+  exception. A sale drops the price a row per share (`SELL_MOVEMENT =
+  :down_share`, `game/base.rb:1311`), and the corps yet to run this OR
+  re-sort into price order (`recalculate_order`, `round/operating.rb:97`).
+- **Bankruptcy** (slot 93), when the treasury, the president's cash, and
+  the largest block they may still sell of each corp fall short of the
+  cheapest train (`can_go_bankrupt?`, `game/base.rb:1989`, through
+  `liquidity` and BuyTrain's `can_sell?`, so a corp sold this turn counts
+  nothing; each corp's largest block counts in full, as every smaller one
+  falls short then). Other corps' trains do not count, so both may be
+  legal. Its effects (`step/bankrupt.rb:24-57`): the president sells the
+  largest block they may of each corp not sold this turn, the corps yet to
+  run re-sort, their cash goes to the bank (`set_cash(0, bank)`; the
+  rulebook gives it to the corp, and nobody scores either way), and they
+  are bankrupt (`declare_bankrupt`), which ends the game at once. The corp
+  keeps its treasury. The bankrupt player keeps the shares that could not be
+  sold and their privates, which score (Section 9), and Ruby's priority deal
+  skips them (`priority_deal_player`, `game/base.rb:3114`), so it passes
+  on. 314's bankrupt president, player 639, ends at ¥0 with KO 40% (sold
+  that turn), TR 20% (its pool full), and KU 20% (the President's
+  Certificate, which nobody could take).
+- **Privates** stay for sale (Ruby's non-blocking BuyCompany ignores the
+  must-buy, `can_buy_company?`), and DR's exchange stays open.
 
-**Game end.** Bankruptcy ends the game immediately. A broken bank ends it
-after the current OR set, whether it broke during an SR or an OR (`:full_or`,
-`game/base.rb:3042`).
+A decision with one choice is forced as anywhere: a purchase the president
+can fund with nothing else legal, or a bankruptcy with nothing left to sell.
+Ruby logs both, and the sync rule consumes them. A purchase clears
+`ebuy_sold_any` (after one funded by the president the treasury is empty,
+so Ruby's step passes and clears `last_share_sold_price`), and TURN_END
+clears both fields.
+
+**Where the design was wrong.** It had the cheapest depot *or* pool
+train, bankruptcy when "everything above" falls short, and the largest
+block of *each* corp sold at bankruptcy. Ruby offers one train, other corps'
+trains don't count toward bankruptcy, and a corp sold this turn is not sold
+again (314's KO). The re-sort happens at each sale and at the bankruptcy,
+not at TURN_END.
+
+**Ruby's steps take more than its UI offers.** BuyTrain gives the president
+`sell_shares` at every BuyTrain step (`step/buy_train.rb:16`), and its
+`can_sell?` admits a sale whenever their cash and the treasury fall short of
+the cheapest train, must-buy or not (8 BuyTrain snapshots of 314 and 11 of
+962). The OR's first step, Bankrupt (`game/g_1889/game.rb:174`), takes
+`bankrupt` at any step of the turn on that shortfall, counting no shares
+outside BuyTrain (22 OR snapshots of 314 and 81 of 962 outside an
+emergency). And `buy_train_action` also accepts the pool's train of the
+cheapest type beside the depot's (it checks `Depot#available`). The UI
+offers emergency money only in a must-buy (the submodule's
+`assets/app/view/game/buy_trains.rb:308-310`) and lists only
+`buyable_trains`, and so does the engine.
+
+**Game end** (`GAME_END_CHECK = { bankrupt: :immediate, bank: :full_or }`,
+`game/base.rb:125`, which 1889 keeps; `game_end_check`, `:2988`, after every
+action, `:903-915`). A bankruptcy ends the game at once (one suffices:
+`BANKRUPTCY_ENDS_GAME_AFTER = :one`). A broken bank ends it after the
+set's last OR (`end_now?`, `:3042`), whether it broke during an SR or an OR.
+The engine sets `round = ROUND_GAME_OVER`, `step = STEP_GAME_OVER`, and
+`end_reason`, and the row keeps the rest, as Ruby keeps its round.
 
 **Searched decisions** are returned states with two or more policy actions.
 **Hot paths** run nogil as in RSS (`core/actions.pyx:352`, `:1054`,
@@ -745,6 +814,19 @@ same way, at any state; values are the pipeline's job (blueprint §10
 **Open:**). The tests compare against Ruby's `result` at the end of `314` and `962`, and
 against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
 
+**As built (6.8b).** `is_terminal` and `final_scores(state, scores)` are
+nogil in `actions.pyx`, beside `get_decision_phase`, with `is_terminal_py`
+and `final_scores_py` (a list) for the 6.9 adapter, as `games/rss.py` wraps
+RSS's `TURN` and `PLAYERS`; `end_reason` tells why the game ended.
+`final_scores` reads `player_value` (`entities/player.pyx`,
+`PLAYERS[i].value`); Ruby's `result` (`game/base.rb:730`) ranks the same
+values. **Measured:** `compare` checks every player's value at every
+snapshot of the four fixtures, and Ruby's `result` once the game is over:
+314 ends at {90: ¥1,473, 344: ¥1,134, 639: ¥320}, the bankrupt 639's ¥320
+being its unsold shares, and 962 at {545: ¥4,444, 253: ¥4,317, 1230:
+¥3,880, 147: ¥3,091}. The `hs_*` fixtures' values before their `end_game`
+equal its `result`.
+
 ## 10. Testing plan (`tests/g1889/`)
 
 1. **Static data,** as in Section 2.
@@ -783,10 +865,18 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
      ER just sold (ER's lays as SpecialTrack offers them, and the step Ruby
      resumes after it), and a top-level `abilities` with MF's port lays while
      its ability is usable and `Exchange#can_exchange?` for DR, whoever's
-     turn it is. `extract_states.rb --graphs` answers the same graph queries, the
+     turn it is. Schema 8 (6.8b) adds `emergency` at every OR snapshot
+     with an operator: its president, `can_go_bankrupt?` (which Ruby's
+     Bankrupt step checks at any step of the turn), and at BuyTrain the
+     percents of the bundles BuyTrain's `can_sell?` lets the president sell,
+     by corp. `extract_states.rb --graphs` answers the same graph queries, the
      semi-restrictive verdicts, and AutoRouter, for hand-built maps given a
-     phase and trains. Cold extraction is unchanged by schemas 5-7 (3.0 s
-     for 314, 7.8 s for 962); the random-map route extract takes about 8 s.
+     phase and trains, and `--probes` (6.8b) snapshots a fixture's game at an
+     action after in-place changes (pool shares moved to a player, a
+     player's cash set), for situations no fixture reaches. Cold extraction
+     is unchanged by schemas 5-8 (3.1 s for 314, 8.0 s for 962); the
+     random-map route extract takes about 8 s, and the six emergency probes
+     13 s.
    - **`snapshot.py`** provides `compare(state, snap)` and
      `load_state(snap)`. `load_state` builds the state through entity APIs,
      so oracle tests don't depend on replaying up to that point.
@@ -823,7 +913,8 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
        mapper rejects another price; every fixture purchase is at its price.
      - **Emergency buys from other corps (6.8b).** 314 record 350: TR, which
        must buy and holds ¥2, buys KO's 3 for ¥2, as Ruby allows before any
-       share sale (Section 6.2).
+       share sale (Section 6.2); it replays as BUY_TRAIN 16+6c+t and
+       TRAIN_PRICE's ⌈2·cash/3⌉ point.
      - **Port tile (6.8a).** 962 action 39 lays MF's port tile at the start
        of TR's turn, whose president owns MF, and TR then lays its own tile.
        The PORT lay doesn't use up the corp's lay; it replays as TRACK 61,
@@ -833,10 +924,21 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
        records 83, 272, 273), all at twice face; ER's sellers pass (314
        record 90) or lay tile 14 on C4 (962 record 42). Ruby's BuyCompany
        also offers a purchase during an emergency, and its check ignores the
-       must-buy (`can_buy_company?`), which 6.8b's BUY_TRAIN must keep.
+       must-buy (`can_buy_company?`), which BUY_TRAIN keeps (6.8b).
      - **Bankruptcy (6.8b).** A bankrupt player keeps shares that can't be
        sold: in 314 player 639 ends with KO 40%, TR 20%, and KU 20% as
-       president, at ¥0 cash.
+       president, at ¥0 cash. KO was sold that turn, TR's pool is full, and
+       KU's 20% is the President's Certificate with no other holder. In
+       KO's emergency (records 449-453) 639 sells UR 10%, KU 30%, IR 10%,
+       and TR 10% and pays ¥518 toward a D; in TR's (456-457) it sells KO
+       20% and goes bankrupt.
+     - **Game ends (6.8b).** Ruby keeps the last round's fields once the
+       game is over. At 314's end its round is still the OR, at BuyTrain,
+       with TR operating, KO in `corporations_sold`, and the priority deal
+       past the bankrupt player; at 962's the OR's last turn is over, with no
+       operator. `compare` and `load_state` take a finished snapshot so, and
+       Ruby's `result` is compared once the game is over (not for the `hs_*`
+       fixtures' `end_game`, which the engine does not model).
      - **Track after the lay (6.5b, 6.8a).** Ruby keeps the Track step open
        after the corp's lay while its president owns MF
        (`tile_lay_abilities_should_block?`), for the port tile; 314 records
@@ -916,6 +1018,24 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    SR turn that exchanges DR for an unparred IR share and lays the port
    tile, and an exchange at the operating corp's Track that floats IR
    mid-OR, which then waits for the next OR.
+   **As of 6.8b:** all four fixtures replay end to end: 314 through its
+   bankruptcy (record 457), 962 through the dividend that ends the OR set in
+   which the bank broke (446), each with its final state and `result`
+   equal to Ruby's, and the `hs_*` fixtures to their `end_game`. Every OR
+   turn (43 in 314, 56 in 962) replays to its end from its first snapshot,
+   the game's end included: every corp lay and token (46 and 59), private
+   purchase (6 and 7), dividend (32 and 48), train purchase (30 and 21), and
+   discard (2 and 0), and 314's 5 emergency sales and its bankruptcy.
+   Replayed alone from the snapshot before it, each of those actions
+   replays. At every BuyTrain snapshot BUY_TRAIN's legal set equals what
+   Ruby offers, emergencies included (`replay/test_train_oracles.py`): at
+   314's 9 the president-funded purchase where the president's cash
+   suffices (3), 35 sales, and the bankruptcy (2: TR at 455-456); the
+   private oracles now check those 9 decisions' buy-private slots too (413
+   of 314's top-level decisions). Six in-place probes of 314's emergencies
+   (`--probes`) equal Ruby too: a president beside a co-holder of three or
+   four shares (keeping as many), a need of ¥0 and ¥1, and a bankruptcy
+   either side of its boundary.
 
    **Test:** can Ruby's `check_track_restrictions!` (`step/tracker.rb:326`,
    skipped while loading) run cheaply per candidate on a cloned game? **Answer
@@ -968,7 +1088,21 @@ against Ruby's player values where the `hs_*` fixtures stop at `end_game`.
    BUY_TRAIN, 222 at BUY_PRIVATE; 107 at exact prices, flags off), and ER's
    sellers lay 120 times on C4 and pass 15; DR's owners exchange 173 times
    (155 in SRs, 18 in ORs) and MF's lay the port tile 173 times (166 from
-   STOCK, 7 from TRACK). The test still takes 19 s.
+   STOCK, 7 from TRACK). The test still takes 19 s. **As of 6.8b:** the
+   games run to their end, all 200 within 1,126 decisions (the cap is
+   3,000): 106 at a bankruptcy (63 flags off, 43 on) and 94 at a broken
+   bank's OR set (37 and 57). They also check that the game is over exactly
+   with an `end_reason` that matches it (one bankrupt player at ¥0, or a
+   broken bank), that the turn's emergency sales stand only from BUY_TRAIN
+   to the turn's end and `ebuy_sold_any` from a sale to the purchase, and
+   that `final_scores` equals `Player#value` recomputed and adds up to the
+   players' cash, the shares outside the IPO and pool at market, and their
+   privates at face. Emergency choices are uniform but the depot's (the bias
+   above): the emergencies take 239 buys from other corps, 71
+   president-funded depot buys and 22 pool buys, 105 sales, 106
+   bankruptcies, and 4 privates. Over 13,321 corp turns the games reach
+   phase 4 in 198, 5 in 184, 6 in 104, and D in 78 (51 flags off, 27 on).
+   The test takes 26 s.
 5. **Per-phase unit tests** (`tests/g1889/phases/`), in the style of
    `tests/phases/` and `.claude/commands/phase-test.md`, run through the
    driver. A `conftest.py` provides `game_state`, `apply_and_verify`, and
@@ -997,7 +1131,7 @@ up to X; the harness reports the first unsupported action.
 | 6.6 | Route solver, the route cache, `ROUTE`, `override_route_revenue` | matches `AutoRouter` at every Route snapshot; at least every human revenue; agrees with brute force; profile recorded |
 | 6.7 | Dividends; BUY_TRAIN from the depot, the pool, and other corps, plus the D trade-in; TRAIN_PRICE; train limits; must-buy funded from the treasury; `PHASE`; DISCARD | `314` and `962` green through the first private buy or emergency; random playouts reach phase D |
 | 6.8a | Privates: the buy-private slots at the top-level OR decisions Ruby asks in phases 3-4, PRIVATE_PRICE, ER_BONUS, PORT, and the DR exchange, in their owners' turns; `private_sale_same_president`; extractor schema 7 | `314` and `962` green up to the first record that needs 6.8b (314 to 349, before TR's emergency; 962 to 445, before the game's end); per-turn replays no longer stop at a private's action; the schema-7 oracles equal Ruby at every snapshot; random playouts use every new action kind |
-| 6.8b | Emergency money, including Ruby's emergency buys from other corps and any private purchase in an emergency; bankruptcy; game end; `final_scores` | all four fixtures green end to end, including the final results |
+| 6.8b | Emergency money, including Ruby's emergency buys from other corps and any private purchase in an emergency; bankruptcy; game end; `final_scores` and `is_terminal`; extractor schema 8 and in-place probes | all four fixtures green end to end, including the final results; per-turn replays no longer stop at emergencies or the game's end; the schema-8 oracles and probes equal Ruby; random playouts run to the game's end |
 | 6.9 | Full random playouts; flags; profiling; the engine half of `games/g1889.py`; remove the driver's development stop (6.3) | seeds terminate within the cap with the invariants intact; the driver no longer catches `NotImplementedError`; adapter conformance passes the engine checks for 1889; the profile is recorded here |
 
 **The `Game` adapter.** `games/g1889.py` is first wired in at 6.9, once a

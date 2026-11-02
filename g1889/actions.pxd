@@ -11,8 +11,7 @@ There are three id sets:
   PRIVATE_PRICE: legal by range check, never enumerated, and at or above the
   phase size, so they have no unified policy slot.
 
-The BUY_TRAIN enumerator raises NotImplementedError at a must-buy the
-treasury cannot fund, whose emergency money lands with 6.8b (§11).
+``is_terminal`` and ``final_scores`` are the game's end and its scores (§9).
 """
 
 cimport numpy as cnp
@@ -71,6 +70,8 @@ cdef int encode_action(ActionInfo info) except -1 nogil
 cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil
 
 cdef int get_decision_phase(GameState state) noexcept nogil
+cdef bint is_terminal(GameState state) noexcept nogil
+cdef int final_scores(GameState state, int* scores) noexcept nogil
 cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -1 nogil
 cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except -1 nogil
 cdef bint is_legal_action(GameState state, int action_id) except -1 nogil
@@ -84,6 +85,10 @@ cdef int enumerate_lay_candidates(GameState state, int hex, LayCandidate* buf) n
 cdef bint can_lay(GameState state, int corp, int hex) noexcept nogil
 cdef bint can_token(GameState state, int corp, int hex) noexcept nogil
 cdef bint must_buy_train(GameState state, int corp) noexcept nogil
+
+# Emergency money (§6.2): a must-buy the treasury cannot fund.
+cdef bint in_emergency(GameState state, int corp) noexcept nogil
+cdef bint can_go_bankrupt(GameState state, int corp) noexcept nogil
 
 # Privates (§5.1, §5.3): purchases by the operating corp, DR's exchange, MF's
 # port tile (PORT's ids), and ER's lays on C4 sorted like TILE's.
@@ -104,6 +109,10 @@ cpdef list lay_candidates_py(GameState state, int hex, int corp=*)
 cpdef list lay_hexes_py(GameState state, int corp=*)
 cpdef list token_hexes_py(GameState state, int corp=*)
 cpdef bint must_buy_train_py(GameState state, int corp=*)
+cpdef bint in_emergency_py(GameState state, int corp=*)
+cpdef bint can_go_bankrupt_py(GameState state, int corp=*)
+cpdef bint is_terminal_py(GameState state)
+cpdef list final_scores_py(GameState state)
 cpdef list purchasable_privates_py(GameState state, int corp=*)
 cpdef bint can_exchange_dr_py(GameState state, int player)
 cpdef list port_lays_py(GameState state)

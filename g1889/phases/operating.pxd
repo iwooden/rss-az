@@ -13,6 +13,8 @@ cdef void run_turn_start(GameState state) except *
 cdef void run_route(GameState state) except *
 cdef void run_turn_end(GameState state) except *
 cdef void run_or_end(GameState state) except *
+cdef void resort_order(GameState state) except *
+cdef void end_game(GameState state, int reason) except *
 cdef void apply_track(GameState state, const ActionInfo* info) except *
 cdef void apply_tile(GameState state, const ActionInfo* info) except *
 cdef void apply_token(GameState state, const ActionInfo* info) except *

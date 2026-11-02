@@ -31,6 +31,7 @@ cdef int corp_token_price(GameState state, int corp) noexcept nogil
 # Share rules (rules §6.3, §6.5)
 cdef int corp_successor(GameState state, int corp) noexcept nogil
 cdef int corp_max_sale(GameState state, int player, int corp) noexcept nogil
+cdef int corp_emergency_sale(GameState state, int player, int corp) noexcept nogil
 
 cdef void invalidate_route(GameState state, int corp) noexcept nogil
 cdef void invalidate_all_routes(GameState state) noexcept nogil
@@ -67,4 +68,5 @@ cdef class Corporation:
     cpdef void sell_shares(self, GameState state, int player, int count)
     cpdef bint float_if_ready(self, GameState state)
     cpdef int max_sale(self, GameState state, int player)
+    cpdef int emergency_sale(self, GameState state, int player)
     cpdef bint sold_out(self, GameState state)

@@ -160,9 +160,8 @@ cdef class GameDriver:
             except NotImplementedError:
                 # TEMPORARY development stop, removed at 6.9 (§11): rest where
                 # a later sub-step takes over (a decision whose legal set it
-                # owns, such as a must-buy that needs emergency money, or an
-                # automated step such as OR_END after a broken bank's last
-                # OR), so replay can compare the state there.
+                # owns, or an automated step), so replay can compare the state
+                # there. Since 6.8b no legal play reaches one.
                 # Nothing has changed since the last decision or step. The next
                 # apply_action fails loudly: NotImplementedError at a decision,
                 # STATUS_INVALID at an automated step.

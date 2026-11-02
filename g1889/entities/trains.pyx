@@ -68,16 +68,30 @@ cdef int trains_depot_types(GameState state) noexcept nogil:
     return mask
 
 
-cdef int trains_cheapest_price(GameState state) noexcept nogil:
-    """The cheapest train in the depot or the pool (``Depot#min_depot_price``,
-    whose ``depot_trains`` include the pool), 0 with none."""
+cdef int trains_cheapest_type(GameState state) noexcept nogil:
+    """The type of the cheapest train in the depot or the pool
+    (``Depot#min_depot_train``, whose ``depot_trains`` include the pool), -1
+    with none. Ruby lists the depot's trains first, so when the depot sells
+    that type too, its train is the one (``trains_cheapest_in_pool``)."""
     cdef int types = trains_depot_types(state)
-    cdef int cheapest = 0
+    cdef int cheapest = -1
     cdef int t
     for t in range(<int>NUM_TRAIN_TYPES):
-        if (types >> t & 1 or pool_count(state, t)) and (cheapest == 0 or TRAIN_PRICE[t] < cheapest):
-            cheapest = TRAIN_PRICE[t]
+        if (types >> t & 1 or pool_count(state, t)) and (cheapest < 0 or TRAIN_PRICE[t] < TRAIN_PRICE[cheapest]):
+            cheapest = t
     return cheapest
+
+
+cdef bint trains_cheapest_in_pool(GameState state) noexcept nogil:
+    """Whether ``Depot#min_depot_train`` is the pool's: the depot does not sell its type."""
+    cdef int t = trains_cheapest_type(state)
+    return t >= 0 and not (trains_depot_types(state) >> t & 1)
+
+
+cdef int trains_cheapest_price(GameState state) noexcept nogil:
+    """The cheapest train's price (``Depot#min_depot_price``), 0 with none."""
+    cdef int t = trains_cheapest_type(state)
+    return TRAIN_PRICE[t] if t >= 0 else 0
 
 
 cdef int trains_limit(GameState state) noexcept nogil:
@@ -143,6 +157,12 @@ cdef class Trains:
 
     cpdef int cheapest_price(self, GameState state):
         return trains_cheapest_price(state)
+
+    cpdef int cheapest_type(self, GameState state):
+        return trains_cheapest_type(state)
+
+    cpdef bint cheapest_in_pool(self, GameState state):
+        return trains_cheapest_in_pool(state)
 
     cpdef int limit(self, GameState state):
         return trains_limit(state)

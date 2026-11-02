@@ -18,7 +18,14 @@
   And the privates: TR and ER block their hexes exactly while a player owns
   them, none is open after phase 4 but a player's UTF, and MF's port tile is
   on a port hex once used. ``apply_and_verify`` checks that no corp's private
-  ever goes back to a player.
+  ever goes back to a player. And the game's end and the emergencies: the
+  game is over exactly at GAME_OVER with an ``end_reason``, which a
+  bankruptcy's matches its one bankrupt player at ¥0 and a broken bank's
+  the bank; the turn's emergency sales stand from BUY_TRAIN to the turn's
+  end, and ``ebuy_sold_any`` from a sale to the purchase; and
+  ``final_scores_py`` equals Ruby's ``Player#value`` recomputed, and its
+  sum the players' cash, the corps' shares outside the IPO and the pool at
+  market, and the players' privates at face.
 - ``enter_auction(state, turn_player, sold, bids)``: hand-built auction
   positions through ``setup_auction_py``.
 - ``hold(state, corp, ...)`` and ``enter_stock_round(state, first, turn)``:
@@ -35,7 +42,7 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
-from g1889.driver import DRIVER, STATUS_OK
+from g1889.driver import DRIVER, STATUS_GAME_OVER, STATUS_OK
 from g1889.entities.bank import BANK
 from g1889.entities.corp import CORPS, PRESIDENT_SHARES, SHARES_PER_CORP
 from g1889.entities.hexmap import MAP
@@ -61,6 +68,9 @@ TURN_STEPS = (K.STEP_TRACK, K.STEP_TILE, K.STEP_TOKEN, K.STEP_ROUTE, K.STEP_DIVI
 # The sub-phases that return to the step they interject in (``return_step``).
 RETURNING_STEPS = (K.STEP_DISCARD, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS, K.STEP_PORT)
 OR_STEPS = (K.STEP_OR_START, K.STEP_TURN_START, *TURN_STEPS, K.STEP_TURN_END, K.STEP_OR_END)
+# Where a turn's emergency sales may stand: from BUY_TRAIN to the turn's end, or a bankruptcy's game end.
+EBUY_STEPS = (K.STEP_BUY_TRAIN, K.STEP_TRAIN_PRICE, K.STEP_DISCARD, K.STEP_BUY_PRIVATE, K.STEP_PRIVATE_PRICE,
+              K.STEP_ER_BONUS, K.STEP_TURN_END, K.STEP_GAME_OVER)
 
 
 # =============================================================================
@@ -274,6 +284,7 @@ def assert_invariants(state, msg=''):
     _assert_map(state, msg)
     _assert_trains(state, msg)
     _assert_privates(state, msg)
+    _assert_game_end(state, msg)
 
     step, top, active = TURN.step(state), topmost(state), TURN.active_player(state)
     if TURN.round(state) != K.ROUND_AUCTION:
@@ -305,6 +316,32 @@ def assert_invariants(state, msg=''):
     assert TURN.auction_private(state) == -1 and PRIVATES[top].bid_count(state) == 0, f'{msg}: topmost has bids'
     assert active == TURN.auction_turn(state), f'{msg}: the turn player acts'
     assert (TURN.pending_private(state) >= 0) == (step == K.STEP_BID), f'{msg}: pending private'
+
+
+def _assert_game_end(state, msg):
+    """The game is over exactly at GAME_OVER, with its reason: a bankruptcy
+    (one bankrupt player, at ¥0) or a broken bank; nobody is bankrupt
+    before. The scores are Ruby's ``Player#value`` at any state, and they
+    add up to the players' cash, the shares outside the IPO and the pool at
+    market, and the players' privates at face."""
+    n = TURN.num_players(state)
+    over, reason = TURN.round(state) == K.ROUND_GAME_OVER, TURN.end_reason(state)
+    assert over == (TURN.step(state) == K.STEP_GAME_OVER) == (reason != K.END_REASON_NONE), \
+        f'{msg}: round {TURN.round(state)}, step {TURN.step(state)}, end reason {reason}'
+    bankrupt = [i for i in range(n) if PLAYERS[i].bankrupt(state)]
+    if reason == K.END_REASON_BANKRUPT:
+        assert len(bankrupt) == 1 and PLAYERS[bankrupt[0]].cash(state) == 0, f'{msg}: bankrupt {bankrupt}'
+    else:
+        assert bankrupt == [] and (reason != K.END_REASON_BANK or BANK.broken(state)), f'{msg}: {reason} {bankrupt}'
+    prices = [MARKET.price(state, c) for c in range(D.NUM_CORPS)]
+    privates = [sum(D.PRIVATE_VALUE[p] for p in range(D.NUM_PRIVATES)
+                    if PRIVATES[p].owner(state) == K.OWNER_PLAYER + i) for i in range(n)]
+    values = [PLAYERS[i].cash(state) + privates[i] + sum(PLAYERS[i].shares(state, c) * prices[c]
+                                                         for c in range(D.NUM_CORPS)) for i in range(n)]
+    scores = A.final_scores_py(state)
+    assert scores == values, f'{msg}: final scores {scores}, values {values}'
+    held = sum((SHARES_PER_CORP - c.ipo_shares(state) - c.pool_shares(state)) * prices[c.corp_id] for c in CORPS)
+    assert sum(scores) == sum(PLAYERS[i].cash(state) for i in range(n)) + held + sum(privates), f'{msg}: score sum'
 
 
 def _assert_map(state, msg):
@@ -378,6 +415,15 @@ def _assert_operating(state, msg):
     assert source < 0 or TRAINS.corp_trains(state, *divmod(source, D.NUM_TRAIN_TYPES)), f'{msg}: unheld train'
     assert TURN.route_revenue(state) == 0 or K.STEP_DIVIDEND in (step, TURN.return_step(state)), \
         f'{msg}: route revenue outside DIVIDEND'
+    sold, sold_any = TURN.ebuy_sold_mask(state), TURN.ebuy_sold_any(state)
+    assert not sold or (corp >= 0 and step in EBUY_STEPS), f'{msg}: emergency sales {sold:#x} at step {step}'
+    if corp >= 0:  # a sale's flag stands until the turn's purchase
+        assert sold_any == (sold != 0 and TRAINS.corp_total(state, corp) == 0), f'{msg}: ebuy_sold_any {sold_any}'
+    else:
+        assert not sold_any, f'{msg}: ebuy_sold_any between turns'
+    if TURN.round(state) == K.ROUND_GAME_OVER:  # Ruby keeps the last round's fields
+        assert corp < 0 or corp == order[TURN.or_index(state)], f'{msg}: operating corp {corp}, order {order}'
+        return
     if TURN.round(state) != K.ROUND_OPERATING:
         assert corps == [] and corp == -1 and TURN.or_index(state) == 0, f'{msg}: OR fields outside the OR'
         return
@@ -492,9 +538,11 @@ def _verify(result, msg):
 
 def apply_and_verify(state, action_id, msg='', expected_status=STATUS_OK):
     """Apply a legal id (enumerated, or an exact amount in range) through the
-    driver and check every state it passed through."""
+    driver and check every state it passed through. ``expected_status`` None
+    accepts the game's end as well as a decision."""
     assert A.is_legal_action_py(state, action_id), f'{msg}: id {action_id} is not legal; legal {legal_ids(state)}'
     history = []
     status = DRIVER.apply_action(state, action_id, history)
-    assert status == expected_status, f'{msg}: status {status}, expected {expected_status}'
+    expected = (STATUS_OK, STATUS_GAME_OVER) if expected_status is None else (expected_status,)
+    assert status in expected, f'{msg}: status {status}, expected {expected_status}'
     return _verify(ApplyResult(state, history, status), msg)

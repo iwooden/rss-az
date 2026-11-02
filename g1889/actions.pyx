@@ -18,26 +18,28 @@ from g1889.constants cimport (
     DPHASE_PRIVATE_PRICE, DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
     DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE, MAX_SALE_SHARES,
     NUM_DECISION_PHASES, NUM_STEPS, OWNER_CORP, OWNER_PLAYER, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY,
-    PRIVATE_PRICE_POINTS, RAISE_DROP, RAISE_POINT, RAISE_POINTS, STEP_TO_DECISION_PHASE, STOCK_DR, STOCK_IPO,
-    STOCK_MF, STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR, TOKEN_HEX, TOKEN_PASS,
-    TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS, TRAIN_PRICE_POINTS,
+    PRIVATE_PRICE_POINTS, RAISE_DROP, RAISE_POINT, RAISE_POINTS, ROUND_GAME_OVER, STEP_TO_DECISION_PHASE, STOCK_DR,
+    STOCK_IPO, STOCK_MF, STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR, TOKEN_HEX,
+    TOKEN_PASS, TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS, TRAIN_PRICE_POINTS,
 )
 from g1889.data.tables cimport (
     CERT_LIMIT, D_TRAIN, DR_EXCHANGE_CORP, ENDPOINT_PAIRS, ER_HEX, ER_TILE, HEX_EXIT_MASK, HEX_NEIGHBOR,
-    MAX_LAY_CANDIDATES, MAX_OWNERSHIP_PERCENT, MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS, NUM_ER_TILES,
-    NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE,
-    PHASE_CAN_BUY_PRIVATES, PHASE_TILE_COLORS, PORT_TILE, PRIVATE_DR, PRIVATE_MF, PRIVATE_VALUE, TILE_BLOCKS_LAY,
-    TILE_COLOR, TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, TRAIN_PRICE, UPG_ROT, UPG_START, UPG_TILE,
+    MAX_LAY_CANDIDATES, MAX_OWNERSHIP_PERCENT, MAX_PLAYERS, MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS,
+    NUM_ER_TILES, NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES,
+    PAR_PRICE, PHASE_CAN_BUY_PRIVATES, PHASE_TILE_COLORS, PORT_TILE, PRIVATE_DR, PRIVATE_MF, PRIVATE_VALUE,
+    TILE_BLOCKS_LAY, TILE_COLOR, TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, TRAIN_PRICE, UPG_ROT, UPG_START,
+    UPG_TILE,
 )
 from g1889.entities.corp cimport (
-    PRESIDENT_SHARES, corp_cash, corp_ipo_shares, corp_max_sale, corp_par_index, corp_par_price, corp_pool_shares,
-    corp_president, corp_token_price, corp_tokens_left,
+    PRESIDENT_SHARES, corp_cash, corp_emergency_sale, corp_ipo_shares, corp_max_sale, corp_par_index,
+    corp_par_price, corp_pool_shares, corp_president, corp_token_price, corp_tokens_left,
 )
 from g1889.entities.graph cimport graph_node, graph_route_available, graph_sides, graph_walks_new_track
 from g1889.entities.hexmap cimport hex_paths, hex_rotation, hex_tile, map_has_slot_for, map_lay_cost, supply_count
 from g1889.entities.market cimport market_price, market_unlimited
 from g1889.entities.player cimport (
     player_available, player_can_gain, player_cash, player_cert_count, player_shares, player_sold_mask,
+    player_value,
 )
 from g1889.entities.phase cimport game_phase
 from g1889.entities.private cimport (
@@ -45,13 +47,14 @@ from g1889.entities.private cimport (
     topmost_private,
 )
 from g1889.entities.trains cimport (
-    corp_train_count, corp_train_total, pool_count, trade_in_price, trains_cheapest_price, trains_depot_types,
-    trains_first_crowded, trains_limit,
+    corp_train_count, corp_train_total, pool_count, trade_in_price, trains_cheapest_in_pool, trains_cheapest_price,
+    trains_cheapest_type, trains_depot_types, trains_first_crowded, trains_limit,
 )
 from g1889.entities.turn cimport (
-    turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_num_players, turn_operating_corp,
-    turn_pending_hex, turn_pending_private, turn_pending_train_source, turn_route_revenue, turn_sr_bought,
-    turn_sr_sold_mask, turn_sr_sold_then_bought, turn_step, turn_turn,
+    turn_active_player, turn_auction_pass_payouts, turn_auction_private, turn_ebuy_sold_any, turn_ebuy_sold_mask,
+    turn_num_players, turn_operating_corp, turn_pending_hex, turn_pending_private, turn_pending_train_source,
+    turn_round, turn_route_revenue, turn_sr_bought, turn_sr_sold_mask, turn_sr_sold_then_bought, turn_step,
+    turn_turn,
 )
 from g1889.state cimport GameState
 
@@ -368,6 +371,24 @@ cdef int get_decision_phase(GameState state) noexcept nogil:
     if step < 0 or step >= <int>NUM_STEPS:
         return -1
     return STEP_TO_DECISION_PHASE[step]
+
+
+cdef bint is_terminal(GameState state) noexcept nogil:
+    """Whether the game is over: a bankruptcy, or a broken bank's OR set,
+    has ended it (``end_reason`` tells which)."""
+    return turn_round(state) == ROUND_GAME_OVER
+
+
+cdef int final_scores(GameState state, int* scores) noexcept nogil:
+    """Write each canonical player's score, Ruby's ``Player#value``
+    (``player_value``), to ``scores`` and return the player count. Ruby's
+    ``result`` ranks the same values once the game is over; they are defined
+    at any state, a bankrupt player's included."""
+    cdef int n = turn_num_players(state)
+    cdef int i
+    for i in range(n):
+        scores[i] = player_value(state, i)
+    return n
 
 
 cdef inline bint _has_exact(int phase) noexcept nogil:
@@ -774,10 +795,10 @@ cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
 # step/buy_company.rb). Ruby skips Dividend at zero revenue with a withhold,
 # so DIVIDEND then offers only that, and the driver applies it. BUY_TRAIN
 # buys one train at a time until the corp passes; a buy from another corp
-# names its price in TRAIN_PRICE. A must-buy the treasury cannot fund needs
-# emergency money (6.8b), and BUY_TRAIN raises there rather than offer an
-# incomplete set. Each of these decisions Ruby asks also takes the
-# interjection slots (section INTERJECTIONS below).
+# names its price in TRAIN_PRICE. A must-buy the treasury cannot fund is an
+# emergency (step/emergency_money.rb, step/bankrupt.rb): the president's
+# cash, their share sales, and bankruptcy. Each of these decisions Ruby asks
+# also takes the interjection slots (section INTERJECTIONS below).
 
 
 cdef bint must_buy_train(GameState state, int corp) noexcept nogil:
@@ -801,7 +822,7 @@ cdef int _enumerate_dividend(GameState state, uint16_t* ids) noexcept nogil:
     return _append_dr(state, ids, count, DIVIDEND_DR)
 
 
-cdef int _enumerate_buy_train(GameState state, uint16_t* ids) except -1 nogil:
+cdef int _enumerate_buy_train(GameState state, uint16_t* ids) noexcept nogil:
     """Pass unless the corp must buy. Then, with room under the phase's limit
     (``room?``), each depot type its treasury affords (``depot_trains``);
     each 4, 5, or 6 it may trade with ¥800 for an available D, room or not
@@ -810,11 +831,10 @@ cdef int _enumerate_buy_train(GameState state, uint16_t* ids) except -1 nogil:
     priced in TRAIN_PRICE (``spend_minmax``: ¥1 to the treasury). Ruby's
     ``buy_train_action`` checks no room, but at the limit its BuyTrain step
     opens only for a trade-in (``can_buy_train?``), and the UI then offers
-    only that. Where Ruby asks, the interjection slots follow. A must-buy
-    whose treasury is short of the cheapest depot or pool train raises: the
-    president's money, share sales, and the buys from other corps that go
-    with them are emergency money (6.8b), and Ruby's BuyCompany then still
-    offers privates."""
+    only that. A must-buy whose treasury is short of the cheapest depot or
+    pool train is an emergency instead (``_buy_train_emergency``). Where
+    Ruby asks, the interjection slots follow: Ruby's BuyCompany offers
+    privates in an emergency too (``can_buy_company?`` ignores it)."""
     cdef int corp = turn_operating_corp(state)
     cdef int count
     if corp < 0:
@@ -827,7 +847,7 @@ cdef int _enumerate_buy_train(GameState state, uint16_t* ids) except -1 nogil:
     return count
 
 
-cdef int _buy_train_base(GameState state, int corp, uint16_t* ids) except -1 nogil:
+cdef int _buy_train_base(GameState state, int corp, uint16_t* ids) noexcept nogil:
     """BUY_TRAIN's own choices: the pass and the trains (``_enumerate_buy_train``)."""
     cdef int count = 0
     cdef int cash, types, t, c, i
@@ -837,7 +857,7 @@ cdef int _buy_train_base(GameState state, int corp, uint16_t* ids) except -1 nog
         ids[count] = BUY_TRAIN_PASS
         count += 1
     elif cash < trains_cheapest_price(state):
-        return _unimplemented(DPHASE_BUY_TRAIN, b"emergency money")
+        return _buy_train_emergency(state, corp, ids)
     room = corp_train_total(state, corp) < trains_limit(state)
     types = trains_depot_types(state)
     if room:
@@ -863,6 +883,93 @@ cdef int _buy_train_base(GameState state, int corp, uint16_t* ids) except -1 nog
                 if c != corp and corp_train_count(state, c, t):
                     ids[count] = <uint16_t>(BUY_TRAIN_CORP + <int>NUM_TRAIN_TYPES * c + t)
                     count += 1
+    return count
+
+
+# Emergency money (§6.2). The corp must buy, and its treasury is short of
+# the cheapest depot or pool train (``buyable_trains`` with ``entity.cash <
+# min_depot_price``; 1889's EBUY_* constants are Ruby's defaults but
+# EBUY_PRES_SWAP = false and EBUY_FROM_OTHERS = :never). What the president
+# must still raise is the need: that train's price less the treasury and
+# their cash (``needed_cash`` - ``available_cash``).
+
+
+cdef inline int _emergency_need(GameState state, int corp) noexcept nogil:
+    return trains_cheapest_price(state) - corp_cash(state, corp) - player_cash(state, corp_president(state, corp))
+
+
+cdef bint in_emergency(GameState state, int corp) noexcept nogil:
+    """Whether ``corp`` must buy a train its treasury cannot fund."""
+    return must_buy_train(state, corp) and corp_cash(state, corp) < trains_cheapest_price(state)
+
+
+cdef bint can_go_bankrupt(GameState state, int corp) noexcept nogil:
+    """``can_go_bankrupt?``: the treasury, the president's cash, and every
+    block they may still sell (``liquidity`` with ``emergency``, through
+    BuyTrain's ``can_sell?``, each corp once) fall short of the cheapest
+    train. Each corp's largest block counts in full, as every smaller one
+    falls short then (``selling_minimum_shares?``)."""
+    cdef int president = corp_president(state, corp)
+    cdef int need = _emergency_need(state, corp)
+    cdef int sold = turn_ebuy_sold_mask(state)
+    cdef int c
+    for c in range(<int>NUM_CORPS):
+        if not (sold >> c & 1):
+            need -= corp_emergency_sale(state, president, c) * market_price(state, c)
+    return need > 0
+
+
+cdef int _buy_train_emergency(GameState state, int corp, uint16_t* ids) noexcept nogil:
+    """An emergency's choices, without a pass:
+
+    - the cheapest depot or pool train (``min_depot_train``, the depot's on
+      a tie), while the treasury and the president's cash cover it: the
+      president pays the rest (``buy_train_action``), toward that train only
+      (``check_for_cheapest_train``). A depot buy may change the phase;
+    - every train of another corp, for ¥1 to the treasury (``spend_minmax``),
+      while the treasury holds ¥1 and the president has sold nothing since
+      the turn's last purchase (``EBUY_FROM_OTHERS = :never``);
+    - while the need is unmet, each block of the president's shares they may
+      sell (``can_sell?``): of each corp at most once this turn
+      (``MUST_SELL_IN_BLOCKS``), within ``corp_emergency_sale`` (the pool's
+      room; no presidency changes), and only while the next smaller block
+      falls short (``EBUY_SELL_MORE_THAN_NEEDED = false``). The operating
+      corp's own shares are sellable too;
+    - bankruptcy, when even all of that falls short (``can_go_bankrupt``).
+
+    Ruby's BuyTrain also takes the president's share sales outside a
+    must-buy, and its Bankrupt step a bankruptcy at any step of the turn,
+    whenever the president's cash and the treasury fall short of the
+    cheapest train; the UI offers both only here, as the engine does."""
+    cdef int president = corp_president(state, corp)
+    cdef int need = _emergency_need(state, corp)
+    cdef int sold = turn_ebuy_sold_mask(state)
+    cdef int count = 0
+    cdef int c, t, n, price
+    if need <= 0:
+        t = trains_cheapest_type(state)
+        ids[count] = <uint16_t>((BUY_TRAIN_POOL if trains_cheapest_in_pool(state) else BUY_TRAIN_DEPOT) + t)
+        count += 1
+    if corp_cash(state, corp) > 0 and not turn_ebuy_sold_any(state):
+        for c in range(<int>NUM_CORPS):
+            for t in range(<int>NUM_TRAIN_TYPES):
+                if c != corp and corp_train_count(state, c, t):
+                    ids[count] = <uint16_t>(BUY_TRAIN_CORP + <int>NUM_TRAIN_TYPES * c + t)
+                    count += 1
+    if need <= 0:
+        return count
+    for c in range(<int>NUM_CORPS):
+        if sold >> c & 1:
+            continue
+        price = market_price(state, c)
+        for n in range(1, corp_emergency_sale(state, president, c) + 1):
+            if (n - 1) * price >= need:
+                break
+            ids[count] = <uint16_t>(BUY_TRAIN_SELL + <int>MAX_SALE_SHARES * c + n - 1)
+            count += 1
+    if can_go_bankrupt(state, corp):
+        ids[count] = BUY_TRAIN_BANKRUPT
+        count += 1
     return count
 
 
@@ -1393,6 +1500,28 @@ cpdef bint must_buy_train_py(GameState state, int corp=-1):
     return must_buy_train(state, _corp_or_operating(state, corp))
 
 
+cpdef bint in_emergency_py(GameState state, int corp=-1):
+    """Whether ``corp`` (the operating corp by default) must buy a train its treasury cannot fund."""
+    return in_emergency(state, _corp_or_operating(state, corp))
+
+
+cpdef bint can_go_bankrupt_py(GameState state, int corp=-1):
+    """Whether the president of ``corp`` (the operating corp by default) may go
+    bankrupt, were it in an emergency (Ruby's ``can_go_bankrupt?``)."""
+    return can_go_bankrupt(state, _corp_or_operating(state, corp))
+
+
+cpdef bint is_terminal_py(GameState state):
+    return is_terminal(state)
+
+
+cpdef list final_scores_py(GameState state):
+    """One score per canonical player: Ruby's ``Player#value``."""
+    cdef int scores[6]  # MAX_PLAYERS
+    cdef int n = final_scores(state, scores)
+    return [scores[i] for i in range(n)]
+
+
 cpdef list purchasable_privates_py(GameState state, int corp=-1):
     """The privates ``corp`` (the operating corp by default) may buy now."""
     corp = _corp_or_operating(state, corp)
@@ -1435,8 +1564,8 @@ del _name, _member
 # IMPORT-TIME CHECKS
 # =============================================================================
 
-# Local id, candidate, and price buffers are sized with the literals 102, 15, 24, 5, and 4.
-assert <int>MAX_ACTION_SIZE == 102 and <int>MAX_LAY_CANDIDATES == 15
+# Local id, candidate, price, and score buffers are sized with the literals 102, 15, 24, 5, 4, and 6.
+assert <int>MAX_ACTION_SIZE == 102 and <int>MAX_LAY_CANDIDATES == 15 and <int>MAX_PLAYERS == 6
 assert <int>NUM_PORTS * <int>NUM_SIDES == 24 and <int>TRAIN_PRICE_POINTS == 5 and <int>PRIVATE_PRICE_POINTS == 4
 
 

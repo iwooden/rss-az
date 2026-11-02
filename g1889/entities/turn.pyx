@@ -93,6 +93,16 @@ cdef bint turn_sr_sold_then_bought(GameState state) noexcept nogil:
     return _get(state, GLOBALS.sr_sold_then_bought) != 0
 
 
+cdef int turn_ebuy_sold_mask(GameState state) noexcept nogil:
+    """The corps the operating corp's president has sold this turn for emergency money."""
+    return _get(state, GLOBALS.ebuy_sold_mask)
+
+
+cdef bint turn_ebuy_sold_any(GameState state) noexcept nogil:
+    """Whether they have sold since the turn's last purchase (Ruby's ``last_share_sold_price``)."""
+    return _get(state, GLOBALS.ebuy_sold_any) != 0
+
+
 cdef inline int _check(int value, int lo, int hi, str name) except -1:
     assert lo <= value < hi, f"{name} {value} out of range [{lo}, {hi})"
     return 0
@@ -294,15 +304,17 @@ cdef class TurnState:
     # Emergency money
 
     cpdef int ebuy_sold_mask(self, GameState state):
-        return _get(state, GLOBALS.ebuy_sold_mask)
+        return turn_ebuy_sold_mask(state)
 
     cpdef void set_ebuy_sold_mask(self, GameState state, int value):
+        _check(value, 0, 1 << <int>NUM_CORPS, 'ebuy_sold_mask')
         _set(state, GLOBALS.ebuy_sold_mask, value)
 
     cpdef int ebuy_sold_any(self, GameState state):
-        return _get(state, GLOBALS.ebuy_sold_any)
+        return turn_ebuy_sold_any(state)
 
     cpdef void set_ebuy_sold_any(self, GameState state, int value):
+        _check(value, 0, 2, 'ebuy_sold_any')
         _set(state, GLOBALS.ebuy_sold_any, value)
 
 

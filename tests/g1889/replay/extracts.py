@@ -19,7 +19,7 @@ match:
 
 - The file name carries a hash of the schema version, the extractor's source,
   and the input (the fixture's bytes, the ``--new-game`` arguments, or a test's
-  game JSON). Editing the extractor or the input therefore makes a new
+  game JSON, graph specs, or probe specs). Editing the extractor or the input therefore makes a new
   extract, and the stale file is deleted when the new one is written.
 - The extract must be newer than every engine Ruby file the 1889 game can load:
   ``lib/engine.rb`` and ``lib/engine/**/*.rb``, except other titles'
@@ -195,8 +195,11 @@ Snapshot (``state``)
     each sellable bundle]}``.
 ``operating``
     None outside ORs, else ``operator``; ``routes_revenue``, the revenue of
-    this turn's routes once run, else None; ``ebuy_sold`` (corporations the
-    president has sold in this emergency) and ``ebuy_last_share_price``;
+    this turn's routes once run, else None; ``ebuy_sold``, the corporations
+    the president has sold in this turn's emergency (BuyTrain's
+    ``corporations_sold``, which its ``setup`` clears as the next turn
+    starts, so it outlives the OR's last turn), and ``ebuy_last_share_price``,
+    the price of the last share sold since the step last passed, else None;
     ``must_buy`` (schema 4), None unless the active step is ``BuyTrain``,
     else ``{fresh, game}``: ``Game#must_buy_train?`` for the operator on a
     fresh ``Graph``, and as the game's own graph answers it from the route
@@ -243,7 +246,18 @@ Snapshot (``state``)
     after it (the first other blocking step), and ``lays``, ER's legal lays
     as ``[hex, tile, rotation, cost]`` (``available_hex``,
     ``upgradeable_tiles`` with each legal rotation as Ruby numbers it, and
-    ``upgrade_cost``, which the seller pays).
+    ``upgrade_cost``, which the seller pays). ``emergency`` (schema 8),
+    None without an operator, else what emergency money offers its
+    president: ``president``, their id; ``bankrupt``, ``can_go_bankrupt?``
+    (the treasury, their cash, and the bundles the active step's
+    ``can_sell?`` lets them sell fall short of the cheapest depot or pool
+    train), which the OR's Bankrupt step checks at any step of the turn; and
+    ``sell``, None unless the active step is ``BuyTrain``, else
+    ``{corporation: [percent of each bundle BuyTrain's can_sell? admits]}``
+    for the corporations they hold. Ruby's step takes those sales whenever
+    the president's cash and the treasury fall short of the cheapest train,
+    must-buy or not; the UI offers them, and bankruptcy, only in a must-buy
+    (``trains.actions`` holds ``sell_shares``).
     And three oracles (schema 3), keyed by every corporation with a placed
     token and computed on a fresh ``Graph`` so the game's own graph caches
     stay untouched:
@@ -303,7 +317,7 @@ from typing import Any
 
 import pytest
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
@@ -335,10 +349,11 @@ AUCTION_KEYS = frozenset({'companies', 'auctioning', 'min_bids'})
 STOCK_KEYS = frozenset({'sold', 'current_actions', 'bought_from_ipo', 'last_to_act', 'pass_order', 'legal'})
 OPERATING_KEYS = frozenset({
     'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'must_buy', 'trains', 'crowded',
-    'auto_router', 'companies', 'er_bonus', 'graph', 'tokens', 'lays',
+    'auto_router', 'companies', 'er_bonus', 'emergency', 'graph', 'tokens', 'lays',
 })
 COMPANIES_KEYS = frozenset({'actions', 'companies'})
 ER_BONUS_KEYS = frozenset({'resume', 'lays'})
+EMERGENCY_KEYS = frozenset({'president', 'bankrupt', 'sell'})
 ABILITY_KEYS = frozenset({'port', 'exchange'})
 TRAINS_KEYS = frozenset({'actions', 'room', 'buyable', 'exchanges'})
 AUTO_ROUTER_KEYS = frozenset({'revenue', 'routes', 'timed_out', 'candidates'})
@@ -440,6 +455,29 @@ def load_graph_extract(label: str, specs: list[dict[str, Any]]) -> Extract:
         with os.fdopen(fd, 'wb') as f:
             f.write(inputs)
         return _load(f'graphs-{label}', ['--graphs', tmp], inputs)
+    finally:
+        os.unlink(tmp)
+
+
+def load_probe_extract(label: str, specs: list[dict[str, Any]]) -> Extract:
+    """Ruby's state after in-place changes to fixtures' games
+    (``extract_states.rb --probes``, schema 8), for situations no fixture
+    reaches. Each spec loads fixture ``fixture`` (a file name in
+    ``FIXTURE_DIR``) at action ``action`` and applies its ``ops`` in order:
+    ``['pool_shares', corporation, player id, count]`` moves that many of the
+    pool's shares to the player, and ``['cash', player id, cash]`` sets the
+    player's cash against the bank. The extract's ``probes`` holds, per spec,
+    ``players`` (``[{id, name}]`` in canonical order) and ``state``, a
+    snapshot as in ``records``. The cache key covers the fixtures' bytes too."""
+    spec_bytes = json.dumps(specs, sort_keys=True).encode()
+    fixtures = sorted({spec['fixture'] for spec in specs})
+    inputs = spec_bytes + b''.join((FIXTURE_DIR / name).read_bytes() for name in fixtures)
+    CACHE_DIR.mkdir(exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix='.probes.json')
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(spec_bytes)
+        return _load(f'probes-{label}', ['--probes', tmp], inputs)
     finally:
         os.unlink(tmp)
 

@@ -26,6 +26,8 @@ cdef int turn_turn(GameState state) noexcept nogil
 cdef bint turn_sr_bought(GameState state) noexcept nogil
 cdef int turn_sr_sold_mask(GameState state) noexcept nogil
 cdef bint turn_sr_sold_then_bought(GameState state) noexcept nogil
+cdef int turn_ebuy_sold_mask(GameState state) noexcept nogil
+cdef bint turn_ebuy_sold_any(GameState state) noexcept nogil
 
 
 cdef class TurnState:

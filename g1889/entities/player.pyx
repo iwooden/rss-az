@@ -3,8 +3,8 @@
 from libc.stdint cimport int16_t
 
 from g1889.constants cimport OWNER_PLAYER
-from g1889.data.tables cimport CERT_LIMIT, MAX_OWNERSHIP_PERCENT, MAX_PLAYERS, NUM_CORPS, NUM_PRIVATES
-from g1889.entities.market cimport market_counts_for_limit, market_unlimited
+from g1889.data.tables cimport CERT_LIMIT, MAX_OWNERSHIP_PERCENT, MAX_PLAYERS, NUM_CORPS, NUM_PRIVATES, PRIVATE_VALUE
+from g1889.entities.market cimport market_counts_for_limit, market_price, market_unlimited
 from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, PRIVATE_FIELDS, GameState
 
 # Holdings are counted in 10% shares.
@@ -88,6 +88,23 @@ cdef bint player_can_gain(GameState state, int player, int corp, int shares) noe
             or player_cert_count(state, player) < CERT_LIMIT[_num_players(state)])
 
 
+cdef int player_value(GameState state, int player) noexcept nogil:
+    """``Player#value`` (``player.rb:28``), what Ruby's ``result`` scores:
+    cash, the player's shares at the market price (the President's
+    Certificate counts twice; an unparred corp's are worth nothing), and the
+    face value of each open private they own. A bankrupt player keeps the
+    shares Ruby could not sell, and scores the same way."""
+    cdef int value = player_cash(state, player)
+    cdef int c, p
+    for c in range(<int>NUM_CORPS):
+        value += player_shares(state, player, c) * market_price(state, c)
+    for p in range(<int>NUM_PRIVATES):
+        if state._data[LAYOUT.privates_offset + p * PRIVATE_FIELDS.size + PRIVATE_FIELDS.owner] == \
+                <int>OWNER_PLAYER + player:
+            value += PRIVATE_VALUE[p]
+    return value
+
+
 cdef int _write_slot(GameState state, int player, int field) except -1:
     cdef int num_players = _num_players(state)
     assert player < num_players, f"player {player} not in a {num_players}-player game"
@@ -120,6 +137,9 @@ cdef class Player:
 
     cpdef int cert_count(self, GameState state):
         return player_cert_count(state, self.player_id)
+
+    cpdef int value(self, GameState state):
+        return player_value(state, self.player_id)
 
     cpdef bint can_gain(self, GameState state, int corp, int shares=1):
         assert 0 <= corp < <int>NUM_CORPS and shares > 0, f"{shares} shares of corp {corp}"

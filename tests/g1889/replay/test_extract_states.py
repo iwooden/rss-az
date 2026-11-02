@@ -14,9 +14,9 @@ import pytest
 
 from g1889.data import load_tables
 from tests.g1889.replay.extracts import (
-    ABILITY_KEYS, AUCTION_KEYS, AUTO_ROUTE_KEYS, AUTO_ROUTER_KEYS, COMPANIES_KEYS, CORPORATION_KEYS, ER_BONUS_KEYS,
-    FIXTURES, GAME_KEYS, HEX_KEYS, OPERATING_KEYS, PLAYER_KEYS, PRE_EXTRA_KEYS, PRE_KEYS, PRE_OPTIONAL_KEYS,
-    PRIVATE_KEYS, STATE_KEYS, STOCK_KEYS, TRAINS_KEYS,
+    ABILITY_KEYS, AUCTION_KEYS, AUTO_ROUTE_KEYS, AUTO_ROUTER_KEYS, COMPANIES_KEYS, CORPORATION_KEYS, EMERGENCY_KEYS,
+    ER_BONUS_KEYS, FIXTURES, GAME_KEYS, HEX_KEYS, OPERATING_KEYS, PLAYER_KEYS, PRE_EXTRA_KEYS, PRE_KEYS,
+    PRE_OPTIONAL_KEYS, PRIVATE_KEYS, STATE_KEYS, STOCK_KEYS, TRAINS_KEYS,
     Extract, load_fixture, load_fixture_extract, load_new_game_extract,
 )
 
@@ -106,6 +106,13 @@ def check_state(state: State, num_players: int) -> None:
         if operating['er_bonus'] is not None:
             assert operating['er_bonus'].keys() == ER_BONUS_KEYS
             assert all(lay[0] == 'C4' for lay in operating['er_bonus']['lays'])
+        assert (operating['emergency'] is not None) == (operating['operator'] is not None)
+        if (emergency := operating['emergency']) is not None:
+            assert emergency.keys() == EMERGENCY_KEYS
+            assert emergency['president'] == state['corporations'][operating['operator']]['president']
+            assert (emergency['sell'] is not None) == (game['step'] == 'BuyTrain')
+            assert all(set(percents) <= {10, 20, 30, 40, 50} and corp in CORP_SYMS
+                       for corp, percents in (emergency['sell'] or {}).items())
     abilities = state['abilities']
     assert abilities.keys() == ABILITY_KEYS
     assert abilities['port'] is None or all(lay[1] == '437' for lay in abilities['port'])
@@ -298,6 +305,42 @@ def test_train_oracles_admit_each_logged_move(case):
             assert action['entity'] in operating['crowded']
             discards += 1
     assert (buys, discards) == {'314': (30, 2), '962': (21, 0)}.get(case[0], (0, 0))
+
+
+def test_emergency_oracles_admit_each_logged_move(case):
+    """``operating.emergency`` admits every emergency sale and the
+    bankruptcy at the snapshot before it, and in every depot or pool
+    purchase the treasury cannot fund, the president pays what it lacks.
+    314's bankrupt president ends at ¥0 with the shares Ruby could not sell:
+    KO, which they sold that turn; TR, whose pool is full; and KU's
+    President's Certificate, which nobody could take."""
+    records = case[2]['records']
+    sales = bankruptcies = funded = 0
+    for before, record in zip(records, records[1:]):
+        action, pre, state = record['action'], record['pre'], before['state']
+        emergency = state['operating'] and state['operating']['emergency']
+        if action['type'] == 'sell_shares' and pre['step'] == 'BuyTrain':
+            assert pre['percent'] in emergency['sell'][pre['corporation']]
+            assert 'sell_shares' in state['operating']['trains']['actions']  # a must-buy
+            sales += 1
+        elif action['type'] == 'bankrupt':
+            assert emergency['bankrupt'] and emergency['president'] == pre['president']
+            bankruptcies += 1
+        elif action['type'] == 'buy_train' and pre['source'] != 'corporation':
+            corp = state['corporations'][action['entity']]
+            if pre['price'] <= corp['cash']:
+                continue
+            president = next(i for i, p in enumerate(state['players']) if p['id'] == corp['president'])
+            assert record['state']['players'][president]['cash'] == \
+                state['players'][president]['cash'] - (pre['price'] - corp['cash'])
+            assert record['state']['corporations'][action['entity']]['cash'] == 0
+            funded += 1
+    assert (sales, bankruptcies, funded) == {'314': (5, 1, 2)}.get(case[0], (0, 0, 0))
+    if case[0] == '314':
+        bankrupt = next(p for p in records[-1]['state']['players'] if p['bankrupt'])
+        assert bankrupt['cash'] == 0 and bankrupt['shares'] == {
+            'KO': {'percent': 40, 'president': True}, 'TR': {'percent': 20, 'president': True},
+            'KU': {'percent': 20, 'president': True}}
 
 
 def _logged_and_best_revenues(name: str) -> dict[int, tuple[int, int]]:

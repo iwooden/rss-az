@@ -18,6 +18,9 @@ cdef int player_sold_mask(GameState state, int player) noexcept nogil
 cdef int player_cert_count(GameState state, int player) noexcept nogil
 cdef bint player_can_gain(GameState state, int player, int corp, int shares) noexcept nogil
 
+# Ruby's Player#value, which final_scores reports
+cdef int player_value(GameState state, int player) noexcept nogil
+
 
 cdef class Player:
     cdef readonly int player_id
@@ -29,6 +32,7 @@ cdef class Player:
     cpdef void set_sold_mask(self, GameState state, int mask)
     cpdef int cert_count(self, GameState state)
     cpdef bint can_gain(self, GameState state, int corp, int shares=*)
+    cpdef int value(self, GameState state)
 
     # Auction bids, at most one per private; 0 when none
     cpdef int bid(self, GameState state, int private)

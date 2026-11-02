@@ -8,7 +8,7 @@ stack ties, an OR with no floated corp, turns and their presidents, the next
 OR of a set and the next SR, a lay's cost, tile, and reach, TILE's forced
 single candidate, a token's price, ROUTE's revenue and its replay override,
 the withhold's move at the market's edges, must-buy against pass, and the
-driver's development stop wherever a later sub-step takes over.
+game's end after a broken bank's OR set.
 ``test_trains.py`` covers 6.7's dividends, train purchases, phases, and
 discards; ``tests/g1889/replay/`` checks the same paths against Ruby on the
 fixtures; ``test_track_and_tokens.py`` pins the lay and token rules.
@@ -23,7 +23,7 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
-from g1889.driver import DRIVER, STATUS_INVALID, STATUS_OK
+from g1889.driver import DRIVER, STATUS_GAME_OVER, STATUS_INVALID, STATUS_OK
 from g1889.entities.bank import BANK
 from g1889.entities.corp import CORPS
 from g1889.entities.graph import GRAPH
@@ -36,7 +36,7 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    HEX, TILE, apply_and_verify, at_development_stop, at_or, enter_operating_round, hold, lay, legal_ids, set_cash,
+    HEX, TILE, apply_and_verify, at_or, enter_operating_round, hold, lay, legal_ids, set_cash,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -54,10 +54,10 @@ def turn_of(state):
 
 def pass_turn(state):
     """Pass every choice until the operating corp's turn is over, or the
-    development stop; the results."""
+    game; the results."""
     results = []
-    while not at_development_stop(state):
-        results.append(apply_and_verify(state, 0))
+    while TURN.round(state) != K.ROUND_GAME_OVER:
+        results.append(apply_and_verify(state, 0, expected_status=None))
         if K.STEP_TURN_END in results[-1].steps:
             break
     return results
@@ -175,18 +175,44 @@ class TestTurns:
         assert TURN.active_player(state) == TURN.priority_player(state) == 2
         assert order(state) == [] and TURN.operating_corp(state) == -1
 
-    def test_a_broken_bank_rests_at_the_sets_end(self):
-        """TEMPORARY (6.9 removes the development stop): the game ends after
-        the set's last OR (``:full_or``), which lands with 6.8b."""
+    def test_a_broken_bank_ends_the_game_after_its_set(self):
+        """``GAME_END_CHECK``'s ``bank: :full_or``: the bank broke before the
+        set (in the SR, say), so the set's ORs run, and after its last the game
+        is over, keeping the last OR's order as Ruby keeps its round."""
         state = at_or(3)
         hold(state, KO, {0: 6})
         BANK.set_broken(state)
         enter_operating_round(state, or_count=2)
         pass_turn(state)
-        assert TURN.or_num(state) == 2  # the set goes on
+        assert TURN.or_num(state) == 2 and not A.is_terminal_py(state)  # the set goes on
         results = pass_turn(state)
-        assert steps(results)[-1] == K.STEP_TURN_END and TURN.step(state) == K.STEP_OR_END
-        assert at_development_stop(state) and DRIVER.apply_action(state, 0) == STATUS_INVALID
+        assert steps(results)[-2:] == [K.STEP_TURN_END, K.STEP_OR_END] and results[-1].status == STATUS_GAME_OVER
+        assert A.is_terminal_py(state) and TURN.end_reason(state) == K.END_REASON_BANK
+        assert (TURN.round(state), TURN.step(state)) == (K.ROUND_GAME_OVER, K.STEP_GAME_OVER)
+        assert order(state) == [KO] and TURN.operating_corp(state) == -1 and TURN.or_num(state) == 2
+        assert A.final_scores_py(state) == [PLAYERS[i].value(state) for i in range(3)]
+        assert DRIVER.apply_action(state, 0) == STATUS_GAME_OVER
+
+    def test_a_bank_that_breaks_in_the_sets_last_or_ends_the_game_there(self):
+        """KO's payout breaks the bank in the set's only OR; the game ends at
+        its end, IR's turn first."""
+        state = at_or(3)
+        lay(state, 'J3', '8', 3)
+        hold(state, KO, {0: 6}, par=PAR_100)
+        hold(state, IR, {1: 6})
+        TRAINS.set_depot(state, D.TRAIN_2, TRAINS.depot(state, D.TRAIN_2) - 1)
+        TRAINS.set_corp_trains(state, KO, D.TRAIN_2, 1)
+        BANK.transfer(state, -1, K.OWNER_PLAYER + 1, BANK.cash(state) - 10)
+        enter_operating_round(state)
+        assert TURN.operating_corp(state) == KO
+        apply_and_verify(state, K.TRACK_PASS)
+        apply_and_verify(state, K.DIVIDEND_PAYOUT)  # ¥50 from a bank holding ¥10
+        assert BANK.broken(state) and not A.is_terminal_py(state)
+        assert TURN.operating_corp(state) == KO and TURN.step(state) == K.STEP_BUY_TRAIN
+        apply_and_verify(state, K.BUY_TRAIN_PASS)
+        assert TURN.operating_corp(state) == IR
+        results = pass_turn(state)
+        assert results[-1].status == STATUS_GAME_OVER and TURN.end_reason(state) == K.END_REASON_BANK
 
 
 # =============================================================================
@@ -340,16 +366,18 @@ class TestBuyTrain:
         assert TURN.step(state) == K.STEP_BUY_TRAIN and not A.must_buy_train_py(state)
         assert legal_ids(state) == [K.BUY_TRAIN_PASS, BUY_2]
 
-    def test_a_must_buy_beyond_the_treasury_needs_emergency_money(self):
+    def test_a_must_buy_beyond_the_treasury_is_an_emergency(self):
+        """The president pays what the treasury lacks of the cheapest train,
+        KO's one choice, which is forced (``test_emergency.py`` has the rest)."""
         state = at_or(3)
         lay(state, 'J3', '8', 3)
         hold(state, KO, {0: 6})
         set_cash(state, KO, D.TRAIN_PRICE[D.TRAIN_2] - 1)
         enter_operating_round(state)
-        apply_and_verify(state, K.TRACK_PASS)
-        assert TURN.step(state) == K.STEP_BUY_TRAIN and at_development_stop(state)
-        with pytest.raises(NotImplementedError, match='emergency money'):
-            legal_ids(state)
+        cash = PLAYERS[0].cash(state)
+        result = apply_and_verify(state, K.TRACK_PASS)
+        assert (K.DPHASE_BUY_TRAIN, BUY_2) in result.forced and TRAINS.corp_trains(state, KO, D.TRAIN_2) == 1
+        assert CORPS[KO].cash(state) == 0 and PLAYERS[0].cash(state) == cash - 1
 
     def test_the_depot_sells_its_lowest_rank_and_d_from_phase_6(self):
         state = at_or(3)

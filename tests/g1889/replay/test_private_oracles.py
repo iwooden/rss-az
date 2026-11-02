@@ -87,7 +87,7 @@ INTERJECTIONS = (A.ACTION_BUY_PRIVATE, A.ACTION_DR_EXCHANGE, A.ACTION_MF_PORT)
 # answers DR's exchange, those it allows, and the decisions DR's owner takes
 # with an exchange to make).
 COVERAGE = {
-    '314': (197, 20, 404, 16, 1, 63, 19, 76, 76, 27),
+    '314': (197, 20, 413, 16, 1, 63, 19, 76, 76, 27),
     '962': (243, 113, 389, 96, 1, 19, 5, 264, 221, 26),
     'hs_jmmljkbw_17502': (2, 0, 40, 0, 0, 39, 5, 40, 40, 9),
     'hs_lhglbbiz_17502': (2, 0, 37, 0, 0, 36, 5, 37, 37, 8),
@@ -147,11 +147,7 @@ def test_privates_match_ruby(label):
         step = DECISION_STEPS.get(g['step'])
         if step is None or TURN.step(state) != step or track_after_lay(snap):
             continue
-        try:
-            legal = _legal(state)
-        except NotImplementedError:  # emergency money (6.8b)
-            assert step == K.STEP_BUY_TRAIN and A.must_buy_train_py(state), where
-            continue
+        legal = _legal(state)
         # The decision's own actions (BUY_PRIVATE's are its purchases) hold one beyond slot 0: Ruby asks.
         own = [i for i, info in legal if info.type not in INTERJECTIONS
                or step == K.STEP_BUY_PRIVATE and info.type == A.ACTION_BUY_PRIVATE]

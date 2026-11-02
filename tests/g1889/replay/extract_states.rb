@@ -13,6 +13,7 @@
 #   ruby tests/g1889/replay/extract_states.rb path/to/game.json
 #   ruby tests/g1889/replay/extract_states.rb --new-game N [--seed S] [--players ID,ID,...]
 #   ruby tests/g1889/replay/extract_states.rb --graphs specs.json
+#   ruby tests/g1889/replay/extract_states.rb --probes specs.json
 #
 # Ruby is the oracle, so the extractor records what the engine does and never
 # corrects it. Actions are processed the way Engine::Game.load processes them:
@@ -27,7 +28,7 @@ require 'logger'
 
 module G1889Extract
   ROOT = File.expand_path('../../..', __dir__)
-  SCHEMA_VERSION = 7
+  SCHEMA_VERSION = 8
   TITLE = '1889'
 
   module_function
@@ -337,7 +338,41 @@ module G1889Extract
         'auto_router' => round.active_step.is_a?(Engine::Step::Route) ? auto_router_info(round.current_operator) : nil,
         'companies' => companies_info(round),
         'er_bonus' => er_bonus_info(round),
+        'emergency' => emergency_info(round),
       }.merge(network_snapshot(round))
+    end
+
+    # ------------------------------------------------------------ emergency
+
+    # What emergency money offers the operator's president (schema 8):
+    # whether the OR's Bankrupt step would take their bankruptcy now
+    # (can_go_bankrupt?: the treasury, their cash, and the bundles they may
+    # sell, through the active step's can_sell?, fall short of the cheapest
+    # depot or pool train; the step accepts it at any step of the turn), and
+    # at BuyTrain, where sell_shares is among the president's actions, the
+    # percent of each bundle the step's can_sell? lets them sell, by
+    # corporation. Only corporations they hold are asked, so no default-proc
+    # key is added; the guard drops any that is.
+    def emergency_info(round)
+      corp = round.current_operator
+      player = corp&.owner
+      return nil unless corp && player&.player?
+
+      held = player.shares_by_corporation
+      keys = held.keys
+      step = round.active_step
+      sell = nil
+      if step.is_a?(Engine::Step::BuyTrain) && step.actions(player).include?('sell_shares')
+        sell = @game.corporations.each_with_object({}) do |c, out|
+          next if held.fetch(c, []).empty?
+
+          percents = @game.bundles_for_corporation(player, c).select { |b| step.can_sell?(player, b) }.map(&:percent)
+          out[c.name] = percents unless percents.empty?
+        end
+      end
+      { 'president' => player.id, 'bankrupt' => @game.can_go_bankrupt?(player, corp), 'sell' => sell }
+    ensure
+      (held.keys - keys).each { |k| held.delete(k) if held[k].empty? } if held
     end
 
     # ------------------------------------------------------------- privates
@@ -953,6 +988,40 @@ module G1889Extract
     { 'schema' => SCHEMA_VERSION, 'source' => { 'kind' => 'graphs' }, 'graphs' => graphs }
   end
 
+  # Ruby's own state after in-place changes to a fixture's game (schema 8),
+  # for situations no fixture reaches. Each spec loads the 1889 fixture
+  # ``fixture`` at action ``action`` (Game.load's at_action) and applies its
+  # ops in order: ['pool_shares', corporation, player id, count] moves that
+  # many of the pool's shares to the player (SharePool#transfer_shares), and
+  # ['cash', player id, cash] sets the player's cash against the bank
+  # (Spender#set_cash). Records the snapshot after them.
+  def extract_probes(path)
+    specs = JSON.parse(File.read(path))
+    probes = specs.map do |spec|
+      data = JSON.parse(File.read(File.join(ROOT, 'submodules', '18xx', 'public', 'fixtures', TITLE, spec['fixture'])))
+      game = Engine::Game.load(data, at_action: spec['action'])
+      check!(game, "#{spec['fixture']} at action #{spec['action']}")
+      spec['ops'].each do |kind, *args|
+        case kind
+        when 'pool_shares'
+          corp = game.corporation_by_id(args[0])
+          shares = game.share_pool.shares_of(corp).reject(&:president).first(args[2])
+          raise "#{spec['fixture']}: the pool holds fewer than #{args[2]} #{args[0]} shares" if shares.size < args[2]
+
+          game.share_pool.transfer_shares(Engine::ShareBundle.new(shares), game.player_by_id(args[1]))
+        when 'cash'
+          game.player_by_id(args[0]).set_cash(args[1], game.bank)
+        else
+          raise "unknown probe op #{kind}"
+        end
+      end
+      ids = player_ids(game)
+      { 'players' => ids.map { |id| { 'id' => id, 'name' => game.player_by_id(id).name } },
+        'state' => Reader.new(game, ids).snapshot }
+    end
+    { 'schema' => SCHEMA_VERSION, 'source' => { 'kind' => 'probes' }, 'probes' => probes }
+  end
+
   def parse_id(text)
     text.match?(/\A-?\d+\z/) ? text.to_i : text
   end
@@ -962,6 +1031,10 @@ module G1889Extract
       abort "usage: ruby #{$PROGRAM_NAME} --graphs specs.json" unless argv.size == 2
       load_engine
       extract = extract_graphs(argv[1])
+    elsif argv.first == '--probes'
+      abort "usage: ruby #{$PROGRAM_NAME} --probes specs.json" unless argv.size == 2
+      load_engine
+      extract = extract_probes(argv[1])
     elsif argv.first == '--new-game'
       num_players = Integer(argv[1])
       opts = argv.drop(2).each_slice(2).to_h

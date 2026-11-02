@@ -1,7 +1,6 @@
 """g1889.driver ahead of the phases (1889/engine-design.md §6): status codes,
-terminal and automated states, and a loud failure where a later sub-step
-takes over. tests/g1889/phases/test_stock_round.py covers the forced rule and
-the development stop."""
+terminal and automated states, and the game's end at an automated step.
+tests/g1889/phases/test_stock_round.py covers the forced rule."""
 
 import numpy as np
 import pytest
@@ -40,14 +39,18 @@ def test_automated_steps_reject_actions(state):
     assert Dr.DRIVER.apply_action(state, 0) == Dr.STATUS_INVALID
 
 
-def test_a_later_sub_steps_step_fails_loudly(state):
-    """TEMPORARY until 6.8b ends the game: OR_END after a broken bank's last
-    OR raises, and the auto-chain rests there unchanged (the development stop)."""
+def test_the_game_ends_after_a_broken_banks_set(state):
+    """OR_END after the set's last OR, with the bank broken, ends the game:
+    the auto-chain reports it, and apply_action changes nothing after."""
     TURN.set_round(state, K.ROUND_OPERATING)
     TURN.set_step(state, K.STEP_OR_END)
     TURN.set_or_count(state, 1)
     BANK.set_broken(state)
+    history = []
+    assert Dr.DRIVER.advance(state, history) == Dr.STATUS_GAME_OVER
+    assert [step for _, _, step in history] == [K.STEP_OR_END]
+    assert (TURN.round(state), TURN.step(state), TURN.end_reason(state)) == \
+        (K.ROUND_GAME_OVER, K.STEP_GAME_OVER, K.END_REASON_BANK)
     row = state._array.copy()
-    assert Dr.DRIVER.advance(state) == Dr.STATUS_OK
+    assert Dr.DRIVER.apply_action(state, 0) == Dr.STATUS_GAME_OVER
     np.testing.assert_array_equal(state._array, row)
-    assert Dr.DRIVER.apply_action(state, 0) == Dr.STATUS_INVALID

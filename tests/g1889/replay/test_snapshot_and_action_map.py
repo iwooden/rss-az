@@ -117,10 +117,33 @@ def test_compare_reports_each_difference():
     TURN.set_auction_private(state, D.PRIVATE_TR)
     paths = {diff.split(':')[0] for diff in compare(state, snap)}
     assert paths == {
-        'players[1].cash', 'game.bank_cash', 'players[2].bids', 'corporations.KU.tokens_left',
-        'privates.SIR.owner', 'players[0].privates', 'tiles', 'depot', 'auction.companies', 'auction.auctioning',
-        'auction.min_bids',
+        'players[1].cash', 'players[1].value', 'game.bank_cash', 'players[2].bids', 'corporations.KU.tokens_left',
+        'privates.SIR.owner', 'players[0].privates', 'players[0].value', 'tiles', 'depot', 'auction.companies',
+        'auction.auctioning', 'auction.min_bids',
     }
+
+
+def test_compare_checks_the_game_end_and_emergency_sales():
+    """314's last record: TR's president is bankrupt, and the game over. It
+    loads with the OR's fields Ruby keeps, and compares the result, each
+    player's value, and the turn's emergency sales (KO's)."""
+    snap = load_fixture_extract('314')['records'][-1]['state']
+    assert snap['game']['finished'] and snap['operating']['ebuy_sold'] == ['KO']
+    state = load(snap)
+    assert compare(state, snap) == []
+    assert TURN.operating_corp(state) == CORP['TR'] and TURN.ebuy_sold_mask(state) == 1 << CORP['KO']
+    TURN.set_ebuy_sold_any(state, 0)
+    PLAYERS[0].set_bankrupt(state, False)
+    BANK.transfer(state, -1, K.OWNER_PLAYER + 2, 10)
+    BANK.transfer(state, K.OWNER_CORP + CORP['AR'], -1, 10)
+    paths = {diff.split(':')[0] for diff in compare(state, snap)}
+    assert paths == {'operating.ebuy_sold_any', 'players[0].bankrupt', 'players[2].cash', 'players[2].value',
+                     'game.result', 'corporations.AR.cash'}
+    # Between turns Ruby keeps the last turn's sales until the next starts; the engine has cleared them.
+    between = copy.deepcopy(snap)
+    between['operating'].update(operator=None, ebuy_sold=['UR'])
+    TURN.set_ebuy_sold_any(state, 1)
+    assert 'operating.ebuy_sold' not in {diff.split(':')[0] for diff in compare(state, between)}
 
 
 def _mid_turn_snapshot():
