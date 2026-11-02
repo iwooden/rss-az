@@ -19,7 +19,7 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
 
-from tests.g1889.replay.action_map import ROUTE_OVERRIDE, ReplayEnd, UnsupportedAction, map_action
+from tests.g1889.replay.action_map import HELD_DISCARD, ROUTE_OVERRIDE, ReplayEnd, UnsupportedAction, map_action
 from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TRAIN, compare, load_state
 from tests.g1889.replay.test_differential_replay import new_game
@@ -75,20 +75,21 @@ def test_load_state_rebuilds_every_stock_round_snapshot():
 
 
 def test_load_state_rebuilds_every_operating_round_snapshot():
-    """Including Ruby's network oracles, which compare checks in ORs. At a
-    DiscardTrain snapshot Ruby's current entity is the crowded corp, whose
-    discard DISCARD models with 6.7; the engine names the operating corp."""
+    """Including Ruby's oracles, which compare checks in ORs: the network,
+    BUY_TRAIN's choices at BuyTrain snapshots, and at DiscardTrain snapshots
+    the crowded corps, the first of which is Ruby's current entity and
+    discards in DISCARD, returning to BUY_TRAIN."""
     count = discards = 0
     for fixture in FIXTURES:
         for record in load_fixture_extract(fixture)['records']:
             snap = record['state']
             if snap['game']['round'] != 'OR' or snap['game']['finished']:
                 continue
-            diffs = compare(load(snap, max_players=D.MAX_PLAYERS), snap)
+            state = load(snap, max_players=D.MAX_PLAYERS)
+            assert compare(state, snap) == [], (fixture, record['index'])
             if snap['game']['step'] == 'DiscardTrain':
+                assert TURN.return_step(state) == K.STEP_BUY_TRAIN and TURN.operating_corp(state) == CORP['AR']
                 discards += 1
-                diffs = [d for d in diffs if not d.startswith('game.current_entity')]
-            assert diffs == [], (fixture, record['index'])
             count += 1
     assert (count, discards) == (444, 2)
 
@@ -215,8 +216,14 @@ def _expected(kind, pre, decoded):
         return last.hex == HEX[pre['hex']]
     if kind == 'lay_tile':
         return decoded[0].hex == HEX[pre['hex']] and last.phase == K.DPHASE_TILE
-    if kind in ('buy_train', 'discard_train'):
-        return decoded[0].train_type in (TRAIN[pre['train_type']], TRAIN.get(pre.get('exchange_type')))
+    if kind == 'discard_train':
+        return decoded[0].train_type == TRAIN[pre['train_type']]
+    if kind == 'buy_train':
+        if decoded[0].type == A.ACTION_TRADE_IN:
+            return decoded[0].train_type == TRAIN[pre['exchange_type']]
+        if decoded[0].type == A.ACTION_BUY_CORP_TRAIN:  # the price, a grid point or exact, is checked below
+            return decoded[0].corp == CORP[pre['seller']] and decoded[0].train_type == TRAIN[pre['train_type']]
+        return decoded[0].train_type == TRAIN[pre['train_type']]
     if kind == 'buy_company':
         return decoded[0].private == PRIVATE[pre['company']] and last.amount == pre['price']
     return True
@@ -226,7 +233,7 @@ def test_map_action_covers_the_fixtures():
     """A corp's lay maps against the state before it, where TILE's index
     names Ruby's tile and canonical rotation among the engine's candidates."""
     scratch = GameState(3)
-    mapped, unsupported, ended = 0, {}, 0
+    mapped, unsupported, ended, grid, held = 0, {}, 0, {True: 0, False: 0}, 0
     for fixture in FIXTURES:
         records = load_fixture_extract(fixture)['records']
         for before, record in zip(records, records[1:]):
@@ -237,8 +244,8 @@ def test_map_action_covers_the_fixtures():
                 state = scratch
                 if kind == 'run_routes':
                     TURN.set_route_revenue(scratch, pre['revenue'])
-                elif kind == 'lay_tile' and action['entity_type'] == 'corporation':
-                    state = load(before['state'])
+                elif kind in ('lay_tile', 'buy_train', 'discard_train') and action['entity_type'] == 'corporation':
+                    state = load(before['state'])  # candidates, the buyer's cash, the discarding corp
                 try:
                     decisions = map_action(action, pre, _ruby_phase(pre, before['state']), state)
                 except UnsupportedAction:
@@ -249,16 +256,31 @@ def test_map_action_covers_the_fixtures():
                     assert kind == 'end_game'
                     ended += 1
                     continue
+                if decisions and decisions[0][0] == HELD_DISCARD:  # 314 record 339: UR's waits for SR's
+                    assert decisions == [(HELD_DISCARD, D.NUM_TRAIN_TYPES * CORP[action['entity']]
+                                          + TRAIN[pre['train_type']])]
+                    held += 1
+                    mapped += 1
+                    continue
                 decoded = [A.decode_action_py(phase, action_id) for phase, action_id in decisions]
                 assert not decoded or _expected(kind, pre, decoded), (fixture, record['index'], kind, decoded)
-                if state is not scratch:
+                if kind == 'lay_tile' and state is not scratch:
                     tile = D.TILE_NAMES.index(pre['tile'])
                     lay = (tile, D.TILE_CANON_ROT[tile][pre['rotation']])
                     assert A.lay_candidates_py(state, HEX[pre['hex']], CORP[action['entity']])[decoded[1].count] == lay
+                elif kind == 'buy_train' and decoded[0].type == A.ACTION_BUY_CORP_TRAIN:
+                    TURN.set_step(state, K.STEP_TRAIN_PRICE)
+                    TURN.set_pending_train_source(state, decisions[0][1] - K.BUY_TRAIN_CORP)
+                    assert A.price_amount_py(state, decisions[1][1]) == pre['price']
+                    grid[decoded[1].type == A.ACTION_PRICE_POINT] += 1
                 mapped += 1
     # MF's port lay and ER's bonus lay, and the privates corps buy, are left for 6.8.
     assert unsupported == {('lay_tile', 'company'): 2, ('buy_company', 'corporation'): 13}
     assert (mapped, ended) == (992, 2)
+    # Corp train prices on the grid: ¥1 three times, the buyer's whole treasury
+    # three times (¥360, ¥370, ¥450), and ⌈2·cash/3⌉ of ¥2 (314 record 350);
+    # ¥100 twice, ¥150, and ¥165 are exact. 314 record 339's discard waits.
+    assert (grid, held) == ({True: 7, False: 4}, 1)
 
 
 def test_map_action_skips_and_rejects():

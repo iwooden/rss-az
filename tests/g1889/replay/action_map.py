@@ -6,15 +6,21 @@ list of ``(decision phase, phase-local id)``, starting in ``phase``. It reads
 the extractor's ``pre`` annotation for what the log entry leaves implicit (a
 bid's purchase or closed auction, a share's source, a token's hex, a train's
 owner). Prices are exact ids, so any price a human chose is expressible;
-bids that land on the BID or RAISE grid use the grid point instead.
+bids and corp train prices that land on the BID, RAISE, or TRAIN_PRICE grid
+use the grid point instead.
 
 Actions with no engine decision map to ``[]``: ``message``, ``program_*``,
 and ``run_routes`` whose revenue the engine's ROUTE step already matches.
 Any other ``run_routes`` maps to ``(ROUTE_OVERRIDE, revenue)``, which the
 harness applies with ``DRIVER.override_route_revenue``: humans' routes often
-earn less than the maximum, and Ruby pays logged revenue unchecked.
-``end_game`` raises ``ReplayEnd``. An action the mapper cannot express yet
-raises ``UnsupportedAction`` naming its type.
+earn less than the maximum, and Ruby pays logged revenue unchecked. A
+``discard_train`` by a crowded corp other than the one the engine's DISCARD
+is for maps to ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + type)``: Ruby takes
+discards from any crowded corp, the engine in corp order, and the order
+cannot change the result, so the harness holds it until the engine reaches
+that corp (314 record 339, engine-design.md §10.2). ``end_game`` raises
+``ReplayEnd``. An action the mapper cannot express yet raises
+``UnsupportedAction`` naming its type.
 
 An OR pass maps by Ruby's step (Track, Token, BuyTrain, BuyCompany), not by
 the engine's phase, so the sync rule never takes a pass in one step for a
@@ -31,14 +37,18 @@ from typing import Any
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
+from g1889.entities.corp import CORPS
+from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState
 
 from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TILE, TRAIN
 
 Decision = tuple[int, int]
-# Not a decision phase: ``(ROUTE_OVERRIDE, revenue)`` is ``DRIVER.override_route_revenue``.
+# Not decision phases: ``(ROUTE_OVERRIDE, revenue)`` is ``DRIVER.override_route_revenue``, and
+# ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + type)`` a discard the harness holds for its corp's turn.
 ROUTE_OVERRIDE = -2
+HELD_DISCARD = -3
 # TEMPORARY until 6.8 makes the buy-private slots legal: until then the mapper
 # reports a fixture's buy_company as unsupported rather than as an illegal id.
 BUY_PRIVATE_LANDED = False
@@ -164,19 +174,43 @@ def _dividend(action, pre, phase, state) -> list[Decision]:
 
 
 def _discard_train(action, pre, phase, state) -> list[Decision]:
-    return [(K.DPHASE_DISCARD, TRAIN[pre['train_type']])]
+    corp, train = CORP[action['entity']], TRAIN[pre['train_type']]
+    crowded = TRAINS.first_crowded(state) if TURN.step(state) == K.STEP_DISCARD else -1
+    if crowded >= 0 and crowded != corp:  # EQUIVALENT: Ruby takes discards in any order
+        return [(HELD_DISCARD, D.NUM_TRAIN_TYPES * corp + train)]
+    return [(K.DPHASE_DISCARD, train)]
+
+
+def _train_price_id(state, corp: int, train: int, price: int) -> int:
+    """TRAIN_PRICE's grid point for ``price`` (¥1, list, ⌈cash/3⌉, ⌈2·cash/3⌉,
+    the buyer's cash) when it lands on one, else the exact id."""
+    cash = CORPS[corp].cash(state)
+    points = [1, D.TRAIN_PRICE[train], -(-cash // 3), -(-2 * cash // 3), cash]
+    return points.index(price) if price in points else K.TRAIN_PRICE_EXACT + price
 
 
 def _buy_train(action, pre, phase, state) -> list[Decision]:
-    train = TRAIN[pre['train_type']]
+    """By source: the depot or pool at the list price, a D for a traded 4, 5,
+    or 6 at ¥800, or another corp's train at its price (TRAIN_PRICE). Ruby
+    checks no depot or pool price (``check_spend`` admits ¥1 to the cash),
+    so any other price is rejected."""
+    train, price = TRAIN[pre['train_type']], pre['price']
     if pre['source'] == 'corporation':
+        corp = CORP[action['entity']]
         return [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_CORP + D.NUM_TRAIN_TYPES * CORP[pre['seller']] + train),
-                (K.DPHASE_TRAIN_PRICE, K.TRAIN_PRICE_EXACT + pre['price'])]
-    if pre['source'] == 'pool':
-        return [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_POOL + train)]
+                (K.DPHASE_TRAIN_PRICE, _train_price_id(state, corp, train, price))]
     if 'exchange_type' in pre:
-        return [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_TRADE_IN + D.TRADE_IN_TYPE.index(TRAIN[pre['exchange_type']]))]
-    return [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_DEPOT + train)]
+        traded = TRAIN[pre['exchange_type']]
+        expected, decision = D.TRAIN_PRICE[train] - D.TRAIN_TRADE_IN[train][traded], \
+            (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_TRADE_IN + D.TRADE_IN_TYPE.index(traded))
+    else:
+        expected = D.TRAIN_PRICE[train]
+        first = K.BUY_TRAIN_POOL if pre['source'] == 'pool' else K.BUY_TRAIN_DEPOT
+        decision = (K.DPHASE_BUY_TRAIN, first + train)
+    if price != expected:
+        raise UnsupportedAction(f"buy_train of a {pre['train_type']} from the {pre['source']} for {price}, "
+                                f'not {expected}')
+    return [decision]
 
 
 def _buy_company(action, pre, phase, state) -> list[Decision]:

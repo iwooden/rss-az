@@ -11,10 +11,12 @@ BuyTrain, then a blocking BuyCompany) are the oracle. An OR runs:
   corp that floats during the OR waits for the next.
 - ``TURN_START`` (``start_operating``): the next corp operates, its
   president acting.
-- TRACK (with TILE for a chosen hex), TOKEN, the automated ROUTE, DIVIDEND,
-  and BUY_TRAIN. Where Ruby skips a step because there is nothing to choose,
-  the engine offers one action, which the driver's forced rule applies: a
-  pass, or the withhold at zero revenue.
+- TRACK (with TILE for a chosen hex), TOKEN, the automated ROUTE, DIVIDEND
+  (``dividend.pyx``), BUY_TRAIN with TRAIN_PRICE and DISCARD
+  (``buy_train.pyx``), and in phases 3-4 BUY_PRIVATE. Where Ruby skips a
+  step because there is nothing to choose, the engine offers one action,
+  which the driver's forced rule applies: a pass, or the withhold at zero
+  revenue.
 - ``TURN_END`` (``next_entity!``): the next corp, or ``OR_END``.
 - ``OR_END`` (``next_round!``): the set's next OR, or else the next SR,
   with the SR number up and ``or_num`` back to 1.
@@ -29,37 +31,32 @@ Fields:
 
 The step implies the turn's lay and token use (engine-design.md §3). Later
 sub-steps own the rest, and the driver's development stop rests where they
-take over. DIVIDEND on revenue (whose legal set raises), a train purchase
-(6.7), and the game's end after a broken bank's last OR (6.8) raise
-NotImplementedError before changing anything; in phases 3-4 BUY_TRAIN's
-pass opens the BUY_PRIVATE window, whose decision phase lands with 6.8.
+take over: BUY_PRIVATE offers only "done" until its purchases land with 6.8,
+and the game's end after a broken bank's last OR (6.8) raises
+NotImplementedError before changing anything.
 """
 
 from g1889.actions cimport (
-    ACTION_PASS, ACTION_PLACE_TOKEN, ACTION_SELECT_HEX, ACTION_WITHHOLD, ActionInfo, LayCandidate,
-    enumerate_lay_candidates,
+    ACTION_PASS, ACTION_PLACE_TOKEN, ACTION_SELECT_HEX, ActionInfo, LayCandidate, enumerate_lay_candidates,
 )
 from g1889.constants cimport (
-    ROUND_OPERATING, STEP_BUY_PRIVATE, STEP_BUY_TRAIN, STEP_DIVIDEND, STEP_OR_END, STEP_OR_START, STEP_ROUTE,
-    STEP_TILE, STEP_TOKEN, STEP_TRACK, STEP_TURN_END, STEP_TURN_START,
+    ROUND_OPERATING, STEP_DIVIDEND, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_TILE, STEP_TOKEN, STEP_TRACK,
+    STEP_TURN_END, STEP_TURN_START,
 )
-from g1889.data.tables cimport CORP_HOME, NUM_CORPS, PHASE_CAN_BUY_PRIVATES
+from g1889.data.tables cimport CORP_HOME, NUM_CORPS
 from g1889.entities.bank cimport bank_broken
-from g1889.entities.corp cimport Corporation, corp_floated, corp_president
+from g1889.entities.corp cimport corp_floated, corp_president
 from g1889.entities.hexmap cimport HexMap, hex_tokens
-from g1889.entities.market cimport Market, market_sort_by_price
-from g1889.entities.phase cimport game_phase
+from g1889.entities.market cimport market_sort_by_price
 from g1889.entities.private cimport pay_revenue
-from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_pending_hex, turn_route_revenue
+from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_pending_hex
 from g1889.phases.stock cimport start_stock_round
 from g1889.routes.solver cimport route_max
 from g1889.state cimport GameState
 
-from g1889.entities import corp as _corp, hexmap as _hexmap, market as _market, turn as _turn
+from g1889.entities import hexmap as _hexmap, turn as _turn
 
-cdef list CORPS = _corp.CORPS
 cdef HexMap MAP = _hexmap.MAP
-cdef Market MARKET = _market.MARKET
 cdef TurnState TURN = _turn.TURN
 
 
@@ -171,7 +168,7 @@ cdef void apply_token(GameState state, const ActionInfo* info) except *:
 
 
 # =============================================================================
-# ROUTE, DIVIDEND, BUY_TRAIN
+# ROUTE, BUY_PRIVATE
 # =============================================================================
 
 cdef void run_route(GameState state) except *:
@@ -183,26 +180,12 @@ cdef void run_route(GameState state) except *:
     TURN.set_step(state, STEP_DIVIDEND)
 
 
-cdef void apply_dividend(GameState state, const ActionInfo* info) except *:
-    """Withhold the turn's revenue, 0 until 6.7 (``process_dividend``): it is
-    the corp's last revenue, and the price moves left. Ruby skips the step at
-    zero revenue with the same withhold."""
-    cdef int corp = turn_operating_corp(state)
-    assert info.type == ACTION_WITHHOLD and turn_route_revenue(state) == 0, \
-        f"apply_dividend: action type {info.type} on revenue {turn_route_revenue(state)}"
-    (<Corporation>CORPS[corp]).set_last_revenue(state, 0)
-    MARKET.move_left(state, corp)
-    TURN.set_route_revenue(state, 0)
-    TURN.set_step(state, STEP_BUY_TRAIN)
-
-
-cdef void apply_buy_train(GameState state, const ActionInfo* info) except *:
-    """Pass: the turn's train buying is done. In phases 3-4 the corp may then
-    buy privates (Ruby's blocking BuyCompany, 6.8); otherwise the turn ends.
-    Buying a train arrives with 6.7."""
-    if info.type != ACTION_PASS:
-        raise NotImplementedError("1889 BUY_TRAIN: buying trains is not implemented yet (engine-design.md §11, 6.7)")
-    TURN.set_step(state, STEP_BUY_PRIVATE if PHASE_CAN_BUY_PRIVATES[game_phase(state)] else STEP_TURN_END)
+cdef void apply_buy_private(GameState state, const ActionInfo* info) except *:
+    """Done: the corp's turn ends. The window's purchases land with 6.8; until
+    then "done" is the one choice, which the driver applies, as Ruby skips
+    BuyCompany when the corp cannot buy."""
+    assert info.type == ACTION_PASS, f"apply_buy_private: action type {info.type}"
+    TURN.set_step(state, STEP_TURN_END)
 
 
 # =============================================================================

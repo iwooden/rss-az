@@ -17,6 +17,8 @@ cdef int turn_auction_pass_payouts(GameState state) noexcept nogil
 cdef int turn_pending_private(GameState state) noexcept nogil
 cdef int turn_pending_corp(GameState state) noexcept nogil
 cdef int turn_pending_hex(GameState state) noexcept nogil
+cdef int turn_pending_train_source(GameState state) noexcept nogil
+cdef int turn_return_step(GameState state) noexcept nogil
 cdef int turn_operating_corp(GameState state) noexcept nogil
 cdef int turn_route_revenue(GameState state) noexcept nogil
 cdef int turn_turn(GameState state) noexcept nogil

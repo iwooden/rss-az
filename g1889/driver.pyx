@@ -17,16 +17,18 @@ from g1889.actions cimport (
     is_legal_action, wide_amount_range,
 )
 from g1889.constants cimport (
-    DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_TRAIN, DPHASE_DIVIDEND, DPHASE_PAR, DPHASE_RAISE, DPHASE_STOCK,
-    DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK, NUM_STEPS, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND,
-    STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END,
-    STEP_TURN_START,
+    DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND, DPHASE_PAR,
+    DPHASE_RAISE, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK, DPHASE_TRAIN_PRICE, NUM_STEPS,
+    ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND, STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE,
+    STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END, STEP_TURN_START,
 )
 from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_round, turn_step
 from g1889.phases.auction cimport apply_auction, apply_bid, apply_raise
+from g1889.phases.buy_train cimport apply_buy_train, apply_discard, apply_train_price
+from g1889.phases.dividend cimport apply_dividend
 from g1889.phases.operating cimport (
-    apply_buy_train, apply_dividend, apply_tile, apply_token, apply_track, run_or_end, run_or_start, run_route,
-    run_turn_end, run_turn_start,
+    apply_buy_private, apply_tile, apply_token, apply_track, run_or_end, run_or_start, run_route, run_turn_end,
+    run_turn_start,
 )
 from g1889.phases.stock cimport apply_par, apply_stock, run_sr_end
 from g1889.state cimport GameState
@@ -90,6 +92,12 @@ cdef class GameDriver:
             apply_dividend(state, &info)
         elif phase == DPHASE_BUY_TRAIN:
             apply_buy_train(state, &info)
+        elif phase == DPHASE_TRAIN_PRICE:
+            apply_train_price(state, &info)
+        elif phase == DPHASE_DISCARD:
+            apply_discard(state, &info)
+        elif phase == DPHASE_BUY_PRIVATE:
+            apply_buy_private(state, &info)
         else:
             raise NotImplementedError(
                 f"1889 {DecisionPhase(phase).name} handler not implemented yet: {decode_action_py(phase, action_id)}")
@@ -138,9 +146,10 @@ cdef class GameDriver:
                 self._dispatch(state, phase, action_id, history)
             except NotImplementedError:
                 # TEMPORARY development stop, removed at 6.9 (§11): rest where
-                # a later sub-step takes over (a decision whose legal set or
-                # forced action it owns, or an automated step such as ROUTE for
-                # a corp with trains), so replay can compare the state there.
+                # a later sub-step takes over (a decision whose legal set it
+                # owns, such as a must-buy that needs emergency money, or an
+                # automated step such as OR_END after a broken bank's last
+                # OR), so replay can compare the state there.
                 # Nothing has changed since the last decision or step. The next
                 # apply_action fails loudly: NotImplementedError at a decision,
                 # STATUS_INVALID at an automated step.

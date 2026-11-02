@@ -12,13 +12,17 @@
   result, and that a returned decision is a choice: two or more policy
   actions, or an amount decision with exact amounts beyond its one point,
   unless the driver rests at its development stop (``at_development_stop``).
+- ``assert_invariants`` also checks the trains: every train is in the depot,
+  the pool, or a floated corp until its rank rusts, and then none is left;
+  no corp is over the limit outside DISCARD, which is for the first one that is.
 - ``enter_auction(state, turn_player, sold, bids)``: hand-built auction
   positions through ``setup_auction_py``.
 - ``hold(state, corp, ...)`` and ``enter_stock_round(state, first, turn)``:
   hand-built SR positions through ``setup_stock_round_py``.
 - ``enter_operating_round(state, or_num)``: an OR on hand-built holdings and
   map, through ``setup_operating_round_py`` and ``DRIVER.advance``, verified
-  as ``apply_and_verify`` does.
+  as ``apply_and_verify`` does; ``at_or``, ``lay``, ``set_cash``,
+  ``enter_phase``, and ``give_train`` build its state.
 """
 
 import numpy as np
@@ -35,16 +39,20 @@ from g1889.entities.market import MARKET
 from g1889.entities.phase import PHASE
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES, topmost
+from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.phases.auction import setup_auction_py
 from g1889.phases.operating import setup_operating_round_py
 from g1889.phases.stock import setup_stock_round_py
+from g1889.entities.bank import BANK_ACCOUNT
 from g1889.state import GameState
 
 POOL_LIMIT = D.MARKET_SHARE_LIMIT // 10
-# The steps of a corp's turn, from TURN_START to TURN_END, as 6.5 builds them.
+HEX = {hex_id: h for h, hex_id in enumerate(D.HEX_IDS)}
+TILE = {name: t for t, name in enumerate(D.TILE_NAMES)}
+# The steps of a corp's turn, from TURN_START to TURN_END, as 6.7 builds them.
 TURN_STEPS = (K.STEP_TRACK, K.STEP_TILE, K.STEP_TOKEN, K.STEP_ROUTE, K.STEP_DIVIDEND, K.STEP_BUY_TRAIN,
-              K.STEP_BUY_PRIVATE)
+              K.STEP_TRAIN_PRICE, K.STEP_DISCARD, K.STEP_BUY_PRIVATE)
 OR_STEPS = (K.STEP_OR_START, K.STEP_TURN_START, *TURN_STEPS, K.STEP_TURN_END, K.STEP_OR_END)
 
 
@@ -116,6 +124,55 @@ def enter_stock_round(state, first, turn=2):
     assert_invariants(state, 'enter_stock_round')
 
 
+def at_or(num_players=3, owners=()):
+    """A game past the auction, the privates in play free to ``owners`` (seat 0
+    by default); holdings, the map, and ``enter_operating_round`` follow."""
+    state = new_game(num_players)
+    end_auction(state, owners)
+    return state
+
+
+def lay(state, hex_id, tile, rotation):
+    MAP.lay(state, HEX[hex_id], TILE[tile], rotation)
+
+
+def set_cash(state, corp, cash):
+    delta = CORPS[corp].cash(state) - cash
+    BANK.transfer(state, *((K.OWNER_CORP + corp, BANK_ACCOUNT) if delta > 0 else (BANK_ACCOUNT, K.OWNER_CORP + corp)),
+                  abs(delta))
+
+
+def enter_phase(state, phase):
+    """Hand-built game phase ``phase``: the depot has sold every rank below the
+    one that opened it and one train of that rank, and those trains wait in
+    the pool unless their rank has rusted (``give_train`` hands them out).
+    From phase 5 the privates have closed, but a player-owned UTF."""
+    PHASE.set_current(state, phase)
+    for p in range(D.NUM_PRIVATES):
+        owner = PRIVATES[p].owner(state)
+        if (phase >= D.CLOSE_PRIVATES_PHASE and owner >= K.OWNER_UNSOLD
+                and not (p == D.PRIVATE_UTF and K.OWNER_PLAYER <= owner < K.OWNER_CORP)):
+            PRIVATES[p].close(state)
+    for t in range(D.TRAIN_D):
+        sold = TRAINS.depot(state, t) if t < phase else min(1, TRAINS.depot(state, t)) if t == phase else 0
+        TRAINS.set_depot(state, t, TRAINS.depot(state, t) - sold)
+        if not (D.TRAIN_RUSTS_ON[t] >= 0 and phase >= D.TRAIN_RUSTS_ON[t]):
+            TRAINS.set_pool(state, t, TRAINS.pool(state, t) + sold)
+
+
+def give_train(state, corp, train, count=1):
+    """Move ``count`` trains of type ``train`` to ``corp`` from the pool, or from
+    the depot when the pool has none (a D always comes from the depot)."""
+    for _ in range(count):
+        if TRAINS.pool(state, train):
+            TRAINS.set_pool(state, train, TRAINS.pool(state, train) - 1)
+        elif TRAINS.depot(state, train) > 0:
+            TRAINS.set_depot(state, train, TRAINS.depot(state, train) - 1)
+        else:
+            assert TRAINS.depot(state, train) == -1, f'no type {train} train to give'
+        TRAINS.set_corp_trains(state, corp, train, TRAINS.corp_trains(state, corp, train) + 1)
+
+
 def enter_operating_round(state, or_num=1, or_count=None, msg='enter_operating_round'):
     """Open OR ``or_num`` of a set of ``or_count`` (the phase's by default) on
     the holdings and map set up by hand, and run it to the first choice."""
@@ -164,7 +221,7 @@ def find_legal_action(state, **fields):
 
 
 def exact_id(state, amount):
-    """The exact-amount id of ``amount`` in the current BID or RAISE."""
+    """The exact-amount id of ``amount`` in the current BID, RAISE, or TRAIN_PRICE."""
     return K.PHASE_ACTION_SIZES[A.get_decision_phase_py(state)] + amount
 
 
@@ -206,6 +263,7 @@ def assert_invariants(state, msg=''):
                 assert owners[p] == K.OWNER_UNSOLD, f'{msg}: player {i} bids on sold private {p}'
                 assert player.bid(state, p) >= D.PRIVATE_VALUE[p] + D.MIN_BID_INCREMENT, f'{msg}: low bid'
     _assert_map(state, msg)
+    _assert_trains(state, msg)
 
     step, top, active = TURN.step(state), topmost(state), TURN.active_player(state)
     if TURN.round(state) != K.ROUND_AUCTION:
@@ -243,16 +301,42 @@ def _assert_map(state, msg):
         assert c.tokens_left(state) + placed == D.CORP_TOKENS[c.corp_id], f'{msg}: {c.sym} tokens'
 
 
+def _assert_trains(state, msg):
+    """Each finite rank's trains are in the depot, the pool, or floated corps
+    until the rank rusts, and then none is left; the D is unlimited. No corp
+    is over the limit but while DISCARD, for the first one that is, waits."""
+    phase = PHASE.current(state)
+    for t in range(D.NUM_TRAIN_TYPES):
+        held = [TRAINS.corp_trains(state, c, t) for c in range(D.NUM_CORPS)]
+        assert all(not n or CORPS[c].floated(state) for c, n in enumerate(held)), f'{msg}: an unfloated corp\'s train'
+        if D.TRAIN_COUNT[t] < 0:
+            assert TRAINS.depot(state, t) == -1, f'{msg}: the D is not unlimited'
+            continue
+        rusted = D.TRAIN_RUSTS_ON[t] >= 0 and phase >= D.PHASE_ON_TRAIN.index(D.TRAIN_RUSTS_ON[t])
+        total = TRAINS.depot(state, t) + TRAINS.pool(state, t) + sum(held)
+        assert total == (0 if rusted else D.TRAIN_COUNT[t]), f'{msg}: {total} trains of type {t} in phase {phase}'
+    crowded = [c for c in range(D.NUM_CORPS) if TRAINS.crowded(state, c)]
+    if TURN.step(state) == K.STEP_DISCARD:
+        assert crowded and TRAINS.first_crowded(state) == crowded[0], f'{msg}: DISCARD without a crowded corp'
+    else:
+        assert not crowded, f'{msg}: corps {crowded} over the limit'
+
+
 def _assert_operating(state, msg):
     """The OR order lists distinct floated corps, the operating corp is the one
-    at ``or_index`` and its president acts, TILE alone has a pending hex, the
-    turn's revenue waits only at DIVIDEND, and every OR field is clear outside
-    the OR."""
+    at ``or_index`` and its president acts (in DISCARD, the crowded corp's),
+    TILE alone has a pending hex and TRAIN_PRICE a pending train, which its
+    seller holds, DISCARD alone a return step, the turn's revenue waits only
+    at DIVIDEND, and every OR field is clear outside the OR."""
     step, corp = TURN.step(state), TURN.operating_corp(state)
     order = [TURN.or_order(state, i) for i in range(D.NUM_CORPS)]
     corps = [c for c in order if c >= 0]
     assert order == corps + [-1] * (D.NUM_CORPS - len(corps)) and len(set(corps)) == len(corps), f'{msg}: {order}'
     assert (TURN.pending_hex(state) >= 0) == (step == K.STEP_TILE), f'{msg}: pending hex'
+    source = TURN.pending_train_source(state)
+    assert (source >= 0) == (step == K.STEP_TRAIN_PRICE), f'{msg}: pending train'
+    assert source < 0 or TRAINS.corp_trains(state, *divmod(source, D.NUM_TRAIN_TYPES)), f'{msg}: unheld train'
+    assert (TURN.return_step(state) >= 0) == (step == K.STEP_DISCARD), f'{msg}: return step'
     assert TURN.route_revenue(state) == 0 or step == K.STEP_DIVIDEND, f'{msg}: route revenue outside DIVIDEND'
     if TURN.round(state) != K.ROUND_OPERATING:
         assert corps == [] and corp == -1 and TURN.or_index(state) == 0, f'{msg}: OR fields outside the OR'
@@ -261,7 +345,8 @@ def _assert_operating(state, msg):
     assert all(CORPS[c].floated(state) for c in corps), f'{msg}: an unfloated corp in {corps}'
     if step in TURN_STEPS or step == K.STEP_TURN_END:
         assert corp == order[TURN.or_index(state)] >= 0, f'{msg}: operating corp {corp}, order {order}'
-        assert TURN.active_player(state) == CORPS[corp].president(state), f'{msg}: the president acts'
+        actor = TRAINS.first_crowded(state) if step == K.STEP_DISCARD else corp
+        assert TURN.active_player(state) == CORPS[actor].president(state), f'{msg}: the president acts'
         assert MAP.tokens(state, D.CORP_HOME[corp]) >> corp & 1, f'{msg}: no home token'
     else:
         assert corp == -1, f'{msg}: operating corp {corp} between turns'
@@ -287,10 +372,9 @@ def is_choice(state):
 
 
 def price_of(state, point):
-    """The amount of BID or RAISE grid point ``point``."""
-    phase = A.get_decision_phase_py(state)
-    p = TURN.pending_private(state) if phase == K.DPHASE_BID else TURN.auction_private(state)
-    return PRIVATES[p].min_bid(state) + D.MIN_BID_INCREMENT * point
+    """The amount of BID, RAISE, or TRAIN_PRICE grid point ``point``."""
+    first = K.RAISE_POINT if A.get_decision_phase_py(state) == K.DPHASE_RAISE else 0
+    return A.price_amount_py(state, first + point)
 
 
 # =============================================================================
@@ -341,6 +425,10 @@ class ApplyResult:
         """The state as automated step ``step`` first began, so the one before
         OR_START is the SR's end."""
         return self.state_at(next(i for i, (_, phase, s) in enumerate(self.history) if phase < 0 and s == step))
+
+    def state_before_decision(self, phase, action_id):
+        """The state as decision ``(phase, action_id)`` was first applied."""
+        return self.state_at(next(i for i, (_, p, a) in enumerate(self.history) if (p, a) == (phase, action_id)))
 
 
 def _verify(result, msg):

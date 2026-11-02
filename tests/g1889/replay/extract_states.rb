@@ -27,7 +27,7 @@ require 'logger'
 
 module G1889Extract
   ROOT = File.expand_path('../../..', __dir__)
-  SCHEMA_VERSION = 5
+  SCHEMA_VERSION = 6
   TITLE = '1889'
 
   module_function
@@ -331,8 +331,52 @@ module G1889Extract
         'ebuy_sold' => buy_train.instance_variable_get(:@corporations_sold)&.map(&:name) || [],
         'ebuy_last_share_price' => buy_train.last_share_sold_price,
         'must_buy' => must_buy_info(round),
+        'trains' => train_info(round),
+        'crowded' => round.active_step.is_a?(Engine::Step::DiscardTrain) ? crowded_names : nil,
         'auto_router' => round.active_step.is_a?(Engine::Step::Route) ? auto_router_info(round.current_operator) : nil,
       }.merge(network_snapshot(round))
+    end
+
+    # At a BuyTrain snapshot, what the operator's BuyTrain step offers it,
+    # answered by the step's own methods: its action types; room? under the
+    # train limit; buyable_trains as [source, type, min, max], the source
+    # 'depot', 'pool', or the selling corporation, and the price range
+    # check_spend admits for another corporation's train (spend_minmax; a
+    # depot or pool train is at its list price); and discountable_trains_for,
+    # the trade-ins, as [type traded, price]. It runs on a fresh Graph, as
+    # must_buy does, since must_buy_train? reads it.
+    def train_info(round)
+      corp = round.current_operator
+      step = round.active_step
+      return nil unless corp && step.is_a?(Engine::Step::BuyTrain)
+
+      log_size = @game.log.size
+      with_graph(Engine::Graph.new(@game)) do
+        buyable = step.buyable_trains(corp).map do |train|
+          range = train.owner&.corporation? ? step.spend_minmax(corp, train) : [train.price, train.price]
+          [train_source(train), train.name, *range]
+        end
+        {
+          'actions' => step.actions(corp),
+          'room' => step.room?(corp),
+          'buyable' => buyable.uniq.sort,
+          'exchanges' => @game.discountable_trains_for(corp).map { |train, _, _, price| [train.name, price] }.uniq.sort,
+        }
+      end
+    ensure
+      @game.log.slice!(log_size..) if log_size
+    end
+
+    # Game#crowded_corps, in its order, without filling its cache.
+    def crowded_names
+      (@game.minors + @game.corporations).select { |c| @game.num_corp_trains(c) > @game.train_limit(c) }.map(&:name)
+    end
+
+    def train_source(train)
+      owner = train.owner
+      return @game.depot.discarded.include?(train) ? 'pool' : 'depot' if owner == @game.depot
+
+      owner.corporation? ? owner.name : ref(owner)&.fetch('type')
     end
 
     # At a BuyTrain snapshot, Game#must_buy_train? for the operator: 'fresh'
@@ -564,11 +608,7 @@ module G1889Extract
     def buy_train_info(action)
       train = action.train
       owner = train.owner
-      source = if owner == @game.depot
-                 @game.depot.discarded.include?(train) ? 'pool' : 'depot'
-               else
-                 ref(owner)&.fetch('type')
-               end
+      source = owner&.corporation? ? 'corporation' : train_source(train)
       info = { 'train_type' => train.name, 'source' => source, 'price' => action.price }
       info['seller'] = owner.name if owner&.corporation?
       info['exchange_type'] = action.exchange.name if action.exchange

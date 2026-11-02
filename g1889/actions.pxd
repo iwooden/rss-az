@@ -95,6 +95,7 @@ cpdef int get_decision_phase_py(GameState state)
 cpdef int enumerate_legal_actions_py(GameState state, cnp.ndarray action_ids) except -1
 cpdef int enumerate_policy_actions_py(GameState state, cnp.ndarray action_ids) except -1
 cpdef bint is_legal_action_py(GameState state, int action_id) except -1
+cpdef int price_amount_py(GameState state, int action_id) except -1
 cpdef list lay_candidates_py(GameState state, int hex, int corp=*)
 cpdef list lay_hexes_py(GameState state, int corp=*)
 cpdef list token_hexes_py(GameState state, int corp=*)

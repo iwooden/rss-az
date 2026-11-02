@@ -89,7 +89,7 @@ def test_the_solver_matches_auto_router_at_every_route_snapshot(fixture):
         check_routes(state, corp, routes)
         same += sorted((D.TRAIN_NAMES[r['train']], r['revenue'], normal(r['hexes'])) for r in routes) == \
             _ruby_routes(router)
-        DRIVER.advance(state)  # ROUTE, then the development stop at DIVIDEND (6.7)
+        DRIVER.advance(state)  # ROUTE, then DIVIDEND, the president's choice
         assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) == router['revenue']
         snapshots += 1
     assert (snapshots, same) == ROUTE_COVERAGE[fixture]

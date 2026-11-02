@@ -1,16 +1,17 @@
-"""The operating round as 6.5 and 6.6 build it: OR_START, TURN_START, TRACK,
-TILE, TOKEN, ROUTE, DIVIDEND at zero revenue, BUY_TRAIN's pass and depot
-offers, TURN_END, and OR_END (1889/engine-design.md §5.2-5.4, §6.1, §8; rules
-§8; Ruby's ``round/operating.rb`` and the OR steps).
+"""The operating round's flow as 6.5 and 6.6 build it: OR_START, TURN_START,
+TRACK, TILE, TOKEN, ROUTE, DIVIDEND at zero revenue, BUY_TRAIN's pass and
+depot offers, TURN_END, and OR_END (1889/engine-design.md §5.2-5.4, §6.1, §8;
+rules §8; Ruby's ``round/operating.rb`` and the OR steps).
 
 Covers the privates' revenue, home tokens, the OR order with its price and
 stack ties, an OR with no floated corp, turns and their presidents, the next
 OR of a set and the next SR, a lay's cost, tile, and reach, TILE's forced
 single candidate, a token's price, ROUTE's revenue and its replay override,
 the withhold's move at the market's edges, must-buy against pass, and the
-driver's development stop wherever a later sub-step takes over. ``tests/g1889/replay/`` checks the same paths against
-Ruby on the fixtures; ``test_track_and_tokens.py`` pins the lay and token
-rules.
+driver's development stop wherever a later sub-step takes over.
+``test_trains.py`` covers 6.7's dividends, train purchases, phases, and
+discards; ``tests/g1889/replay/`` checks the same paths against Ruby on the
+fixtures; ``test_track_and_tokens.py`` pins the lay and token rules.
 
 Sides: 0 S, 1 SW, 2 NW, 3 N, 4 NE, 5 SE. KO's home, Takamatsu (K4), has
 printed track to K6 (side 0), J5 (side 1), and J3 (side 2).
@@ -23,7 +24,7 @@ import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
 from g1889.driver import DRIVER, STATUS_INVALID, STATUS_OK
-from g1889.entities.bank import BANK, BANK_ACCOUNT
+from g1889.entities.bank import BANK
 from g1889.entities.corp import CORPS
 from g1889.entities.graph import GRAPH
 from g1889.entities.hexmap import MAP
@@ -35,32 +36,12 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    apply_and_verify, at_development_stop, end_auction, enter_operating_round, hold, legal_ids, new_game,
+    HEX, TILE, apply_and_verify, at_development_stop, at_or, enter_operating_round, hold, lay, legal_ids, set_cash,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
 PAR_65, PAR_70, PAR_100 = 0, 1, 5
-HEX = {hex_id: h for h, hex_id in enumerate(D.HEX_IDS)}
-TILE = {name: t for t, name in enumerate(D.TILE_NAMES)}
 BUY_2 = K.BUY_TRAIN_DEPOT + D.TRAIN_2
-
-
-def at_or(num_players=3, owners=()):
-    """A game past the auction, the privates in play free to ``owners`` (seat 0
-    by default); holdings, the map, and ``enter_operating_round`` follow."""
-    state = new_game(num_players)
-    end_auction(state, owners)
-    return state
-
-
-def lay(state, hex_id, tile, rotation):
-    MAP.lay(state, HEX[hex_id], TILE[tile], rotation)
-
-
-def set_cash(state, corp, cash):
-    delta = CORPS[corp].cash(state) - cash
-    BANK.transfer(state, *((K.OWNER_CORP + corp, BANK_ACCOUNT) if delta > 0 else (BANK_ACCOUNT, K.OWNER_CORP + corp)),
-                  abs(delta))
 
 
 def order(state):
@@ -252,7 +233,8 @@ class TestTrackTileToken:
 
     def test_a_token_costs_the_next_charter_price(self):
         """KO tokens Kochi (K8, AR's home with a second slot); one token a
-        turn, so ROUTE follows. With K4 and K8 reached, KO must then buy."""
+        turn, so ROUTE follows. With K4 and K8 reached, KO must then buy, and
+        its one choice, a 2, is forced."""
         state = at_or(3)
         hold(state, KO, {0: 6})
         lay(state, 'K6', '9', 0)
@@ -264,9 +246,9 @@ class TestTrackTileToken:
         cash, bank = CORPS[KO].cash(state), BANK.cash(state)
         result = apply_and_verify(state, K.TOKEN_HEX + HEX['K8'])
         assert MAP.tokens(state, HEX['K8']) == 1 << KO and CORPS[KO].tokens_left(state) == 0
-        assert CORPS[KO].cash(state) == cash - 40 and BANK.cash(state) == bank + 40
-        assert result.steps[0] == K.STEP_ROUTE and TURN.step(state) == K.STEP_BUY_TRAIN
-        assert A.must_buy_train_py(state) and at_development_stop(state)
+        assert result.steps[0] == K.STEP_ROUTE and result.forced[-1] == (K.DPHASE_BUY_TRAIN, BUY_2)
+        assert CORPS[KO].cash(state) == cash - 40 - 80 and BANK.cash(state) == bank + 40 + 80
+        assert TURN.step(state) == K.STEP_BUY_TRAIN and not A.must_buy_train_py(state)
 
 
 # =============================================================================
@@ -295,15 +277,14 @@ class TestDividend:
         else:  # the bottom of the new cell's stack
             assert MARKET.stamp(state, KO) > MARKET.stamp(state, IR)
 
-    def test_only_zero_revenue_is_settled_yet(self):
+    def test_revenue_offers_the_payout(self):
         state = at_or(3)
         hold(state, KO, {0: 6})
         enter_operating_round(state)
         TURN.set_step(state, K.STEP_DIVIDEND)
         assert legal_ids(state) == [K.DIVIDEND_WITHHOLD]
         TURN.set_route_revenue(state, 50)
-        with pytest.raises(NotImplementedError, match='dividends'):
-            legal_ids(state)
+        assert legal_ids(state) == [K.DIVIDEND_WITHHOLD, K.DIVIDEND_PAYOUT]
 
 
 class TestMarketMoves:
@@ -351,18 +332,13 @@ class TestBuyTrain:
         assert (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS) in result.forced and TURN.round(state) == K.ROUND_STOCK
 
     def test_a_corp_with_a_route_must_buy(self):
-        """No pass; the one train is forced, and buying arrives with 6.7, so
-        the driver rests before it with nothing changed (the development stop)."""
+        """No pass; the one train, a 2, is forced, and then KO may pass or buy more."""
         state = at_or(3)
         lay(state, 'J3', '8', 3)  # K4 to Okayama: two revenue centers
         result = to_buy_train(state)
-        assert TURN.step(state) == K.STEP_BUY_TRAIN and A.must_buy_train_py(state)
-        assert legal_ids(state) == [BUY_2] and at_development_stop(state)
-        assert all(phase != K.DPHASE_BUY_TRAIN for phase, _ in result.decisions)
-        row = state._array.copy()
-        with pytest.raises(NotImplementedError, match='6.7'):
-            DRIVER.apply_action(state, BUY_2)
-        np.testing.assert_array_equal(state._array, row)
+        assert result.forced[-1] == (K.DPHASE_BUY_TRAIN, BUY_2) and TRAINS.corp_trains(state, KO, D.TRAIN_2) == 1
+        assert TURN.step(state) == K.STEP_BUY_TRAIN and not A.must_buy_train_py(state)
+        assert legal_ids(state) == [K.BUY_TRAIN_PASS, BUY_2]
 
     def test_a_must_buy_beyond_the_treasury_needs_emergency_money(self):
         state = at_or(3)
@@ -373,17 +349,6 @@ class TestBuyTrain:
         apply_and_verify(state, K.TRACK_PASS)
         assert TURN.step(state) == K.STEP_BUY_TRAIN and at_development_stop(state)
         with pytest.raises(NotImplementedError, match='emergency money'):
-            legal_ids(state)
-
-    @pytest.mark.parametrize('where', ['pool', 'corp'])
-    def test_trains_outside_the_depot_wait_for_their_sources(self, where):
-        state = at_or(3)
-        to_buy_train(state)
-        if where == 'pool':
-            TRAINS.set_pool(state, D.TRAIN_2, 1)
-        else:
-            TRAINS.set_corp_trains(state, IR, D.TRAIN_2, 1)
-        with pytest.raises(NotImplementedError, match='pool or corps'):
             legal_ids(state)
 
     def test_the_depot_sells_its_lowest_rank_and_d_from_phase_6(self):
@@ -399,27 +364,19 @@ class TestBuyTrain:
         TRAINS.set_depot(state, D.TRAIN_6, 0)
         assert TRAINS.depot_types(state) == 1 << D.TRAIN_D
 
-    def test_buys_offer_each_affordable_depot_type(self):
-        """From phase 6 the depot sells 6s and Ds; a must-buy corp that can
-        afford the 6 but not the D is offered the 6."""
-        state = at_or(3)
-        for t in (D.TRAIN_2, D.TRAIN_3, D.TRAIN_4, D.TRAIN_5):
-            TRAINS.set_depot(state, t, 0)
-        PHASE.set_current(state, D.GAME_PHASE_6)
-        hold(state, KO, {0: 6}, par=PAR_100)  # ¥1,000
-        enter_operating_round(state)
-        apply_and_verify(state, K.TRACK_PASS)
-        assert legal_ids(state) == [K.BUY_TRAIN_PASS, K.BUY_TRAIN_DEPOT + D.TRAIN_6]
-        set_cash(state, KO, D.TRAIN_PRICE[D.TRAIN_D])
-        assert legal_ids(state) == [K.BUY_TRAIN_PASS, K.BUY_TRAIN_DEPOT + D.TRAIN_6, K.BUY_TRAIN_DEPOT + D.TRAIN_D]
-
     def test_in_phases_3_and_4_the_buy_private_window_follows(self):
-        """TEMPORARY (6.9 removes the development stop): BUY_PRIVATE lands with 6.8."""
+        """TEMPORARY (6.8 adds its purchases): BUY_PRIVATE offers only "done",
+        which the driver applies, so the turn ends."""
         state = at_or(3)
         PHASE.set_current(state, D.GAME_PHASE_3)
+        TRAINS.set_depot(state, D.TRAIN_2, 0)  # sold out, rusted at phase 4: given away for the test
+        TRAINS.set_pool(state, D.TRAIN_2, D.TRAIN_COUNT[D.TRAIN_2])
+        TRAINS.set_depot(state, D.TRAIN_3, D.TRAIN_COUNT[D.TRAIN_3] - 1)
+        TRAINS.set_pool(state, D.TRAIN_3, 1)
         to_buy_train(state)
-        apply_and_verify(state, K.BUY_TRAIN_PASS)
-        assert TURN.step(state) == K.STEP_BUY_PRIVATE and at_development_stop(state)
+        result = apply_and_verify(state, K.BUY_TRAIN_PASS)
+        assert result.forced[0] == (K.DPHASE_BUY_PRIVATE, K.BUY_PRIVATE_DONE)
+        assert result.steps[0] == K.STEP_TURN_END and TURN.round(state) == K.ROUND_OPERATING
 
 
 class TestRoute:
@@ -441,15 +398,12 @@ class TestRoute:
         return state
 
     def test_a_corp_runs_its_trains_for_the_most_they_earn(self):
-        """TEMPORARY (6.9 removes the development stop): it rests at DIVIDEND,
-        whose payout lands with 6.7."""
+        """DIVIDEND then waits for the president's choice."""
         state = self.with_a_train()
         result = apply_and_verify(state, K.TRACK_PASS)
         assert result.forced == [(K.DPHASE_TOKEN, K.TOKEN_PASS)] and result.steps == [K.STEP_ROUTE]
         assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) == 50
-        assert at_development_stop(state)
-        with pytest.raises(NotImplementedError):
-            DRIVER.apply_action(state, K.DIVIDEND_PAYOUT)
+        assert legal_ids(state) == [K.DIVIDEND_WITHHOLD, K.DIVIDEND_PAYOUT]
 
     def test_a_corp_without_a_route_earns_nothing_and_withholds(self):
         state = self.with_a_train(track=False)

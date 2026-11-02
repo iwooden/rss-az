@@ -2,7 +2,7 @@
 
 from libc.stdint cimport int16_t
 
-from g1889.constants cimport OWNER_CORP, OWNER_NOT_IN_PLAY, OWNER_PLAYER, OWNER_UNSOLD
+from g1889.constants cimport OWNER_CLOSED, OWNER_CORP, OWNER_NOT_IN_PLAY, OWNER_PLAYER, OWNER_UNSOLD
 from g1889.data.tables cimport (
     HEX_BLOCKER, MIN_BID_INCREMENT, NUM_CORPS, NUM_PRIVATES, PRIVATE_REVENUE, PRIVATE_TR, PRIVATE_UTF,
     PRIVATE_VALUE, UTF_LATE_PHASE, UTF_LATE_REVENUE,
@@ -130,6 +130,12 @@ cdef class Private:
 
     cpdef void set_flags(self, GameState state, int flags):
         state._data[_slot(self.private_id, PRIVATE_FIELDS.flags)] = <int16_t>flags
+
+    cpdef void close(self, GameState state):
+        """Close this private (``Company#close!``): its revenue, abilities, and
+        block end."""
+        assert self.owner(state) >= <int>OWNER_UNSOLD, f"private {self.sym} is not open"
+        self.set_owner(state, <int>OWNER_CLOSED)
 
     cpdef int revenue(self, GameState state):
         return private_revenue(state, self.private_id)

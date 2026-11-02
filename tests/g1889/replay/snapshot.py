@@ -41,9 +41,13 @@ GRAPH's sides and nodes reached and ``route_available``, the cities the corp
 may token, and its lay candidates with their costs. They do not depend on
 whose turn it is; the oracle tests also check the operating corp's TRACK,
 TILE, and TOKEN ids. At a BuyTrain snapshot it checks ``must_buy_train``
-against Ruby's ``must_buy_train?`` on a fresh graph (``operating.must_buy``),
-and at a Route snapshot the route solver's maximum against AutoRouter's
-(``operating.auto_router``; ``test_route_oracles.py`` checks the routes).
+against Ruby's ``must_buy_train?`` on a fresh graph (``operating.must_buy``)
+and BUY_TRAIN's legal choices against Ruby's BuyTrain step
+(``operating.trains``, ``ruby_train_buys``); at a DiscardTrain snapshot the
+crowded corps in Ruby's order (``operating.crowded``), the first of which is
+Ruby's current entity there; and at a Route snapshot the route solver's
+maximum against AutoRouter's (``operating.auto_router``;
+``test_route_oracles.py`` checks the routes).
 
 Not compared, because the engine does not model them (or not yet): player
 ``value`` and the game ``result`` (``final_scores``, 6.8); a corporation's
@@ -214,8 +218,8 @@ def _compare_game(state, snap, ids, check) -> None:
     entity = g['current_entity'] or {}
     if entity.get('type') == 'player':
         check('game.current_entity', ids[TURN.active_player(state)], entity['id'])
-    elif entity.get('type') == 'corporation':
-        corp = TURN.operating_corp(state)
+    elif entity.get('type') == 'corporation':  # at DiscardTrain, the crowded corp that discards
+        corp = TRAINS.first_crowded(state) if step == K.STEP_DISCARD else TURN.operating_corp(state)
         check('game.current_entity', D.CORP_SYMS[corp] if corp >= 0 else None, entity['id'])
     if g['round'] == 'ISR':
         check('game.round_entities[entity_index]', ids[TURN.auction_turn(state)],
@@ -336,6 +340,11 @@ def _compare_rounds(state, snap, ids, check) -> None:
               sorted(operating['ebuy_sold'], key=CORP.__getitem__))
         if operating['must_buy'] is not None and corp >= 0:
             check('operating.must_buy', A.must_buy_train_py(state, corp), operating['must_buy']['fresh'])
+        if operating['trains'] is not None and TURN.step(state) == K.STEP_BUY_TRAIN:
+            _compare_train_buys(state, operating['trains'], check)
+        if operating['crowded'] is not None:
+            check('operating.crowded', [D.CORP_SYMS[c] for c in range(D.NUM_CORPS) if TRAINS.crowded(state, c)],
+                  operating['crowded'])
         if operating['auto_router'] is not None and corp >= 0:
             check('operating.auto_router.revenue', max_route_revenue(state, corp), operating['auto_router']['revenue'])
         _compare_network(state, operating, check)
@@ -378,6 +387,52 @@ def _compare_network(state, operating, check) -> None:
         check(f'{path} (ruby only)', sorted(theirs - ours), [])
         for hex_id, cost in sorted({(hex_id, cost) for hex_id, _, _, cost, _ in lays}):
             check(f'{path}.cost.{hex_id}', MAP.lay_cost(state, HEX[hex_id], c), cost)
+
+
+def ruby_train_buys(trains: dict, cash: int) -> set[tuple[str, ...]] | None:
+    """Ruby's BuyTrain choices for a corp paying from its treasury, as
+    ``('pass',)``, ``('depot' | 'pool' | seller, type)``, and ``('trade',
+    type)``: the pass when offered; with ``room``, each depot or pool train at
+    most the cash, and another corp's train when its range holds a price
+    (``spend_minmax``: ¥1 to the cash); and each trade-in at most the cash,
+    room or not. None in an emergency, where emergency money (6.8) takes
+    over: the corp must buy (``sell_shares`` is offered, as the president may
+    contribute) and its cash is short of every depot and pool train."""
+    if 'sell_shares' in trains['actions'] and \
+            cash < min(low for source, _, low, _ in trains['buyable'] if source in ('depot', 'pool')):
+        return None
+    buys = {('pass',)} if 'pass' in trains['actions'] else set()
+    if trains['room']:
+        buys |= {(source, train) for source, train, low, high in trains['buyable'] if low <= min(high, cash)}
+    return buys | {('trade', train) for train, price in trains['exchanges'] if price <= cash}
+
+
+def engine_train_buys(state: GameState) -> set[tuple[str, ...]] | None:
+    """The operating corp's legal BUY_TRAIN ids in ``ruby_train_buys``'s form;
+    None where the enumerator raises for emergency money."""
+    ids = np.zeros(K.MAX_ACTION_SIZE, dtype=np.uint16)
+    try:
+        count = A.enumerate_legal_actions_py(state, ids)
+    except NotImplementedError:
+        return None
+    buys: set[tuple[str, ...]] = set()
+    for action_id in ids[:count]:
+        info = A.decode_action_py(K.DPHASE_BUY_TRAIN, int(action_id))
+        name = D.TRAIN_NAMES[info.train_type] if info.train_type >= 0 else ''
+        buys.add({A.ACTION_PASS: ('pass',), A.ACTION_BUY_DEPOT_TRAIN: ('depot', name),
+                  A.ACTION_BUY_POOL_TRAIN: ('pool', name), A.ACTION_TRADE_IN: ('trade', name),
+                  A.ACTION_BUY_CORP_TRAIN: (D.CORP_SYMS[info.corp], name)}[info.type])
+    return buys
+
+
+def _compare_train_buys(state, trains, check) -> None:
+    ours = engine_train_buys(state)
+    theirs = ruby_train_buys(trains, CORPS[TURN.operating_corp(state)].cash(state))
+    if ours is None or theirs is None:
+        check('operating.trains (emergency money)', ours is None, theirs is None)
+        return
+    check('operating.trains (engine only)', sorted(ours - theirs), [])
+    check('operating.trains (ruby only)', sorted(theirs - ours), [])
 
 
 def _compare_stock_legal(state, legal, check) -> None:
@@ -518,10 +573,14 @@ def _load_operating(state: GameState, snap: Snapshot, ids: list) -> None:
     the emergency sales. A Track or Token snapshot opens its step, with the
     turn's lay or token still to come, except a Track snapshot after the lay,
     which Ruby keeps open for MF's port tile (engine-design §10.2): it loads
-    at TOKEN, where the engine stands then."""
+    at TOKEN, where the engine stands then. A DiscardTrain snapshot returns
+    to BUY_TRAIN, the only step whose purchases change the phase, and Ruby's
+    active player is the crowded corp's president."""
     g, operating = snap['game'], snap['operating']
     TURN.set_round(state, K.ROUND_OPERATING)
     TURN.set_step(state, K.STEP_TOKEN if track_after_lay(snap) else OR_STEPS[g['step']])
+    if g['step'] == 'DiscardTrain':
+        TURN.set_return_step(state, K.STEP_BUY_TRAIN)
     for i, sym in enumerate(g['round_entities']):
         TURN.set_or_order(state, i, CORP[sym])
     TURN.set_or_index(state, g['entity_index'])

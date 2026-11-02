@@ -212,9 +212,27 @@ Snapshot (``state``)
     ``timed_out``, whether the path walk hit its 30 s limit; and
     ``candidates``, ``{train id: routes kept}``, where 10,000 (``route_limit``)
     would mean a cut list. Schema 4 kept this in the ``run_routes``
-    annotation; a Route snapshot is the state before it. And three oracles
-    (schema 3), keyed by every corporation with a placed token and computed
-    on a fresh ``Graph`` so the game's own graph caches stay untouched:
+    annotation; a Route snapshot is the state before it. ``trains``
+    (schema 6), None unless the active step is ``BuyTrain``, else what the
+    operator's BuyTrain step offers it, from the step's own methods on a
+    fresh ``Graph``: ``actions``, its action types (``['sell_shares',
+    'buy_train']`` when the corporation must buy, so the president may
+    contribute; ``['buy_train', 'pass']`` otherwise); ``room``, ``room?``
+    under the train limit; ``buyable``, ``buyable_trains`` as sorted unique
+    ``[source, type, min, max]``, where ``source`` is ``'depot'``,
+    ``'pool'``, or the selling corporation, and ``min``/``max`` the prices
+    ``check_spend`` admits (``spend_minmax`` for another corporation's
+    train; the list price otherwise, which Ruby never checks); and
+    ``exchanges``, ``discountable_trains_for`` as sorted unique ``[type
+    traded, price]``. Ruby's ``buyable_trains`` ignores ``room?`` and the
+    corporation's cash, which the buy itself and the UI apply, so the
+    consumer does (``snapshot.ruby_train_buys``). ``crowded`` (schema 6),
+    None unless the active step is ``DiscardTrain``, else
+    ``Game#crowded_corps`` in its order (corporation order), recomputed
+    without filling its cache; Ruby's current entity there is the first.
+    And three oracles (schema 3), keyed by every corporation with a placed
+    token and computed on a fresh ``Graph`` so the game's own graph caches
+    stay untouched:
 
     ``graph``
         ``{corporation: {hexes, nodes, route}}``: ``hexes``, Ruby's
@@ -262,7 +280,7 @@ from typing import Any
 
 import pytest
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
@@ -293,9 +311,10 @@ HEX_KEYS = frozenset({'tile', 'rotation', 'tokens', 'reserved'})
 AUCTION_KEYS = frozenset({'companies', 'auctioning', 'min_bids'})
 STOCK_KEYS = frozenset({'sold', 'current_actions', 'bought_from_ipo', 'last_to_act', 'pass_order', 'legal'})
 OPERATING_KEYS = frozenset({
-    'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'must_buy', 'auto_router', 'graph',
-    'tokens', 'lays',
+    'operator', 'routes_revenue', 'ebuy_sold', 'ebuy_last_share_price', 'must_buy', 'trains', 'crowded',
+    'auto_router', 'graph', 'tokens', 'lays',
 })
+TRAINS_KEYS = frozenset({'actions', 'room', 'buyable', 'exchanges'})
 AUTO_ROUTER_KEYS = frozenset({'revenue', 'routes', 'timed_out', 'candidates'})
 AUTO_ROUTE_KEYS = frozenset({'train', 'revenue', 'hexes', 'ordered_hexes'})
 

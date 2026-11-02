@@ -24,6 +24,7 @@ cdef class Private:
     cpdef void set_owner(self, GameState state, int owner)
     cpdef int flags(self, GameState state)
     cpdef void set_flags(self, GameState state, int flags)
+    cpdef void close(self, GameState state)
     cpdef int revenue(self, GameState state)
     cpdef bint blocks_hex(self, GameState state, int hex)
 

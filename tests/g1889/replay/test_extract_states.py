@@ -15,8 +15,8 @@ import pytest
 from g1889.data import load_tables
 from tests.g1889.replay.extracts import (
     AUCTION_KEYS, AUTO_ROUTE_KEYS, AUTO_ROUTER_KEYS, CORPORATION_KEYS, FIXTURES, GAME_KEYS, HEX_KEYS, OPERATING_KEYS,
-    PLAYER_KEYS, PRE_EXTRA_KEYS, PRE_KEYS, PRE_OPTIONAL_KEYS, PRIVATE_KEYS, STATE_KEYS, STOCK_KEYS, Extract,
-    load_fixture, load_fixture_extract, load_new_game_extract,
+    PLAYER_KEYS, PRE_EXTRA_KEYS, PRE_KEYS, PRE_OPTIONAL_KEYS, PRIVATE_KEYS, STATE_KEYS, STOCK_KEYS, TRAINS_KEYS,
+    Extract, load_fixture, load_fixture_extract, load_new_game_extract,
 )
 
 T = load_tables()
@@ -89,6 +89,12 @@ def check_state(state: State, num_players: int) -> None:
         assert router['revenue'] == sum(route['revenue'] for route in router['routes'])
     elif detail == 'operating':
         assert game['step'] != 'Route' or game['finished']
+    if detail == 'operating' and (trains := state['operating']['trains']) is not None:
+        assert game['step'] == 'BuyTrain' and trains.keys() == TRAINS_KEYS
+        assert all(source in ('depot', 'pool', *CORP_SYMS) and low <= high
+                   for source, _, low, high in trains['buyable'])
+    if detail == 'operating':
+        assert (state['operating']['crowded'] is not None) == (game['step'] == 'DiscardTrain')
 
     assert (game['result'] is not None) == game['finished']
 
@@ -254,6 +260,29 @@ def test_network_oracles_admit_each_logged_move(case):
             assert pre['hex'] in operating['tokens'][corp]
             tokens += 1
     assert (lays, tokens) == {'314': (40, 6), '962': (51, 8)}.get(case[0], (0, 0))
+
+
+def test_train_oracles_admit_each_logged_move(case):
+    """``operating.trains`` admits every logged train purchase at the
+    snapshot before it, at its logged price, and ``operating.crowded`` names
+    every corporation that discards."""
+    records = case[2]['records']
+    buys = discards = 0
+    for before, record in zip(records, records[1:]):
+        operating, action, pre = before['state']['operating'], record['action'], record['pre']
+        if action['type'] == 'buy_train':
+            trains = operating['trains']
+            if 'exchange_type' in pre:
+                assert [pre['exchange_type'], pre['price']] in trains['exchanges']
+            else:
+                source = pre['seller'] if pre['source'] == 'corporation' else pre['source']
+                assert any(row[:2] == [source, pre['train_type']] and row[2] <= pre['price'] <= row[3]
+                           for row in trains['buyable']), (record['index'], trains['buyable'])
+            buys += 1
+        elif action['type'] == 'discard_train':
+            assert action['entity'] in operating['crowded']
+            discards += 1
+    assert (buys, discards) == {'314': (30, 2), '962': (21, 0)}.get(case[0], (0, 0))
 
 
 def _logged_and_best_revenues(name: str) -> dict[int, tuple[int, int]]:
