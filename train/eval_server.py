@@ -1324,6 +1324,32 @@ class EvaluationServer:
                     break
 
 
+def get_worker_result(
+    result_queue: Any,
+    eval_servers: list[EvaluationServer],
+    *,
+    timeout: float,
+) -> Any:
+    """Return the next worker result, raising if an eval server dies first.
+
+    Workers waiting on a dead server block until
+    ``RemoteEvaluator._EVAL_TIMEOUT``, so the parent checks the servers
+    between short waits on the queue. Raises ``queue.Empty`` after
+    ``timeout`` seconds, like ``Queue.get``.
+    """
+    deadline = perf_counter() + timeout
+    while True:
+        for server in eval_servers:
+            server.check_alive()
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            raise _queue.Empty
+        try:
+            return result_queue.get(timeout=min(_LIVENESS_POLL_SECS, remaining))
+        except _queue.Empty:
+            pass
+
+
 class RemoteEvaluator(BaseEvaluator):
     """Worker-side proxy that evaluates states via shared memory + EvaluationServer.
 

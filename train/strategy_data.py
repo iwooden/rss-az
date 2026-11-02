@@ -36,7 +36,12 @@ from nn import create_model, get_model_input_spec
 from nn.policy_layout import UNIFIED_LOGIT_DIM, build_action_lut
 from train.checkpoint import find_latest_checkpoint, load_checkpoint
 from train.config import EpochConfig, TrainingConfig
-from train.eval_server import EvaluationServer, RemoteEvaluator, SharedEvalBuffers
+from train.eval_server import (
+    EvaluationServer,
+    RemoteEvaluator,
+    SharedEvalBuffers,
+    get_worker_result,
+)
 from train.self_play import GameRecord, play_game
 
 
@@ -730,7 +735,9 @@ def main() -> None:
 
             while games_done < total_games:
                 try:
-                    record = result_queue.get(timeout=1200.0)
+                    record = get_worker_result(
+                        result_queue, eval_servers, timeout=1200.0,
+                    )
                 except queue.Empty:
                     alive = sum(1 for worker in workers if worker.is_alive())
                     raise RuntimeError(

@@ -28,6 +28,7 @@ from train.eval_server import (
     _resolve_actual_launch_cap,
     _resolve_launch_batch_size,
     _resolve_max_launch_batch_size,
+    get_worker_result,
 )
 
 
@@ -65,6 +66,18 @@ class StartupFailureModel(SyncValueModel):
 
     def to(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("model failed to load")
+
+
+class ForwardFailureModel(SyncValueModel):
+    """Fails on its first forward, after an uncompiled server is ready."""
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        legal_mask: torch.Tensor,
+        relations: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        raise RuntimeError("forward failed")
 
 
 def _cpu_server(model: torch.nn.Module) -> tuple[EvaluationServer, SharedEvalBuffers]:
@@ -258,6 +271,34 @@ def test_wait_ready_returns_when_server_dies_during_startup() -> None:
         assert not server.is_alive()
         with pytest.raises(RuntimeError, match="exited with code 1"):
             server.check_alive()
+    finally:
+        server.stop()
+
+
+def test_worker_result_wait_fails_fast_when_server_dies_after_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RemoteEvaluator, "_EVAL_TIMEOUT", 2.0)
+    server, shared_bufs = _cpu_server(ForwardFailureModel())
+    state = GameState(NUM_PLAYERS)
+    state.initialize_game(NUM_PLAYERS, seed=123)
+    legal_mask = np.zeros((1, U_DIM), dtype=np.uint8)
+    legal_mask[0, 0] = 1
+
+    try:
+        server.start()
+        assert server.wait_ready(timeout=60.0)
+        evaluator = RemoteEvaluator(NUM_PLAYERS, shared_bufs, worker_idx=0)
+        # The forward kills the server; its worker only times out.
+        with pytest.raises(RuntimeError, match="did not respond"):
+            evaluator.evaluate_leaves([state._array], legal_mask)
+
+        started = perf_counter()
+        with pytest.raises(RuntimeError, match="exited with code 1"):
+            get_worker_result(
+                mp.get_context("spawn").Queue(), [server], timeout=600.0,
+            )
+        assert perf_counter() - started < 30.0
     finally:
         server.stop()
 

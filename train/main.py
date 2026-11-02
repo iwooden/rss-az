@@ -35,7 +35,11 @@ from train.checkpoint import (
     save_checkpoint,
 )
 from train.config import POLICY_TARGET_PRUNING_MODES, TrainingConfig
-from train.eval_server import EvaluationServer, SharedEvalBuffers
+from train.eval_server import (
+    EvaluationServer,
+    SharedEvalBuffers,
+    get_worker_result,
+)
 from train.logging import TrainingLogger
 from train.profile_stats import EvalServerStats, GameProfileData, format_epoch_profile
 from train.policy_metrics import PolicyMetrics
@@ -1328,7 +1332,9 @@ def main() -> None:
                 # Collect results as they complete
                 for game_idx in range(config.games_per_epoch):
                     try:
-                        record = result_queue.get(timeout=1200.0)
+                        record = get_worker_result(
+                            result_queue, eval_servers, timeout=1200.0,
+                        )
                     except queue.Empty:
                         alive = sum(1 for w in workers if w.is_alive())
                         raise RuntimeError(
