@@ -92,8 +92,8 @@ cdef int _find(const int8_t* values, int count, int value) except -1 nogil:
     for i in range(count):
         if values[i] == value:
             return i
-    with gil:
-        raise ValueError(f"{value} is not one of the {count} encodable values")
+    assert False, f"{value} is not one of the {count} encodable values"
+    return 0
 
 
 cdef int encode_action(ActionInfo info) except -1 nogil:
@@ -213,8 +213,8 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
         if t == ACTION_PORT_LAY:
             return (PORT_LAY + <int>NUM_SIDES * _find(MF_PORT_HEX, <int>NUM_PORTS, info.hex)
                     + _index(info.count, <int>NUM_SIDES))
-    with gil:
-        raise ValueError(f"no action of type {t} in decision phase {phase}")
+    assert False, f"encode_action: no action of type {t} in decision phase {phase}"
+    return 0
 
 
 cdef inline void _decode_price(ActionInfo* info, int action_id, int first_point, int exact) noexcept nogil:
@@ -384,7 +384,8 @@ cdef int final_scores(GameState state, int* scores) noexcept nogil:
     return n
 
 
-cdef inline bint _has_exact(int phase) noexcept nogil:
+cpdef bint has_exact_amounts(int phase) noexcept nogil:
+    """Whether ``phase`` takes exact amounts, at ids from its size up."""
     return phase == DPHASE_BID or phase == DPHASE_TRAIN_PRICE or phase == DPHASE_PRIVATE_PRICE
 
 
@@ -493,11 +494,11 @@ cdef int _filter_auction(GameState state, uint16_t* ids, int count) noexcept nog
     dominates (§5.1), and apply the pass cap."""
     cdef int top = topmost_private(state)
     cdef bint capped = _capped(state)
-    cdef bint can_buy = count > 1 and ids[1] == AUCTION_BUY
+    cdef bint no_pass = capped and private_price(state, top) <= player_available(state, turn_active_player(state), top)
     cdef int i, p
     cdef int kept = 0
     for i in range(count):
-        if ids[i] == AUCTION_PASS and capped and can_buy:
+        if ids[i] == AUCTION_PASS and no_pass:  # the actor can buy the topmost
             continue
         if ids[i] >= AUCTION_BID:
             p = ids[i] - AUCTION_BID
@@ -536,10 +537,10 @@ cdef int _filter_bid(GameState state, int count) noexcept nogil:
 # (SELL_AFTER = :first), and nothing sold this SR is bought back. A player
 # over a limit with something to sell has a must-sell turn: sales only, no
 # pass. Slot 0 passes before acting and is "done" after; it is legal at every
-# other turn, so a player with nothing else to do passes through the forced
-# rule, as Ruby skips them. A turn Ruby presents also offers the player's DR
-# exchange (STOCK_DR) and MF port tile (STOCK_MF), which section INTERJECTIONS
-# below has.
+# other turn. Every turn also offers the player's DR exchange (STOCK_DR) and
+# MF port tile (STOCK_MF) while they are usable, which section INTERJECTIONS
+# below has, so a player with nothing else to do passes through the forced
+# rule, as Ruby skips them, only when neither private has a use.
 
 cdef inline bint _can_buy(GameState state, int player, int corp, int price) noexcept nogil:
     """A 10% share at ``price`` (``can_buy?``): not sold this SR, affordable, and
@@ -581,7 +582,8 @@ cdef bint _must_sell(GameState state, int player) noexcept nogil:
 cdef int _enumerate_stock(GameState state, uint16_t* ids) noexcept nogil:
     """Pass; buys from the IPO, from the pool, and pars, unless the turn has
     bought; then each corp the player may sell. A must-sell turn offers only
-    the sales."""
+    the sales. Then DR's exchange and MF's port tile while the player may use
+    them, whether or not Ruby asks (§12 item 4)."""
     cdef int player = turn_active_player(state)
     cdef int count = 0
     cdef int c
@@ -606,20 +608,22 @@ cdef int _enumerate_stock(GameState state, uint16_t* ids) noexcept nogil:
         if _sale_limit(state, player, c):
             ids[count] = <uint16_t>(STOCK_SELL + c)
             count += 1
-    if _asks(ids, count):
-        count = _append_dr(state, ids, count, STOCK_DR)
-        count = _append_mf(state, ids, count, STOCK_MF)
+    count = _append_dr(state, ids, count, STOCK_DR)
+    return _append_mf(state, ids, count, STOCK_MF)
+
+
+cdef inline int _iota(uint16_t* ids, int count) noexcept nogil:
+    """Write ids 0 to ``count`` - 1, a phase's indices, and return ``count``."""
+    cdef int n
+    for n in range(count):
+        ids[n] = <uint16_t>n
     return count
 
 
 cdef int _enumerate_sell_amount(GameState state, uint16_t* ids) noexcept nogil:
     """Each block of the pending corp the player may sell, from one share up."""
     cdef int corp = turn_pending_corp(state)
-    cdef int count = _sale_limit(state, turn_active_player(state), corp) if corp >= 0 else 0
-    cdef int n
-    for n in range(count):
-        ids[n] = <uint16_t>n
-    return count
+    return _iota(ids, _sale_limit(state, turn_active_player(state), corp) if corp >= 0 else 0)
 
 
 cdef int _enumerate_par(GameState state, uint16_t* ids) noexcept nogil:
@@ -665,14 +669,19 @@ cdef bint _semi_restrictive(GameState state, int corp, int hex, int old, uint32_
     of the new tile that is new track, or that touches a revenue center whose
     value changed. A lay where there is no track passes.
 
-    Every 1889 city upgrade changes the city's value, and every path of a
-    city tile touches the city. Such a lay passes whenever its exits meet a
-    side the corp reaches (``_lay_scan`` checks that first): the walks run as
-    before the lay until they first enter the hex at a side the new tile has
-    track on, and there they walk every path at that side. New track off the
-    node fails when none of it ends where a walk could enter the hex
-    (``enterable``). Any other lay is decided by walking with the tile laid
-    (``graph_walks_new_track``)."""
+    A lay that changes the value, with every path of the new tile touching
+    the node, passes whenever its exits meet a side the corp reaches
+    (``_lay_scan`` checks that first): the walks run as before the lay until
+    they first enter the hex at a side the new tile has track on, and there
+    they walk every path at that side. New track off the node fails when none
+    of it ends where a walk could enter the hex (``enterable``). Any other
+    lay is decided by walking with the tile laid (``graph_walks_new_track``),
+    which checks only for new track. Two table facts make that complete,
+    both asserted in ``tests/g1889/test_data_tables.py``: every path of a
+    tile with a revenue center touches it, and every upgrade of a tile with
+    track and a revenue center changes its value. So every lay on track at a
+    revenue center takes the shortcut above, and the walk decides only lays
+    where there is no revenue center, whose values cannot change."""
     cdef uint32_t paths = TILE_MASK[tile][rotation]
     cdef uint32_t added = paths & ~old_paths
     if old_paths == 0:
@@ -771,13 +780,9 @@ cdef int _enumerate_tile(GameState state, uint16_t* ids) noexcept nogil:
     """An index per candidate at the pending hex."""
     cdef LayCandidate candidates[15]  # MAX_LAY_CANDIDATES
     cdef int hex = turn_pending_hex(state)
-    cdef int count = 0
-    cdef int k
-    if hex >= 0 and turn_operating_corp(state) >= 0:
-        count = enumerate_lay_candidates(state, hex, candidates)
-    for k in range(count):
-        ids[k] = <uint16_t>k
-    return count
+    if hex < 0 or turn_operating_corp(state) < 0:
+        return 0
+    return _iota(ids, enumerate_lay_candidates(state, hex, candidates))
 
 
 cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
@@ -793,7 +798,7 @@ cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
         if can_token(state, corp, h):
             ids[count] = <uint16_t>(TOKEN_HEX + h)
             count += 1
-    if _asks(ids, count):
+    if _asks(ids, count, TOKEN_PASS):
         count = _append_private_buys(state, ids, count, TOKEN_BUY_PRIVATE)
         count = _append_dr(state, ids, count, TOKEN_DR)
     return count
@@ -862,7 +867,7 @@ cdef int _enumerate_buy_train(GameState state, uint16_t* ids) noexcept nogil:
             count += 1
     if emergency:
         count = _append_emergency(state, corp, ids, count)
-    if _asks(ids, count):
+    if _asks(ids, count, BUY_TRAIN_PASS):
         count = _append_private_buys(state, ids, count, BUY_TRAIN_BUY_PRIVATE)
         count = _append_dr(state, ids, count, BUY_TRAIN_DR)
     return count
@@ -1007,13 +1012,9 @@ cdef int _enumerate_emergency_sell_amount(GameState state, uint16_t* ids) noexce
     """Each block of the pending corp the president may sell, from one share up."""
     cdef int corp = turn_operating_corp(state)
     cdef int seller = turn_pending_corp(state)
-    cdef int count = 0
-    cdef int n
-    if corp >= 0 and seller >= 0:
-        count = _emergency_sale_limit(state, corp, seller, _emergency_need(state, corp))
-    for n in range(count):
-        ids[n] = <uint16_t>n
-    return count
+    if corp < 0 or seller < 0:
+        return 0
+    return _iota(ids, _emergency_sale_limit(state, corp, seller, _emergency_need(state, corp)))
 
 
 cdef int _filter_private_buys(GameState state, uint16_t* ids, int count, int first) noexcept nogil:
@@ -1050,6 +1051,18 @@ cdef int _filter_buy_train(GameState state, uint16_t* ids, int count) noexcept n
     return kept
 
 
+cdef inline void _offer_points(int* points, int count, int low, int high) noexcept nogil:
+    """Set to -1, not offered, each grid point outside ``low`` to ``high`` or
+    equal to an earlier one (§5.2)."""
+    cdef int k, j
+    for k in range(count):
+        if not low <= points[k] <= high:
+            points[k] = -1
+        for j in range(k):
+            if points[j] == points[k]:
+                points[k] = -1
+
+
 cdef inline int _train_price_cash(GameState state) noexcept nogil:
     """The most TRAIN_PRICE may pay: the buyer's treasury, 0 without a pending train."""
     cdef int corp = turn_operating_corp(state)
@@ -1062,18 +1075,12 @@ cdef void _train_price_points(GameState state, int* points) noexcept nogil:
     cash (``spend_minmax``), or equal to an earlier one, is -1: not offered."""
     cdef int cash = _train_price_cash(state)
     cdef int train = turn_pending_train_type(state)
-    cdef int k, j
     points[0] = 1
     points[1] = TRAIN_PRICE[train] if train >= 0 else 0
     points[2] = (cash + 2) // 3
     points[3] = (2 * cash + 2) // 3
     points[4] = cash
-    for k in range(<int>TRAIN_PRICE_POINTS):
-        if not 1 <= points[k] <= cash:
-            points[k] = -1
-        for j in range(k):
-            if points[j] == points[k]:
-                points[k] = -1
+    _offer_points(points, <int>TRAIN_PRICE_POINTS, 1, cash)
 
 
 cdef int _enumerate_train_price(GameState state, uint16_t* ids) noexcept nogil:
@@ -1110,12 +1117,17 @@ cdef int _enumerate_discard(GameState state, uint16_t* ids) noexcept nogil:
 #
 # Ruby's BuyCompany, Exchange, and SpecialTrack steps are non-blocking: their
 # actions join whatever step Ruby stops at (``Round::Base#actions_for``), and
-# Ruby skips a blocking step with nothing to do (``skip_steps``). So the
-# interjection slots (§5.1) join the top-level decisions Ruby asks: TRACK
+# Ruby skips a blocking step with nothing to do (``skip_steps``). So in an OR
+# the interjection slots (§5.1) join the top-level decisions Ruby asks: TRACK
 # always (its lay costs nothing, ``can_lay_tile?``), and any other whose own
-# actions hold one beyond slot 0 (``_asks``). A decision with nothing else is
-# Ruby's skipped step, which the forced rule applies, so the engine stops
-# wherever Ruby does and nowhere else.
+# actions hold one besides the pass (``_asks``). A decision with nothing else
+# is Ruby's skipped step, which the forced rule applies, so the engine stops
+# wherever Ruby does and nowhere else. STOCK offers DR and MF on every turn of
+# their owner instead (§12 item 4): Ruby's player may use them during another
+# player's turn too (DR's exchange is ``when: 'any'``), which the engine does
+# not offer, so a turn Ruby skips or ends with nothing else to do is the
+# owner's one chance. The OR loses nothing that way, as a president always
+# gets TRACK.
 #
 # - Buy private p (phases 3-4, the operating corp's treasury): PRIVATE_PRICE
 #   names the price, then ER_BONUS follows a sale of ER, and the step resumes
@@ -1133,10 +1145,11 @@ cdef int _enumerate_discard(GameState state, uint16_t* ids) noexcept nogil:
 # of this reaches phase 5.
 
 
-cdef inline bint _asks(const uint16_t* ids, int count) noexcept nogil:
-    """Whether Ruby asks the player at this decision: its own actions hold one
-    beyond slot 0 (the pass, done, or withhold)."""
-    return count > 1 or (count == 1 and ids[0] != 0)
+cdef inline bint _asks(const uint16_t* ids, int count, int pass_id) noexcept nogil:
+    """Whether Ruby asks the player at this decision: its own ``ids``, before
+    the interjection slots, hold one besides ``pass_id`` (the pass or done).
+    The ids are distinct, so any two do."""
+    return count > 1 or (count == 1 and ids[0] != pass_id)
 
 
 cdef inline int _private_price_low(int private) noexcept nogil:
@@ -1266,7 +1279,7 @@ cdef int _enumerate_buy_private(GameState state, uint16_t* ids) noexcept nogil:
     where Ruby asks, DR."""
     cdef int count = _append_private_buys(state, ids, 1, BUY_PRIVATE_PRIVATE)
     ids[0] = BUY_PRIVATE_DONE
-    if _asks(ids, count):
+    if _asks(ids, count, BUY_PRIVATE_DONE):
         count = _append_dr(state, ids, count, BUY_PRIVATE_DR)
     return count
 
@@ -1291,18 +1304,13 @@ cdef void _private_price_points(GameState state, int* points) noexcept nogil:
     one, is -1: not offered."""
     cdef int p = turn_pending_private(state)
     cdef int face = PRIVATE_VALUE[p] if p >= 0 else 0
-    cdef int low, high, k, j
+    cdef int low, high
     _private_price_range(state, &low, &high)
     points[0] = low
     points[1] = face
     points[2] = (3 * face + 1) // 2
     points[3] = high
-    for k in range(<int>PRIVATE_PRICE_POINTS):
-        if not low <= points[k] <= high:
-            points[k] = -1
-        for j in range(k):
-            if points[j] == points[k]:
-                points[k] = -1
+    _offer_points(points, <int>PRIVATE_PRICE_POINTS, low, high)
 
 
 cdef int _enumerate_private_price(GameState state, uint16_t* ids) noexcept nogil:
@@ -1414,7 +1422,7 @@ cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
     if phase < 0 or action_id < 0:
         return False
     if action_id >= PHASE_ACTION_SIZE[phase]:
-        if not _has_exact(phase) or action_id > MAX_ACTION_ID:
+        if not has_exact_amounts(phase) or action_id > MAX_ACTION_ID:
             return False
         return _amount_in_range(state, phase, action_id - PHASE_ACTION_SIZE[phase])
     count = enumerate_legal_actions(state, ids)
@@ -1422,10 +1430,6 @@ cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
         if ids[i] == action_id:
             return True
     return False
-
-
-cdef bint has_exact(int phase) noexcept nogil:
-    return _has_exact(phase)
 
 
 cdef bint wide_amount_range(GameState state, int phase) except -1 nogil:
@@ -1440,22 +1444,17 @@ cdef bint wide_amount_range(GameState state, int phase) except -1 nogil:
     if phase == DPHASE_PRIVATE_PRICE:
         _private_price_range(state, &low, &high)
         return high > low
-    with gil:
-        raise ValueError(f"{_PHASE_NAMES[phase]} takes no exact amounts")
+    assert False, f"wide_amount_range: {_PHASE_NAMES[phase]} takes no exact amounts"
+    return False
 
 
 # =============================================================================
 # PYTHON WRAPPERS
 # =============================================================================
 
-cpdef bint has_exact_amounts(int phase):
-    """Whether ``phase`` takes exact amounts, at ids from its size up."""
-    return _has_exact(phase)
-
-
 cdef int _check_id(int phase, int action_id) except -1:
     assert 0 <= phase < <int>NUM_DECISION_PHASES, f"invalid decision phase {phase}"
-    assert 0 <= action_id < PHASE_ACTION_SIZE[phase] or (_has_exact(phase) and action_id <= MAX_ACTION_ID), \
+    assert 0 <= action_id <= (MAX_ACTION_ID if has_exact_amounts(phase) else PHASE_ACTION_SIZE[phase] - 1), \
         f"action id {action_id} out of range for {_PHASE_NAMES[phase]} (size {PHASE_ACTION_SIZE[phase]})"
     return 0
 
@@ -1511,7 +1510,7 @@ cpdef int price_amount_py(GameState state, int action_id) except -1:
     """The yen of ``action_id`` (a grid point or an exact amount) at the current
     BID, TRAIN_PRICE, or PRIVATE_PRICE decision."""
     cdef int phase = get_decision_phase(state)
-    assert phase >= 0 and _has_exact(phase), \
+    assert phase >= 0 and has_exact_amounts(phase), \
         f"not at a BID, TRAIN_PRICE, or PRIVATE_PRICE decision (phase {phase})"
     _check_id(phase, action_id)
     cdef ActionInfo info = decode_action(phase, action_id)
@@ -1584,7 +1583,13 @@ cpdef list port_lays_py(GameState state):
     """``(hex, rotation)`` of each port tile lay MF's owner may make now, in PORT's order."""
     cdef uint16_t ids[24]  # ACTION_SIZE_PORT
     cdef int count = port_lays(state, ids)
-    return [(MF_PORT_HEX[ids[k] // <int>NUM_SIDES], ids[k] % <int>NUM_SIDES) for k in range(count)]
+    cdef ActionInfo info
+    cdef int k
+    lays = []
+    for k in range(count):
+        info = decode_action(DPHASE_PORT, ids[k])
+        lays.append((info.hex, info.count))
+    return lays
 
 
 cpdef list er_candidates_py(GameState state):
@@ -1620,7 +1625,7 @@ def _check_round_trip():
     for phase in range(<int>NUM_DECISION_PHASES):
         for action_id in range(PHASE_ACTION_SIZE[phase]):
             assert encode_action(decode_action(phase, action_id)) == action_id, (phase, action_id)
-        if _has_exact(phase):
+        if has_exact_amounts(phase):
             action_id = PHASE_ACTION_SIZE[phase] + 1889
             assert encode_action(decode_action(phase, action_id)) == action_id, (phase, action_id)
 

@@ -18,7 +18,9 @@ so its replay starts from ``load_state`` of the SR's first snapshot.
   Prices fall through the yellow zone into the orange one.
 
 Ruby skips a player with nothing to do, logging nothing; the engine's driver
-applies their pass, and the sync rule drops it. A must-sell turn is not
+applies their pass, and the sync rule drops it. In ``sold_out_stacking``
+seat 1 owns MF, so the engine offers it the port tile on such a turn, and
+the harness passes for it (``skipped_sr_turn``). A must-sell turn is not
 scripted: reaching the certificate limit, or 60% outside the orange zone,
 takes operating rounds that pay dividends (withholds move a corp back into
 the zone it left), so unit tests cover it on hand-built states.

@@ -12,7 +12,7 @@ action maps to, sub-phases such as PRIVATE_PRICE and PORT included, must be
 the engine's active player's, one of Ruby's active players before the action;
 ``compare`` checks the active player at every snapshot too.
 
-Three equivalences need the harness. Track after the lay (engine-design
+Four equivalences need the harness. Track after the lay (engine-design
 §10.2): Ruby keeps Track open after a corp's lay while its president owns MF,
 for the port tile, and the engine moves on to TOKEN. That snapshot is
 compared with the engine at TOKEN (``snapshot.track_after_lay``), and Ruby's
@@ -26,7 +26,11 @@ compared with the engine's row before its last ROUTE step, and
 Discards (§10.2): Ruby accepts a discard from any crowded corp, and the
 engine takes them in corp order, so the mapper holds a discard that comes
 early (``HELD_DISCARD``) until the engine reaches its corp; the records in
-between are not compared.
+between are not compared. SR turns Ruby skips (§10.2): the engine offers DR
+and MF on every SR turn of their owner, so it stops at a turn whose only
+other choice is the pass, which Ruby skips or ends without logging
+anything; after each Ruby action the harness applies that pass
+(``skipped_sr_turn``), and queues the forced decisions after it as usual.
 
 Replay stops at the first unsupported action or mismatch; an engine error
 propagates. When it stops at an action while forced decisions are pending,
@@ -58,16 +62,21 @@ import g1889.constants as K
 import g1889.data.tables as D
 from g1889.actions import get_decision_phase_py, is_terminal_py
 from g1889.driver import DRIVER, STATUS_INVALID
+from g1889.entities.bank import BANK, BANK_ACCOUNT
 from g1889.entities.corp import CORPS
+from g1889.entities.player import PLAYERS
+from g1889.entities.private import PRIVATES
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
 
 from tests.g1889.replay.action_map import (
-    HELD_DISCARD, ROUTE_OVERRIDE, Decision, ReplayEnd, UnsupportedAction, map_action,
+    HELD_DISCARD, ROUTE_OVERRIDE, Decision, ReplayEnd, UnsupportedAction, map_action, skipped_sr_turn,
 )
+from tests.g1889.phases.conftest import end_auction, enter_stock_round
+from tests.g1889.phases.conftest import new_game as fresh_game
 from tests.g1889.replay.extracts import Extract, FIXTURES, load_fixture_extract, load_new_game_extract
-from tests.g1889.replay.snapshot import END_REASONS, compare, engine_result, load_state, track_after_lay
+from tests.g1889.replay.snapshot import CORP, END_REASONS, compare, engine_result, load_state, track_after_lay
 
 # How each fixture's game ends in Ruby: 314 when TR's president goes bankrupt
 # (record 457), 962 after the OR set in which the bank broke (record 446), and
@@ -137,7 +146,8 @@ def _apply(state: GameState, decisions: list[Decision], actors: set[int], pendin
     failure, or when the engine's active player is not one of ``actors``. A
     ``ROUTE_OVERRIDE`` pays a human's revenue (``override_route_revenue``),
     which records no decision of its own, and a ``HELD_DISCARD`` waits in
-    ``held`` for its corp's turn to discard (``_release``)."""
+    ``held`` for its corp's turn to discard (``_release``). Then the engine
+    passes for each SR turn Ruby skips or ends (``_pass_skipped_sr_turns``)."""
     for phase, action_id in decisions:
         if phase == HELD_DISCARD:  # by its corp's president, whose discard Ruby takes out of its order
             corp, train = divmod(action_id, D.NUM_TRAIN_TYPES)
@@ -163,9 +173,28 @@ def _apply(state: GameState, decisions: list[Decision], actors: set[int], pendin
             if DRIVER.apply_action(state, action_id, history) == STATUS_INVALID:
                 return f'{_phase_name(phase)} id {action_id} is illegal in the engine'
             forced = history[1:]
-        pending.extend((p, a, int(row[ACTIVE_PLAYER_SLOT]), row) for row, p, a in forced if p >= 0)
+        _queue(pending, forced)
         log += history
+    _pass_skipped_sr_turns(state, pending, log)
     return _release(state, pending, log, held)
+
+
+def _queue(pending: list[Forced], forced: list) -> None:
+    """Queue the decisions in driver history ``forced`` for the sync rule."""
+    pending.extend((p, a, int(row[ACTIVE_PLAYER_SLOT]), row) for row, p, a in forced if p >= 0)
+
+
+def _pass_skipped_sr_turns(state: GameState, pending: list[Forced], log: list) -> None:
+    """EQUIVALENT: pass where the engine rests at an SR turn whose only other
+    choices are DR's exchange and MF's port tile, which Ruby skips or ends
+    without logging anything (``skipped_sr_turn``). The pass is not Ruby's
+    decision, so the sync rule never takes a Ruby action for it; the forced
+    decisions after it are queued as usual."""
+    while decisions := skipped_sr_turn(state):
+        history: list = []
+        assert DRIVER.apply_action(state, decisions[0][1], history) != STATUS_INVALID
+        _queue(pending, history[1:])
+        log += history
 
 
 def _discarding(state: GameState, row=None) -> int:
@@ -544,6 +573,26 @@ def test_sync_reports_no_match():
     assert consume(pending, lambda phase: [(K.DPHASE_AUCTION, K.AUCTION_BUY)], {0}) is None
     assert consume(pending, lambda phase: [], {0}) is None  # no decision, e.g. a message
     assert pending == [PASS_AUCTION]
+
+
+def test_the_harness_passes_for_an_sr_turn_ruby_skips():
+    """Player 1 has ¥0 and owns DR: the engine offers it [pass, DR], where
+    Ruby skips the turn and logs nothing (as 314 and 962 do in SR 1). After
+    player 0's pass the harness passes for player 1, so player 2's par
+    applies; the supplied pass is not queued for the sync rule."""
+    state = fresh_game(3)
+    end_auction(state, [1 if p == D.PRIVATE_DR else 2 for p in range(D.NUM_PRIVATES - 1)])  # no UTF at 3
+    BANK.transfer(state, 1, BANK_ACCOUNT, PLAYERS[1].cash(state))
+    enter_stock_round(state, 0, turn=1)
+    pending: list[Forced] = []
+    log: list = []
+    assert _apply(state, [(K.DPHASE_STOCK, K.STOCK_PASS)], {0}, pending, log, []) is None
+    assert [(phase, action_id, int(row[ACTIVE_PLAYER_SLOT])) for row, phase, action_id in log] == [
+        (K.DPHASE_STOCK, K.STOCK_PASS, 0), (K.DPHASE_STOCK, K.STOCK_PASS, 1)]
+    assert pending == [] and TURN.active_player(state) == 2 and skipped_sr_turn(state) == []
+    assert PLAYERS[1].passed(state) and PRIVATES[D.PRIVATE_DR].owner(state) == K.OWNER_PLAYER + 1
+    par = [(K.DPHASE_STOCK, K.STOCK_PAR + CORP['KO']), (K.DPHASE_PAR, 0)]
+    assert _apply(state, par, {2}, pending, log, []) is None and CORPS[CORP['KO']].president(state) == 2
 
 
 def test_sync_matches_only_the_forced_player():

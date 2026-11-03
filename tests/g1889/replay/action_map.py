@@ -42,6 +42,12 @@ MF's ``lay_tile`` to the MF slot and then PORT; and ER's ``lay_tile`` or
 turns (engine-design §12 item 4), and the privates' slots not at Ruby's
 Route step, which the engine runs by itself, so an exchange or port tile out
 of turn, or anything at Route, raises ``UnsupportedAction``.
+
+The engine offers DR and MF on every SR turn of their owner, so it stops at
+a turn whose only other choice is the pass (or done), which Ruby skips or
+ends without logging anything: its BuySellParShares offers nothing there.
+``skipped_sr_turn`` gives the engine's pass for such a turn, which the
+harness applies after each Ruby action (engine-design §10.2).
 """
 
 from __future__ import annotations
@@ -58,7 +64,7 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState
 
-from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TILE, TRAIN
+from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TILE, TRAIN, legal_actions
 
 Decision = tuple[int, int]
 # Not decision phases: ``(ROUTE_OVERRIDE, revenue)`` is ``DRIVER.override_route_revenue``, and
@@ -300,6 +306,20 @@ MAPPERS: dict[str, Callable[..., list[Decision]]] = {
     'discard_train': _discard_train, 'buy_train': _buy_train, 'buy_company': _buy_company,
     'bankrupt': _bankrupt, 'end_game': _end_game,
 }
+
+
+def skipped_sr_turn(state: GameState) -> list[Decision]:
+    """The engine's STOCK pass where the engine rests at an SR turn whose only
+    choices besides the pass (or done) are DR's exchange and MF's port tile,
+    else []. Ruby's BuySellParShares offers no action there, not even the
+    pass (``buy_sell_par_shares.rb`` ``actions``), so Ruby skips the turn
+    (``Round::Stock#start_entity``) or ends it (``#after_process``) and logs
+    nothing; the engine offers the two privates on every turn of their owner
+    (engine-design §12 item 4)."""
+    if A.get_decision_phase_py(state) != K.DPHASE_STOCK:
+        return []
+    own = [i for i, info in legal_actions(state) if info.type not in (A.ACTION_DR_EXCHANGE, A.ACTION_MF_PORT)]
+    return [(K.DPHASE_STOCK, K.STOCK_PASS)] if own == [K.STOCK_PASS] else []
 
 
 def map_action(action: dict[str, Any], pre: dict[str, Any], phase: int, state: GameState) -> list[Decision]:

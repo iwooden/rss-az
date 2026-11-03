@@ -704,6 +704,12 @@ block 1889 only at step 7, so the two tracks can alternate.
     (`DRIVER.apply_out_of_turn`, engine-design §12 item 4), and MF's port
     tile at Track after the corp's lay (engine-design §10.2). Replay fails
     loudly on all three today;
+  - the SR turns where the engine offers only the pass, DR, and MF, which
+    Ruby skips or ends without waiting (engine-design §10.2, 2026-11-02).
+    For a human, live play applies the engine's pass, as replay does. For
+    the bot, Ruby has already moved on, so live play sends a chosen
+    exchange or port lay as a use during another player's turn and a pass
+    as nothing;
   - 1889 has no live-play integration in `utils_18xx/`;
   - 18xx.games may change its 1889 implementation after the submodule's
     pinned commit, so live play should detect a desync. The same-president

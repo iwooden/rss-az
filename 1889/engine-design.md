@@ -293,6 +293,15 @@ the port hexes have no terrain (`phases/privates.pyx` asserts it).
   must skip them rather than index with them.
 - **Validation.** `is_legal_action(state, id)` scans the enumerated set (at
   most 62 ids, as `core/driver.pyx:322-331`) or checks the amount range.
+- **Guards (2026-11-02).** As in RSS, input and invariant guards are
+  `assert`s, which `setup.py --release` strips (`CYTHON_WITHOUT_ASSERTIONS`):
+  a release build's callers must pass valid input, and anything else is
+  undefined behavior. An unreachable path is `assert False, "<message>"`
+  followed by a harmless return for release builds, never the `except` value
+  of an `except -1` signature (`core/driver.pyx:253-254`). Legality is no
+  guard: `is_legal_action`, and the driver's `STATUS_INVALID` for an illegal
+  action, are the engine's contract with callers. Buffer overflows `abort()`
+  in every build, as in `core/actions.pyx:1096-1104`.
 - **Permanent policy filters.** The policy never includes exact amounts, or
   a bid on the topmost private, which buying it at its price dominates.
 - **Rotations.** Rotations with equal masks are one candidate
@@ -300,21 +309,26 @@ the port hexes have no terrain (`phases/privates.pyx` asserts it).
   of them.
 - **Interjection slots.** "Buy private p" (in phases 3-4), the DR exchange,
   and the MF port tile appear only in the active player's top-level phases
-  (Section 12, item 4), never in a sub-phase (Section 5.3), and there only at
-  a decision Ruby asks (6.8a):
+  (Section 12, item 4), never in a sub-phase (Section 5.3). In an OR they
+  appear only at a decision Ruby asks (6.8a):
   Ruby's BuyCompany, Exchange, and SpecialTrack steps are non-blocking, so
   their actions join the step Ruby stops at (`Round::Base#actions_for`),
   and Ruby skips a step with nothing to do (`skip_steps`). TRACK always asks
   (its lay costs nothing, `can_lay_tile?`); any other decision asks when its
-  own actions hold one beyond slot 0 (`_asks` in `actions.pyx`). Otherwise
-  the engine would stop where Ruby does not: at a TOKEN with no token, a
-  zero-revenue DIVIDEND, a BUY_TRAIN with nothing to buy, a BUY_PRIVATE
-  with nothing to buy, or an SR turn with nothing to buy or sell. The
-  privates' slots are buy-private slots of the operating corp (a player's
-  private, for ⌈face/2⌉ within the treasury); the DR slot for the active
-  player while they own DR and IR's IPO has a share for them within 60%;
-  and the MF slot (STOCK and TRACK) while they own MF, unused, and PORT has a
-  lay.
+  own actions hold one besides the pass (`_asks` in `actions.pyx`).
+  Otherwise the engine would stop where Ruby does not: at a TOKEN with no
+  token, a zero-revenue DIVIDEND, a BUY_TRAIN with nothing to buy, or a
+  BUY_PRIVATE with nothing to buy. STOCK offers the DR and MF slots on every
+  turn of their owner while they are usable, a turn with nothing else to do
+  included (Section 12, item 4, revised 2026-11-02). There `[pass, DR]` is a
+  decision, where Ruby skips the turn or ends it, and replay supplies the
+  pass (Section 10.2): a turn passes by itself only when the pass is its one
+  legal action. The OR keeps Ruby's gating, as a president always gets
+  TRACK, which offers both. The privates' slots are buy-private slots of the
+  operating corp (a player's private, for ⌈face/2⌉ within the treasury); the
+  DR slot for the active player while they own DR and IR's IPO has a share
+  for them within 60%; and the MF slot (STOCK and TRACK) while they own MF,
+  unused, and PORT has a lay.
 
 ### 5.2 Phases
 
@@ -564,7 +578,7 @@ exact amounts.
 | Steps | Kind | Notes |
 |---|---|---|
 | `AUCTION`, `BID` | decisions | See the auction notes below |
-| `STOCK`, `PAR`, `SELL_AMOUNT`, `PORT` | decisions | A pass without acting sets `passed`; "done" after acting clears it (`step/buy_sell_par_shares.rb:202`). A must-sell turn offers only sales, and any legal sale counts, as in Ruby (`:106`); STOCK picks the corp and SELL_AMOUNT the block, both forced when they have one choice. Buying and then selling the same corp in one turn is legal. Priority follows Ruby's `priority_deal_player`: the player after the last to buy or sell. A player with nothing to do gets only slot 0, which the forced rule applies, as Ruby skips them. A turn Ruby asks also offers the player's DR exchange and MF port tile (PORT returns to STOCK); neither counts as an action |
+| `STOCK`, `PAR`, `SELL_AMOUNT`, `PORT` | decisions | A pass without acting sets `passed`; "done" after acting clears it (`step/buy_sell_par_shares.rb:202`). A must-sell turn offers only sales, and any legal sale counts, as in Ruby (`:106`); STOCK picks the corp and SELL_AMOUNT the block, both forced when they have one choice. Buying and then selling the same corp in one turn is legal. Priority follows Ruby's `priority_deal_player`: the player after the last to buy or sell. Every turn also offers the player's DR exchange and MF port tile while they are usable, a turn Ruby skips or ends for having nothing else included (Section 12, item 4); PORT returns to STOCK, and neither counts as an action. A player with nothing to do and neither private to use gets only slot 0, which the forced rule applies, as Ruby skips them; so does a turn the exchange or port tile leaves with only slot 0, which Ruby ends (`Round::Stock#after_process`) |
 | `SR_END` | automated | Priority goes to the player after the last passer. Sold-out corps move up in price order (`round/stock.rb:70`). `or_count` is fixed |
 | `OR_START`, `TURN_START` | automated | OR_START pays private revenue (`game/base.rb:1649`; the bank only pays out, so Ruby's payment order cannot matter), places every floated corp's free home token (`HOME_TOKEN_TIMING = :operating_round`), and fixes the order: the floated corps in stock price order (`game/base.rb:986`). With none, OR_END follows. TURN_START gives the turn to the next corp's president |
 | `TRACK`, `TILE`, `TOKEN` | decisions | One lay and one token per turn: TILE moves on to TOKEN, and TOKEN to ROUTE |
@@ -1128,13 +1142,28 @@ equal its `result`.
        only the step), and BuyCompany and Exchange act there too; the
        engine offers MF at TRACK before the lay only, so replay stops there
        as unsupported. So it does for DR or MF out of their owner's turn
-       (Section 12, item 4), including an SR turn Ruby skipped for having
-       nothing to buy or sell, and for a purchase at Ruby's Route or
+       (Section 12, item 4), and for a purchase at Ruby's Route or
        DiscardTrain step, which the engine runs by itself or has no slot at.
        No fixture does any of these. Ruby also ends an SR turn without a
        pass when an exchange or port tile leaves BuySellParShares nothing
        to offer (`Round::Stock#after_process`), where the engine forces the
        pass, which sets the player's `passed` flag; no fixture reaches it.
+     - **SR turns Ruby skips (2026-11-02).** STOCK offers DR and MF on every
+       turn of their owner (Section 12, item 4), so the engine stops at a
+       turn whose only other choice is the pass (or done), where Ruby's
+       BuySellParShares offers nothing, not even the pass
+       (`step/buy_sell_par_shares.rb:18-30`). Ruby skips such a turn
+       (`Round::Stock#start_entity`) or ends it after a purchase or sale
+       (`#after_process`), and logs nothing. After each Ruby action the
+       harness applies the engine's pass there (`skipped_sr_turn` in
+       `action_map.py`). It is not queued as a forced decision, so the sync
+       rule never takes a Ruby action for it; the forced decisions after it
+       are queued as usual. The fixtures
+       reach it 25 times: three skipped turns in SR 1 (314's DR owner with
+       ¥25 and MF owner with ¥15, and 962's MF owner with ¥20) and 22 turns
+       that end after a purchase or sale. A use of DR or MF that Ruby logs
+       later, in another player's turn, is out of turn, and replay stops at
+       it as unsupported.
      - **Programmed actions.** In the `hs_*` fixtures, programmed buys ride
        as `auto_actions` on another player's pass, alongside
        `program_disable` and `program_share_pass` entries that the mapper
@@ -1353,20 +1382,25 @@ equal its `result`.
    64 (39 flags off, 25 on), against 6.8b's 78: a uniform pick now means a
    uniform step, not a uniform joint choice, which shifts the play (a corp
    to sell is one STOCK slot, not one per block). The test takes 27 s.
+   **As of 2026-11-02,** STOCK offers DR and MF on every turn of their
+   owner (Section 12, item 4). The new decisions draw from the generator,
+   so the games shift: 94 end at a bankruptcy (55 flags off, 39 on) and 106
+   at a broken bank's OR set, all within 1,204 decisions, and they reach
+   phase 4 in 197, 5 in 175, 6 in 84, and D in 56 (35 and 21).
    A one-off soak (`scratchpad/g1889_610/soak.py`, 6.9's at the same seeds
-   and settings) played 6,000 games from new, with every check of this
-   test on. All reached GAME_OVER, at most 1,757 decisions in (the cap is
-   3,000), and every decision phase and automated step occurred in each
-   setting:
+   and settings; rerun 2026-11-02 after STOCK's DR and MF change) played
+   6,000 games from new, with every check of this test on. All reached
+   GAME_OVER, at most 1,597 decisions in (the cap is 3,000), and every
+   decision phase and automated step occurred in each setting:
 
    | Setting | Decisions: median, p99, max | Bankrupt / bank | Phases 4, 5, 6, D |
    |---|---|---|---|
-   | this test's player, flags on | 557, 898, 1,053 | 626 / 874 | 1,495, 1,386, 603, 440 |
-   | this test's player, flags off | 560, 911, 1,230 | 891 / 609 | 1,495, 1,321, 802, 582 |
-   | uniform, flags on | 721, 1,180, 1,317 | 903 / 597 | 1,478, 1,043, 420, 285 |
-   | uniform, flags off | 698, 1,428, 1,757 | 1,068 / 432 | 1,243, 636, 192, 139 |
+   | this test's player, flags on | 571, 901, 1,141 | 634 / 866 | 1,497, 1,412, 631, 465 |
+   | this test's player, flags off | 577, 985, 1,239 | 895 / 605 | 1,496, 1,332, 856, 606 |
+   | uniform, flags on | 739, 1,174, 1,271 | 839 / 661 | 1,483, 1,083, 426, 309 |
+   | uniform, flags off | 712, 1,495, 1,597 | 1,015 / 485 | 1,260, 668, 166, 122 |
 
-   The soak takes 70 s on 16 processes.
+   The soak takes 72 s on 16 processes.
 5. **Per-phase unit tests** (`tests/g1889/phases/`), in the style of
    `tests/phases/` and `.claude/commands/phase-test.md`, run through the
    driver. A `conftest.py` provides `game_state`, `apply_and_verify`, and
@@ -1468,6 +1502,17 @@ The user accepted every recommendation below (2026-11-01).
    its owner's STOCK turn and at every top-level OR decision of a corp
    they are president of; MF at their STOCK turn and at such a corp's
    TRACK before its lay (Section 5.1).
+   *Revised (2026-11-02):* the user decided that STOCK offers DR and MF
+   whenever they are usable, whether or not the turn has anything else, so
+   a turn passes by itself only when the pass is its one legal action.
+   Before, a STOCK turn offered them only where Ruby asks, as the OR still
+   does. But DR's exchange is `when: 'any'` in Ruby
+   (`game/g_1889/entities.rb:91`), so a player Ruby skips for having
+   nothing to buy or sell can still exchange during another player's turn;
+   in-turn use only, with Ruby's skip, locked them out until their cash
+   grew. The OR keeps the gating, as a president always gets TRACK, which
+   offers both. Replay supplies the pass for the turns Ruby skips (Section
+   10.2).
 5. **Decided:** a forced-decision rule based on the policy set (Section 6).
    *Adopted:* adopt it.
 6. **Decided:** buy-private slots at every top-level OR phase in phases 3-4.

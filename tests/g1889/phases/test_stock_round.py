@@ -21,6 +21,7 @@ import g1889.data.tables as D
 from g1889.driver import DRIVER
 from g1889.entities.bank import BANK, BANK_ACCOUNT
 from g1889.entities.corp import CORPS
+from g1889.entities.hexmap import MAP
 from g1889.entities.market import MARKET
 from g1889.entities.phase import PHASE
 from g1889.entities.player import PLAYERS
@@ -193,6 +194,40 @@ class TestTurns:
         state = first_sr(3)
         BANK.transfer(state, 1, BANK_ACCOUNT, PLAYERS[1].cash(state) - 60)  # under any par or share
         result = apply_and_verify(state, PASS)
+        assert result.forced == [(K.DPHASE_STOCK, PASS)]
+        assert TURN.active_player(state) == 2 and passed(state) == [True, True, False]
+
+    @pytest.mark.parametrize('private, slot', [(D.PRIVATE_DR, K.STOCK_DR), (D.PRIVATE_MF, K.STOCK_MF)])
+    def test_a_broke_owner_of_dr_or_mf_still_chooses(self, private, slot):
+        """Ruby skips a player with nothing to buy or sell, but its DR
+        exchanges at any time (``when: 'any'``) and MF lays at any moment of an
+        SR, so the engine offers the private on the owner's own turn, even with
+        nothing else (§12 item 4). Either choice ends the turn: after the
+        exchange or the lay only the pass is left, which the driver applies."""
+        def broke_owner():
+            """SR 1 after player 0's pass: player 1 has ¥0 and only ``private``."""
+            state = new_game(3)
+            end_auction(state, [1 if p == private else 2 for p in range(D.NUM_PRIVATES - 1)])  # no UTF at 3
+            BANK.transfer(state, 1, BANK_ACCOUNT, PLAYERS[1].cash(state))
+            enter_stock_round(state, 0, turn=1)
+            apply_and_verify(state, PASS)
+            assert TURN.active_player(state) == 1 and PRIVATES[private].owner(state) == K.OWNER_PLAYER + 1
+            assert legal_ids(state) == policy_ids(state) == [PASS, slot]
+            return state
+
+        state = broke_owner()
+        apply_and_verify(state, PASS)
+        assert TURN.active_player(state) == 2 and passed(state) == [True, True, False]
+        assert PRIVATES[private].owner(state) == K.OWNER_PLAYER + 1 and not PRIVATES[private].flags(state)
+
+        state = broke_owner()
+        result = apply_and_verify(state, slot)
+        if private == D.PRIVATE_MF:
+            assert TURN.step(state) == K.STEP_PORT
+            result = apply_and_verify(state, legal_ids(state)[0])
+            assert PRIVATES[private].flags(state) and MAP.supply(state, D.PORT_TILE) == 0
+        else:
+            assert PRIVATES[private].owner(state) == K.OWNER_CLOSED and PLAYERS[1].shares(state, IR) == 1
         assert result.forced == [(K.DPHASE_STOCK, PASS)]
         assert TURN.active_player(state) == 2 and passed(state) == [True, True, False]
 
@@ -433,6 +468,17 @@ class TestZones:
         assert legal_ids(state) == [K.STOCK_SELL + UR] and sales(state, UR) == [1, 2, 3, 4, 5]
         sell(state, UR, 1)
         assert legal_ids(state)[0] == PASS
+
+    def test_a_must_sell_turn_offers_dr_and_mf(self):
+        """DR's exchange skips the certificate limit (``can_gain?`` with
+        ``exchange``, ``share_buying.rb:49``) and MF's lay buys nothing, so their
+        owner may use them before selling."""
+        state = at_sr(3, owners=[0])
+        hold(state, UR, {0: 7, 1: 2}, cell=(7, 1))
+        enter_stock_round(state, 0)
+        assert legal_ids(state) == [K.STOCK_SELL + UR, K.STOCK_DR, K.STOCK_MF]
+        apply_and_verify(state, K.STOCK_DR)
+        assert legal_ids(state) == [K.STOCK_SELL + UR, K.STOCK_MF]  # still 70% of UR
 
     def test_must_sell_needs_a_sale_of_the_corp_over_sixty_percent(self):
         """After one UR block the player still holds 70%, but UR cannot be sold

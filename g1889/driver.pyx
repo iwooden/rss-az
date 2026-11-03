@@ -9,7 +9,7 @@ from libc.stdint cimport uint16_t
 
 from g1889.actions cimport (
     ACTION_BUY_PRIVATE, ACTION_DR_EXCHANGE, ACTION_MF_PORT, ActionInfo, decode_action, enumerate_legal_actions,
-    enumerate_policy_actions, get_decision_phase, has_exact, is_legal_action, wide_amount_range,
+    enumerate_policy_actions, get_decision_phase, has_exact_amounts, is_legal_action, wide_amount_range,
 )
 from g1889.constants cimport (
     DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND,
@@ -57,12 +57,11 @@ cdef class GameDriver:
         cdef int count = enumerate_policy_actions(state, ids)
         cdef int action_id = ids[0]
         cdef int phase
-        if count == 0:
-            raise RuntimeError(f"no policy actions at step {Step(turn_step(state)).name}")
-        if count > 1:
+        assert count > 0, f"_forced_action: no policy actions at step {Step(turn_step(state)).name}"
+        if count != 1:
             return -1
         phase = get_decision_phase(state)
-        if has_exact(phase) and enumerate_legal_actions(state, ids) == 1 and wide_amount_range(state, phase):
+        if has_exact_amounts(phase) and enumerate_legal_actions(state, ids) == 1 and wide_amount_range(state, phase):
             return -1
         return action_id
 
@@ -117,8 +116,8 @@ cdef class GameDriver:
 
     cdef int _run_automated_step(self, GameState state, int step, object history) except -1:
         """Run one automated step."""
-        if not 0 <= step < <int>NUM_STEPS or STEP_TO_DECISION_PHASE[step] >= 0 or step == STEP_GAME_OVER:
-            raise RuntimeError(f"step {step} is not an automated step")
+        assert 0 <= step < <int>NUM_STEPS and STEP_TO_DECISION_PHASE[step] < 0 and step != STEP_GAME_OVER, \
+            f"_run_automated_step: step {step} is not an automated step"
         cdef object row = state._array.copy() if history is not None else None
         if step == STEP_SR_END:
             run_sr_end(state)
@@ -151,7 +150,8 @@ cdef class GameDriver:
             if action_id < 0:
                 return STATUS_OK
             self._dispatch(state, phase, action_id, history)
-        raise RuntimeError(f"auto-chain exceeded {MAX_AUTO_CHAIN_ITERATIONS} iterations")
+        assert False, f"_auto_chain: exceeded {MAX_AUTO_CHAIN_ITERATIONS} iterations"
+        return STATUS_OK
 
     cpdef int apply_action(self, GameState state, int action_id, object history=None) except -1:
         """Validate ``action_id`` against engine legality, apply it, and auto-chain.

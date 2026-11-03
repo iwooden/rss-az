@@ -78,7 +78,6 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
 cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except -1 nogil
 cdef bint is_legal_action(GameState state, int action_id) except -1 nogil
 cdef int price_amount(GameState state, const ActionInfo* info) noexcept nogil
-cdef bint has_exact(int phase) noexcept nogil
 cdef bint wide_amount_range(GameState state, int phase) except -1 nogil
 
 # Track and token legality (§5.4): lay candidates sorted by (tile, rotation).
@@ -99,7 +98,7 @@ cdef bint can_exchange_dr(GameState state, int player) noexcept nogil
 cdef int port_lays(GameState state, uint16_t* ids) noexcept nogil
 cdef int er_candidates(GameState state, LayCandidate* buf) noexcept nogil
 
-cpdef bint has_exact_amounts(int phase)
+cpdef bint has_exact_amounts(int phase) noexcept nogil
 cpdef object decode_action_py(int phase, int action_id)
 cpdef int encode_action_py(object info) except -1
 cpdef int get_decision_phase_py(GameState state)

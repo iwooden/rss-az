@@ -485,7 +485,9 @@ class TestPassCap:
 
     def test_a_capped_bid_must_leave_the_topmost_affordable(self):
         """Without this, players who outbid themselves on later privates never
-        afford the topmost and the payouts go on forever (rules §12.9)."""
+        afford the topmost and the payouts go on forever (rules §12.9). Both
+        halves of the cap apply at once: player 1 can buy MF, so the pass
+        goes, and the raise on SIR, within the limit, stays."""
         state = self._capped_with_cash_on_sir()
         bids = [K.AUCTION_BID + p for p in (MF, ER, SMR, DR, SIR)]
         assert legal_ids(state) == [K.AUCTION_PASS, K.AUCTION_BUY] + bids

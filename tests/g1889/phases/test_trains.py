@@ -298,6 +298,9 @@ class TestTrainPrice:
         state = at_train_price(250)
         assert [A.is_legal_action_py(state, exact_id(state, amount)) for amount in (0, 1, 249, 250, 251)] == \
             [False, True, True, True, False]
+        assert not A.is_legal_action_py(state, -1)
+        with pytest.raises(AssertionError):  # no grid point below 0
+            A.price_amount_py(state, -1)
         ko, ir = CORPS[KO].cash(state), CORPS[IR].cash(state)
         apply_and_verify(state, exact_id(state, 249))
         assert (CORPS[KO].cash(state), CORPS[IR].cash(state)) == (ko - 249, ir + 249)

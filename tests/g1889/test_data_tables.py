@@ -223,6 +223,19 @@ def test_upgrade_table():
         assert bool(legal_on(i, h['tile'])) == upgradable, h['id']
 
 
+def test_lays_on_a_revenue_center_change_its_value():
+    """The facts ``_semi_restrictive`` (g1889/actions.pyx) needs to settle the
+    changed-value half of the rule without a walk: every path of a tile with a
+    revenue center touches it, and every upgrade of a tile with track and a
+    revenue center changes its value."""
+    for t in TILES:
+        assert t['rc'] == NONE or all(NODE in path for path in t['paths']), t['name']
+    for (old, _), targets in UPGRADES.items():
+        o = TILES[old]
+        if o['rc'] != NONE and o['paths']:
+            assert all(TILES[new]['revenue'] != o['revenue'] for new, _ in targets), o['name']
+
+
 def test_named_upgrades():
     def on(hex_id):
         return legal_on(HEX[hex_id], HEXES[HEX[hex_id]]['tile'])

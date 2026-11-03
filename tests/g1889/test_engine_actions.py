@@ -97,30 +97,30 @@ def test_decoded_fields(phase, action_id, expected):
     assert decode(phase, action_id) == info(phase, **expected)
 
 
-@pytest.mark.parametrize('bad, error', [
-    (info(K.DPHASE_PAR, A.ACTION_PASS), ValueError),                                  # PAR has no pass
-    (info(K.DPHASE_DIVIDEND, A.ACTION_PASS), ValueError),                             # nor DIVIDEND
-    (info(K.DPHASE_STOCK, A.ACTION_SELL, corp=0, count=1), ValueError),               # STOCK picks the corp
-    (info(K.DPHASE_SELL_AMOUNT, A.ACTION_SELL, count=6), AssertionError),
-    (info(K.DPHASE_BUY_TRAIN, A.ACTION_SELECT_SALE, corp=D.NUM_CORPS), AssertionError),
-    (info(K.DPHASE_AUCTION, A.ACTION_SELECT_BID, private=D.NUM_PRIVATES), AssertionError),
-    (info(K.DPHASE_SELECT_TRAIN, A.ACTION_TRADE_IN, train_type=D.TRAIN_3), ValueError),  # no trade-in for a 3
-    (info(K.DPHASE_PORT, A.ACTION_PORT_LAY, hex=0, count=0), ValueError),             # not a port hex
-    (info(K.DPHASE_BID, A.ACTION_EXACT_PRICE, amount=-1), AssertionError),
-    (info(K.NUM_DECISION_PHASES, A.ACTION_PASS), AssertionError),
+@pytest.mark.parametrize('bad', [
+    info(K.DPHASE_PAR, A.ACTION_PASS),                                    # PAR has no pass
+    info(K.DPHASE_DIVIDEND, A.ACTION_PASS),                               # nor DIVIDEND
+    info(K.DPHASE_STOCK, A.ACTION_SELL, corp=0, count=1),                 # STOCK picks the corp
+    info(K.DPHASE_SELL_AMOUNT, A.ACTION_SELL, count=6),
+    info(K.DPHASE_BUY_TRAIN, A.ACTION_SELECT_SALE, corp=D.NUM_CORPS),
+    info(K.DPHASE_AUCTION, A.ACTION_SELECT_BID, private=D.NUM_PRIVATES),
+    info(K.DPHASE_SELECT_TRAIN, A.ACTION_TRADE_IN, train_type=D.TRAIN_3),  # no trade-in for a 3
+    info(K.DPHASE_PORT, A.ACTION_PORT_LAY, hex=0, count=0),               # not a port hex
+    info(K.DPHASE_BID, A.ACTION_EXACT_PRICE, amount=-1),
+    info(K.NUM_DECISION_PHASES, A.ACTION_PASS),
 ])
-def test_encode_rejects_invalid_info(bad, error):
-    with pytest.raises(error):
+def test_encode_rejects_invalid_info(bad):
+    """Invalid input fails an assertion, which release builds strip (engine-design §5.1)."""
+    with pytest.raises(AssertionError):
         A.encode_action_py(bad)
 
 
-def test_decode_rejects_ids_outside_the_phase():
-    with pytest.raises(AssertionError):
-        decode(K.DPHASE_STOCK, K.ACTION_SIZE_STOCK)
-    with pytest.raises(AssertionError):
-        decode(K.DPHASE_AUCTION, -1)
-    with pytest.raises(AssertionError):
-        decode(K.DPHASE_BID, 0x10000)
+@pytest.mark.parametrize('phase', [K.DPHASE_STOCK, K.DPHASE_AUCTION, *EXACT_PHASES])
+def test_decode_rejects_ids_outside_the_phase(phase):
+    """Below 0, and past the phase's size or, with exact amounts, past uint16."""
+    for action_id in (-1, 0x10000 if A.has_exact_amounts(phase) else K.PHASE_ACTION_SIZES[phase]):
+        with pytest.raises(AssertionError):
+            decode(phase, action_id)
 
 
 @pytest.mark.parametrize('step', range(K.NUM_STEPS))

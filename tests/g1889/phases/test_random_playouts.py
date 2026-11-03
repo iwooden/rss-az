@@ -160,18 +160,22 @@ def _ending(state):
 
 
 # Of each setting's 100 games, at least this many reach phases 4 and D. As
-# measured (6.10, uniform at each step of a factored choice): phases 4, 5, 6,
-# and D in 98, 90, 51, and 39 games with the flags off, and 99, 92, 36, and
-# 25 with them on; 53 and 38 games end in a bankruptcy, the rest at a broken
-# bank's OR set, within 998 decisions. (6.8b, before the factoring: 99, 92,
-# 61, and 51; 99, 92, 43, and 27; 63 and 43 bankruptcies; 1,126 decisions.)
+# measured (2026-11-02, with DR and MF offered on every SR turn of their
+# owner, engine-design §12 item 4): phases 4, 5, 6, and D in 98, 87, 51, and
+# 35 games with the flags off, and 99, 88, 33, and 21 with them on; 55 and 39
+# games end in a bankruptcy, the rest at a broken bank's OR set, within 1,204
+# decisions. The new stops draw from the generator, so every game after one
+# plays differently. (6.10, uniform at each step of a factored choice: 98, 90,
+# 51, and 39; 99, 92, 36, and 25; 53 and 38 bankruptcies; 998 decisions.
+# 6.8b, before the factoring: 99, 92, 61, and 51; 99, 92, 43, and 27; 63 and
+# 43 bankruptcies; 1,126 decisions.)
 MIN_REACH = {D.GAME_PHASE_4: 90, D.GAME_PHASE_D: 15}
 
 
 @pytest.mark.parametrize('flags', [False, True], ids=['flags_off', 'flags_on'])
 def test_random_games_run_to_the_end(flags):
     """Every game gets into the ORs, buys trains through the phases, and
-    ends, at a bankruptcy or a broken bank's OR set; a quarter to a half
+    ends, at a bankruptcy or a broken bank's OR set; a fifth to a third
     reach phase D. Between them, the games bid, raise, and drop out of closed
     auctions, sell in SRs, lay track, place tokens, pay out and withhold, buy
     from the depot, the pool, and each other at grid and exact prices, trade
