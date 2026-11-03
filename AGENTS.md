@@ -58,6 +58,14 @@ affected producers, consumers, tests, and documentation together.
 - Legality belongs in `core/actions.pyx`; the driver checks it before dispatch.
   Phase handlers assume legal actions. Engine/MCTS use sparse phase-local
   actions; NN/eval/trainer boundaries use dense unified masks and targets.
+- Engine guards (input checks, invariants, unreachable branches) are `assert`
+  statements, not `if`/`raise`: `setup.py --release` strips them
+  (`CYTHON_WITHOUT_ASSERTIONS`). Release callers must pass valid input, or
+  behavior is undefined. An unreachable branch is `assert False, "..."`
+  followed by a harmless return for release builds (see `_auto_chain` in
+  `core/driver.pyx`). Legality is not a guard: `STATUS_INVALID` for an illegal
+  action stays in every build. Setup-time validation of user input, such as an
+  unsupported layout version, may still raise.
 - Transformer inputs come from `core/token_data.pyx` and `core/relations.pyx`.
   Forward calls require relations: dense planes (trainer, `NNEvaluator`) or
   the sparse relation records that eval-server IPC passes straight through.
