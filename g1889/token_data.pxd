@@ -8,9 +8,11 @@ type are in the .pyx. get_token_data and get_token_data_batch are def
 functions (keyword-only layout_version), so they have no declarations here.
 
 ``extraction_prologue`` refreshes the caches every fill reads, writing them
-into the row (§4); the relation fills run it too.
+into the row (§4); the relation fills run it too. ``tile_candidates`` is the
+candidate list behind CANDIDATE rows and relations 21-24 (§7.1).
 """
 
+from g1889.actions cimport LayCandidate
 from g1889.data.tables cimport NUM_HEXES
 from g1889.state cimport LAYOUT, GameState
 
@@ -53,10 +55,11 @@ cpdef object get_token_widths(int max_players, int layout_version)
 
 # Shared with the relation fills: the prologue, the player-count checks
 # (3 <= num_players <= max_players <= 5; max_players 0 is the row's count),
-# and the batches' scratch state.
+# the batches' row view, and the candidate list.
 cdef void extraction_prologue(GameState state) noexcept nogil
 cdef int resolve_max_players(int num_players, int max_players, str func) except -1
-cdef GameState bind_row(GameState scratch, object row, int max_players, str func)
+cdef GameState bind_row(GameState view, object row, int max_players, str func)
+cdef int tile_candidates(GameState state, int phase, int* hex, LayCandidate* buf) noexcept nogil
 
 
 cdef inline int graph_entry(GameState state, int corp, int hex) noexcept nogil:

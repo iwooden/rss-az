@@ -2,9 +2,14 @@
 
 Rows (§5.1): GLOBAL, PRICE, DIVIDEND, the corps, the privates, the train
 types, the hexes, the candidates, and the players. Slot 0 of every row is its
-key mask and slot 1 its ``is_selected`` (§5.2). PRICE, DIVIDEND, and
-CANDIDATE rows stay hidden and zero, and so do the per-choice slots (CORP
-15-19, HEX 102-104, TRAIN 10-12), until sub-steps 7.2-7.3.
+key mask and slot 1 its ``is_selected`` (§5.2). PRICE and DIVIDEND rows
+stay hidden and zero, and so do the other per-choice slots (CORP 15-19, HEX
+102-104, TRAIN 10-12), until sub-step 7.3.
+
+CANDIDATE rows describe TILE's and ER_BONUS's lays, each tried on the call's
+scratch state (§4): a copy of the row, changed through the entity
+primitives, whose caches are recomputed for what the features read. The
+live row changes only by its own caches.
 
 The decision corp is §5.2's, and the actor ``active_player``; their features
 are zero at GAME_OVER, which has neither. Divisors follow §5.2: ¥1000 for
@@ -14,11 +19,12 @@ cash and train-scale money, ¥100 for prices, values, bids, and revenues,
 
 import numpy as np
 
-from libc.stdint cimport uint32_t
-from libc.string cimport memset
+from libc.stdint cimport int16_t, uint32_t
+from libc.string cimport memcpy, memset
 
 from g1889.actions cimport (
-    can_buy_private, can_exchange_dr, get_decision_phase, in_emergency, must_buy_train, sale_limit,
+    LayCandidate, can_buy_private, can_exchange_dr, enumerate_lay_candidates, er_candidates, get_decision_phase,
+    in_emergency, must_buy_train, sale_limit,
 )
 from g1889.constants cimport (
     DPHASE_BID, DPHASE_DISCARD, DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PRIVATE_PRICE,
@@ -31,18 +37,18 @@ from g1889.data.tables cimport (
     LABEL_NONE, MAX_CITY_SLOTS, MAX_CORP_TOKENS, MAX_LAY_CANDIDATES, NUM_CORPS, NUM_GAME_PHASES, NUM_HEXES,
     NUM_PAIRS, NUM_PRIVATES, NUM_RCS, NUM_SIDES, NUM_SUPPLY_TILES, NUM_TRAIN_TYPES, PHASE_ON_TRAIN, PHASE_ORS,
     PHASE_TILE_COLORS, PRIVATE_DR, PRIVATE_VALUE, RC_NONE, TERRAIN_MOUNTAIN, TERRAIN_WATER, TILE_BLOCKS_LAY,
-    TILE_COLOR, TILE_COST, TILE_EXITS, TILE_LABEL, TILE_MASK, TILE_RC, TILE_SLOTS, TILE_TERRAIN, TRAIN_PRICE,
-    TRAIN_RUSTS_ON, UPG_ROT, UPG_START, UPG_TILE,
+    TILE_COLOR, TILE_COST, TILE_COUNT, TILE_EXITS, TILE_LABEL, TILE_MASK, TILE_RC, TILE_SLOTS, TILE_TERRAIN,
+    TRAIN_PRICE, TRAIN_RUSTS_ON, UPG_ROT, UPG_START, UPG_TILE,
 )
 from g1889.entities.bank cimport bank_broken, bank_cash
 from g1889.entities.corp cimport (
     corp_cash, corp_emergency_sale, corp_floated, corp_ipo_shares, corp_par_index, corp_par_price,
     corp_pool_shares, corp_president, corp_token_price, corp_tokens_left,
 )
-from g1889.entities.graph cimport GRAPH_NODE, GRAPH_SIDES, graph_refresh
+from g1889.entities.graph cimport GRAPH_NODE, GRAPH_SIDES, graph_refresh, graph_route_available
 from g1889.entities.hexmap cimport (
     hex_paths, hex_rotation, hex_tile, hex_tokens, map_blocked_for, map_free_slots, map_has_slot_for,
-    map_revenue, map_token_count, supply_count,
+    map_lay_cost, map_put_tile, map_revenue, map_token_count, supply_count,
 )
 from g1889.entities.market cimport market_col, market_price, market_row, market_type
 from g1889.entities.phase cimport game_phase
@@ -188,6 +194,19 @@ cdef enum:
     H_TOKENABLE = 103
     H_TOKEN_DELTA = 104
 
+    # CANDIDATE (§5.8): the tile block at TILE_BLOCK, as HEX's
+    CA_ER = 1
+    CA_ADDED = 78                   # + pair
+    CA_COST = 99
+    CA_COPIES = 100
+    CA_HEXES = 101
+    CA_CENTERS = 102
+    CA_REVENUE = 103
+    CA_ROUTE_DELTA = 104
+    CA_ROUTE_AVAILABLE = 105
+    CA_OTHERS = 106
+    CA_OTHER_CENTERS = 107
+
     # PLAYER (§5.9)
     PL_SELECTED = 1
     PL_SEAT = 2                     # + seats after the actor
@@ -217,6 +236,15 @@ cdef struct _Context:
     int game_phase
     int actor                       # -1 at none
     int corp                        # the decision corp, -1 at none
+
+
+# A corp's reach (GRAPH): hexes with a reached side, reached centers, their
+# revenue now, and those with a slot for the corp.
+cdef struct _Reach:
+    int hexes
+    int centers
+    int revenue
+    int slots
 
 
 cdef inline int _global(GameState state, int field) noexcept nogil:
@@ -284,6 +312,43 @@ cdef void extraction_prologue(GameState state) noexcept nogil:
         route_max(state, c)
 
 
+cdef int tile_candidates(GameState state, int phase, int* hex, LayCandidate* buf) noexcept nogil:
+    """Write the decision's lay candidates to ``buf`` (MAX_LAY_CANDIDATES
+    slots) in their ids' order, and their hex to ``hex``; return the count. At
+    TILE, the operating corp's on the pending hex, candidate k being id k; at
+    ER_BONUS, ER's on C4, id 1 + k (§7.1); none at other decisions."""
+    if phase == DPHASE_ER_BONUS:
+        hex[0] = <int>ER_HEX
+        return er_candidates(state, buf)
+    hex[0] = turn_pending_hex(state)
+    if phase != DPHASE_TILE or hex[0] < 0 or turn_operating_corp(state) < 0:
+        return 0
+    return enumerate_lay_candidates(state, hex[0], buf)
+
+
+cdef bint _has_hypotheticals(int phase) noexcept nogil:
+    """Whether the decision's per-choice features try its choices on the scratch state."""
+    return phase == DPHASE_TILE or phase == DPHASE_ER_BONUS
+
+
+cdef GameState _scratch_for(GameState scratch, GameState state):
+    """The call's scratch state for ``state`` (§4): ``scratch`` while it has the
+    state's capacity or the state's decision tries nothing, else a new one, a
+    copy of the row. One serves every hypothetical of a call."""
+    if (scratch is not None and scratch.max_players == state.max_players
+            or not _has_hypotheticals(get_decision_phase(state))):
+        return scratch
+    return GameState.from_array(state._array, turn_num_players(state), state.max_players)
+
+
+cdef inline void _scratch_load(GameState scratch, GameState state) noexcept nogil:
+    """Copy the row, caches included, into the scratch state, of its capacity:
+    each hypothetical starts here, then changes the copy through the entity
+    primitives, which mark the caches it makes stale."""
+    memcpy(scratch._data, state._data,
+           (LAYOUT.players_offset + PLAYER_FIELDS.size * state.max_players) * sizeof(int16_t))
+
+
 cdef int resolve_max_players(int num_players, int max_players, str func) except -1:
     if max_players == 0:
         max_players = num_players
@@ -292,16 +357,16 @@ cdef int resolve_max_players(int num_players, int max_players, str func) except 
     return max_players
 
 
-cdef GameState bind_row(GameState scratch, object row, int max_players, str func):
-    """``scratch`` repointed at the raw ``row``, or a new state over it if None,
+cdef GameState bind_row(GameState view, object row, int max_players, str func):
+    """``view`` repointed at the raw ``row``, or a new state over it if None,
     after the player-count checks; ``max_players`` 0 is the row's count."""
     cdef int num_players = int(row[LAYOUT.global_offset + GLOBALS.num_players])
     cdef int capacity = get_storage_player_capacity(len(row))
     resolve_max_players(num_players, max_players, func)
-    if scratch is None:
+    if view is None:
         return GameState.from_buffer(row, num_players, max_players=capacity)
-    scratch.rebind(row, num_players, max_players=capacity)
-    return scratch
+    view.rebind(row, num_players, max_players=capacity)
+    return view
 
 
 # def rather than cpdef: cpdef cannot take the keyword-only layout_version.
@@ -310,23 +375,25 @@ def get_token_data(GameState state, float[:, ::1] buffer, int max_players=0, *, 
     TOKEN_DIM, for ``state``; ``max_players`` 0 is the state's player count.
     The refreshed caches are written into the state's row (§4)."""
     cdef int num_players = turn_num_players(state)
+    cdef GameState scratch
     _check_layout(layout_version)
     max_players = resolve_max_players(num_players, max_players, "get_token_data")
     assert buffer.shape[0] >= get_num_tokens(max_players) and buffer.shape[1] == <int>TOKEN_DIM, \
         f"get_token_data: buffer {(buffer.shape[0], buffer.shape[1])} for {get_num_tokens(max_players)} tokens"
+    scratch = _scratch_for(None, state)
     with nogil:
         extraction_prologue(state)
-        _fill_buffer(state, buffer, num_players, get_num_tokens(max_players))
+        _fill_buffer(state, scratch, buffer, num_players, get_num_tokens(max_players))
 
 
 def get_token_data_batch(list state_arrays, float[:, :, ::1] buffer, int max_players=0, *, int layout_version):
     """Fill ``buffer[i]`` from ``state_arrays[i]``: writable raw rows, which may
     mix player counts. ``max_players`` 0 takes the buffer's capacity. One
-    scratch state is rebound across the rows, and each row's prologue and
-    fill run without the GIL."""
+    view is rebound across the rows, one scratch state serves their
+    hypotheticals, and each row's prologue and fill run without the GIL."""
     cdef int n = len(state_arrays)
     cdef int num_tokens, i
-    cdef GameState scratch = None
+    cdef GameState view = None, scratch = None
     _check_layout(layout_version)
     if n == 0:
         return
@@ -336,17 +403,20 @@ def get_token_data_batch(list state_arrays, float[:, :, ::1] buffer, int max_pla
     assert buffer.shape[0] >= n and buffer.shape[1] >= num_tokens and buffer.shape[2] == <int>TOKEN_DIM, \
         f"get_token_data_batch: buffer {(buffer.shape[0], buffer.shape[1], buffer.shape[2])} for {n} rows"
     for i in range(n):
-        scratch = bind_row(scratch, state_arrays[i], max_players, "get_token_data_batch")
+        view = bind_row(view, state_arrays[i], max_players, "get_token_data_batch")
+        scratch = _scratch_for(scratch, view)
         with nogil:
-            extraction_prologue(scratch)
-            _fill_buffer(scratch, buffer[i], turn_num_players(scratch), num_tokens)
+            extraction_prologue(view)
+            _fill_buffer(view, scratch, buffer[i], turn_num_players(view), num_tokens)
 
 
 # =============================================================================
 # FILLS
 # =============================================================================
 
-cdef void _fill_buffer(GameState state, float[:, ::1] buffer, int num_players, int num_tokens) noexcept nogil:
+cdef void _fill_buffer(GameState state, GameState scratch, float[:, ::1] buffer, int num_players,
+                       int num_tokens) noexcept nogil:
+    """The rows; ``scratch`` is ``_scratch_for``'s, None when the decision tries nothing."""
     cdef _Context x
     cdef int i
     memset(&buffer[0, 0], 0, num_tokens * <int>TOKEN_DIM * sizeof(float))
@@ -365,6 +435,8 @@ cdef void _fill_buffer(GameState state, float[:, ::1] buffer, int num_players, i
         _fill_train(state, &buffer[<int>ROW_TRAIN + i, 0], i, &x)
     for i in range(<int>NUM_HEXES):
         _fill_hex(state, &buffer[<int>ROW_HEX + i, 0], i, &x)
+    if x.phase == DPHASE_TILE or x.phase == DPHASE_ER_BONUS:
+        _fill_candidates(state, scratch, buffer, &x)
     for i in range(num_players):
         _fill_player(state, &buffer[<int>ROW_PLAYER + i, 0], i, &x)
 
@@ -391,9 +463,25 @@ cdef void _fill_global(GameState state, float* row, const _Context* x) noexcept 
         row[G_TRAIN_SOURCE + min(turn_pending_train_source(state), <int>TRAIN_SOURCE_CORP)] = 1
 
 
+cdef _Reach _reach(GameState state, int c, int game_phase) noexcept nogil:
+    """The corp's reach from its fresh graph block."""
+    cdef _Reach r
+    cdef int h, entry
+    r.hexes = r.centers = r.revenue = r.slots = 0
+    for h in range(<int>NUM_HEXES):
+        entry = graph_entry(state, c, h)
+        r.hexes += (entry & <int>GRAPH_SIDES) != 0
+        if entry & <int>GRAPH_NODE:
+            r.centers += 1
+            r.revenue += map_revenue(state, h, game_phase, False)
+            r.slots += map_has_slot_for(state, h, c)
+    return r
+
+
 cdef void _fill_corp(GameState state, float* row, int c, const _Context* x) noexcept nogil:
-    cdef int hexes = 0, centers = 0, revenue = 0, slots = 0, owned = 0
-    cdef int i, h, entry
+    cdef _Reach reach = _reach(state, c, x.game_phase)
+    cdef int owned = 0
+    cdef int i
     row[0] = 1
     row[C_SELECTED] = c == x.corp
     if x.phase == DPHASE_SELECT_TRAIN or x.phase == DPHASE_TRAIN_PRICE:
@@ -427,17 +515,10 @@ cdef void _fill_corp(GameState state, float* row, int c, const _Context* x) noex
         if _global(state, GLOBALS.or_order + i) == c:
             row[C_OR_POSITION] = (i + 1) / <float>NUM_CORPS
             row[C_OPERATED] = i < _global(state, GLOBALS.or_index)
-    for h in range(<int>NUM_HEXES):
-        entry = graph_entry(state, c, h)
-        hexes += (entry & <int>GRAPH_SIDES) != 0
-        if entry & <int>GRAPH_NODE:
-            centers += 1
-            revenue += map_revenue(state, h, x.game_phase, False)
-            slots += map_has_slot_for(state, h, c)
-    row[C_HEXES] = hexes / <float>NUM_HEXES
-    row[C_CENTERS] = centers / <float>NUM_RCS
-    row[C_REVENUE] = revenue / PRICE_DIV
-    row[C_SLOTS] = slots / 5.0
+    row[C_HEXES] = reach.hexes / <float>NUM_HEXES
+    row[C_CENTERS] = reach.centers / <float>NUM_RCS
+    row[C_REVENUE] = reach.revenue / PRICE_DIV
+    row[C_SLOTS] = reach.slots / 5.0
     if x.actor >= 0:
         row[C_ACTOR_SOLD] = player_sold_mask(state, x.actor) >> c & 1
         if x.game_round == ROUND_STOCK:
@@ -576,6 +657,60 @@ cdef void _fill_hex(GameState state, float* row, int h, const _Context* x) noexc
         row[H_BLOCKED_FOR] = map_blocked_for(state, h, x.corp)
 
 
+cdef void _fill_candidates(GameState state, GameState scratch, float[:, ::1] buffer, const _Context* x) noexcept nogil:
+    """§5.8's rows at TILE and ER_BONUS, row k for candidate k, each lay tried
+    on the scratch state (§7.1). The deltas are the decision corp's, the
+    buyer at ER_BONUS. Another corp is refreshed only if its walks reach a
+    side of the hex: a lay on a hex they never enter cannot change its reach."""
+    cdef LayCandidate candidates[15]  # MAX_LAY_CANDIDATES
+    cdef _Reach before[7]             # NUM_CORPS
+    cdef _Reach after
+    cdef int hex, k, i, c, tile, rotation, route, grown, gained
+    cdef int count = tile_candidates(state, x.phase, &hex, candidates)
+    cdef uint32_t old_paths, added
+    cdef float cost
+    cdef float* row
+    if count == 0:
+        return
+    old_paths = hex_paths(state, hex)
+    cost = 0 if x.phase == DPHASE_ER_BONUS else map_lay_cost(state, hex, x.corp) / PRICE_DIV
+    route = _corp_field(state, x.corp, CORP_FIELDS.route_cache)
+    for c in range(<int>NUM_CORPS):
+        if c == x.corp or graph_entry(state, c, hex):
+            before[c] = _reach(state, c, x.game_phase)
+    for k in range(count):
+        tile = candidates[k].tile
+        rotation = candidates[k].rotation
+        row = &buffer[<int>ROW_CANDIDATE + k, 0]
+        _scratch_load(scratch, state)
+        map_put_tile(scratch, hex, tile, rotation)
+        row[0] = 1
+        row[CA_ER] = x.phase == DPHASE_ER_BONUS
+        _fill_tile_block(row + <int>TILE_BLOCK, tile, rotation, map_revenue(scratch, hex, x.game_phase, False))
+        added = TILE_MASK[tile][rotation] & ~old_paths
+        for i in range(<int>NUM_PAIRS):
+            row[CA_ADDED + i] = added >> i & 1
+        row[CA_COST] = cost
+        row[CA_COPIES] = supply_count(scratch, tile) / <float>TILE_COUNT[tile]
+        grown = gained = 0
+        for c in range(<int>NUM_CORPS):
+            if c != x.corp and not graph_entry(state, c, hex):
+                continue
+            graph_refresh(scratch, c)
+            after = _reach(scratch, c, x.game_phase)
+            if c == x.corp:
+                row[CA_HEXES] = (after.hexes - before[c].hexes) / <float>NUM_HEXES
+                row[CA_CENTERS] = (after.centers - before[c].centers) / <float>NUM_RCS
+                row[CA_REVENUE] = (after.revenue - before[c].revenue) / PRICE_DIV
+                row[CA_ROUTE_DELTA] = (route_max(scratch, c) - route) / PRICE_DIV
+                row[CA_ROUTE_AVAILABLE] = graph_route_available(scratch, c)
+            elif after.centers > before[c].centers:
+                grown += 1
+                gained += after.centers - before[c].centers
+        row[CA_OTHERS] = grown / <float>(NUM_CORPS - 1)
+        row[CA_OTHER_CENTERS] = gained / <float>NUM_RCS
+
+
 cdef void _fill_player(GameState state, float* row, int i, const _Context* x) noexcept nogil:
     cdef int n = x.num_players
     cdef int certs = player_cert_count(state, i)
@@ -613,7 +748,10 @@ assert ROW_PLAYER - ROW_CANDIDATE == MAX_LAY_CANDIDATES
 assert G_PHASE + NUM_DECISION_PHASES == G_ROUND and G_TRAIN_SOURCE + 3 == TW_GLOBAL
 assert C_ZONE + 4 == C_SALE_PRICES and C_SALE_PRICES + MAX_SALE_SHARES == C_SOLD_OUT and C_PRIVATES + 1 == TW_CORP
 assert P_EXCHANGE + 1 == TW_PRIVATE and T_ROUTE_DELTAS + 3 == TW_TRAIN and H_TOKEN_DELTA + 1 == TW_HEX
-assert TB_LABEL + 3 == TW_TILE_BLOCK and TILE_BLOCK + TW_TILE_BLOCK == H_D_REVENUE
+assert TB_LABEL + 3 == TW_TILE_BLOCK and TILE_BLOCK + TW_TILE_BLOCK == H_D_REVENUE == CA_ADDED
+assert CA_ADDED + NUM_PAIRS == CA_COST and CA_OTHER_CENTERS + 1 == TW_CANDIDATE
 assert PL_SEAT + 5 == PL_PRIORITY and PL_EMERGENCY_SOLD + 1 == TW_PLAYER
 assert <int>TOKEN_DIM == max(TW_GLOBAL, TW_PRICE, TW_DIVIDEND, TW_CORP, TW_PRIVATE, TW_TRAIN, TW_HEX, TW_CANDIDATE,
                              TW_PLAYER)
+# The candidate fill's buffers are sized with literals.
+assert MAX_LAY_CANDIDATES == 15 and NUM_CORPS == 7

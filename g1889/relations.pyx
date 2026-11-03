@@ -7,8 +7,9 @@ entity by entity, each pair's two directions together. No (relation, query,
 key) repeats and no value is 0, so the dense planes' nonzero count is the
 record count.
 
-Relations 21-24, the candidates', are sub-step 7.2's: their ids are
-reserved, and nothing emits them yet.
+Relations 21-24 exist at TILE and ER_BONUS: each visible candidate row to
+its hex and to the hex across each of its exits, over the token fill's
+candidate list (``tile_candidates``).
 """
 
 import numpy as np
@@ -16,10 +17,11 @@ import numpy as np
 from libc.stdint cimport uint32_t
 from libc.string cimport memset
 
+from g1889.actions cimport LayCandidate, get_decision_phase
 from g1889.constants cimport OWNER_CORP, OWNER_PLAYER
 from g1889.data.tables cimport (
-    CORP_HOME, ENDPOINT_PAIRS, HEX_BLOCKER, HEX_EXIT_MASK, HEX_NEIGHBOR, MF_PORT_HEX, NUM_CORPS, NUM_HEXES,
-    NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRAIN_TYPES, PRIVATE_MF,
+    CORP_HOME, ENDPOINT_PAIRS, HEX_BLOCKER, HEX_EXIT_MASK, HEX_NEIGHBOR, MAX_LAY_CANDIDATES, MF_PORT_HEX,
+    NUM_CORPS, NUM_HEXES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRAIN_TYPES, PRIVATE_MF, TILE_EXITS,
 )
 from g1889.entities.corp cimport corp_president
 from g1889.entities.graph cimport GRAPH_NODE, GRAPH_SIDES
@@ -30,8 +32,8 @@ from g1889.entities.trains cimport corp_train_count
 from g1889.entities.turn cimport turn_num_players
 from g1889.state cimport GameState
 from g1889.token_data cimport (
-    ROW_CORP, ROW_HEX, ROW_PLAYER, ROW_PRIVATE, ROW_TRAIN, bind_row, extraction_prologue, get_num_tokens,
-    graph_entry, resolve_max_players,
+    ROW_CANDIDATE, ROW_CORP, ROW_HEX, ROW_PLAYER, ROW_PRIVATE, ROW_TRAIN, bind_row, extraction_prologue,
+    get_num_tokens, graph_entry, resolve_max_players, tile_candidates,
 )
 
 
@@ -65,10 +67,10 @@ cpdef void get_relation_data(GameState state, unsigned char[:, :, ::1] planes, i
 cpdef void get_relation_data_batch(list state_arrays, unsigned char[:, :, :, ::1] planes, int max_players=0):
     """Fill ``planes[i]`` from ``state_arrays[i]``: writable raw rows, which may
     mix player counts. ``max_players`` 0 takes the buffer's capacity. One
-    scratch state is rebound across the rows, as in the token batch."""
+    view is rebound across the rows, as in the token batch."""
     cdef int n = len(state_arrays)
     cdef int num_tokens, i, count
-    cdef GameState scratch = None
+    cdef GameState view = None
     if n == 0:
         return
     if max_players == 0:
@@ -79,10 +81,10 @@ cpdef void get_relation_data_batch(list state_arrays, unsigned char[:, :, :, ::1
         f"get_relation_data_batch: planes {(planes.shape[0], planes.shape[1], planes.shape[2], planes.shape[3])} " \
         f"for {n} rows of {num_tokens} tokens"
     for i in range(n):
-        scratch = bind_row(scratch, state_arrays[i], max_players, "get_relation_data_batch")
+        view = bind_row(view, state_arrays[i], max_players, "get_relation_data_batch")
         with nogil:
-            extraction_prologue(scratch)
-            count = _fill_planes(scratch, planes[i], turn_num_players(scratch))
+            extraction_prologue(view)
+            count = _fill_planes(view, planes[i], turn_num_players(view))
         _check_count(count, "get_relation_data_batch")
 
 
@@ -107,17 +109,17 @@ cpdef void get_relation_coord_data_batch(list state_arrays, unsigned char[:, :, 
     ``max_players`` 0 checks each row against its own count."""
     cdef int n = len(state_arrays)
     cdef int i, count
-    cdef GameState scratch = None
+    cdef GameState view = None
     if n == 0:
         return
     assert (records.shape[0] >= n and records.shape[1] == <int>MAX_RELATION_EDGES
             and records.shape[2] == <int>RELATION_RECORD_WIDTH), \
         f"get_relation_coord_data_batch: records {(records.shape[0], records.shape[1], records.shape[2])} for {n} rows"
     for i in range(n):
-        scratch = bind_row(scratch, state_arrays[i], max_players, "get_relation_coord_data_batch")
+        view = bind_row(view, state_arrays[i], max_players, "get_relation_coord_data_batch")
         with nogil:
-            extraction_prologue(scratch)
-            count = _fill_records(scratch, <Record*>&records[i, 0, 0], turn_num_players(scratch))
+            extraction_prologue(view)
+            count = _fill_records(view, <Record*>&records[i, 0, 0], turn_num_players(view))
         _check_count(count, "get_relation_coord_data_batch")
 
 
@@ -193,11 +195,12 @@ cdef inline int _pair(Record* out, int n, int relation, int a, int b, int value)
 
 
 cdef int _emit(GameState state, int num_players, Record* out) noexcept nogil:
-    """Write relations 0-20 of the state to ``out``, up to MAX_RELATION_EDGES
+    """Write the state's relations to ``out``, up to MAX_RELATION_EDGES
     records, and return how many there are. Reads the caches raw, so the
     prologue runs first."""
+    cdef LayCandidate candidates[15]  # MAX_LAY_CANDIDATES
     cdef int n = 0
-    cdef int c, i, p, t, h, s, corp, entry, owner
+    cdef int c, i, p, t, h, s, k, corp, entry, owner, count
     cdef uint32_t paths
     for c in range(<int>NUM_CORPS):
         corp = <int>ROW_CORP + c
@@ -237,11 +240,19 @@ cdef int _emit(GameState state, int num_players, Record* out) noexcept nogil:
             if (paths & ENDPOINT_PAIRS[s] and HEX_EXIT_MASK[h] >> s & 1
                     and hex_paths(state, HEX_NEIGHBOR[h][s]) & ENDPOINT_PAIRS[(s + 3) % <int>NUM_SIDES]):
                 n = _put(out, n, REL_TRACK_LINK, <int>ROW_HEX + h, <int>ROW_HEX + HEX_NEIGHBOR[h][s], 1)
+    # Candidates' exits are on open sides, which have a hex across.
+    count = tile_candidates(state, get_decision_phase(state), &h, candidates)
+    for k in range(count):
+        n = _pair(out, n, REL_CANDIDATE_AT, <int>ROW_CANDIDATE + k, <int>ROW_HEX + h, 1)
+        for s in range(<int>NUM_SIDES):
+            if TILE_EXITS[candidates[k].tile][candidates[k].rotation] >> s & 1:
+                n = _pair(out, n, REL_CANDIDATE_EXIT, <int>ROW_CANDIDATE + k, <int>ROW_HEX + HEX_NEIGHBOR[h][s], 1)
     return n
 
 
 assert <int>MAX_RELATION_EDGES == 2048 and sizeof(Record) == RELATION_RECORD_WIDTH  # the stack buffer, the record cast
-assert REL_TRACK_LINK + 5 == NUM_RELATIONS and SREL_ABILITY_OF + 1 == NUM_STATIC_RELATIONS
+assert <int>MAX_LAY_CANDIDATES == 15  # the candidate buffer
+assert REL_EXIT_OF + 1 == NUM_RELATIONS and SREL_ABILITY_OF + 1 == NUM_STATIC_RELATIONS
 # Every open side has a hex across, so the track-link test may read it.
 assert all(HEX_NEIGHBOR[h][s] >= 0 for h in range(<int>NUM_HEXES) for s in range(<int>NUM_SIDES)
            if HEX_EXIT_MASK[h] >> s & 1)

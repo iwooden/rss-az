@@ -4,8 +4,9 @@ On test_extraction's random-playout states, the relations extracted on the
 live state, as the eval worker extracts them:
 
 - the records are §6.1's edges, decoded from the entity APIs (``PLAYERS``,
-  ``CORPS``, ``PRIVATES``, ``TRAINS``, ``MAP``, ``GRAPH``) with their values,
-  and nothing else: the candidate relations stay empty until sub-step 7.2;
+  ``CORPS``, ``PRIVATES``, ``TRAINS``, ``MAP``, ``GRAPH``) and the candidate
+  lists (``lay_candidates_py``, ``er_candidates_py``) with their values, and
+  nothing else;
 - they join only visible tokens, each group stays within its §6.1 bound, and
   the bounds sum to §6.3's 1,844, below MAX_RELATION_EDGES;
 - the dense planes on a copy with every cache stale scatter the same records,
@@ -19,6 +20,7 @@ states.
 import numpy as np
 import pytest
 
+import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
 from g1889.data import load_tables
@@ -44,7 +46,6 @@ from tests.g1889.test_extraction import _playouts, _stale, _state, _tokens
 
 NUM_RELATIONS = int(REL.NUM_RELATIONS)
 MAX_EDGES = int(RelationSize.MAX_RELATION_EDGES)
-CANDIDATE_RELATIONS = range(int(REL.REL_CANDIDATE_AT), NUM_RELATIONS)  # sub-step 7.2
 
 # §6.1's bound per group of relation ids, and §6.3's sum.
 BOUNDS = {
@@ -149,6 +150,15 @@ def _edges(state):
         for side, across in enumerate(D.HEX_NEIGHBOR[h]):
             if across >= 0 and _track_at(state, h, side) and _track_at(state, across, (side + 3) % D.NUM_SIDES):
                 edges[int(REL.REL_TRACK_LINK), _hex(h), _hex(across)] = 1
+    phase = A.get_decision_phase_py(state)
+    h = TURN.pending_hex(state) if phase == K.DPHASE_TILE else D.ER_HEX
+    candidates = (A.lay_candidates_py(state, h) if phase == K.DPHASE_TILE
+                  else A.er_candidates_py(state) if phase == K.DPHASE_ER_BONUS else [])
+    for k, (tile, rotation) in enumerate(candidates):
+        pair(REL.REL_CANDIDATE_AT, R.ROW_CANDIDATE + k, _hex(h))
+        for side in range(D.NUM_SIDES):
+            if D.TILE_EXITS[tile][rotation] >> side & 1:
+                pair(REL.REL_CANDIDATE_EXIT, R.ROW_CANDIDATE + k, _hex(D.HEX_NEIGHBOR[h][side]))
     return edges
 
 
@@ -158,7 +168,7 @@ def _edges(state):
 
 def test_records_are_the_entity_relations(samples):
     """Each record is one of §6.1's edges, with its value, once, and every edge
-    has its record; the tail is zero. Every relation but the candidates' occurs."""
+    has its record; the tail is zero. Every relation occurs."""
     seen = set()
     for row, _, records, count in samples:
         decoded = {(r, q, k): v for r, q, k, v in records[:count].tolist()}
@@ -166,7 +176,7 @@ def test_records_are_the_entity_relations(samples):
         assert decoded == _edges(_state(row.copy()))
         assert not records[count:].any()
         seen.update(r for r, _, _ in decoded)
-    assert seen == set(range(NUM_RELATIONS)) - set(CANDIDATE_RELATIONS), sorted(seen)
+    assert seen == set(range(NUM_RELATIONS)), sorted(seen)
 
 
 def test_records_join_visible_tokens_within_their_bounds(samples):

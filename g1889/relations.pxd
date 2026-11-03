@@ -39,9 +39,9 @@ cpdef enum RelationId:
     REL_REACHES_CENTER = 18         # corp -> hex: GRAPH reaches its center
     REL_CENTER_REACHED_BY = 19
     REL_TRACK_LINK = 20             # hex <-> hex: track on both sides of their side
-    REL_CANDIDATE_AT = 21           # 21-24: sub-step 7.2's candidate rows
+    REL_CANDIDATE_AT = 21           # candidate -> its hex, at TILE and ER_BONUS
     REL_CANDIDATE_OF = 22
-    REL_CANDIDATE_EXIT = 23
+    REL_CANDIDATE_EXIT = 23         # candidate -> the hex across each of its exits
     REL_EXIT_OF = 24
     NUM_RELATIONS = 25
 

@@ -1,4 +1,4 @@
-"""1889 token extraction (1889/extraction-design.md §10 items 1 and 6).
+"""1889 token extraction (1889/extraction-design.md §10 items 1, 2, and 6).
 
 On random-playout states at 3-5 players, capacities 3 and 5, with the policy
 flags on and off:
@@ -12,7 +12,11 @@ flags on and off:
 - a row extracted twice, and its copy with every cache marked stale, give
   the same tokens;
 - extraction changes only the caches, which then equal a recomputation, and
-  CORP 34 reads the route solver's revenue.
+  CORP 34 reads the route solver's revenue; the hypotheticals behind the
+  candidate rows leave the row as it was;
+- candidate row k at TILE and ER_BONUS describes the state after applying
+  its id to a copy: the hex's tile block, the cost paid, the supply left, and
+  GRAPH's and the solver's deltas.
 
 And the RSS guard: RSS's engine and its v2 and v3 models import nothing of
 1889's, nor 1889's engine anything of RSS's, so no 1889 change can reach RSS
@@ -29,7 +33,10 @@ import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
 from g1889.driver import DRIVER, STATUS_INVALID
+from g1889.entities.corp import CORPS
 from g1889.entities.graph import GRAPH
+from g1889.entities.hexmap import MAP
+from g1889.entities.phase import PHASE
 from g1889.entities.private import PRIVATES
 from g1889.entities.turn import TURN
 from g1889.routes.solver import max_route_revenue
@@ -71,7 +78,7 @@ ROW_TYPES = {
     'CANDIDATE': (R.ROW_CANDIDATE, D.MAX_LAY_CANDIDATES),
     'PLAYER': (R.ROW_PLAYER, None),
 }
-HIDDEN_UNTIL_7_2 = ('PRICE', 'DIVIDEND', 'CANDIDATE')
+HIDDEN_UNTIL_7_3 = ('PRICE', 'DIVIDEND')
 
 # Slots outside [0, 1], by §5.2's divisor families; every other slot is a
 # flag, a one-hot, or a count by its natural maximum. SOFT counts are by a
@@ -83,6 +90,9 @@ WIDE = {
     'PRIVATE': dict.fromkeys((7, 8, 9, 10, 12, 13), PRICE),
     'TRAIN': {2: MONEY},
     'HEX': dict.fromkeys((2 + 71, 78, 84), PRICE),  # the tile block's revenue, D revenue, lay cost
+    # The tile block's revenue, the lay cost, Δ reached revenue and route
+    # max (a lay only adds track and slots), and the others' Δ centers.
+    'CANDIDATE': {107: SOFT, **dict.fromkeys((2 + 71, 99, 103, 104), PRICE)},
     'PLAYER': {8: MONEY, 9: MONEY, 10: SOFT, 36: SOFT, **dict.fromkeys(range(26, 33), PRICE)},
 }
 # Selection slots: at most one row of the type sets each.
@@ -151,6 +161,15 @@ def samples():
     return out
 
 
+def _candidate_count(state):
+    """TILE's and ER_BONUS's lay candidates, by their legal ids: TILE's ids
+    are its candidates, and ER_BONUS's follow its pass."""
+    phase = A.get_decision_phase_py(state)
+    if phase in (K.DPHASE_TILE, K.DPHASE_ER_BONUS):
+        return len(legal_ids(state)) - (phase == K.DPHASE_ER_BONUS)
+    return 0
+
+
 def _cache_slots(row):
     """The slots extraction writes back: the graph block, each corp's route
     cache and ``route_available``, and the two dirty masks."""
@@ -217,15 +236,16 @@ def test_values_are_finite_and_within_their_divisor_family(samples):
 
 
 def test_visibility_padding_and_widths(samples):
-    """Slot 0 per §5.1 (PRICE, DIVIDEND, and CANDIDATE rows stay hidden until
-    sub-step 7.2), hidden and padded rows all zero, nothing past a row's width."""
+    """Slot 0 per §5.1 (PRICE and DIVIDEND rows stay hidden until sub-step
+    7.3), hidden and padded rows all zero, nothing past a row's width."""
     for row, after, max_players, tokens in samples:
         num_players = TURN.num_players(after)
         widths = get_token_widths(max_players, 1)
         assert not any(tokens[i, widths[i]:].any() for i in range(len(tokens)))
         visible = np.ones(len(tokens), bool)
-        for name in HIDDEN_UNTIL_7_2:
+        for name in HIDDEN_UNTIL_7_3:
             visible[_rows(name, max_players)] = False
+        visible[R.ROW_CANDIDATE + _candidate_count(after):R.ROW_PLAYER] = False
         visible[_rows('PRIVATE', max_players)] = [p.owner(after) != K.OWNER_NOT_IN_PLAY for p in PRIVATES]
         visible[R.ROW_PLAYER + num_players:] = False
         np.testing.assert_array_equal(tokens[:, 0], visible)
@@ -263,8 +283,9 @@ def test_extraction_is_deterministic_whatever_the_caches(samples):
 
 def test_extraction_writes_back_only_fresh_caches(samples):
     """Extraction changes only the caches, which are then all clean and equal
-    a recomputation from scratch (as test_random_playouts' check); CORP 34 is
-    the solver's revenue."""
+    a recomputation from scratch (as test_random_playouts' check), whatever
+    the candidate rows tried on the scratch state; CORP 34 is the solver's
+    revenue."""
     for row, after, _, tokens in samples:
         caches = _cache_slots(row)
         written = after._array
@@ -275,6 +296,77 @@ def test_extraction_writes_back_only_fresh_caches(samples):
             GRAPH.refresh(fresh, c)
             assert tokens[R.ROW_CORP + c, 34] == np.float32(max_route_revenue(fresh, c)) / np.float32(100)
         np.testing.assert_array_equal(written[caches], fresh._array[caches])
+
+
+def test_batches_match_single_states_at_lay_decisions(samples):
+    """A batch mixing lay decisions with others, and player counts, fills each
+    row as a single state does, one scratch state serving its candidates."""
+    for capacity in (3, 5):
+        picked = [(row, tokens) for i, (row, after, max_players, tokens) in enumerate(samples)
+                  if max_players == capacity and (_candidate_count(after) or i % 50 == 0)]
+        out = np.full((len(picked), get_num_tokens(capacity), TOKEN_DIM), np.nan, np.float32)
+        get_token_data_batch([row.copy() for row, _ in picked], out, capacity, layout_version=1)
+        np.testing.assert_array_equal(out, np.stack([tokens for _, tokens in picked]))
+
+
+# =============================================================================
+# CANDIDATE OUTCOMES (§10 item 2)
+# =============================================================================
+
+def _f32(numerator, divisor):
+    """A slot's value as the fill computes it, in float32."""
+    return np.float32(numerator) / np.float32(divisor)
+
+
+def _after_lay(row, action):
+    """A copy of ``row`` with ``action`` applied, before the driver's
+    automated steps and forced decisions."""
+    state = _state(row.copy())
+    history = []
+    assert DRIVER.apply_action(state, action, history) != STATUS_INVALID
+    return _state(history[1][0]) if len(history) > 1 else state
+
+
+def _reach(state, corp):
+    """GRAPH's reach for the corp: hexes with a reached side, reached centers,
+    and their revenue now."""
+    centers = [h for h in range(D.NUM_HEXES) if GRAPH.node_reached(state, corp, h)]
+    hexes = sum(GRAPH.sides_reached(state, corp, h) != 0 for h in range(D.NUM_HEXES))
+    return hexes, len(centers), sum(MAP.revenue(state, h, PHASE.current(state)) for h in centers)
+
+
+def test_candidate_rows_describe_their_lays(samples):
+    """Applying TILE k, or ER_BONUS 1 + k, to a copy lays what candidate row k
+    describes: the hex's tile block afterwards is the row's and its new paths
+    the row's added ones, the corp pays the lay cost and supply keeps the
+    copies left, and the deltas are GRAPH's and the solver's after the lay
+    less before; at ER_BONUS, the buying corp's."""
+    seen = {K.DPHASE_TILE: 0, K.DPHASE_ER_BONUS: 0}
+    for row, before, max_players, tokens in samples:
+        phase = A.get_decision_phase_py(before)
+        if phase not in seen:
+            continue
+        er = phase == K.DPHASE_ER_BONUS
+        h, corp = D.ER_HEX if er else TURN.pending_hex(before), TURN.operating_corp(before)
+        reach = [_reach(before, c) for c in range(D.NUM_CORPS)]
+        old_paths = D.TILE_MASK[MAP.tile(before, h)][MAP.rotation(before, h)]
+        assert (tokens[R.ROW_CANDIDATE:R.ROW_CANDIDATE + _candidate_count(before), 1] == er).all()
+        for k, action in enumerate(legal_ids(before)[er:]):
+            candidate, laid = tokens[R.ROW_CANDIDATE + k], _after_lay(row, action)
+            tile = MAP.tile(laid, h)
+            np.testing.assert_array_equal(candidate[2:78], _tokens(laid, max_players)[R.ROW_HEX + h, 2:78])
+            added = D.TILE_MASK[tile][MAP.rotation(laid, h)] & ~old_paths
+            assert candidate[78:99].tolist() == [added >> i & 1 for i in range(D.NUM_PAIRS)]
+            assert candidate[99] == _f32(CORPS[corp].cash(before) - CORPS[corp].cash(laid), 100)
+            assert candidate[100] == _f32(MAP.supply(laid, tile), D.TILE_COUNT[tile])
+            deltas = [np.subtract(_reach(laid, c), reach[c]) for c in range(D.NUM_CORPS)]
+            assert candidate[101:104].tolist() == [_f32(d, divisor) for d, divisor in zip(deltas[corp], (52, 25, 100))]
+            assert candidate[104] == _f32(max_route_revenue(laid, corp) - max_route_revenue(before, corp), 100)
+            assert candidate[105] == GRAPH.route_available(laid, corp)
+            grown = [d[1] for c, d in enumerate(deltas) if c != corp and d[1] > 0]
+            assert candidate[106:108].tolist() == [_f32(len(grown), 6), _f32(sum(grown), 25)]
+            seen[phase] += 1
+    assert all(seen.values()), seen
 
 
 # =============================================================================

@@ -172,8 +172,9 @@ found 93.5-94.4% of `route_max` reads cached.
 
 **Scratch state for hypotheticals.** Outcome features (Section 7) need the
 row after a lay, a token, or a train change. Each public call allocates one
-scratch `GameState` of the batch's capacity before its nogil loop (a numpy
-buffer and `from_buffer`; **Test:** about 1 µs). For each hypothetical, nogil code
+scratch `GameState` of the rows' capacity, at the first row whose decision
+has hypotheticals, and none if no row has (a copy of the row through
+`GameState.from_array`: 0.6 µs). For each hypothetical, nogil code
 copies the row in, applies the change through Section 3's primitives, and
 calls `graph_refresh`, `route_max`, or `lay_candidates` on it. A lay marks
 every corp stale (`hexmap.pyx:47-49`), so the scratch caches are recomputed.
@@ -521,10 +522,11 @@ self-play's denser maps.
   same functions, so the order cannot drift.
 - **Outcomes** (CANDIDATE 99-107). For each candidate, on the scratch
   state: `map_put_tile`, then `graph_refresh` and `route_max` for the
-  decision corp, and `graph_refresh` for each other corp with a token.
-  Deltas are against the prologue's caches. ER's lay is the seller's, but
-  the decision corp is the buyer, the corp that gains or loses, so its
-  deltas are the ones reported.
+  decision corp, and `graph_refresh` for each other corp whose walks reach
+  a side of the hex; a lay on a hex a corp's walks never enter leaves its
+  reach as it was. Deltas are against the prologue's caches. ER's lay is
+  the seller's, but the decision corp is the buyer, the corp that gains or
+  loses, so its deltas are the ones reported.
 - **Not in v0:**
   - opponents' Δ route max: refreshing and solving all seven corps costs
     6.7-7.1 µs median per candidate, against 1.4-1.6 µs for the decision
