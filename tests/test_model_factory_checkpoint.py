@@ -13,7 +13,6 @@ import torch
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.token_data import get_num_tokens, get_token_dim
 from games import get_game
-from games.g1889 import EXTRACTION_STEP
 from mcts.evaluator import NNEvaluator
 from nn import ModelInputSpec, RSSTransformerNet, _load_model_module, create_model, get_model_input_spec
 from nn.policy_layout import UNIFIED_LOGIT_DIM
@@ -287,11 +286,15 @@ def test_model_module_with_build_model_builds_its_own_model(tmp_path) -> None:
     # The keyword form builds only the RSS fallback.
     with pytest.raises(TypeError, match="defines build_model"):
         create_model(num_players=3, model_path=str(path))
-    # Any game reaches the builder through its own adapter; 1889's has no
-    # input sizes until its extraction lands.
-    with pytest.raises(NotImplementedError, match=EXTRACTION_STEP):
+    # Any game reaches the builder through its own adapter, which takes only
+    # its own token layouts: 1889's is 1.
+    with pytest.raises(ValueError, match="Unsupported 1889 token layout version: 3"):
         create_model(TrainingConfig(game="1889", model_path=str(path)))
     assert len(module.calls) == 1
+    path_1889 = tmp_path / "dummy_1889_model.py"
+    path_1889.write_text(DUMMY_MODEL_MODULE.replace("INPUT_LAYOUT_VERSION = 3", "INPUT_LAYOUT_VERSION = 1"))
+    spec_1889 = get_model_input_spec(TrainingConfig(game="1889", model_path=str(path_1889)))
+    assert (spec_1889.game, spec_1889.layout_version, spec_1889.token_dim) == ("1889", 1, 108)
 
 
 def test_model_module_must_declare_its_layout(tmp_path) -> None:

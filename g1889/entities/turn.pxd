@@ -25,6 +25,7 @@ cdef int turn_operating_corp(GameState state) noexcept nogil
 cdef int turn_route_revenue(GameState state) noexcept nogil
 cdef int turn_turn(GameState state) noexcept nogil
 cdef bint turn_sr_bought(GameState state) noexcept nogil
+cdef int turn_sr_bought_corp(GameState state) noexcept nogil
 cdef int turn_sr_sold_mask(GameState state) noexcept nogil
 cdef bint turn_sr_sold_then_bought(GameState state) noexcept nogil
 cdef int turn_ebuy_sold_mask(GameState state) noexcept nogil
@@ -66,8 +67,9 @@ cdef class TurnState:
     cpdef int auction_pass_payouts(self, GameState state)
     cpdef void set_auction_pass_payouts(self, GameState state, int value)
 
-    # Stock round: this turn's purchase, its sales, and whether a purchase
-    # followed a sale (which ends selling for the turn)
+    # Stock round: this turn's purchase (the corp bought or parred + 1, 0 for
+    # none), its sales, and whether a purchase followed a sale (which ends
+    # selling for the turn)
     cpdef int sr_bought(self, GameState state)
     cpdef void set_sr_bought(self, GameState state, int value)
     cpdef int sr_sold_mask(self, GameState state)

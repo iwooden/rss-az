@@ -15,6 +15,9 @@ cdef int trains_limit(GameState state) noexcept nogil
 cdef int trains_first_crowded(GameState state) noexcept nogil
 cdef int trade_in_price(int train_type) noexcept nogil
 
+# TRAINS.set_corp_trains's write, without its checks, for nogil callers.
+cdef void trains_set_count(GameState state, int corp, int train_type, int count) noexcept nogil
+
 
 cdef class Trains:
     cpdef int depot(self, GameState state, int train_type)

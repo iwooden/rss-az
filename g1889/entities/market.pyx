@@ -81,6 +81,23 @@ cdef int market_sort_by_price(GameState state, int mask, int* out) noexcept nogi
     return count
 
 
+cdef void market_moved(int row, int col, int move, int steps, int* new_row, int* new_col) noexcept nogil:
+    """Down stops at a column's bottom and up at the top row; left at column
+    0 goes down instead, and right at a row's end up."""
+    cdef int i
+    for i in range(steps):
+        if move == MOVE_LEFT and col > 0:
+            col -= 1
+        elif move == MOVE_RIGHT and col + 1 < MARKET_ROW_LEN[row]:
+            col += 1
+        elif move == MOVE_UP or move == MOVE_RIGHT:
+            row = max(row - 1, 0)
+        elif row + 1 < <int>MARKET_ROWS and MARKET_PRICE[row + 1][col] > 0:
+            row += 1
+    new_row[0] = row
+    new_col[0] = col
+
+
 cdef class Market:
     """Stateless handle over the market fields."""
 
@@ -110,40 +127,33 @@ cdef class Market:
     cpdef int next_stamp(self, GameState state):
         return <int>state._data[LAYOUT.global_offset + GLOBALS.market_stamp]
 
+    cdef void _move(self, GameState state, int corp, int move) except *:
+        """Move the corp one cell (``market_moved``); a blocked move keeps its stamp."""
+        cdef int row = market_row(state, corp), col = market_col(state, corp)
+        cdef int new_row, new_col
+        assert row >= 0, f"corp {corp} is not on the market"
+        market_moved(row, col, move, 1, &new_row, &new_col)
+        if new_row != row or new_col != col:
+            self.set_position(state, corp, new_row, new_col)
+
     cpdef void move_down(self, GameState state, int corp):
         """One row down, as for each share sold; at the bottom of its column the
         token stays put (``TwoDimensionalMovement#down``)."""
-        cdef int row = market_row(state, corp), col = market_col(state, corp)
-        assert row >= 0, f"corp {corp} is not on the market"
-        if row + 1 < <int>MARKET_ROWS and MARKET_PRICE[row + 1][col] > 0:
-            self.set_position(state, corp, row + 1, col)
+        self._move(state, corp, MOVE_DOWN)
 
     cpdef void move_up(self, GameState state, int corp):
         """One row up, as when sold out at the end of an SR; the top row stays put."""
-        cdef int row = market_row(state, corp)
-        assert row >= 0, f"corp {corp} is not on the market"
-        if row > 0:
-            self.set_position(state, corp, row - 1, market_col(state, corp))
+        self._move(state, corp, MOVE_UP)
 
     cpdef void move_left(self, GameState state, int corp):
         """One column left, as for a withhold; at column 0 one row down instead
         (``TwoDimensionalMovement#left``), so ¥10 stays put."""
-        cdef int row = market_row(state, corp), col = market_col(state, corp)
-        assert row >= 0, f"corp {corp} is not on the market"
-        if col > 0:
-            self.set_position(state, corp, row, col - 1)
-        else:
-            self.move_down(state, corp)
+        self._move(state, corp, MOVE_LEFT)
 
     cpdef void move_right(self, GameState state, int corp):
         """One column right, as for a payout; at a row's end one row up instead
         (``TwoDimensionalMovement#right``), so ¥350 stays put."""
-        cdef int row = market_row(state, corp), col = market_col(state, corp)
-        assert row >= 0, f"corp {corp} is not on the market"
-        if col + 1 < MARKET_ROW_LEN[row]:
-            self.set_position(state, corp, row, col + 1)
-        else:
-            self.move_up(state, corp)
+        self._move(state, corp, MOVE_RIGHT)
 
     cpdef int type(self, GameState state, int corp):
         return market_type(state, corp)

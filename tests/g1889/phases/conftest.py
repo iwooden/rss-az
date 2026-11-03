@@ -487,9 +487,17 @@ def _assert_private_moves(before, after, msg):
 
 def _assert_sr_turns(before, after, entry, msg):
     """In an SR the turn player acts: the priority holder opens it, and only
-    STOCK's slot 0 (a pass, or done) hands the turn to the next seat."""
+    STOCK's slot 0 (a pass, or done) hands the turn to the next seat. A
+    purchase or a par records its corp (``sr_bought``, the corp + 1)."""
     if TURN.round(after) != K.ROUND_STOCK or TURN.step(after) == K.STEP_SR_END:
         return
+    phase, action_id = entry
+    if phase == K.DPHASE_PAR:
+        assert TURN.sr_bought(after) == TURN.pending_corp(before) + 1, f'{msg}: the par is not recorded'
+    elif phase == K.DPHASE_STOCK:
+        info = A.decode_action_py(phase, action_id)
+        if info.type in (A.ACTION_BUY_IPO, A.ACTION_BUY_POOL):
+            assert TURN.sr_bought(after) == info.corp + 1, f'{msg}: the purchase is not recorded'
     if TURN.round(before) != K.ROUND_STOCK:
         expected = TURN.priority_player(after)
     else:

@@ -482,7 +482,7 @@ def test_turn_fields_round_trip(state):
     ('round', K.NUM_ROUNDS), ('step', K.NUM_STEPS), ('return_step', -2), ('active_player', 4),
     ('priority_player', -1), ('end_reason', K.NUM_END_REASONS), ('auction_turn', 4),
     ('auction_private', D.NUM_PRIVATES), ('auction_discount', -5), ('auction_discount', 25),
-    ('auction_pass_payouts', -1), ('sr_bought', 2), ('sr_sold_mask', 1 << D.NUM_CORPS), ('sr_sold_then_bought', -1),
+    ('auction_pass_payouts', -1), ('sr_bought', D.NUM_CORPS + 1), ('sr_sold_mask', 1 << D.NUM_CORPS), ('sr_sold_then_bought', -1),
     ('operating_corp', D.NUM_CORPS), ('pending_hex', D.NUM_HEXES), ('pending_seller', 4),
     ('pending_train_source', K.NUM_TRAIN_SOURCES), ('pending_train_type', D.NUM_TRAIN_TYPES),
 ])

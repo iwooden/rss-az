@@ -307,6 +307,9 @@ EMERGENCY_SELL_AMOUNT's id at slot 15 + id of the row CORP 3 selects.
 | 49 | the actor's largest emergency sale /5 | `corp_emergency_sale` |
 | 50 | privates owned /3 | |
 
+Slots 7-14 are 0 while the corp is unparred, and 37 is the decision corp's
+alone; 36 is every corp's.
+
 ### 5.6 PRIVATE (18) and TRAIN (13)
 
 | Slots | PRIVATE feature | Source |
@@ -317,6 +320,8 @@ EMERGENCY_SELL_AMOUNT's id at slot 15 + id of the row CORP 3 selects.
 | 10, 11, 12, 13 | high bid /100, bids /5, minimum bid /100, the actor's bid /100 | `private_high_bid`, `private_bid_count`, `private_min_bid`, `bids` |
 | 14, 15 | blocking its hex (TR, ER); MF's port tile used | `private_blocks_hex`, `flags` |
 | 16, 17 | the decision corp may buy it; the actor may exchange it (DR) | `can_buy_private`, `can_exchange_dr` |
+
+Slot 8 is 0 once the private closes, and slots 9-13 unless it is unsold.
 
 | Slots | TRAIN feature | Source |
 |---|---|---|
@@ -547,7 +552,7 @@ candidate attend to its hex and to the hexes across its exits (relations
 | TOKEN | pass, hex h, buy private, DR | HEX 103-104, CORP 24-25 | a solve per tokenable city |
 | DIVIDEND | withhold, payout, buy private, DR | DIVIDEND row | none |
 | DISCARD | train type | TRAIN 12 | a solve per held type |
-| BUY_TRAIN | pass, the depot, the pool, corp c's trains, emergency sale of corp c, bankrupt, private, DR | TRAIN 2-9; CORP rows (their trains through relations 12-13, emergency sales 46 and 48, sale prices 15-19) | none |
+| BUY_TRAIN | pass, the depot, the pool, corp c's trains, emergency sale of corp c, bankrupt, private, DR | TRAIN 2-9; CORP rows (their trains through relations 12-13, emergency sales 46 and 49, sale prices 15-19) | none |
 | SELECT_TRAIN | type t from the pending source, a D for a traded 4, 5, or 6 | TRAIN 2-11, the source (GLOBAL 40-42, CORP 2) | a solve per offered type and trade-in |
 | TRAIN_PRICE, PRIVATE_PRICE | price points | PRICE, and the train and its seller (TRAIN 1, CORP 2) or the private (PRIVATE 1) | none |
 | EMERGENCY_SELL_AMOUNT | n shares of the pending corp, by the president | the row CORP 3 selects (sale prices 15-19), the decision corp, PLAYER | none |

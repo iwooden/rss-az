@@ -1,8 +1,9 @@
 """CORPS: the corp blocks' share, president, token, and revenue fields.
 
 MARKET owns ``market_row``/``market_col``/``market_stamp`` and TRAINS the
-train counts. ``route_cache`` and ``route_available`` are caches behind the
-global ``route_dirty`` and ``conn_dirty`` masks: GRAPH fills and reads
+train counts, and MAP's token placement lowers ``tokens_left``.
+``route_cache`` and ``route_available`` are caches behind the global
+``route_dirty`` and ``conn_dirty`` masks: GRAPH fills and reads
 ``route_available`` (``GRAPH.route_available``), and the route solver owns
 ``route_cache``.
 

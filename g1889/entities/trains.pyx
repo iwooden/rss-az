@@ -3,7 +3,7 @@
 Ruby's ``Depot`` keeps every train object and moves it between owners
 (``depot.rb``, ``Game#buy_train``, ``Game#rust``); the engine counts trains
 by type in the depot, the pool (Ruby's ``discarded``), and each corp. Every
-change to a corp's count goes through ``set_corp_trains``, which makes the
+change to a corp's count goes through ``trains_set_count``, which makes the
 corp's route cache stale. A rusted train leaves play, so the counts of a
 rank that has rusted no longer add up to ``TRAIN_COUNT``.
 """
@@ -116,6 +116,12 @@ cdef int trade_in_price(int train_type) noexcept nogil:
     return TRAIN_PRICE[<int>D_TRAIN] - TRAIN_TRADE_IN[<int>D_TRAIN][train_type]
 
 
+cdef void trains_set_count(GameState state, int corp, int train_type, int count) noexcept nogil:
+    """Set a corp's count of one train type; the corp's route cache goes stale."""
+    state._data[_corp_slot(corp, train_type)] = <int16_t>count
+    invalidate_route(state, corp)
+
+
 cdef inline int _check(int train_type, int count, int lowest) except -1:
     assert 0 <= train_type < <int>NUM_TRAIN_TYPES and count >= lowest, f"{count} trains of type {train_type}"
     return 0
@@ -142,11 +148,10 @@ cdef class Trains:
         return corp_train_count(state, corp, train_type)
 
     cpdef void set_corp_trains(self, GameState state, int corp, int train_type, int count):
-        """Set a corp's count of one train type; the corp's route cache goes stale."""
+        """Set a corp's count of one train type (``trains_set_count``)."""
         assert 0 <= corp < <int>NUM_CORPS, f"corp {corp} out of range"
         _check(train_type, count, 0)
-        state._data[_corp_slot(corp, train_type)] = <int16_t>count
-        invalidate_route(state, corp)
+        trains_set_count(state, corp, train_type, count)
 
     cpdef int corp_total(self, GameState state, int corp):
         assert 0 <= corp < <int>NUM_CORPS, f"corp {corp} out of range"

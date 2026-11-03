@@ -9,14 +9,13 @@ from g1889.data.tables cimport (
     TILE_MASK, TILE_RC, TILE_REVENUE, TILE_SLOTS, TILE_TERRAIN, UPG_ROT, UPG_START, UPG_TILE,
 )
 from g1889.entities.bank cimport BANK_ACCOUNT, Bank
-from g1889.entities.corp cimport Corporation, corp_token_price, corp_tokens_left, invalidate_all_routes
+from g1889.entities.corp cimport corp_token_price, corp_tokens_left, invalidate_all_routes
 from g1889.entities.private cimport private_owner
-from g1889.state cimport GLOBALS, HEX_FIELDS, LAYOUT, GameState
+from g1889.state cimport CORP_FIELDS, GLOBALS, HEX_FIELDS, LAYOUT, GameState
 
-from g1889.entities import bank as _bank, corp as _corp
+from g1889.entities import bank as _bank
 
 cdef Bank BANK = _bank.BANK
-cdef list CORPS = _corp.CORPS
 
 
 cdef inline int _slot(int hex, int field) noexcept nogil:
@@ -47,6 +46,27 @@ cdef int supply_count(GameState state, int tile) noexcept nogil:
 cdef void invalidate_connectivity(GameState state) noexcept nogil:
     state._data[LAYOUT.global_offset + GLOBALS.conn_dirty] = <int16_t>((1 << <int>NUM_CORPS) - 1)
     invalidate_all_routes(state)
+
+
+cdef void map_put_tile(GameState state, int hex, int tile, int rotation) noexcept nogil:
+    """Lay supply tile ``tile`` on the hex at the canonical form of
+    ``rotation``; the replaced tile returns to the supply unless it is printed."""
+    cdef int old = hex_tile(state, hex)
+    if old < <int>NUM_SUPPLY_TILES:
+        state._data[LAYOUT.supply_offset + old] = <int16_t>(supply_count(state, old) + 1)
+    state._data[LAYOUT.supply_offset + tile] = <int16_t>(supply_count(state, tile) - 1)
+    state._data[_slot(hex, HEX_FIELDS.tile)] = <int16_t>tile
+    state._data[_slot(hex, HEX_FIELDS.rotation)] = TILE_CANON_ROT[tile][rotation]
+    invalidate_connectivity(state)
+
+
+cdef void map_put_token(GameState state, int hex, int corp) noexcept nogil:
+    """Put the corp's next charter token in the hex's city: one fewer left
+    (CORPS' field, which only placing a token lowers), and its bit in the mask."""
+    cdef int left = LAYOUT.corps_offset + corp * CORP_FIELDS.size + CORP_FIELDS.tokens_left
+    state._data[left] = <int16_t>(state._data[left] - 1)
+    state._data[_slot(hex, HEX_FIELDS.tokens)] = <int16_t>(hex_tokens(state, hex) | 1 << corp)
+    invalidate_connectivity(state)
 
 
 # =============================================================================
@@ -212,10 +232,7 @@ cdef class HexMap:
         assert 0 <= rotation < <int>NUM_SIDES and _upgrades_to(old, hex_rotation(state, hex), tile, rotation), \
             f"tile {tile} at rotation {rotation} does not upgrade hex {hex}"
         assert _count(hex_tokens(state, hex)) <= TILE_SLOTS[tile], f"tile {tile} cannot hold hex {hex}'s tokens"
-        if old < <int>NUM_SUPPLY_TILES:
-            self.set_supply(state, old, supply_count(state, old) + 1)
-        self.set_supply(state, tile, supply_count(state, tile) - 1)
-        self.set_tile(state, hex, tile, rotation)
+        map_put_tile(state, hex, tile, rotation)
 
     cpdef void lay_track(self, GameState state, int corp, int hex, int tile, int rotation):
         """The corp lays the tile and pays the lay cost, priced before the lay, to the bank."""
@@ -230,11 +247,9 @@ cdef class HexMap:
         must be open to it (its home reservation counts)."""
         _check_hex(hex)
         _check_corp(corp)
-        cdef int left = corp_tokens_left(state, corp)
-        assert left > 0, f"corp {corp} has no tokens left"
+        assert corp_tokens_left(state, corp) > 0, f"corp {corp} has no tokens left"
         assert map_has_slot_for(state, hex, corp), f"corp {corp} cannot token hex {hex}"
-        (<Corporation>CORPS[corp]).set_tokens_left(state, left - 1)
-        self.set_tokens(state, hex, hex_tokens(state, hex) | 1 << corp)
+        map_put_token(state, hex, corp)
 
     cpdef void buy_token(self, GameState state, int hex, int corp):
         """The corp places its next token and pays its price (¥0 for the home

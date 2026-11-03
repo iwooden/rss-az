@@ -13,7 +13,7 @@ Fields:
 
 - ``active_player`` is the turn player;
 - ``sr_bought``, ``sr_sold_mask``, and ``sr_sold_then_bought`` are this turn's
-  purchase, its sales, and whether a purchase followed a sale;
+  purchase (the corp + 1), its sales, and whether a purchase followed a sale;
 - each player's ``sold_mask`` holds the corps they sold this SR, which they
   may not buy back;
 - ``pending_corp`` is the corp PAR pars or SELL_AMOUNT sells, while it is open;
@@ -81,11 +81,12 @@ cdef void start_stock_round(GameState state) except *:
     _start_turn(state, TURN.priority_player(state))
 
 
-cdef void _acted(GameState state, int player, bint bought) except *:
-    """Record a purchase or a sale (``track_action``): priority moves to the
-    next player, and a purchase after a sale ends the turn's selling."""
-    if bought:
-        TURN.set_sr_bought(state, 1)
+cdef void _acted(GameState state, int player, int bought) except *:
+    """Record a purchase of corp ``bought``, or a sale (-1) (``track_action``):
+    priority moves to the next player, and a purchase after a sale ends the
+    turn's selling."""
+    if bought >= 0:
+        TURN.set_sr_bought(state, bought + 1)
         if turn_sr_sold_mask(state):
             TURN.set_sr_sold_then_bought(state, 1)
     TURN.set_priority_player(state, TURN.next_player(state, player))
@@ -108,7 +109,7 @@ cdef void apply_stock(GameState state, const ActionInfo* info) except *:
             _start_turn(state, TURN.next_player(state, player))
     elif info.type == ACTION_BUY_IPO or info.type == ACTION_BUY_POOL:
         _corp_at(c).buy_share(state, player, info.type == ACTION_BUY_POOL)
-        _acted(state, player, True)
+        _acted(state, player, c)
     else:
         assert info.type == ACTION_SELECT_PAR or info.type == ACTION_SELECT_SALE, \
             f"apply_stock: action type {info.type}"
@@ -122,7 +123,7 @@ cdef void apply_par(GameState state, const ActionInfo* info) except *:
     cdef int c = turn_pending_corp(state)
     TURN.set_pending_corp(state, -1)
     _corp_at(c).par(state, player, info.count)
-    _acted(state, player, True)
+    _acted(state, player, c)
     TURN.set_step(state, STEP_STOCK)
 
 
@@ -135,7 +136,7 @@ cdef void apply_sell_amount(GameState state, const ActionInfo* info) except *:
     _corp_at(c).sell_shares(state, player, info.count)
     _player_at(player).set_sold_mask(state, player_sold_mask(state, player) | 1 << c)
     TURN.set_sr_sold_mask(state, turn_sr_sold_mask(state) | 1 << c)
-    _acted(state, player, False)
+    _acted(state, player, -1)
     TURN.set_step(state, STEP_STOCK)
 
 

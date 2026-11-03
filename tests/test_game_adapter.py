@@ -2,12 +2,13 @@
 
 The generic tests talk only to the adapter. The engine and self-play stats
 checks run for every game; the extraction checks skip a game whose extraction
-has not landed (1889 until pipeline step 7), whose adapter raises
-NotImplementedError for it. The RSS migration tests pin the RSS adapter to the
-direct engine calls that consumers made before pipeline-refactor.md step 2
-moved them onto the adapter, and its self-play stats to the scalars
-train/main.py logged before step 3 moved them behind the hook. The 1889 tests
-pin its adapter to the g1889 engine.
+has not landed, and the relation checks one whose relations have not (1889
+until pipeline step 7), whose adapter raises NotImplementedError for them.
+The RSS migration tests pin the RSS adapter to the direct engine calls that
+consumers made before pipeline-refactor.md step 2 moved them onto the
+adapter, and its self-play stats to the scalars train/main.py logged before
+step 3 moved them behind the hook. The 1889 tests pin its adapter to the
+g1889 engine.
 """
 
 from __future__ import annotations
@@ -105,8 +106,8 @@ G1889_FLAGS_OFF = {
 CASES: dict[str, tuple[dict[str, Any], int | None]] = {
     "rss-v2": ({"game": "rss"}, 2),
     "rss-v3": ({"game": "rss", **V3_ENGINE_OPTIONS}, 3),
-    "1889": ({"game": "1889"}, None),
-    "1889-flags-off": ({"game": "1889", **G1889_FLAGS_OFF}, None),
+    "1889": ({"game": "1889"}, 1),
+    "1889-flags-off": ({"game": "1889", **G1889_FLAGS_OFF}, 1),
 }
 RSS_CASES = [case_id for case_id, (fields, _) in CASES.items() if fields["game"] == "rss"]
 G1889_CASES = [case_id for case_id, (fields, _) in CASES.items() if fields["game"] == "1889"]
@@ -125,7 +126,7 @@ class Sample:
 
     decision: int
     tokens: np.ndarray
-    records: np.ndarray
+    records: np.ndarray | None  # None for a game whose relations have not landed
     record_count: int
 
 
@@ -170,6 +171,10 @@ def _record_buffer(game: Game, n: int = 0) -> np.ndarray:
     return np.full((n, *shape) if n else shape, 0xFF, dtype=np.uint8)
 
 
+def _has_relations(game: Game) -> bool:
+    return game.max_relation_edges != NO_SIZE
+
+
 def _materialize(
     records: np.ndarray, count: int, num_relations: int, num_tokens: int,
 ) -> np.ndarray:
@@ -200,8 +205,10 @@ def _play(
         if layout_version is not None and decision % SAMPLE_EVERY == 0:
             tokens = _token_buffer(game, max_players, layout_version)
             game.fill_tokens(state, tokens, max_players=max_players, layout_version=layout_version)
-            records = _record_buffer(game)
-            count = game.fill_relations_sparse(state, records, max_players=max_players)
+            records, count = None, 0
+            if _has_relations(game):
+                records = _record_buffer(game)
+                count = game.fill_relations_sparse(state, records, max_players=max_players)
             playout.samples.append(Sample(decision, tokens, records, count))
         chosen = int(rng.integers(n))
         counts = np.ones(n, dtype=np.float32)
@@ -240,6 +247,17 @@ def extraction_case(case: Case) -> Case:
             case.game.num_tokens(case.playouts[0].max_players)
         pytest.skip(str(missing.value))
     return case
+
+
+@pytest.fixture
+def relations_case(extraction_case: Case) -> Case:
+    """``extraction_case``, or a skip, with the adapter's reason, for a game
+    whose relations have not landed."""
+    if not _has_relations(extraction_case.game):
+        with pytest.raises(NotImplementedError) as missing:
+            extraction_case.game.fill_relations_sparse(extraction_case.playouts[0].final, None, max_players=5)
+        pytest.skip(str(missing.value))
+    return extraction_case
 
 
 @pytest.fixture(params=RSS_CASES)
@@ -396,6 +414,8 @@ def test_scratch_state_reproduces_model_inputs(extraction_case: Case):
                 max_players=playout.max_players, layout_version=case.layout_version,
             )
             np.testing.assert_array_equal(tokens, sample.tokens)
+            if sample.records is None:
+                continue
             records = _record_buffer(game)
             count = game.fill_relations_sparse(
                 scratch, records, max_players=playout.max_players,
@@ -404,11 +424,12 @@ def test_scratch_state_reproduces_model_inputs(extraction_case: Case):
             np.testing.assert_array_equal(records, sample.records)
 
 
-def test_dense_and_sparse_relations_encode_the_same_edges(extraction_case: Case):
-    game = extraction_case.game
-    for playout in extraction_case.playouts:
+def test_dense_and_sparse_relations_encode_the_same_edges(relations_case: Case):
+    game = relations_case.game
+    for playout in relations_case.playouts:
         num_tokens = game.num_tokens(playout.max_players)
         for sample in playout.samples:
+            assert sample.records is not None
             assert np.isfinite(sample.tokens).all()
             assert 0 <= sample.record_count <= game.max_relation_edges
             assert not sample.records[sample.record_count:].any()
@@ -436,13 +457,16 @@ def test_batch_extraction_matches_single_states(extraction_case: Case):
 
         tokens = _token_buffer(game, max_players, layout_version, n)
         game.fill_tokens_batch(rows, tokens, max_players=max_players, layout_version=layout_version)
+        for i, (_, sample) in enumerate(pairs):
+            np.testing.assert_array_equal(tokens[i], sample.tokens)
+        if not _has_relations(game):
+            continue
         dense = _dense_buffer(game, max_players, n)
         game.fill_relations_dense_batch(rows, dense, max_players=max_players)
         records = _record_buffer(game, n)
         game.fill_relations_sparse_batch(rows, records, max_players=max_players)
 
         for i, (playout, sample) in enumerate(pairs):
-            np.testing.assert_array_equal(tokens[i], sample.tokens)
             np.testing.assert_array_equal(records[i], sample.records)
             single = _dense_buffer(game, max_players)
             state = game.scratch_state(playout.final, rows[i])
@@ -687,7 +711,7 @@ def test_rss_new_game_and_scratch_state_match_direct_construction(rss_case: Case
 
 
 # ---------------------------------------------------------------------------
-# 1889: the adapter over the g1889 engine; extraction lands in step 7
+# 1889: the adapter over the g1889 engine; relations land in step 7
 # ---------------------------------------------------------------------------
 
 
@@ -745,14 +769,10 @@ def test_g1889_extraction_raises_until_step_7(g1889_case: Case):
     state = g1889_case.playouts[0].final
     assert game.num_relations == game.max_relation_edges == NO_SIZE < 0
     for call in (
-        lambda: game.num_tokens(5),
-        lambda: game.token_dim(1),
-        lambda: game.fill_tokens(state, None, max_players=5, layout_version=1),
-        lambda: game.fill_tokens_batch([], None, max_players=5, layout_version=1),
         lambda: game.fill_relations_dense(state, None, max_players=5),
         lambda: game.fill_relations_dense_batch([], None, max_players=5),
         lambda: game.fill_relations_sparse(state, None, max_players=5),
         lambda: game.fill_relations_sparse_batch([], None, max_players=5),
     ):
-        with pytest.raises(NotImplementedError, match="1889 extraction lands in pipeline step 7"):
+        with pytest.raises(NotImplementedError, match="1889 relations land in pipeline step 7"):
             call()

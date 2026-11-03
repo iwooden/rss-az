@@ -20,6 +20,11 @@ cdef uint32_t hex_paths(GameState state, int hex) noexcept nogil
 cdef int supply_count(GameState state, int tile) noexcept nogil
 cdef void invalidate_connectivity(GameState state) noexcept nogil
 
+# MAP.lay's and MAP.place_token's writes, without their checks, for nogil
+# callers that apply legal changes (extraction's hypotheticals).
+cdef void map_put_tile(GameState state, int hex, int tile, int rotation) noexcept nogil
+cdef void map_put_token(GameState state, int hex, int corp) noexcept nogil
+
 # Cities, revenue, and terrain
 cdef int map_token_count(GameState state, int hex) noexcept nogil
 cdef int map_free_slots(GameState state, int hex) noexcept nogil

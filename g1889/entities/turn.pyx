@@ -90,6 +90,11 @@ cdef bint turn_sr_bought(GameState state) noexcept nogil:
     return _get(state, GLOBALS.sr_bought) != 0
 
 
+cdef int turn_sr_bought_corp(GameState state) noexcept nogil:
+    """The corp this SR turn bought or parred, or -1."""
+    return _get(state, GLOBALS.sr_bought) - 1
+
+
 cdef int turn_sr_sold_mask(GameState state) noexcept nogil:
     return _get(state, GLOBALS.sr_sold_mask)
 
@@ -227,7 +232,7 @@ cdef class TurnState:
         return _get(state, GLOBALS.sr_bought)
 
     cpdef void set_sr_bought(self, GameState state, int value):
-        _check(value, 0, 2, 'sr_bought')
+        _check(value, 0, <int>NUM_CORPS + 1, 'sr_bought')
         _set(state, GLOBALS.sr_bought, value)
 
     cpdef int sr_sold_mask(self, GameState state):

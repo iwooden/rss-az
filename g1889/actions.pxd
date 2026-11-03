@@ -80,6 +80,9 @@ cdef bint is_legal_action(GameState state, int action_id) except -1 nogil
 cdef int price_amount(GameState state, const ActionInfo* info) noexcept nogil
 cdef bint wide_amount_range(GameState state, int phase) except -1 nogil
 
+# The largest block of ``corp`` the player may sell now in an SR; 0 for none.
+cdef int sale_limit(GameState state, int player, int corp) noexcept nogil
+
 # Track and token legality (§5.4): lay candidates sorted by (tile, rotation).
 cdef int lay_candidates(GameState state, int corp, int hex, LayCandidate* buf) noexcept nogil
 cdef int enumerate_lay_candidates(GameState state, int hex, LayCandidate* buf) noexcept nogil

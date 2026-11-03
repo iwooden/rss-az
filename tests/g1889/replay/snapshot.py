@@ -686,6 +686,8 @@ def _load_stock(state: GameState, stock: dict, ids: list, active: int) -> None:
             now = mask
     bought, sold_then_bought = _turn_purchases(stock['current_actions'])
     TURN.set_sr_sold_mask(state, now)
+    # The extract lists the turn's action types only, so a purchase loads as
+    # AR's (the corp + 1); play reads only whether there was one.
     TURN.set_sr_bought(state, bought)
     TURN.set_sr_sold_then_bought(state, sold_then_bought)
 

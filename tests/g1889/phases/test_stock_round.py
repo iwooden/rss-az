@@ -102,7 +102,7 @@ class TestTurns:
         assert passed(state) == [True, False, False] and TURN.active_player(state) == 1
         apply_and_verify(state, PASS)
         apply_and_verify(state, ipo(IR))  # player 2 buys; it may still sell, so the turn goes on
-        assert TURN.active_player(state) == 2 and TURN.sr_bought(state)
+        assert TURN.active_player(state) == 2 and TURN.sr_bought(state) == IR + 1
         apply_and_verify(state, PASS)  # done
         assert passed(state) == [True, True, False] and TURN.active_player(state) == 0
 

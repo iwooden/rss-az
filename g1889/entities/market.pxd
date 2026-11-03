@@ -10,6 +10,13 @@ column 0 is down, right at a row's end is up, and the corners stay put.
 
 from g1889.state cimport GameState
 
+# A one-cell move: a share sold, the SR's end sold out, a withhold, a payout.
+cpdef enum MarketMove:
+    MOVE_DOWN = 0
+    MOVE_UP = 1
+    MOVE_LEFT = 2
+    MOVE_RIGHT = 3
+
 cdef int market_row(GameState state, int corp) noexcept nogil
 cdef int market_col(GameState state, int corp) noexcept nogil
 cdef int market_stamp(GameState state, int corp) noexcept nogil
@@ -25,6 +32,9 @@ cdef bint market_unlimited(GameState state, int corp) noexcept nogil
 cdef bint market_precedes(GameState state, int a, int b) noexcept nogil
 cdef int market_sort_by_price(GameState state, int mask, int* out) noexcept nogil
 
+# The cell ``steps`` moves of ``move`` from (row, col) reach, as MARKET's moves go.
+cdef void market_moved(int row, int col, int move, int steps, int* new_row, int* new_col) noexcept nogil
+
 
 cdef class Market:
     cpdef int row(self, GameState state, int corp)
@@ -33,6 +43,7 @@ cdef class Market:
     cpdef int price(self, GameState state, int corp)
     cpdef void set_position(self, GameState state, int corp, int row, int col)
     cpdef int next_stamp(self, GameState state)
+    cdef void _move(self, GameState state, int corp, int move) except *
     cpdef void move_down(self, GameState state, int corp)
     cpdef void move_up(self, GameState state, int corp)
     cpdef void move_left(self, GameState state, int corp)

@@ -1,8 +1,9 @@
 """Shikoku 1889 adapter over the g1889 engine (1889/engine-design.md §11).
 
-The engine fields are complete. Extraction lands in pipeline step 7: until
-then its callables raise NotImplementedError, and its sizes are ``NO_SIZE``,
-which any buffer or layer sized from them rejects.
+The engine and token fields are complete (``g1889.token_data``). Relations
+land in pipeline step 7: until then their callables raise
+NotImplementedError, and their sizes are ``NO_SIZE``, which any buffer or
+layer sized from them rejects.
 """
 
 from __future__ import annotations
@@ -26,6 +27,12 @@ from g1889.state import (
     get_layout,
     get_storage_player_capacity,
 )
+from g1889.token_data import (
+    get_num_tokens,
+    get_token_data,
+    get_token_data_batch,
+    get_token_dim,
+)
 from games import EmptySelfPlayStats, Game
 from nn.policy_layout import PolicyLayout
 
@@ -46,7 +53,7 @@ POLICY_LAYOUT = PolicyLayout(
     phases_with_pass_slot=K.PHASES_WITH_PASS_SLOT,
 )
 
-EXTRACTION_STEP = "1889 extraction lands in pipeline step 7"
+RELATIONS_STEP = "1889 relations land in pipeline step 7"
 NO_SIZE = -1  # num_relations and max_relation_edges until step 7
 
 # Only total_size depends on the player count.
@@ -72,8 +79,8 @@ def _scratch_state(root: GameState, row: np.ndarray) -> GameState:
     return scratch
 
 
-def _no_extraction(*args: object, **kwargs: object) -> NoReturn:
-    raise NotImplementedError(EXTRACTION_STEP)
+def _no_relations(*args: object, **kwargs: object) -> NoReturn:
+    raise NotImplementedError(RELATIONS_STEP)
 
 
 def make_game(config: TrainingConfig) -> Game:
@@ -106,15 +113,15 @@ def make_game(config: TrainingConfig) -> Game:
         decision_phase=get_decision_phase_py,
         enumerate_policy_actions=enumerate_policy_actions_py,
         final_scores=final_scores_py,
-        num_tokens=_no_extraction,
-        token_dim=_no_extraction,
+        num_tokens=get_num_tokens,
+        token_dim=get_token_dim,
         num_relations=NO_SIZE,
         max_relation_edges=NO_SIZE,
-        fill_tokens=_no_extraction,
-        fill_tokens_batch=_no_extraction,
-        fill_relations_dense=_no_extraction,
-        fill_relations_dense_batch=_no_extraction,
-        fill_relations_sparse=_no_extraction,
-        fill_relations_sparse_batch=_no_extraction,
+        fill_tokens=get_token_data,
+        fill_tokens_batch=get_token_data_batch,
+        fill_relations_dense=_no_relations,
+        fill_relations_dense_batch=_no_relations,
+        fill_relations_sparse=_no_relations,
+        fill_relations_sparse_batch=_no_relations,
         new_selfplay_stats=EmptySelfPlayStats,
     )

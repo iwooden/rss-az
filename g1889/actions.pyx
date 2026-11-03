@@ -556,7 +556,7 @@ cdef inline bint _can_par(GameState state, int player, int corp) noexcept nogil:
             and player_can_gain(state, player, corp, 2))
 
 
-cdef inline int _sale_limit(GameState state, int player, int corp) noexcept nogil:
+cdef int sale_limit(GameState state, int player, int corp) noexcept nogil:
     """The largest block of ``corp`` the player may sell now; 0 for none. Each
     corp sells as one block per turn (MUST_SELL_IN_BLOCKS)."""
     if (turn_turn(state) <= 1 or turn_sr_sold_then_bought(state)
@@ -571,7 +571,7 @@ cdef bint _must_sell(GameState state, int player) noexcept nogil:
     cdef bint can_sell = False
     cdef int c
     for c in range(<int>NUM_CORPS):
-        if _sale_limit(state, player, c) == 0:
+        if sale_limit(state, player, c) == 0:
             continue
         can_sell = True
         if not player_can_hold(state, player, c, 0):
@@ -605,7 +605,7 @@ cdef int _enumerate_stock(GameState state, uint16_t* ids) noexcept nogil:
                     ids[count] = <uint16_t>(STOCK_PAR + c)
                     count += 1
     for c in range(<int>NUM_CORPS):
-        if _sale_limit(state, player, c):
+        if sale_limit(state, player, c):
             ids[count] = <uint16_t>(STOCK_SELL + c)
             count += 1
     count = _append_dr(state, ids, count, STOCK_DR)
@@ -623,7 +623,7 @@ cdef inline int _iota(uint16_t* ids, int count) noexcept nogil:
 cdef int _enumerate_sell_amount(GameState state, uint16_t* ids) noexcept nogil:
     """Each block of the pending corp the player may sell, from one share up."""
     cdef int corp = turn_pending_corp(state)
-    return _iota(ids, _sale_limit(state, turn_active_player(state), corp) if corp >= 0 else 0)
+    return _iota(ids, sale_limit(state, turn_active_player(state), corp) if corp >= 0 else 0)
 
 
 cdef int _enumerate_par(GameState state, uint16_t* ids) noexcept nogil:
