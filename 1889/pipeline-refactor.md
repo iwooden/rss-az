@@ -647,7 +647,10 @@ Engine track, independent of the pipeline track:
    - **Code review of `g1889/`.** Agents wrote the engine in about ten
      hours, and its review leaned on the Ruby oracles and the tests. Read it
      for correctness, clarity, and fit with the RSS patterns, and land any
-     cleanup before extraction builds on it.
+     cleanup before extraction builds on it. Paused by the user on
+     2026-11-02 after three of five runs, with their fixes landed.
+     Engine-design §13 lists what was reviewed, what was deferred, and what
+     is left.
    - **Parity on scraped games.** Scrape completed 1889 games from
      18xx.games and replay each through the engine, comparing state at every
      step, as the RSS engine was validated. This needs its own design,

@@ -6,7 +6,8 @@ same day. Every sub-step, 6.1 through 6.10, is implemented, with "As built"
 notes where the code departs from or refines this design: the engine plays
 complete games, and `games/g1889.py` wires its engine half into the adapter
 (Section 11). 6.10 refactored the decision phases (Section 12, item 7).
-Step 7 adds extraction.
+A code review of `g1889/` paused after three runs (Section 13). Step 7 adds
+extraction.
 
 The rules are [`1889-rules.md`](1889-rules.md). Where they are silent or
 disagree with 18xx.games, the engine follows 18xx.games (rules §14,
@@ -1569,3 +1570,77 @@ Settled by following 18xx.games, and recorded in `1889-rules.md` §13-14:
   saw purchases during Ruby's BuyTrain step.
 - **Discards.** Crowded corps discard in corporation-list order
   (`game/base.rb:2231`), which has no effect on the outcome.
+
+## 13. Code review (2026-11-02)
+
+This review is the first gate before step 7 (pipeline-refactor §8). A
+separate session ran `/code-review` on one area at a time against a brief,
+and wrote its findings to a file. The user triaged each run, and its fixes
+were committed as one verified batch. The brief and the findings are local
+files in the gitignored `scratchpad/`: `g1889_review_brief.md` and
+`g1889_review_findings.md`. The user paused the review after three of the
+five planned runs.
+
+| Run | Scope | Reviewed at | Findings | Fixed in |
+|---|---|---|---|---|
+| 1 | `actions.pyx`, `actions.pxd` | 64cae0b | 7: 6 fixed, 1 deferred | 004159c |
+| 2 | `driver.pyx`, `phases/` | 004159c | 8: 7 fixed, 1 a doc note | e043afa |
+| 3 | `state.pyx`, `entities/` | 004159c | 12: 8 fixed, 3 deferred, 1 rejected | e043afa |
+
+Every finding was rated low severity. What changed:
+
+- **Engine guards are asserts,** stripped from release builds (`AGENTS.md`,
+  1bd3003). The guards in `g1889/` that raised became asserts.
+- **STOCK offers DR and MF on every turn their owner takes** (Section 12,
+  item 4, revised). Replay supplies the pass where Ruby skips the turn
+  (Section 10.2).
+- **The rest is cleanup:**
+  - shared helpers in place of copies;
+  - size asserts beside buffers sized by literals;
+  - entity mutators that check before they write;
+  - tests for untested legality edges.
+
+  The RSS fingerprint matched after both batches. The run 2-3 batch
+  changed no 1889 play: a hash of 800 seeded random games matched before
+  and after.
+
+**Deferred:**
+
+- **1.6 and 3.9: BUY_TRAIN rescans the depot.** `_enumerate_buy_train`
+  recomputes the corp's train room, the depot's types, and the emergency
+  need for each source. `trains_cheapest_in_pool` and the cheapest-price
+  helpers rescan the depot on every call. These are short scans, and
+  Section 6.2's profile does not single out BUY_TRAIN. Compute them once
+  when `_source_trains` next changes.
+- **2.1: the forced rule in live play.** Live play's real state must run with
+  the policy flags off, and nothing enforces that yet (pipeline-refactor §9).
+- **3.1 and 3.5: the `GameState` API.** These quirks are shared with RSS:
+  - `initialize_game` on a `from_buffer` row too small for the new player
+    count allocates a private row, without warning, instead of reusing the
+    caller's;
+  - `_alloc` is the constructor's second positional parameter, so
+    `GameState(4, 5)` ignores the 5;
+  - `rebind` does not infer `max_players` from the row's width;
+  - `_array` and `max_players` are writable from Python.
+
+  `core/state.pyx` has the same four, and no caller trips them. Fix both
+  engines together, if at all.
+
+**Rejected:**
+
+- **3.7: buffers sized by named constants.** Cython rejects `cpdef enum`
+  constants as array dimensions ("Array dimension not integer"). The literal
+  sizes and their import-time asserts stay.
+
+**Not yet reviewed:**
+
+- `g1889/routes/`, the route solver behind `route_max`;
+- the table codegen, `g1889/data/generate.py` and `dump_1889.rb`, whose
+  output `test_data_vs_ruby.py` checks against Ruby;
+- `games/g1889.py`, the adapter's engine half;
+- a pass over `g1889/` and `tests/g1889/` for fit with the RSS patterns and
+  for test coverage.
+
+To resume, have a session read the brief and run
+`/code-review high g1889/routes g1889/data/generate.py g1889/data/dump_1889.rb games/g1889.py --max-findings all`.
+Its findings go in the same file as run 4.
