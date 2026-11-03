@@ -121,6 +121,8 @@ mirror (engine-design §1):
 | `entities/hexmap` | `map_put_token(state, hex, corp)`: `tokens_left` − 1, the mask bit | `MAP.place_token` (`:228-237`) |
 | `entities/trains` | `trains_set_count(state, corp, type, count)` | `TRAINS.set_corp_trains` (`trains.pyx:144-149`) |
 | `entities/market` | `market_moved(row, col, move, steps, int* row, int* col)`, pure | `MARKET.move_*` (`market.pyx:113-146`) |
+| `entities/turn`, `phases/stock` | `sr_bought` holds the bought or parred corp + 1 (0 for none), which `_acted` records (`stock.pyx:84-90`); `turn_sr_bought_corp(state)`, −1 for none | `turn_sr_bought`'s callers, unchanged |
+| `actions` | `sale_limit(state, player, corp)`, exported: today's `_sale_limit` (`actions.pyx:559-565`) | STOCK's legality |
 
 Everything else extraction reads is already exported nogil: GRAPH
 (`graph.pxd:19-21`), `route_max` and `solve_routes` (`routes/solver.pxd:29-30`),
@@ -186,15 +188,15 @@ added only to a corp holding fewer than 4.
 
 | Rows | Type | Count | Width | Visible (slot 0 = 1) |
 |---|---|---|---|---|
-| 0 | GLOBAL | 1 | 84 | always |
+| 0 | GLOBAL | 1 | 43 | always |
 | 1 | PRICE | 1 | 24 | at BID, PAR, TRAIN_PRICE, PRIVATE_PRICE |
 | 2 | DIVIDEND | 1 | 8 | at DIVIDEND |
-| 3-9 | CORP | 7 | 50 | always |
+| 3-9 | CORP | 7 | 51 | always |
 | 10-16 | PRIVATE | 7 | 18 | unless not in play (UTF below 4 players) |
 | 17-22 | TRAIN | 6 | 13 | always |
-| 23-74 | HEX | 52 | 104 | always |
+| 23-74 | HEX | 52 | 105 | always |
 | 75-89 | CANDIDATE | 15 | 108 | row k < the candidate count, at TILE and ER_BONUS |
-| 90-94 | PLAYER | `max_players` | 37 | real players; padded rows are all zero |
+| 90-94 | PLAYER | `max_players` | 38 | real players; padded rows are all zero |
 
 - **Counts.** `num_tokens(max_players) = 3 + 7 + 7 + 6 + 52 + 15 +
   max_players = 90 + max_players`, so 93, 94, and 95 at capacities 3-5.
@@ -232,7 +234,7 @@ added only to a corp holding fewer than 4.
   can reach about −3.6 (−¥25,000, engine-design §3) after it breaks. Float16
   transport keeps about three significant digits at any of these sizes.
 
-### 5.3 GLOBAL (84)
+### 5.3 GLOBAL (43)
 
 | Slots | Feature | Source |
 |---|---|---|
@@ -240,16 +242,25 @@ added only to a corp holding fewer than 4.
 | 1-18 | decision phase one-hot; all zero at GAME_OVER | `get_decision_phase` |
 | 19-21 | round: auction, stock, operating | `round` |
 | 22-27 | game phase one-hot | `game_phase` |
-| 28, 29, 30 | SR number /10, OR in set /3, ORs in set /3 | `turn`, `or_num`, `or_count` |
-| 31, 32 | bank cash /7000, bank broken | `bank_cash`, `bank_broken` |
-| 33-35 | player count one-hot (3, 4, 5) | `num_players` |
-| 36, 37 | all-pass payouts /3, A's discount /20 | `auction_pass_payouts`, `auction_discount` |
-| 38, 39, 40 | SR turn bought, sold then bought; emergency sale since the last purchase | `sr_bought`, `sr_sold_then_bought`, `ebuy_sold_any` |
-| 41-43 | the train's source at SELECT_TRAIN and TRAIN_PRICE: the depot, the pool, a corp (CORP 2 names it) | `pending_train_source` |
-| 44-83 | copies left / `TILE_COUNT`, per supply tile | supply block |
+| 28 | before the second SR: the first SR bars sales | `turn` ≤ 1 (`actions.pyx:562`) |
+| 29-31 | OR in set one-hot (1, 2, 3); all zero outside an OR | `or_num` |
+| 32 | ORs in set /3: the set's in an OR, else the coming set's | `or_count`; `PHASE_ORS[game_phase]` |
+| 33, 34 | bank cash /7000, bank broken | `bank_cash`, `bank_broken` |
+| 35-37 | player count one-hot (3, 4, 5) | `num_players` |
+| 38, 39 | all-pass payouts /3, A's discount /20 | `auction_pass_payouts`, `auction_discount` |
+| 40-42 | the train's source at SELECT_TRAIN and TRAIN_PRICE: the depot, the pool, a corp (CORP 2 names it) | `pending_train_source` |
 
-Train limit, tile colors, and the private-purchase window are functions of
-the game phase (`PHASE_*` tables), so they are left to the one-hot.
+- **No turn counter.** Over many self-play games the model could key its
+  play to the SR number, a pace human games need not share, so the game's
+  progress comes from the board: the game phase and the bank, as in RSS.
+  Slot 28 keeps the one rule the SR number drives. Once the bank breaks,
+  slots 29-32 give the ORs left before the game ends.
+- Train limit, tile colors, and the private-purchase window are functions of
+  the game phase (`PHASE_*` tables), so they are left to the one-hot.
+- The SR turn's purchase and sales are on the CORP rows (CORP 45, 47-48), the
+  emergency-sale bar on the president's PLAYER row (PLAYER 37), and the
+  tile supply on the HEX rows (HEX 92-93) and the candidates (CANDIDATE
+  100).
 
 ### 5.4 PRICE (24) and DIVIDEND (8)
 
@@ -270,7 +281,7 @@ the phase-local ids, so a step-8 head reads slot 5 + id for action id.
 | 5 | treasury after a withhold /1000 |
 | 6, 7 | the president's payout and the corp's payout for its pool shares /100 |
 
-### 5.5 CORP (50)
+### 5.5 CORP (51)
 
 Sale prices are indexed by block, so a step-8 head reads SELL_AMOUNT's and
 EMERGENCY_SELL_AMOUNT's id at slot 15 + id of the row CORP 3 selects.
@@ -292,9 +303,10 @@ EMERGENCY_SELL_AMOUNT's id at slot 15 + id of the row CORP 3 selects.
 | 38, 39 | OR position (index + 1)/7, 0 outside the order; operated this OR (index < `or_index`) | `or_order`, `or_index` (`phases/operating.pyx:29-30`) |
 | 40, 41, 42 | hexes reached /52, centers reached /25, their revenue /100 | graph block, `map_revenue` |
 | 43 | cities reached with a slot for it /5 | `graph_node`, `map_has_slot_for` |
-| 44, 45, 46 | sold by the actor this SR; sold this SR turn; sold in this turn's emergency | `sold_mask`, `sr_sold_mask`, `ebuy_sold_mask` |
-| 47, 48 | the actor's largest sale and largest emergency sale /5 | `corp_max_sale`, `corp_emergency_sale` |
-| 49 | privates owned /3 | |
+| 44, 45, 46, 47 | sold by the actor this SR; sold this SR turn; sold in this turn's emergency; bought (or parred) this SR turn | `sold_mask`, `sr_sold_mask`, `ebuy_sold_mask`, `sr_bought` |
+| 48 | the actor's largest sale now /5: 0 outside an SR and when the turn bars it (the first SR, a purchase after a sale, the corp sold this turn) | `sale_limit` |
+| 49 | the actor's largest emergency sale /5 | `corp_emergency_sale` |
+| 50 | privates owned /3 | |
 
 ### 5.6 PRIVATE (18) and TRAIN (13)
 
@@ -315,7 +327,7 @@ EMERGENCY_SELL_AMOUNT's id at slot 15 + id of the row CORP 3 selects.
 | 8, 9 | rusted; rusts at the next phase | `TRAIN_RUSTS_ON` against `game_phase` |
 | 10, 11, 12 | Δ route max /100 if the decision corp adds one from the pending source or trades one in for a D, at SELECT_TRAIN, or discards one, at DISCARD (Section 7.2) | scratch `route_max` |
 
-### 5.7 HEX (104) and the tile block
+### 5.7 HEX (105) and the tile block
 
 The **tile block** (76 slots) describes a tile as laid. HEX rows hold the
 current tile's at slots 2-77 and CANDIDATE rows the candidate's at the same
@@ -342,10 +354,11 @@ slots, so step 8 can project both with one layer.
 | 85 | blocked by a private | `private_blocks_hex` |
 | 86-91 | dangling exits: track at a side whose hex across has none facing back | `hex_paths` of both |
 | 92 | upgrade targets now /15: in supply, of a phase color, exits on open sides, not `blocks_lay`; connectivity and cost aside | `UPG_*`, `supply_count` |
-| 93-98, 99 | the decision corp's reached sides; its center reached | `graph_sides`, `graph_node` |
-| 100 | blocked for the decision corp | `map_blocked_for` |
-| 101 | the decision corp's lay candidates here /15, at TRACK | `lay_candidates` |
-| 102, 103 | the decision corp may token here; Δ route max /100 if it does, at TOKEN | `can_token`; scratch `route_max` |
+| 93 | upgrade targets in supply whatever the phase /15: slot 92 without the phase's colors | `UPG_*`, `supply_count` |
+| 94-99, 100 | the decision corp's reached sides; its center reached | `graph_sides`, `graph_node` |
+| 101 | blocked for the decision corp | `map_blocked_for` |
+| 102 | the decision corp's lay candidates here /15, at TRACK | `lay_candidates` |
+| 103, 104 | the decision corp may token here; Δ route max /100 if it does, at TOKEN | `can_token`; scratch `route_max` |
 
 The blueprint's "laid this OR" is not in the row (engine-design §3,
 "Not stored"), so it is dropped. The decision phase says where the
@@ -364,7 +377,7 @@ operating corp is in its turn, which is all the row keeps.
 | 104, 105 | Δ route max /100; route available after | scratch `route_max`, graph block |
 | 106, 107 | other corps with tokens whose reached centers grow /6; their Δ centers reached /25 | scratch GRAPH of the six |
 
-### 5.9 PLAYER (37)
+### 5.9 PLAYER (38)
 
 | Slots | Feature | Source |
 |---|---|---|
@@ -376,15 +389,16 @@ operating corp is in its turn, which is all the row keeps.
 | 12-18, 19-25, 26-32 | shares /10, sold this SR, bids /100, by corp or private | `shares`, `sold_mask`, `bids` |
 | 33, 34 | passed, bankrupt | |
 | 35, 36 | presidencies /7, privates owned /3 | |
+| 37 | on the operating corp's president: an emergency sale since the last purchase, which bars buying from other corps | `ebuy_sold_any` |
 
 ### 5.10 What needs GRAPH or the solver
 
 | Feature | Needs | When | Cost |
 |---|---|---|---|
-| reach relations, CORP 40-43, HEX 93-100 | graph block | every state | the prologue |
+| reach relations, CORP 40-43, HEX 94-101 | graph block | every state | the prologue |
 | CORP 34, 35 | `route_cache`, `route_available` | every state | the prologue |
-| HEX 101 | `lay_candidates` per hex (semi-restrictive walks) | TRACK | **Test:** about TRACK's enumeration, 1.5 µs median (engine-design §5.4) |
-| HEX 103 | scratch token, `route_max` | TOKEN | Section 9 |
+| HEX 102 | `lay_candidates` per hex (semi-restrictive walks) | TRACK | **Test:** about TRACK's enumeration, 1.5 µs median (engine-design §5.4) |
+| HEX 104 | scratch token, `route_max` | TOKEN | Section 9 |
 | CANDIDATE 101-107 | scratch lay, GRAPH × 7, `route_max` × 1 | TILE, ER_BONUS | Section 9 |
 | TRAIN 10-12 | scratch train change, `route_max` | SELECT_TRAIN, DISCARD | Section 9 |
 
@@ -531,11 +545,11 @@ candidate attend to its hex and to the hexes across its exits (relations
 | SELL_AMOUNT | n shares of the pending corp | the row CORP 3 selects (sale prices 15-19), PLAYER | none |
 | TRACK | pass, hex h, buy private p, DR, MF | HEX rows (the decision corp's view 93-101), PRIVATE 16 | `lay_candidates` per hex |
 | TILE | candidate k | CANDIDATE rows (7.1) | 7.1 |
-| TOKEN | pass, hex h, buy private, DR | HEX 102-103, CORP 24-25 | a solve per tokenable city |
+| TOKEN | pass, hex h, buy private, DR | HEX 103-104, CORP 24-25 | a solve per tokenable city |
 | DIVIDEND | withhold, payout, buy private, DR | DIVIDEND row | none |
 | DISCARD | train type | TRAIN 12 | a solve per held type |
 | BUY_TRAIN | pass, the depot, the pool, corp c's trains, emergency sale of corp c, bankrupt, private, DR | TRAIN 2-9; CORP rows (their trains through relations 12-13, emergency sales 46 and 48, sale prices 15-19) | none |
-| SELECT_TRAIN | type t from the pending source, a D for a traded 4, 5, or 6 | TRAIN 2-11, the source (GLOBAL 41-43, CORP 2) | a solve per offered type and trade-in |
+| SELECT_TRAIN | type t from the pending source, a D for a traded 4, 5, or 6 | TRAIN 2-11, the source (GLOBAL 40-42, CORP 2) | a solve per offered type and trade-in |
 | TRAIN_PRICE, PRIVATE_PRICE | price points | PRICE, and the train and its seller (TRAIN 1, CORP 2) or the private (PRIVATE 1) | none |
 | EMERGENCY_SELL_AMOUNT | n shares of the pending corp, by the president | the row CORP 3 selects (sale prices 15-19), the decision corp, PLAYER | none |
 | BUY_PRIVATE | done, private p, DR | PRIVATE rows | none |
@@ -688,10 +702,10 @@ sparse 1.33 µs, dense 1.90 µs.
    - at every OR snapshot, relations 16-19 for every corp with a token
      against Ruby's `connected_hexes` and `connected_nodes`, as
      `test_network_oracles.py:76-98` checks GRAPH;
-   - at Track snapshots, HEX 101 against Ruby's legal lays per hex
+   - at Track snapshots, HEX 102 against Ruby's legal lays per hex
      (`ruby_lays`), and after TRACK 1 + h on a copy, the candidate rows'
      tiles and rotations against Ruby's lays at h;
-   - at Token snapshots, HEX 102 against Ruby's token cities;
+   - at Token snapshots, HEX 103 against Ruby's token cities;
    - at Route snapshots, CORP 34 against AutoRouter's revenue
      (`test_route_oracles.py:83-97`).
 
@@ -715,9 +729,9 @@ on its existing fixture.
 
 | # | Scope | Acceptance |
 |---|---|---|
-| 7.1 | Section 3's engine additions; `token_data` at its final sizes, with every row type but CANDIDATE, PRICE, and DIVIDEND (hidden and zero until 7.2-7.3) and no per-choice slots (CORP 15-19, HEX 101-103, TRAIN 10-12: zero); the prologue and write-back; `relations` at 25 ids with 0-20 emitted, and the static planes; the adapter fields | conformance's extraction checks pass for both 1889 cases; Section 10, items 1, 3, and 6; the engine suite and differential replays unchanged |
+| 7.1 | Section 3's engine additions; `token_data` at its final sizes, with every row type but CANDIDATE, PRICE, and DIVIDEND (hidden and zero until 7.2-7.3) and no per-choice slots (CORP 15-19, HEX 102-104, TRAIN 10-12: zero); the prologue and write-back; `relations` at 25 ids with 0-20 emitted, and the static planes; the adapter fields | conformance's extraction checks pass for both 1889 cases; Section 10, items 1, 3, and 6; the engine suite and differential replays unchanged |
 | 7.2 | CANDIDATE rows at TILE and ER_BONUS with their outcomes; relations 21-24; the scratch state | item 2 for TILE and ER_BONUS; the edge-bound assert never fires in a soak like engine-design §10.4's |
-| 7.3 | PRICE and DIVIDEND rows; HEX 101-103; TRAIN 10-12; CORP sale prices | item 2 for the rest |
+| 7.3 | PRICE and DIVIDEND rows; HEX 102-104; TRAIN 10-12; CORP sale prices | item 2 for the rest |
 | 7.4 | the oracle tests; the profile, recorded in this document; `token-data-1889.md` as the contract step 8 reads; status lines here and in pipeline-refactor | oracles equal at every snapshot; Section 9's targets met, or the gap recorded with its cause |
 | 7b | build distance and the §8 planes, after step 8's first run | Section 8's validation; its own design note first |
 
@@ -800,7 +814,7 @@ amends each.
 7. **Outcome summaries at TRACK** (the best candidate per hex).
    *Recommend no:* there are 11-12 candidates in all at the median and up
    to 81, a TILE child shows them anyway, and search backs its value up to
-   TRACK. Give TRACK the candidate count (HEX 101) only.
+   TRACK. Give TRACK the candidate count (HEX 102) only.
 8. **The other per-choice features** (Section 7.2: TOKEN, train deltas at
    SELECT_TRAIN over the pending source's offered trains, PRICE amounts,
    DIVIDEND outcomes, sale prices). *Recommend all*; they cost 1.4-3.3 µs
@@ -827,12 +841,12 @@ amends each.
     with the engine additions in their owning entity modules (Section 3), and
     `token-data-1889.md` as the contract (7.4).
 14. **Player counts.** *Recommend* 3-5 players in extraction, as RSS's
-    asserts: the pipeline trains 3-5, and the one-hots (GLOBAL 33-35,
+    asserts: the pipeline trains 3-5, and the one-hots (GLOBAL 35-37,
     PLAYER 2-6) are sized for it. 2- and 6-player rows stay engine-only.
 15. **Divisors.** *Recommend* Section 5.2's families. Step 8 sets the
     relation scales: shares by 1/10, trains by 1/4.
 16. **Selections at the factored phases** (engine-design §5.3).
-    - **The train's source.** (a) GLOBAL 41-43 at SELECT_TRAIN and
+    - **The train's source.** (a) GLOBAL 40-42 at SELECT_TRAIN and
       TRAIN_PRICE (the depot, the pool, a corp), with CORP 2 naming the
       corp. (b) CORP 2 alone, so the depot and the pool look alike.
     - **The corp a sale is of.** (a) Its own slot, CORP 3, at SELL_AMOUNT
@@ -845,4 +859,4 @@ amends each.
     purchase can start a phase and a pool purchase cannot; each slot keeps
     one role, so both sale heads read sale prices from the row CORP 3
     selects; and a decision corp at SELL_AMOUNT would show an SR that
-    corp's OR view (HEX 93-100, PRIVATE 16).
+    corp's OR view (HEX 94-101, PRIVATE 16).
