@@ -12,11 +12,14 @@ flags on and off:
 - a row extracted twice, and its copy with every cache marked stale, give
   the same tokens;
 - extraction changes only the caches, which then equal a recomputation, and
-  CORP 34 reads the route solver's revenue; the hypotheticals behind the
-  candidate rows leave the row as it was;
-- candidate row k at TILE and ER_BONUS describes the state after applying
-  its id to a copy: the hex's tile block, the cost paid, the supply left, and
-  GRAPH's and the solver's deltas.
+  CORP 34 reads the route solver's revenue; the hypotheticals tried on the
+  scratch state leave the row as it was;
+- each per-choice feature (§7) describes the move it is for, applied to a
+  copy, and is zero at other decisions: candidate row k at TILE and ER_BONUS
+  (the hex's tile block, the cost paid, the supply left, and GRAPH's and the
+  solver's deltas), PRICE's amounts, DIVIDEND's outcomes, the sale prices,
+  HEX 102's candidate counts at TRACK, HEX 103-104 at TOKEN, and TRAIN
+  10-12's route deltas at SELECT_TRAIN and DISCARD.
 
 And the RSS guard: RSS's engine and its v2 and v3 models import nothing of
 1889's, nor 1889's engine anything of RSS's, so no 1889 change can reach RSS
@@ -36,8 +39,11 @@ from g1889.driver import DRIVER, STATUS_INVALID
 from g1889.entities.corp import CORPS
 from g1889.entities.graph import GRAPH
 from g1889.entities.hexmap import MAP
+from g1889.entities.market import MARKET
 from g1889.entities.phase import PHASE
+from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
+from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.routes.solver import max_route_revenue
 from g1889.state import GameState, get_corp_fields, get_global_fields, get_layout, get_storage_player_capacity
@@ -78,18 +84,30 @@ ROW_TYPES = {
     'CANDIDATE': (R.ROW_CANDIDATE, D.MAX_LAY_CANDIDATES),
     'PLAYER': (R.ROW_PLAYER, None),
 }
-HIDDEN_UNTIL_7_3 = ('PRICE', 'DIVIDEND')
+# The decisions PRICE's row is for, in its kind order (§5.4).
+PRICE_KINDS = (K.DPHASE_BID, K.DPHASE_PAR, K.DPHASE_TRAIN_PRICE, K.DPHASE_PRIVATE_PRICE)
+# The hypotheticals' decisions, which use the scratch state (§4).
+HYPOTHETICALS = (K.DPHASE_TILE, K.DPHASE_ER_BONUS, K.DPHASE_TOKEN, K.DPHASE_SELECT_TRAIN, K.DPHASE_DISCARD)
+# The per-choice slots (§7) by row type: the outcomes and amounts.
+PER_CHOICE = {'PRICE': range(1, 24), 'DIVIDEND': range(1, 8), 'CORP': range(15, 20), 'TRAIN': (10, 11, 12),
+              'HEX': (102, 103, 104), 'CANDIDATE': range(99, 108)}
 
 # Slots outside [0, 1], by §5.2's divisor families; every other slot is a
 # flag, a one-hot, or a count by its natural maximum. SOFT counts are by a
 # typical maximum: all-pass payouts, cities reached, privates, certificates.
-MONEY, PRICE, SOFT, BANK = (0, 5), (0, 10), (0, 3), (-4, 1)
+# MONEY's covers a treasury after a withhold, which reaches ¥5,058 in random
+# play; LOSS is a route revenue lost.
+MONEY, PRICE, SOFT, BANK, LOSS = (0, 6), (0, 10), (0, 3), (-4, 1), (-10, 0)
 WIDE = {
     'GLOBAL': {33: BANK, 38: SOFT},
-    'CORP': {21: MONEY, 43: SOFT, 50: SOFT, **dict.fromkeys((7, 8, 25, 33, 34, 42), PRICE)},
+    'PRICE': dict.fromkeys(range(5, 24), MONEY),
+    'DIVIDEND': {5: MONEY, **dict.fromkeys((1, 3, 4, 6, 7), PRICE)},
+    'CORP': {21: MONEY, 43: SOFT, 50: SOFT, **dict.fromkeys((7, 8, 25, 33, 34, 42, *range(15, 20)), PRICE)},
     'PRIVATE': dict.fromkeys((7, 8, 9, 10, 12, 13), PRICE),
-    'TRAIN': {2: MONEY},
-    'HEX': dict.fromkeys((2 + 71, 78, 84), PRICE),  # the tile block's revenue, D revenue, lay cost
+    # A train added, or a D for a traded one, never earns less; one discarded never more.
+    'TRAIN': {2: MONEY, 10: PRICE, 11: PRICE, 12: LOSS},
+    # The tile block's revenue, D revenue, lay cost, and Δ route max with a token (never less).
+    'HEX': dict.fromkeys((2 + 71, 78, 84, 104), PRICE),
     # The tile block's revenue, the lay cost, Δ reached revenue and route
     # max (a lay only adds track and slots), and the others' Δ centers.
     'CANDIDATE': {107: SOFT, **dict.fromkeys((2 + 71, 99, 103, 104), PRICE)},
@@ -236,15 +254,16 @@ def test_values_are_finite_and_within_their_divisor_family(samples):
 
 
 def test_visibility_padding_and_widths(samples):
-    """Slot 0 per §5.1 (PRICE and DIVIDEND rows stay hidden until sub-step
-    7.3), hidden and padded rows all zero, nothing past a row's width."""
+    """Slot 0 per §5.1, hidden and padded rows all zero, nothing past a row's
+    width."""
     for row, after, max_players, tokens in samples:
         num_players = TURN.num_players(after)
+        phase = A.get_decision_phase_py(after)
         widths = get_token_widths(max_players, 1)
         assert not any(tokens[i, widths[i]:].any() for i in range(len(tokens)))
         visible = np.ones(len(tokens), bool)
-        for name in HIDDEN_UNTIL_7_3:
-            visible[_rows(name, max_players)] = False
+        visible[R.ROW_PRICE] = phase in PRICE_KINDS
+        visible[R.ROW_DIVIDEND] = phase == K.DPHASE_DIVIDEND
         visible[R.ROW_CANDIDATE + _candidate_count(after):R.ROW_PLAYER] = False
         visible[_rows('PRIVATE', max_players)] = [p.owner(after) != K.OWNER_NOT_IN_PLAY for p in PRIVATES]
         visible[R.ROW_PLAYER + num_players:] = False
@@ -298,19 +317,20 @@ def test_extraction_writes_back_only_fresh_caches(samples):
         np.testing.assert_array_equal(written[caches], fresh._array[caches])
 
 
-def test_batches_match_single_states_at_lay_decisions(samples):
-    """A batch mixing lay decisions with others, and player counts, fills each
-    row as a single state does, one scratch state serving its candidates."""
+def test_batches_match_single_states_with_hypotheticals(samples):
+    """A batch mixing the hypotheticals' decisions with others, and player
+    counts, fills each row as a single state does, one scratch state serving
+    every hypothetical."""
     for capacity in (3, 5):
         picked = [(row, tokens) for i, (row, after, max_players, tokens) in enumerate(samples)
-                  if max_players == capacity and (_candidate_count(after) or i % 50 == 0)]
+                  if max_players == capacity and (A.get_decision_phase_py(after) in HYPOTHETICALS or i % 50 == 0)]
         out = np.full((len(picked), get_num_tokens(capacity), TOKEN_DIM), np.nan, np.float32)
         get_token_data_batch([row.copy() for row, _ in picked], out, capacity, layout_version=1)
         np.testing.assert_array_equal(out, np.stack([tokens for _, tokens in picked]))
 
 
 # =============================================================================
-# CANDIDATE OUTCOMES (§10 item 2)
+# PER-CHOICE OUTCOMES (§10 item 2)
 # =============================================================================
 
 def _f32(numerator, divisor):
@@ -318,7 +338,7 @@ def _f32(numerator, divisor):
     return np.float32(numerator) / np.float32(divisor)
 
 
-def _after_lay(row, action):
+def _applied(row, action):
     """A copy of ``row`` with ``action`` applied, before the driver's
     automated steps and forced decisions."""
     state = _state(row.copy())
@@ -352,7 +372,7 @@ def test_candidate_rows_describe_their_lays(samples):
         old_paths = D.TILE_MASK[MAP.tile(before, h)][MAP.rotation(before, h)]
         assert (tokens[R.ROW_CANDIDATE:R.ROW_CANDIDATE + _candidate_count(before), 1] == er).all()
         for k, action in enumerate(legal_ids(before)[er:]):
-            candidate, laid = tokens[R.ROW_CANDIDATE + k], _after_lay(row, action)
+            candidate, laid = tokens[R.ROW_CANDIDATE + k], _applied(row, action)
             tile = MAP.tile(laid, h)
             np.testing.assert_array_equal(candidate[2:78], _tokens(laid, max_players)[R.ROW_HEX + h, 2:78])
             added = D.TILE_MASK[tile][MAP.rotation(laid, h)] & ~old_paths
@@ -366,6 +386,172 @@ def test_candidate_rows_describe_their_lays(samples):
             grown = [d[1] for c, d in enumerate(deltas) if c != corp and d[1] > 0]
             assert candidate[106:108].tolist() == [_f32(len(grown), 6), _f32(sum(grown), 25)]
             seen[phase] += 1
+    assert all(seen.values()), seen
+
+
+def test_per_choice_slots_are_exercised(samples):
+    """Every per-choice slot is nonzero at some sampled decision, so the
+    outcome tests compare more than zeros."""
+    unset = {name: set(slots) for name, slots in PER_CHOICE.items()}
+    for _, _, max_players, tokens in samples:
+        for name, slots in unset.items():
+            slots -= set(np.flatnonzero(tokens[_rows(name, max_players)].any(axis=0)).tolist())
+    assert not any(unset.values()), unset
+
+
+def _route_delta(after, before, corp):
+    return _f32(max_route_revenue(after, corp) - max_route_revenue(before, corp), 100)
+
+
+def test_price_row_gives_each_choices_amount(samples):
+    """PRICE 5 + id is the yen of each legal id: at PAR the President's
+    Certificate the player pays, and elsewhere ``price_amount_py``'s but at
+    BID's drop; 0 for an id not offered. The kind, the reference price, and
+    the payer's funds follow §5.4."""
+    seen = dict.fromkeys(PRICE_KINDS, 0)
+    for row, before, _, tokens in samples:
+        phase = A.get_decision_phase_py(before)
+        if phase not in seen:
+            continue
+        price, actor, corp = tokens[R.ROW_PRICE], TURN.active_player(before), TURN.operating_corp(before)
+        amounts = np.zeros(17, np.float32)
+        for action in legal_ids(before):
+            if phase == K.DPHASE_PAR:
+                paid = PLAYERS[actor].cash(before) - PLAYERS[actor].cash(_applied(row, action))
+                amounts[action] = _f32(paid, 1000)
+            elif not (phase == K.DPHASE_BID and action == K.BID_DROP):
+                amounts[action] = _f32(A.price_amount_py(before, action), 1000)
+        np.testing.assert_array_equal(price[5:22], amounts)
+        assert price[1:5].tolist() == [phase == kind for kind in PRICE_KINDS]
+        if phase == K.DPHASE_BID:
+            p = TURN.auction_private(before) if TURN.auction_private(before) >= 0 else TURN.pending_private(before)
+            reference, funds = D.PRIVATE_VALUE[p], PLAYERS[actor].available(before, p)
+        elif phase == K.DPHASE_PAR:
+            reference, funds = 0, PLAYERS[actor].cash(before)
+        else:
+            reference = (D.TRAIN_PRICE[TURN.pending_train_type(before)] if phase == K.DPHASE_TRAIN_PRICE
+                         else D.PRIVATE_VALUE[TURN.pending_private(before)])
+            funds = CORPS[corp].cash(before)
+        assert price[22:24].tolist() == [_f32(reference, 1000), _f32(funds, 1000)]
+        seen[phase] += 1
+    assert all(seen.values()), seen
+
+
+def test_dividend_row_describes_payout_and_withhold(samples):
+    """DIVIDEND's prices, treasury, and payouts are what applying payout and
+    withhold to copies gives: each holder earns its shares times the
+    per-share payout (revenues are multiples of ¥10, so nothing rounds)."""
+    seen = 0
+    for row, before, _, tokens in samples:
+        if A.get_decision_phase_py(before) != K.DPHASE_DIVIDEND:
+            continue
+        corp, revenue, div = TURN.operating_corp(before), TURN.route_revenue(before), tokens[R.ROW_DIVIDEND]
+        assert div[1:3].tolist() == [_f32(revenue, 100), _f32(revenue // 10, 100)]
+        kept = _applied(row, K.DIVIDEND_WITHHOLD)
+        assert div[4:6].tolist() == [_f32(MARKET.price(kept, corp), 100), _f32(CORPS[corp].cash(kept), 1000)]
+        if K.DIVIDEND_PAYOUT not in legal_ids(before):  # no revenue
+            continue
+        paid = _applied(row, K.DIVIDEND_PAYOUT)
+        gains = [PLAYERS[i].cash(paid) - PLAYERS[i].cash(before) for i in range(TURN.num_players(before))]
+        assert gains == [PLAYERS[i].shares(before, corp) * (revenue // 10) for i in range(len(gains))]
+        president = CORPS[corp].president(before)
+        assert div[3] == _f32(MARKET.price(paid, corp), 100)
+        assert div[6:8].tolist() == [_f32(gains[president], 100),
+                                     _f32(CORPS[corp].cash(paid) - CORPS[corp].cash(before), 100)]
+        seen += 1
+    assert seen
+
+
+def test_sale_prices_are_the_prices_after_each_block(samples):
+    """CORP 15 + n - 1 is the price after selling n shares: applying
+    SELL_AMOUNT or EMERGENCY_SELL_AMOUNT n - 1 to a copy moves the sold
+    corp's price there. Every parred corp has them at STOCK and BUY_TRAIN,
+    the sold corp at the two sale decisions, and no corp elsewhere."""
+    seen = {K.DPHASE_SELL_AMOUNT: 0, K.DPHASE_EMERGENCY_SELL_AMOUNT: 0}
+    for row, before, max_players, tokens in samples:
+        phase = A.get_decision_phase_py(before)
+        prices = tokens[_rows('CORP', max_players), 15:20]
+        if phase in (K.DPHASE_STOCK, K.DPHASE_BUY_TRAIN):
+            priced = [CORPS[c].par_index(before) >= 0 for c in range(D.NUM_CORPS)]
+        else:
+            priced = [phase in seen and c == TURN.pending_corp(before) for c in range(D.NUM_CORPS)]
+        assert (prices > 0).all(axis=1).tolist() == priced and not prices[np.logical_not(priced)].any()
+        if phase in seen:
+            sold = TURN.pending_corp(before)
+            for action in legal_ids(before):
+                assert prices[sold, action] == _f32(MARKET.price(_applied(row, action), sold), 100)
+                seen[phase] += 1
+    assert all(seen.values()), seen
+
+
+def test_track_counts_each_hexs_lay_candidates(samples):
+    """HEX 102 at TRACK is the candidate count TILE offers after TRACK 1 + h
+    on a copy, /15, and 0 at a hex TRACK does not offer; 0 at every other
+    decision."""
+    seen = 0
+    for row, before, _, tokens in samples:
+        counts = tokens[R.ROW_HEX:R.ROW_CANDIDATE, 102]
+        if A.get_decision_phase_py(before) != K.DPHASE_TRACK:
+            assert not counts.any()
+            continue
+        expected = np.zeros(D.NUM_HEXES, np.float32)
+        for action in legal_ids(before):
+            if K.TRACK_HEX <= action < K.TRACK_BUY_PRIVATE:
+                expected[action - K.TRACK_HEX] = _f32(_candidate_count(_applied(row, action)), D.MAX_LAY_CANDIDATES)
+                seen += 1
+        np.testing.assert_array_equal(counts, expected)
+    assert seen
+
+
+def test_token_slots_describe_each_token(samples):
+    """At TOKEN, HEX 103 marks the cities TOKEN offers, and HEX 104 is the
+    corp's Δ route max after TOKEN 1 + h on a copy; both 0 at every other hex
+    and decision."""
+    seen = 0
+    for row, before, _, tokens in samples:
+        slots = tokens[R.ROW_HEX:R.ROW_CANDIDATE, 103:105]
+        if A.get_decision_phase_py(before) != K.DPHASE_TOKEN:
+            assert not slots.any()
+            continue
+        corp = TURN.operating_corp(before)
+        expected = np.zeros((D.NUM_HEXES, 2), np.float32)
+        for action in legal_ids(before):
+            if K.TOKEN_HEX <= action < K.TOKEN_BUY_PRIVATE:
+                expected[action - K.TOKEN_HEX] = 1, _route_delta(_applied(row, action), before, corp)
+                seen += 1
+        np.testing.assert_array_equal(slots, expected)
+    assert seen
+
+
+def test_train_deltas_describe_each_train_change(samples):
+    """TRAIN 10-12 are the decision corp's Δ route max after each choice's
+    train change, made with ``TRAINS.set_corp_trains`` on a copy (a real
+    purchase can change the phase): at SELECT_TRAIN one more of type t (10)
+    or a D for a traded t (11), at DISCARD one fewer (12); 0 for the types
+    not offered, and at every other decision."""
+    seen = {K.DPHASE_SELECT_TRAIN: 0, K.DPHASE_DISCARD: 0}
+    for row, before, _, tokens in samples:
+        phase = A.get_decision_phase_py(before)
+        deltas = tokens[R.ROW_TRAIN:R.ROW_HEX, 10:13]
+        if phase not in seen:
+            assert not deltas.any()
+            continue
+        corp = TRAINS.first_crowded(before) if phase == K.DPHASE_DISCARD else TURN.operating_corp(before)
+        expected = np.zeros((D.NUM_TRAIN_TYPES, 3), np.float32)
+        for action in legal_ids(before):
+            if phase == K.DPHASE_DISCARD:
+                t, slot, changes = action, 2, {action: -1}
+            elif action < K.SELECT_TRAIN_TRADE_IN:
+                t, slot, changes = action, 0, {action: 1}
+            else:
+                t = D.TRADE_IN_TYPE[action - K.SELECT_TRAIN_TRADE_IN]
+                slot, changes = 1, {t: -1, D.D_TRAIN: 1}
+            changed = _state(row.copy())
+            for train_type, n in changes.items():
+                TRAINS.set_corp_trains(changed, corp, train_type, TRAINS.corp_trains(changed, corp, train_type) + n)
+            expected[t, slot] = _route_delta(changed, before, corp)
+            seen[phase] += 1
+        np.testing.assert_array_equal(deltas, expected)
     assert all(seen.values()), seen
 
 

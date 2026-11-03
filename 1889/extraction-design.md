@@ -270,7 +270,7 @@ the phase-local ids, so a step-8 head reads slot 5 + id for action id.
 | Slots | PRICE feature |
 |---|---|
 | 1-4 | kind: BID, PAR, TRAIN_PRICE, PRIVATE_PRICE |
-| 5-21 | the yen of phase-local ids 0-16, /1000: BID's grid points (ids 1-16) and TRAIN_PRICE and PRIVATE_PRICE points from `price_amount` (`actions.pyx:410-422`); BID's drop (id 0, a closed auction's) and unoffered points are 0; PAR's six are 2 × `PAR_PRICE`, the President's Certificate |
+| 5-21 | the yen of phase-local ids 0-16, /1000: BID's grid points (ids 1-16) and TRAIN_PRICE and PRIVATE_PRICE points from `price_amount` (`actions.pyx:410-422`); BID's drop (id 0, a closed auction's) and ids not legal are 0; PAR's are 2 × `PAR_PRICE`, the President's Certificate |
 | 22 | reference /1000: the private's face (BID, PRIVATE_PRICE), the train's list price (TRAIN_PRICE), 0 (PAR) |
 | 23 | payer's funds /1000: `player_available` (BID), the actor's cash (PAR), the buying corp's cash (TRAIN_PRICE, PRIVATE_PRICE) |
 
@@ -293,7 +293,7 @@ EMERGENCY_SELL_AMOUNT's id at slot 15 + id of the row CORP 3 selects.
 | 7, 8 | par price, share price /100 | `corp_par_price`, `market_price` |
 | 9, 10 | market row /10, column /14 | `market_row`, `market_col` |
 | 11-14 | zone: normal, par, no-cert-limit, unlimited | `market_type` |
-| 15-19 | share price after selling 1-5 shares /100 | `market_moved` down |
+| 15-19 | share price after selling 1-5 shares /100: every corp's at STOCK and BUY_TRAIN, the one CORP 3 selects at SELL_AMOUNT and EMERGENCY_SELL_AMOUNT | `market_moved` down |
 | 20 | sold out (no IPO or pool shares): moves up at the SR's end | |
 | 21, 22, 23 | cash /1000, IPO and pool shares /10 | |
 | 24, 25 | tokens left /3, next token price /100 | `corp_token_price` |
@@ -308,7 +308,7 @@ EMERGENCY_SELL_AMOUNT's id at slot 15 + id of the row CORP 3 selects.
 | 49 | the actor's largest emergency sale /5 | `corp_emergency_sale` |
 | 50 | privates owned /3 | |
 
-Slots 7-14 are 0 while the corp is unparred, and 37 is the decision corp's
+Slots 7-19 are 0 while the corp is unparred, and 37 is the decision corp's
 alone; 36 is every corp's.
 
 ### 5.6 PRIVATE (18) and TRAIN (13)
