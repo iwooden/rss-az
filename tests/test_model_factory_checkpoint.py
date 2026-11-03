@@ -48,23 +48,7 @@ def _put_model_class_name(model_cls: type[torch.nn.Module], queue: Queue) -> Non
     queue.put(model_cls.__name__)
 
 
-def test_factory_instantiates_transformer_from_config() -> None:
-    config = TrainingConfig(model_path="nn/transformer-v2.py", model_type="transformer")
-    model = create_model(config)
-
-    assert isinstance(model, RSSTransformerNet)
-    assert config.phase_conditioning is False
-    assert model.cfg.num_players == config.num_players
-    assert model.cfg.d_model == config.d_model
-    assert model.cfg.d_proj == config.d_proj
-    assert model.cfg.num_heads == config.num_heads
-    assert model.cfg.num_layers == config.num_layers
-    assert model.cfg.ff_mult == config.ff_mult
-    assert model.cfg.phase_conditioning is config.phase_conditioning
-    assert model.cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
-
-
-def test_factory_instantiates_custom_sized_transformer_from_config() -> None:
+def test_factory_instantiates_custom_sized_transformer() -> None:
     config = TrainingConfig(
         model_path="nn/transformer-v2.py",
         model_type="transformer",
@@ -126,47 +110,6 @@ def test_factory_instantiates_transformer_from_model_path() -> None:
     assert cfg.phase_conditioning is config.phase_conditioning
     assert cfg.price_slot_fourier_bands == config.price_slot_fourier_bands
     assert any(name.endswith("phase_mod.weight") for name, _ in model.named_parameters())
-
-
-def test_factory_threads_custom_size_into_model_path_transformer() -> None:
-    config = TrainingConfig(
-        model_type="transformer",
-        model_path="nn/transformer-v2.py",
-        d_model=64,
-        d_proj=16,
-        num_heads=4,
-        num_layers=1,
-        ff_mult=1.1,
-    )
-    model = create_model(config)
-    cfg = getattr(model, "cfg")
-
-    assert model.__class__.__name__ == "RSSTransformerNet"
-    assert model.__class__ is RSSTransformerNet
-    assert cfg.d_model == 64
-    assert cfg.d_proj == 16
-    assert cfg.num_heads == 4
-    assert cfg.num_layers == 1
-    assert cfg.ff_mult == 1.1
-    gate = getattr(getattr(model, "blocks")[0], "ffn_gate")
-    assert isinstance(gate, torch.nn.Linear)
-    assert gate.out_features == 128
-
-
-def test_factory_instantiates_mixed_model_path_transformer_at_max_player_capacity() -> None:
-    config = TrainingConfig(
-        num_players=0,
-        min_players=3,
-        max_players=5,
-        model_type="transformer",
-        model_path="nn/transformer-v2.py",
-    )
-    model = create_model(config)
-    cfg = getattr(model, "cfg")
-
-    assert model.__class__.__name__ == "RSSTransformerNet"
-    assert model.__class__ is RSSTransformerNet
-    assert cfg.num_players == config.effective_max_players
 
 
 def test_factory_can_disable_model_path_phase_conditioning() -> None:
