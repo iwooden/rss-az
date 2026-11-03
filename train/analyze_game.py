@@ -909,7 +909,7 @@ def main() -> None:
         "checkpoint",
         type=str,
         help='Path to checkpoint file, "latest" for the newest in --checkpoint-dir, '
-             'or "new" for a freshly-initialized (untrained) model',
+             'or "new" for a freshly-initialized (untrained) v2 model',
     )
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument(
@@ -1033,7 +1033,7 @@ def main() -> None:
         )
         assert 3 <= new_num_players <= 5, \
             f"--num-players must be in [3, 5], got {new_num_players}"
-        config = TrainingConfig(num_players=new_num_players)
+        config = TrainingConfig(num_players=new_num_players, model_path="nn/transformer-v2.py")
         model = create_model(config).to(device)
         model.eval()
         checkpoint_path_for_log = "new"

@@ -101,11 +101,7 @@ from torch._dynamo.decorators import mark_unbacked
 
 from games import RELATION_RECORD_WIDTH
 from mcts.evaluator import BaseEvaluator
-from nn.model_contract import (
-    ModelInputSpec,
-    ModelKind,
-    normalize_model_type,
-)
+from nn.model_contract import ModelInputSpec, normalize_model_type
 from train.profile_stats import EvalClientStats, EvalServerStats
 
 if TYPE_CHECKING:
@@ -226,23 +222,13 @@ class SharedEvalBuffers:
         num_workers: int,
         batch_size: int,
         num_players: int,
-        input_spec: ModelInputSpec | None = None,
+        input_spec: ModelInputSpec,
     ) -> None:
         self.num_workers = num_workers
         self.batch_size = batch_size
         self.num_players = num_players
         self.policy = game.policy
         self.unified_dim = game.policy.unified_dim
-        if input_spec is None:
-            input_spec = ModelInputSpec(
-                model_type=ModelKind.TRANSFORMER.value,
-                num_players=num_players,
-                policy_dim=self.unified_dim,
-                value_dim=num_players,
-                num_tokens=game.num_tokens(num_players),
-                token_dim=game.token_dim(ModelInputSpec.layout_version),
-                game=game.name,
-            )
         model_kind = normalize_model_type(input_spec.model_type)
         if input_spec.game != game.name:
             raise ValueError(

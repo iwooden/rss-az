@@ -3,7 +3,7 @@
 This document specifies layout 2, consumed by `nn/transformer-v2.py`.
 Its extractor and constants live in `core/token_data_v2.pyx/.pxd`, restored
 from `v2-final` (`1d1e943410f7`). The shared `core/token_data.pyx` API dispatches
-to it with `layout_version=2` (the default). Shared callers use
+to it with `layout_version=2`; every call names its layout. Shared callers use
 `get_token_dim(2)` and `get_token_widths(max_players, layout_version=2)`.
 The model imports its constants directly from `core.token_data_v2`.
 

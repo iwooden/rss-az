@@ -134,7 +134,7 @@ def test_format_phase_context_acq_offer_describes_original_and_offered_corp() ->
 def test_format_token_dump_denormalizes_rows_into_compact_table() -> None:
     state = _make_state()
 
-    rendered = format_token_dump(state)
+    rendered = format_token_dump(state, layout_version=2)
 
     market_row = next(line for line in rendered.splitlines() if "| market_info |" in line)
     company_row = next(line for line in rendered.splitlines() if "| company[0] |" in line)
@@ -152,7 +152,7 @@ def test_format_token_dump_denormalizes_rows_into_compact_table() -> None:
 
 def test_analyze_game_token_dump_flag_includes_token_tables() -> None:
     torch.manual_seed(0)
-    config = TrainingConfig(num_players=3)
+    config = TrainingConfig(model_path="nn/transformer-v2.py", num_players=3)
     model = create_model(config).to(torch.device("cpu"))
     model.eval()
 
@@ -183,7 +183,7 @@ def test_analyze_game_eval_dtype_override_allows_float32() -> None:
 
 def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
     torch.manual_seed(0)
-    config = TrainingConfig(num_players=3)
+    config = TrainingConfig(model_path="nn/transformer-v2.py", num_players=3)
     model = create_model(config).to(torch.device("cpu"))
     model.eval()
 
@@ -213,6 +213,7 @@ def test_analyze_game_token_dump_flag_appends_normalization_report() -> None:
 def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
     torch.manual_seed(0)
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=0,
         min_players=3,
         max_players=5,
@@ -250,6 +251,7 @@ def test_analyze_game_mixed_config_uses_requested_actual_player_count() -> None:
 def test_analyze_game_player_names_relabel_output() -> None:
     torch.manual_seed(0)
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=3,
         num_simulations=1,
         search_batch_size=1,
@@ -320,6 +322,7 @@ def test_extract_18xx_seed_setup_builds_minimal_rss_game(monkeypatch) -> None:
 def test_analyze_game_18xx_seed_logs_applied_initial_setup(monkeypatch) -> None:
     torch.manual_seed(0)
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=3,
         num_simulations=1,
         search_batch_size=1,
@@ -448,6 +451,7 @@ def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
         fake_load_state,
     )
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=3, v3_behavior=True, acq_same_president=False, max_acq_price_actions=8,
     )
     model = create_model(config).to(torch.device("cpu"))
@@ -482,7 +486,7 @@ def test_analyze_game_continues_from_18xx_json_and_uses_player_names(
 
 
 def test_analyze_game_rejects_18xx_seed_with_game_json() -> None:
-    config = TrainingConfig(num_players=3)
+    config = TrainingConfig(model_path="nn/transformer-v2.py", num_players=3)
     model = create_model(config).to(torch.device("cpu"))
 
     with pytest.raises(ValueError, match="mutually exclusive"):

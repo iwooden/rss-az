@@ -54,12 +54,13 @@ layout rather than differences from another version.
 | `nn/transformer-v2.py` | 2 | [V2 token data](token-data.md) |
 | `nn/transformer-v3.py` | 3 | [V3 token data](token-data-v3.md) |
 
-Set `model_path` in the training config to select the model. The model declares
-its input version; evaluators, training, IPC, and diagnostics use that contract
-to select the layout. Query `get_token_dim(layout_version)` and
-`get_token_widths(max_players, layout_version)` for dimensions. The default
-model and extraction calls without a version remain v2 for checkpoint
-compatibility; v2 is retained as the evaluation baseline for v3.
+Set `model_path` in the training config to select the model; there is no
+default. Every model module declares its input version as
+`INPUT_LAYOUT_VERSION`; evaluators, training, IPC, and diagnostics use that
+contract to select the layout. Every extraction call names its layout: query
+`get_token_dim(layout_version)` and
+`get_token_widths(max_players, layout_version)` for dimensions. V2 is retained
+as the evaluation baseline for v3.
 
 V3 enables relation input mixing before type embeddings by default. For an
 ablation, set `"relation_input_mixing": false` in the training JSON or pass

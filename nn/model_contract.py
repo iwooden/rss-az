@@ -34,10 +34,11 @@ class ModelInputSpec:
     value_dim: int
     num_tokens: int
     token_dim: int
-    # The game's token layout id. RSS versions 2 and 3 share token order and
-    # relation transport. V2 consumes only the original ten binary planes; v3
-    # also uses the share-count planes.
-    layout_version: int = 2
+    # The game's token layout id, the model module's INPUT_LAYOUT_VERSION.
+    # RSS versions 2 and 3 share token order and relation transport. V2
+    # consumes only the original ten binary planes; v3 also uses the
+    # share-count planes.
+    layout_version: int
     game: str = "rss"
 
 

@@ -1,11 +1,14 @@
 """Neural network model loading and contract helpers.
 
 A config's ``model_path`` names its model module, a module name or a Python
-file, loaded on first use. A module that defines ``build_model(config, spec)``
-builds its model from the config and its ``ModelInputSpec``, for any game.
-Any other module is an RSS transformer (``RSSTransformerNet`` and
-``TransformerConfig``), the fallback, which runs only RSS. RSS configs default
-to ``transformer-v2.py``; other games have no default.
+file, loaded on first use; there is no default module. Every module declares
+its token layout as ``INPUT_LAYOUT_VERSION``. A module that defines
+``build_model(config, spec)`` builds its model from the config and its
+``ModelInputSpec``, for any game. Any other module is an RSS transformer
+(``RSSTransformerNet`` and ``TransformerConfig``), the fallback, which runs
+only RSS. This package's ``RSSTransformerNet``, ``TransformerBlock``, and
+``TransformerConfig`` are v2's (``transformer-v2.py``), for tests and RSS
+tooling.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
 
 _MODEL_IMPL_MODULE_PREFIX = "_rss_model_impl_"
 _MODEL_IMPL_ENV_PREFIX = "RSS_MODEL_IMPL_PATH_"
-_DEFAULT_MODEL_PATH = Path(__file__).with_name("transformer-v2.py")
+_V2_MODEL_PATH = Path(__file__).with_name("transformer-v2.py")
 
 
 class _ModelPathFinder(importlib.abc.MetaPathFinder):
@@ -96,9 +99,9 @@ def _require_symbol(module: ModuleType, name: str, model_path: str) -> Any:
 _ensure_model_path_finder()
 
 
-def _default_model_module() -> ModuleType:
+def _v2_model_module() -> ModuleType:
     """``transformer-v2.py``, loaded on first use: it imports the RSS engine."""
-    return _load_model_module(str(_DEFAULT_MODEL_PATH))
+    return _load_model_module(str(_V2_MODEL_PATH))
 
 
 if TYPE_CHECKING:
@@ -120,9 +123,9 @@ if TYPE_CHECKING:
         def __getattr__(self, name: str) -> Any: ...
 else:
     def __getattr__(name: str) -> Any:
-        # The default implementation's classes, loaded with it on first use.
+        # V2's classes, loaded with its module on first use.
         if name in ("RSSTransformerNet", "TransformerBlock", "TransformerConfig"):
-            return _require_symbol(_default_model_module(), name, str(_DEFAULT_MODEL_PATH))
+            return _require_symbol(_v2_model_module(), name, str(_V2_MODEL_PATH))
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -149,22 +152,24 @@ def _effective_max_players(config: object) -> int:
     return int(_config_value(config, "num_players", 3))
 
 
+def _require_model_path(model_path: str | None) -> str:
+    if model_path is None:
+        raise ValueError("model_path is not set; name the model module, e.g. nn/transformer-v2.py")
+    return model_path
+
+
 def _model_module(config: object) -> tuple[ModuleType, str]:
     """The config's model module. Another game's must define ``build_model``:
-    the RSS transformer fallback, and so the default, runs only RSS."""
+    the RSS transformer fallback runs only RSS."""
+    path = _require_model_path(_config_value(config, "model_path", None))
+    module = _load_model_module(path)
     game = _config_value(config, "game", "rss")
-    model_path = _config_value(config, "model_path", None)
-    path = str(_DEFAULT_MODEL_PATH if model_path is None else model_path)
-    if game == "rss":
-        return _load_model_module(path), path
-    if model_path is not None:
-        module = _load_model_module(path)
-        if hasattr(module, "build_model"):
-            return module, path
-    raise ValueError(
-        f"game {game!r} needs a model_path module that defines build_model(config, spec): "
-        f"the RSSTransformerNet fallback runs only RSS (model_path={model_path!r})"
-    )
+    if game != "rss" and not hasattr(module, "build_model"):
+        raise ValueError(
+            f"game {game!r} needs a model_path module that defines build_model(config, spec): "
+            f"the RSSTransformerNet fallback runs only RSS (model_path={path!r})"
+        )
+    return module, path
 
 
 def _config_kwargs(config_cls: type[object], values: dict[str, Any]) -> dict[str, Any]:
@@ -188,8 +193,8 @@ def get_model_input_spec(config: object) -> ModelInputSpec:
         str(_config_value(config, "model_type", ModelKind.TRANSFORMER.value))
     )
     max_players = _effective_max_players(config)
-    module, _ = _model_module(config)
-    layout_version = int(getattr(module, "INPUT_LAYOUT_VERSION", 2))
+    module, path = _model_module(config)
+    layout_version = int(_require_symbol(module, "INPUT_LAYOUT_VERSION", path))
     game = get_game(config)  # type: ignore[arg-type]
     return ModelInputSpec(
         model_type=model_kind.value,
@@ -222,7 +227,8 @@ def create_model(
 
     With a config, a model module that defines ``build_model`` builds it from
     the config and ``get_model_input_spec(config)``. Otherwise, and in the
-    keyword form, it is the RSS transformer fallback.
+    keyword form (which needs ``model_path``), it is the RSS transformer
+    fallback.
     """
     if isinstance(config, int):
         if num_players is not None:
@@ -233,7 +239,7 @@ def create_model(
     if config is None:
         if num_players is None:
             raise TypeError("create_model requires a TrainingConfig or num_players")
-        selected_path = model_path or str(_DEFAULT_MODEL_PATH)
+        selected_path = _require_model_path(model_path)
         module = _load_model_module(selected_path)
         if hasattr(module, "build_model"):
             raise TypeError(

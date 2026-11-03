@@ -770,12 +770,10 @@ amends each.
    outcomes on GLOBAL and the corp. *Recommend (a):* each row has one
    meaning per kind, as RSS's shared PAR/IPO row, and (c) would make one
    projection read phase-dependent slots.
-2. **Layout ids.** *Recommend 1* for v0, which the existing test already
-   passes, with `get_token_dim` raising for any other id. Step 8's module
-   sets `INPUT_LAYOUT_VERSION = 1`. A module that forgets gets the loader's
-   default, 2 (`nn/__init__.py:192`), which names no 1889 layout, so it
-   fails loudly. Later 1889 layouts skip 2 to keep that true: build
-   distance's corp summaries take id 3.
+2. **Layout ids.** *Recommend 1* for v0: 1889's layouts count from 1, and
+   `get_token_dim` raises for any other id. Every model module declares
+   `INPUT_LAYOUT_VERSION` (the loader has no default), so step 8's module
+   sets `INPUT_LAYOUT_VERSION = 1`, and build distance's layout would be 2.
 3. **Reach for all corps, both directions** (relations 16-19), the bulk of
    the edges.
    - (a) All seven corps, both directions.

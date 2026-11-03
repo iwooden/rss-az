@@ -6,7 +6,7 @@ import torch
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import GameState, get_layout
-from core.token_data import TokenDataSize, get_num_tokens
+from core.token_data import get_num_tokens, get_token_dim
 from entities.turn import TURN
 from games import get_game
 from nn.policy_layout import PHASES_WITH_PASS_SLOT, UNIFIED_LOGIT_DIM
@@ -40,7 +40,10 @@ def test_phase_policy_entropy_kl_counts_and_gradients(device):
                 len(tokens), 3, device=tokens.device,
             )
 
-    config = TrainingConfig(num_players=3, optimizer="adamw", value_loss_weight=0, grad_clip=0)
+    config = TrainingConfig(
+        num_players=3, model_path="nn/transformer-v2.py", optimizer="adamw",
+        value_loss_weight=0, grad_clip=0,
+    )
     model = FixedPolicy().to(device)
     trainer = Trainer(model, config, torch.device(device))
     buffer = ReplayBuffer(RSS_GAME, 3, get_layout(3).total_size, 3)
@@ -156,6 +159,7 @@ def _one_hot_policy_targets() -> tuple[np.ndarray, np.ndarray]:
 
 def _mixed_training_config() -> TrainingConfig:
     return TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=0,
         min_players=3,
         max_players=5,
@@ -173,6 +177,7 @@ def _mixed_training_config() -> TrainingConfig:
 
 def test_train_step_value_loss_uses_mean_over_player_dimension() -> None:
     cfg = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=NUM_PLAYERS,
         optimizer="adamw",
         batch_size=1,
@@ -299,7 +304,7 @@ def test_train_step_mixed_batch_uses_masked_value_mse_and_max_width_inputs() -> 
     assert model.last_tokens_shape == (
         2,
         get_num_tokens(5),
-        int(TokenDataSize.TOKEN_DIM),
+        get_token_dim(2),
     )
     assert model.last_tokens_dtype == torch.float32
     assert model.last_relations_shape == (

@@ -108,7 +108,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-path",
         type=str,
-        help="Optional Python module/file path that provides the selected model implementation",
+        help="Model module or Python file, e.g. nn/transformer-v2.py; required "
+             "unless --config or the resumed checkpoint sets model_path",
     )
     parser.add_argument("--d-model", type=int, help="Transformer trunk width")
     parser.add_argument("--d-proj", type=int, help="Transformer policy projection width")

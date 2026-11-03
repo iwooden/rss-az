@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
-from core.token_data import TokenDataSize, get_num_tokens, get_token_dim
+from core.token_data import get_num_tokens, get_token_dim
 from games import get_game
 from games.g1889 import EXTRACTION_STEP
 from mcts.evaluator import NNEvaluator
@@ -49,7 +49,7 @@ def _put_model_class_name(model_cls: type[torch.nn.Module], queue: Queue) -> Non
 
 
 def test_factory_instantiates_transformer_from_config() -> None:
-    config = TrainingConfig(model_type="transformer")
+    config = TrainingConfig(model_path="nn/transformer-v2.py", model_type="transformer")
     model = create_model(config)
 
     assert isinstance(model, RSSTransformerNet)
@@ -66,6 +66,7 @@ def test_factory_instantiates_transformer_from_config() -> None:
 
 def test_factory_instantiates_custom_sized_transformer_from_config() -> None:
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         model_type="transformer",
         d_model=64,
         d_proj=16,
@@ -89,6 +90,7 @@ def test_factory_instantiates_custom_sized_transformer_from_config() -> None:
 
 def test_factory_instantiates_mixed_transformer_at_max_player_capacity() -> None:
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=0,
         min_players=3,
         max_players=5,
@@ -182,13 +184,13 @@ def test_factory_can_disable_model_path_phase_conditioning() -> None:
 
 
 def test_transformer_factory_output_shapes_remain_unified() -> None:
-    config = TrainingConfig(model_type="transformer")
+    config = TrainingConfig(model_path="nn/transformer-v2.py", model_type="transformer")
     model = create_model(config)
     model.eval()
 
     batch = 1
     num_tokens = get_num_tokens(config.num_players)
-    tokens = torch.zeros(batch, num_tokens, int(TokenDataSize.TOKEN_DIM))
+    tokens = torch.zeros(batch, num_tokens, get_token_dim(2))
     tokens[:, :, 0] = 1.0
     legal_mask = torch.ones(batch, int(UNIFIED_LOGIT_DIM), dtype=torch.bool)
     relations = torch.zeros(
@@ -207,14 +209,15 @@ def test_transformer_factory_output_shapes_remain_unified() -> None:
 
 
 def test_model_input_spec_matches_transformer_contract() -> None:
-    transformer = get_model_input_spec(TrainingConfig(model_type="transformer"))
+    config = TrainingConfig(model_path="nn/transformer-v2.py", model_type="transformer")
+    transformer = get_model_input_spec(config)
 
     assert transformer.num_tokens == get_num_tokens(transformer.num_players)
 
 
 def test_new_checkpoints_reload_correct_model_type(tmp_path) -> None:
     device = torch.device("cpu")
-    config = TrainingConfig(model_type="transformer")
+    config = TrainingConfig(model_path="nn/transformer-v2.py", model_type="transformer")
     model = create_model(config).to(device)
     path = tmp_path / "transformer.pt"
 
@@ -238,6 +241,7 @@ def test_new_checkpoints_reload_correct_model_type(tmp_path) -> None:
 def test_checkpoint_reload_preserves_transformer_size(tmp_path) -> None:
     device = torch.device("cpu")
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         model_type="transformer",
         d_model=64,
         d_proj=16,
@@ -299,13 +303,12 @@ def test_checkpoint_reload_uses_model_path(tmp_path) -> None:
     assert list(loaded.state_dict().keys()) == list(model.state_dict().keys())
 
 
-# The default model loads on first use, like any model_path file, so spawned
-# eval servers and workers import it through nn's model-path finder.
-@pytest.mark.parametrize("model_path", [None, "nn/transformer-v2.py"])
-def test_model_path_class_pickles_across_spawn(model_path: str | None) -> None:
+# A model_path file loads on first use, so spawned eval servers and workers
+# import it through nn's model-path finder.
+def test_model_path_class_pickles_across_spawn() -> None:
     config = TrainingConfig(
         model_type="transformer",
-        model_path=model_path,
+        model_path="nn/transformer-v2.py",
         phase_conditioning=False,
     )
     model = create_model(config)
@@ -348,8 +351,32 @@ def test_model_module_with_build_model_builds_its_own_model(tmp_path) -> None:
     assert len(module.calls) == 1
 
 
-@pytest.mark.parametrize("model_path", [None, "nn/transformer-v3.py"])
-def test_rss_transformer_fallback_refuses_other_games(model_path: str | None) -> None:
+def test_model_module_must_declare_its_layout(tmp_path) -> None:
+    path = tmp_path / "no_layout_model.py"
+    path.write_text(DUMMY_MODEL_MODULE.replace("INPUT_LAYOUT_VERSION = 3\n", ""))
+    config = TrainingConfig(model_path=str(path))
+    message = "must define INPUT_LAYOUT_VERSION"
+    with pytest.raises(ValueError, match=message):
+        get_model_input_spec(config)
+    with pytest.raises(ValueError, match=message):
+        create_model(config)
+
+
+@pytest.mark.parametrize("game", ["rss", "1889"])
+def test_config_without_model_path_builds_no_model(game: str) -> None:
+    config = TrainingConfig(game=game)
+    assert config.model_path is None
+    message = "model_path is not set"
+    with pytest.raises(ValueError, match=message):
+        create_model(config)
+    with pytest.raises(ValueError, match=message):
+        get_model_input_spec(config)
+    with pytest.raises(ValueError, match=message):
+        create_model(num_players=3)
+
+
+@pytest.mark.parametrize("model_path", ["nn/transformer-v2.py", "nn/transformer-v3.py"])
+def test_rss_transformer_fallback_refuses_other_games(model_path: str) -> None:
     config = TrainingConfig(game="1889", model_path=model_path)
     message = "game '1889' needs a model_path module that defines build_model"
     with pytest.raises(ValueError, match=message):
@@ -361,9 +388,10 @@ def test_rss_transformer_fallback_refuses_other_games(model_path: str | None) ->
 def test_spec_and_checkpoint_without_game_are_rss() -> None:
     """A spec or checkpoint without ``game`` is RSS's, as a config is
     (test_training_config_players.py)."""
-    spec = get_model_input_spec(TrainingConfig())
+    spec = get_model_input_spec(TrainingConfig(model_path="nn/transformer-v2.py"))
     fields = {name: getattr(spec, name) for name in (
         "model_type", "num_players", "policy_dim", "value_dim", "num_tokens", "token_dim",
+        "layout_version",
     )}
     assert spec.game == "rss"
     assert ModelInputSpec(**fields) == spec
@@ -378,7 +406,7 @@ def test_spec_and_checkpoint_without_game_are_rss() -> None:
 
 
 def test_evaluators_refuse_another_games_spec() -> None:
-    config = TrainingConfig()
+    config = TrainingConfig(model_path="nn/transformer-v2.py")
     game = get_game(config)
     spec = replace(get_model_input_spec(config), game="1889")
     message = r"input_spec game \('1889'\) does not match"

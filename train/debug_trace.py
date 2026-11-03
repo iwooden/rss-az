@@ -138,7 +138,7 @@ def _field_names(prefix: str, count: int) -> list[str]:
     return [f"{prefix}[{idx}]" for idx in range(count)]
 
 
-def _token_field_labels(token_label: str, layout_version: int = 2) -> list[str]:
+def _token_field_labels(token_label: str, layout_version: int) -> list[str]:
     if token_label == "market_info":
         return (
             ["attn_mask"]
@@ -243,7 +243,7 @@ def _token_field_labels(token_label: str, layout_version: int = 2) -> list[str]:
     raise ValueError(f"unknown token label: {token_label}")
 
 
-def _extract_token_buffer(state: GameState, layout_version: int = 2) -> tuple[np.ndarray, np.ndarray, list[str]]:
+def _extract_token_buffer(state: GameState, layout_version: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
     num_players = TURN.get_num_players(state)
     if not (3 <= num_players <= 5):
         raise ValueError(f"token dump unavailable for num_players={num_players}")
@@ -257,7 +257,7 @@ def _extract_token_buffer(state: GameState, layout_version: int = 2) -> tuple[np
     return buffer, widths, labels
 
 
-def _denormalize_token_values(token_label: str, row: np.ndarray, layout_version: int = 2) -> list[int]:
+def _denormalize_token_values(token_label: str, row: np.ndarray, layout_version: int) -> list[int]:
     if token_label == "market_info":
         return (
             _round_values(row[:1])
@@ -471,7 +471,7 @@ def _summarize_token_values(token_label: str, values: list[int]) -> str:
     return str(values)
 
 
-def format_token_dump(state: GameState, layout_version: int = 2) -> str:
+def format_token_dump(state: GameState, layout_version: int) -> str:
     try:
         buffer, widths, labels = _extract_token_buffer(state, layout_version=layout_version)
     except ValueError as exc:
@@ -484,7 +484,7 @@ def format_token_dump_from_buffer(
     widths: np.ndarray,
     labels: list[str],
     *,
-    layout_version: int = 2,
+    layout_version: int,
 ) -> str:
     lines = ["idx | token | width | values", "--- | --- | ---: | ---"]
     for token_index in range(len(labels)):
@@ -498,7 +498,7 @@ def format_token_dump_from_buffer(
 class TokenNormalizationAccumulator:
     THRESHOLDS = (1.00, 1.10, 1.25)
 
-    def __init__(self, num_players: int, layout_version: int = 2):
+    def __init__(self, num_players: int, layout_version: int):
         self.layout_version = layout_version
         if not (3 <= num_players <= 5):
             raise ValueError(f"token normalization unavailable for num_players={num_players}")

@@ -182,6 +182,7 @@ def test_trainer_reports_uniform_estimates_and_trains_policy_on_priority_mix(fra
             return logits, torch.zeros(len(tokens), 3, device=tokens.device)
 
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=3, optimizer="adamw", weight_decay=0.0, grad_clip=0,
         policy_loss_weight=0.0, value_loss_weight=0.0,
         replay_priority_fraction=fraction, replay_priority_exponent=1.0,

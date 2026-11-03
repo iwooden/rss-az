@@ -25,6 +25,7 @@ from entities.company import COMPANIES, CompanyLocation
 from entities.deck import DECK
 from entities.player import PLAYERS
 from games import get_game
+from nn import get_model_input_spec
 from nn.policy_layout import UNIFIED_LOGIT_DIM
 from nn.model_contract import ModelInputSpec
 from train.config import TrainingConfig
@@ -38,6 +39,11 @@ NUM_PLAYERS = 3
 COMPANY_TOKEN_START = 1
 CORP_TOKEN_START = 46
 PLAYER_TOKEN_START = 54
+
+
+def _v2_spec(num_players: int) -> ModelInputSpec:
+    config = TrainingConfig(num_players=num_players, model_path="nn/transformer-v2.py")
+    return get_model_input_spec(config)
 
 
 def _materialize_relation_coords_np(
@@ -620,7 +626,10 @@ def test_remote_evaluator_evaluate_leaves_populates_relation_buffer(
     corp_id = 3
     company_id = 8
     state = _state_with_corp_company(corp_id, company_id)
-    shared_bufs = SharedEvalBuffers(RSS_GAME, num_workers=1, batch_size=2, num_players=NUM_PLAYERS)
+    shared_bufs = SharedEvalBuffers(
+        RSS_GAME, num_workers=1, batch_size=2, num_players=NUM_PLAYERS,
+        input_spec=_v2_spec(NUM_PLAYERS),
+    )
     shared_bufs.init_bitmap([(0, 1)])
     evaluator = RemoteEvaluator(RSS_GAME, NUM_PLAYERS, shared_bufs, worker_idx=0)
     monkeypatch.setattr(evaluator, "_request_eval", lambda n: None)
@@ -669,6 +678,7 @@ def test_remote_evaluator_slices_max_width_values_to_actual_players(
         num_workers=1,
         batch_size=2,
         num_players=max_players,
+        input_spec=_v2_spec(max_players),
     )
     shared_bufs.init_bitmap([(0, 1)])
     evaluator = RemoteEvaluator(RSS_GAME, max_players, shared_bufs, worker_idx=0)

@@ -25,7 +25,7 @@ def _unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
 
 
 def _transformer_input_spec(
-    game: Game, num_players: int, layout_version: int = 2,
+    game: Game, num_players: int, layout_version: int,
 ) -> ModelInputSpec:
     return ModelInputSpec(
         model_type=ModelKind.TRANSFORMER.value,
@@ -47,11 +47,13 @@ def _infer_model_input_spec(
     """Infer the evaluator input contract from a model's config.
 
     Tests and utility call sites may construct ``NNEvaluator`` directly
-    without a training config, so infer the player capacity from the model.
+    without a training config, so infer the player capacity and token layout
+    from the model's ``cfg``, which must declare ``layout_version``.
     """
     cfg = getattr(_unwrap_compiled_model(model), "cfg", None)
-    if cfg is None:
-        return _transformer_input_spec(game, num_players)
+    layout_version = getattr(cfg, "layout_version", None)
+    if layout_version is None:
+        raise ValueError("NNEvaluator needs a model whose cfg declares layout_version")
 
     model_np = int(getattr(cfg, "num_players", num_players))
     if model_np != num_players:
@@ -60,7 +62,7 @@ def _infer_model_input_spec(
             f"evaluator num_players ({num_players})"
         )
 
-    return _transformer_input_spec(game, num_players, int(getattr(cfg, "layout_version", 2)))
+    return _transformer_input_spec(game, num_players, int(layout_version))
 
 
 def _validate_model_input_spec(

@@ -1645,7 +1645,7 @@ def _load_model_for_cli(
     if checkpoint == "new":
         if not 3 <= num_players <= 5:
             raise ValueError(f"'new' model requires 3-5 players, got {num_players}")
-        config = TrainingConfig(num_players=num_players)
+        config = TrainingConfig(num_players=num_players, model_path="nn/transformer-v2.py")
         model = create_model(config).to(device)
         model.eval()
         return model, config, "new"
@@ -1680,7 +1680,7 @@ def main() -> None:
     parser.add_argument(
         "checkpoint",
         type=str,
-        help='Path to checkpoint, "latest" for --checkpoint-dir, or "new"',
+        help='Path to checkpoint, "latest" for --checkpoint-dir, or "new" (untrained v2)',
     )
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--device", type=str, default=None)

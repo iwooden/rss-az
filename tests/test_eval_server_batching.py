@@ -17,6 +17,7 @@ from core.attention_relations import (
 )
 from core.state import GameState
 from games import get_game
+from nn import get_model_input_spec
 from nn.model_contract import ModelKind
 from nn.policy_layout import UNIFIED_LOGIT_DIM
 from train.config import TrainingConfig
@@ -38,6 +39,10 @@ RSS_GAME = get_game(TrainingConfig())
 
 NUM_PLAYERS = 3
 U_DIM = int(UNIFIED_LOGIT_DIM)
+# The buffers carry v2's input contract; these tests' models are stand-ins.
+V2_SPEC = get_model_input_spec(
+    TrainingConfig(num_players=NUM_PLAYERS, model_path="nn/transformer-v2.py"),
+)
 
 
 class SyncValueModel(torch.nn.Module):
@@ -92,6 +97,7 @@ def _cpu_server(model: torch.nn.Module) -> tuple[EvaluationServer, SharedEvalBuf
         num_workers=1,
         batch_size=1,
         num_players=NUM_PLAYERS,
+        input_spec=V2_SPEC,
     )
     shared_bufs.init_bitmap([(0, 1)], ctx)
     server = EvaluationServer(
@@ -203,7 +209,9 @@ def test_partition_request_groups_rejects_request_larger_than_cap() -> None:
 
 def test_evaluation_server_threads_batch_shape_mode_and_max_batch_size_into_process_kwargs() -> None:
     model = torch.nn.Linear(4, 4)
-    shared_bufs = SharedEvalBuffers(RSS_GAME, num_workers=4, batch_size=8, num_players=3)
+    shared_bufs = SharedEvalBuffers(
+        RSS_GAME, num_workers=4, batch_size=8, num_players=3, input_spec=V2_SPEC,
+    )
 
     server = EvaluationServer(
         model,
@@ -225,6 +233,7 @@ def test_evaluation_server_sync_weights_updates_remote_eval_outputs() -> None:
         num_workers=1,
         batch_size=1,
         num_players=NUM_PLAYERS,
+        input_spec=V2_SPEC,
     )
     shared_bufs.init_bitmap([(0, 1)], ctx)
     server = EvaluationServer(
@@ -319,6 +328,7 @@ def test_shared_eval_buffers_allocates_uint8_relation_coords() -> None:
         num_workers=2,
         batch_size=4,
         num_players=3,
+        input_spec=V2_SPEC,
     )
 
     assert shared_bufs.model_type == ModelKind.TRANSFORMER.value

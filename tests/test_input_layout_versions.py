@@ -12,7 +12,7 @@ from core.driver import DRIVER
 from core.state import GameState, get_layout
 import core.token_data_v2 as token_data_v2
 import core.token_data_v3 as token_data_v3
-from core.token_data import TokenWidth, get_num_tokens, get_token_data, get_token_data_batch, get_token_dim
+from core.token_data import get_num_tokens, get_token_data, get_token_data_batch, get_token_dim
 from entities.player import PLAYERS
 from entities.company import COMPANIES
 from entities.turn import TURN
@@ -205,7 +205,7 @@ def test_checkpoint_evaluator_and_trainer_use_model_layout(
         assert not hasattr(getattr(model, "cfg"), "phase_conditioning")
         assert not hasattr(model, "phase_mod_diagnostics")
         assert getattr(model, "cfg").relation_input_mixing is relation_input_mixing
-        assert getattr(model, "global_info_proj").in_features == int(TokenWidth.TW_GLOBAL_INFO) - 1
+        assert getattr(model, "global_info_proj").in_features == int(token_data_v3.TokenWidth.TW_GLOBAL_INFO) - 1
     spec = get_model_input_spec(config)
     assert spec.layout_version == version
     assert getattr(model, "cfg").layout_version == version

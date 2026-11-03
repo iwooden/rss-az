@@ -54,7 +54,7 @@ game-aware (Section 5), and the boundary test's allowlist is empty
 |---|---|
 | `mcts/`, `train/eval_server.py`, `train/replay_buffer.py`, `train/trainer.py`, `train/policy_metrics.py`, `train/self_play.py`, `train/main.py`, `nn/model_contract.py` | None. |
 | `train/config.py` | RSS engine flags and the ACQ cap. The cap's bound comes from `games/rss.py`, imported only to check a non-default cap. |
-| `nn/__init__.py` | The RSS transformer fallback and RSS's default model, `transformer-v2.py`, loaded on first use and only for RSS configs. |
+| `nn/__init__.py` | The RSS transformer fallback, only for RSS configs, and v2's classes (`transformer-v2.py`) for tests and RSS tooling, loaded on first use. |
 | `nn/policy_layout.py` | RSS's layout under its legacy module names (`NUM_PHASES`, `PHASE_OFFSETS`, `UNIFIED_LOGIT_DIM`, `PHASES_WITH_PASS_SLOT`, `build_action_lut`) for the v2 and v3 model files, resolved from `games.rss` on first use. |
 
 ## 3. The adapter
@@ -311,27 +311,26 @@ game hooks.
 As built (step 4):
 
 - Loading. Importing `nn` loads no engine and no model file. A config's
-  module is its `model_path` (a module name or a file), or `transformer-v2.py`
-  for an RSS config without one, loaded on first use. `nn.RSSTransformerNet`,
+  module is its `model_path` (a module name or a file), loaded on first use;
+  a config without one builds no model (no default). `nn.RSSTransformerNet`,
   `TransformerBlock`, and `TransformerConfig` are v2's, resolved on first
   access through a module `__getattr__` for tests and RSS tooling.
 - Resolution. `create_model(config)` calls the module's
   `build_model(config, spec)` if it defines one, with the `TrainingConfig` and
   `get_model_input_spec(config)`. Otherwise it builds the RSS fallback,
-  `RSSTransformerNet(TransformerConfig(...))`, as before. The fallback, and
-  so the default, is RSS-only: for another game, `create_model` and
-  `get_model_input_spec` raise `ValueError` unless `model_path` names a
-  module that defines `build_model`. Other games have no default model. The
-  keyword form, `create_model(num_players=...)`, builds only the fallback and
-  raises `TypeError` for a module that defines `build_model`.
-- `layout_version` is still the module's `INPUT_LAYOUT_VERSION`, default 2
-  (RSS's v2), so a non-RSS model module sets its own.
+  `RSSTransformerNet(TransformerConfig(...))`, as before. The fallback is
+  RSS-only: for another game, `create_model` and `get_model_input_spec`
+  raise `ValueError` unless `model_path` names a module that defines
+  `build_model`. The keyword form,
+  `create_model(num_players=..., model_path=...)`, builds only the fallback
+  and raises `TypeError` for a module that defines `build_model`.
+- `layout_version` is the module's `INPUT_LAYOUT_VERSION`, which every
+  model module declares (no default).
 - `ModelInputSpec.game` is the registry name, last among the fields with
   default `"rss"`, so a spec built without it is RSS's.
-  `get_model_input_spec`, `NNEvaluator`'s inferred spec, and
-  `SharedEvalBuffers`' default spec take it, and their sizes, from the
-  `Game`. `NNEvaluator` and `SharedEvalBuffers` reject a spec for another
-  game, so tournament seats from two games fail there.
+  `get_model_input_spec` and `NNEvaluator`'s inferred spec take it, and
+  their sizes, from the `Game`. `NNEvaluator` and `SharedEvalBuffers` reject
+  a spec for another game, so tournament seats from two games fail there.
 - Checkpoints store the game in `config_json`; a config without it is RSS's
   (Section 3.4). The v2 parity fixture and the live v3 checkpoint have none.
   Resuming a run (`train.main._resolve_config`) raises `ValueError` when the

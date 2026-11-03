@@ -1504,7 +1504,7 @@ class TestFillTokenBuffer:
         buf = np.zeros(
             (evaluator.num_tokens, evaluator.token_dim), dtype=np.float32,
         )
-        RSS_GAME.fill_tokens(game_state, buf)
+        RSS_GAME.fill_tokens(game_state, buf, layout_version=evaluator.layout_version)
         # Not all-zero — the initialized state has populated tokens.
         assert np.any(buf != 0)
 

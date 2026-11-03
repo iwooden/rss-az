@@ -12,6 +12,7 @@ from train.trainer import Trainer
 def _make_trainer(training_steps_per_epoch: int) -> Trainer:
     model = torch.nn.Linear(1, 1)
     cfg = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         optimizer="adamw",
         learning_rate=1.0,
         lr_min=0.1,

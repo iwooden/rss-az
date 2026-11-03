@@ -350,6 +350,7 @@ def test_play_game_mixed_config_runs_3p_4p_5p_with_one_max_pool():
     torch.manual_seed(2)
     max_players = 5
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=0,
         min_players=3,
         max_players=max_players,

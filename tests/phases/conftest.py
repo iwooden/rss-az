@@ -45,9 +45,8 @@ from core.data import (
     PY_COMPANY_STAR_DIVISOR,
     PY_IMPACT_DIVISOR,
 )
-from core.token_data import (
-    get_token_data, get_num_tokens, get_token_widths, TokenDataSize, TokenWidth,
-)
+from core.token_data import get_token_data, get_num_tokens, get_token_widths
+from core.token_data_v2 import TokenDataSize, TokenWidth
 from entities.turn import TURN
 from entities.player import PLAYERS
 from entities.corp import CORPS
@@ -773,7 +772,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
 
     # Cross-check per-position widths against get_token_widths() — catches
     # both engine-side layout drift and test-side offset drift.
-    widths = get_token_widths(num_players)
+    widths = get_token_widths(num_players, layout_version=2)
     assert widths.shape == (num_tokens,), (
         f"{msg}\nget_token_widths({num_players}).shape={widths.shape} "
         f"!= ({num_tokens},)"
@@ -802,7 +801,7 @@ def assert_token_data_invariants(state, msg="", expected_decision_phase=None):
     )
 
     buf = np.zeros((num_tokens, token_dim), dtype=np.float32)
-    get_token_data(state, buf)
+    get_token_data(state, buf, layout_version=2)
 
     # --- Basic buffer invariants ---
     assert buf.shape == (num_tokens, token_dim), (

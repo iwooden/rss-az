@@ -151,8 +151,9 @@ class TrainingConfig:
 
     # --- Model ---
     model_type: str = ModelKind.TRANSFORMER.value
-    # Optional Python module/file path that provides the implementation for
-    # ``model_type``. For example: "nn/transformer-v2.py".
+    # Python module/file path that provides the implementation for
+    # ``model_type``, e.g. "nn/transformer-v2.py". There is no default: None
+    # is unset, and building a model or its input spec then raises.
     model_path: str | None = None
     # V2 per-block adaLN-Zero conditioning; filtered out of the v3 model config.
     phase_conditioning: bool = False

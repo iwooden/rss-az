@@ -79,6 +79,7 @@ def test_live_search_uses_checkpoint_acq_price_cap(
     tmp_path, checkpoint_cap, override, expected,
 ):
     config = TrainingConfig(
+        model_path="nn/transformer-v2.py",
         d_model=32, d_proj=8, num_heads=4, num_layers=1,
         max_acq_price_actions=checkpoint_cap,
     )

@@ -41,6 +41,7 @@ def _make_trainer(optimizer: str, *, v3: bool = False) -> Trainer:
         )
     cfg = TrainingConfig(
         num_players=NUM_PLAYERS,
+        model_path=f"nn/transformer-v{3 if v3 else 2}.py",
         optimizer=optimizer,
         learning_rate=3e-4,
         weight_decay=0.01,

@@ -178,11 +178,11 @@ Notes below name RSS's implementations where they matter
   Another game's buffer, or a capacity, player-range, or shape mismatch,
   skips it with only a warning. Checkpoints and buffers without a game are
   RSS's.
-- **Model selection.** `model_path` selects the implementation (default
-  `nn/transformer-v2.py`, for RSS only). A module that defines
+- **Model selection.** `model_path` selects the implementation; every config
+  that builds a model names one (no default). A module that defines
   `build_model(config, spec)` builds its own model for any game; any other is
-  an RSS transformer. Its `INPUT_LAYOUT_VERSION` sets token width for
-  every consumer (`get_model_input_spec`). `phase_conditioning`, `d_proj`, and
-  `price_slot_fourier_bands` are v2-only, and `relation_input_mixing` and
-  `zero_sum_values` are v3-only. Engine flags `v3_behavior` and
+  an RSS transformer. Every module declares `INPUT_LAYOUT_VERSION`, which sets
+  token width for every consumer (`get_model_input_spec`).
+  `phase_conditioning`, `d_proj`, and `price_slot_fourier_bands` are v2-only,
+  and `relation_input_mixing` and `zero_sum_values` are v3-only. Engine flags `v3_behavior` and
   `acq_same_president` are independent of the model (see `README.md`).

@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from games import get_game
+from nn import get_model_input_spec
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
 
@@ -66,9 +67,9 @@ class Trainer:
         self._game = game = get_game(config)
         self._policy = game.policy
 
-        model_cfg = getattr(self._base_model, "cfg", None)
-        self._layout_version = int(getattr(model_cfg, "layout_version", 2))
-        self._token_dim = game.token_dim(self._layout_version)
+        spec = get_model_input_spec(config)
+        self._layout_version = spec.layout_version
+        self._token_dim = spec.token_dim
         self._num_players = config.effective_max_players
         self._num_tokens = game.num_tokens(self._num_players)
         self._state_size = game.state_size(self._num_players)

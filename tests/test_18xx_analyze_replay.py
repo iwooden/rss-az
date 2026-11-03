@@ -8,7 +8,7 @@ from utils_18xx.analyze_replay import analyze_replay
 
 
 def test_analyze_replay_outputs_grouped_markdown_for_bid_fixture() -> None:
-    config = TrainingConfig(num_players=3)
+    config = TrainingConfig(model_path="nn/transformer-v2.py", num_players=3)
     model = create_model(config).to(torch.device("cpu"))
     model.eval()
 
@@ -31,7 +31,7 @@ def test_analyze_replay_outputs_grouped_markdown_for_bid_fixture() -> None:
 
 
 def test_analyze_replay_outputs_html_summary_tables() -> None:
-    config = TrainingConfig(num_players=3)
+    config = TrainingConfig(model_path="nn/transformer-v2.py", num_players=3)
     model = create_model(config).to(torch.device("cpu"))
     model.eval()
 

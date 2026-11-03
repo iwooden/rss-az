@@ -115,8 +115,8 @@ def _patch(monkeypatch, mutation):
     """Patch conftest.get_token_data to apply ``mutation(buf)`` after fill."""
     original = phase_conftest.get_token_data
 
-    def patched(state, buf):
-        original(state, buf)
+    def patched(state, buf, *, layout_version):
+        original(state, buf, layout_version=layout_version)
         mutation(buf)
 
     monkeypatch.setattr(phase_conftest, "get_token_data", patched)

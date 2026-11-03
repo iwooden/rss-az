@@ -26,13 +26,12 @@ from core.data import (
 )
 from core.state import GameState
 from core.token_data import (
-    TokenDataSize,
-    TokenWidth,
     get_num_tokens,
     get_token_data,
     get_token_data_batch,
     get_token_widths,
 )
+from core.token_data_v2 import TokenDataSize, TokenWidth
 from tests.phases.conftest import play_random_decisions
 
 
@@ -253,7 +252,7 @@ def test_v2_compiled_cuda_ignores_sparse_quantity_records() -> None:
     for row in range(2):
         state = GameState(3)
         state.initialize_game(3, seed=row)
-        get_token_data(state, raw[row])
+        get_token_data(state, raw[row], layout_version=2)
     x = torch.from_numpy(raw).cuda()
     legal = torch.ones(2, U_DIM, dtype=torch.bool, device="cuda")
     coords = _zero_relation_coords(2, device=torch.device("cuda"))
@@ -673,13 +672,13 @@ def _token_buffer_for_state(state: GameState) -> torch.Tensor:
         (num_tokens, int(TokenDataSize.TOKEN_DIM)),
         dtype=np.float32,
     )
-    get_token_data(state, buf)
+    get_token_data(state, buf, layout_version=2)
     return torch.from_numpy(buf).unsqueeze(0)
 
 
 def test_token_widths_report_player_widths_for_all_capacity_rows() -> None:
     max_players = 5
-    widths = get_token_widths(max_players)
+    widths = get_token_widths(max_players, layout_version=2)
 
     assert widths.shape == (get_num_tokens(max_players),)
     assert widths[-max_players:].tolist() == [
@@ -698,8 +697,8 @@ def test_token_data_emits_zero_padded_player_rows_for_larger_capacity(
     exact = np.zeros((get_num_tokens(3), token_dim), dtype=np.float32)
     padded = np.full((get_num_tokens(5), token_dim), 7.0, dtype=np.float32)
 
-    get_token_data(state, exact)
-    get_token_data(state, padded, max_players=5)
+    get_token_data(state, exact, layout_version=2)
+    get_token_data(state, padded, max_players=5, layout_version=2)
 
     assert padded.shape == (get_num_tokens(5), token_dim)
     np.testing.assert_allclose(padded[:player_base + 3], exact)
@@ -749,11 +748,11 @@ def test_token_data_batch_reads_actual_player_counts_in_mixed_capacity_batch(
         dtype=np.float32,
     )
 
-    get_token_data_batch([state._array for state in states], batch)
+    get_token_data_batch([state._array for state in states], batch, layout_version=2)
 
     for row, (state, num_players) in enumerate(zip(states, player_counts, strict=True)):
         exact = np.zeros((get_num_tokens(num_players), token_dim), dtype=np.float32)
-        get_token_data(state, exact)
+        get_token_data(state, exact, layout_version=2)
 
         np.testing.assert_allclose(batch[row, :player_base + num_players], exact)
         np.testing.assert_array_equal(
@@ -809,7 +808,7 @@ def _padded_tokens_for_state(
         (get_num_tokens(max_players), int(TokenDataSize.TOKEN_DIM)),
         dtype=np.float32,
     )
-    get_token_data(state, buffer, max_players=max_players)
+    get_token_data(state, buffer, max_players=max_players, layout_version=2)
     return torch.from_numpy(buffer).unsqueeze(0)
 
 

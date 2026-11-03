@@ -42,7 +42,7 @@ class SmokeTransformerModel(torch.nn.Module):
 
     def __init__(self, num_players: int = MAX_PLAYERS) -> None:
         super().__init__()
-        self.cfg = SimpleNamespace(num_players=num_players)
+        self.cfg = SimpleNamespace(num_players=num_players, layout_version=2)
         self.logit_scale = torch.nn.Parameter(torch.tensor(0.0))
         self.values = torch.nn.Parameter(torch.zeros(num_players))
         self.register_buffer(
@@ -71,6 +71,7 @@ class SmokeTransformerModel(torch.nn.Module):
 
 def _smoke_config(*, num_workers: int) -> TrainingConfig:
     return TrainingConfig(
+        model_path="nn/transformer-v2.py",
         num_players=0,
         min_players=3,
         max_players=MAX_PLAYERS,
