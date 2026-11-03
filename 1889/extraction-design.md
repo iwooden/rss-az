@@ -1,9 +1,8 @@
 # Shikoku 1889 Feature Extraction Design
 
 Status: design for step 7 of [`pipeline-refactor.md`](pipeline-refactor.md),
-dated 2026-11-02, for review. Nothing here is implemented. Section 13 lists
-the open questions with a recommendation each; the user settles them before
-7.1 starts, as for [`engine-design.md`](engine-design.md) §12.
+dated 2026-11-02; the user accepted every recommendation in Section 13 on
+2026-11-03. Implementation follows Section 11's sub-steps.
 
 Step 7 fills the extraction half of `games/g1889.py`, whose callables raise
 `NotImplementedError` and whose sizes are `NO_SIZE` (`games/g1889.py:49-50`,
@@ -774,8 +773,8 @@ on its existing fixture.
 
 ## 13. Decisions
 
-Each item gives the options and a recommendation; the user accepts or
-amends each.
+Each item gives the options and a recommendation. The user accepted every
+recommendation on 2026-11-03.
 
 1. **Row set and order.** (a) Section 5.1: three shared rows (GLOBAL,
    PRICE, DIVIDEND), then corps, privates, trains, hexes, 15 candidates,
@@ -851,7 +850,7 @@ amends each.
       corp. (b) CORP 2 alone, so the depot and the pool look alike.
     - **The corp a sale is of.** (a) Its own slot, CORP 3, at SELL_AMOUNT
       and EMERGENCY_SELL_AMOUNT. (b) CORP 2, shared with the train's seller
-      and told apart by the phase, so CORP keeps 49 slots.
+      and told apart by the phase, so CORP keeps 50 slots.
     - **SELL_AMOUNT's decision corp.** (a) None, as at STOCK. (b) The
       pending corp, as at PAR.
 
