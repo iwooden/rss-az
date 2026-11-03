@@ -15,8 +15,9 @@ from g1889.constants cimport (
     DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND,
     DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE,
     DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
-    DPHASE_TRAIN_PRICE, NUM_STEPS, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND, STEP_GAME_OVER, STEP_OR_END,
-    STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END, STEP_TURN_START,
+    DPHASE_TRAIN_PRICE, MAX_ACTION_SIZE, NUM_STEPS, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND,
+    STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END,
+    STEP_TURN_START,
 )
 from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_round, turn_step
 from g1889.phases.auction cimport apply_auction, apply_bid
@@ -55,11 +56,11 @@ cdef class GameDriver:
         amounts, so its one point is forced."""
         cdef uint16_t ids[62]  # MAX_ACTION_SIZE
         cdef int count = enumerate_policy_actions(state, ids)
-        cdef int action_id = ids[0]
-        cdef int phase
+        cdef int action_id, phase
         assert count > 0, f"_forced_action: no policy actions at step {Step(turn_step(state)).name}"
         if count != 1:
             return -1
+        action_id = ids[0]
         phase = get_decision_phase(state)
         if has_exact_amounts(phase) and enumerate_legal_actions(state, ids) == 1 and wide_amount_range(state, phase):
             return -1
@@ -200,3 +201,6 @@ DRIVER = GameDriver()
 for _name, _member in ActionStatus.__members__.items():
     globals()[_name] = int(_member)
 del _name, _member
+
+# _forced_action's buffer is sized with the literal 62.
+assert <int>MAX_ACTION_SIZE == 62

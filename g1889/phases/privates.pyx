@@ -24,20 +24,21 @@ BuyTrain. ``actions.pyx`` has the legality.
 """
 
 from g1889.actions cimport (
-    ACTION_BUY_PRIVATE, ACTION_DR_EXCHANGE, ACTION_LAY_CANDIDATE, ACTION_PASS, ActionInfo, LayCandidate,
-    er_candidates, price_amount,
+    ACTION_BUY_PRIVATE, ACTION_DR_EXCHANGE, ACTION_LAY_CANDIDATE, ACTION_MF_PORT, ACTION_PASS, ActionInfo,
+    LayCandidate, er_candidates, price_amount,
 )
 from g1889.constants cimport (
     OWNER_PLAYER, STEP_ER_BONUS, STEP_PORT, STEP_PRIVATE_PRICE, STEP_TURN_END,
 )
 from g1889.data.tables cimport (
-    ER_HEX, MF_PORT_HEX, NUM_PORTS, NUM_SUPPLY_TILES, PORT_TILE, PRIVATE_DR, PRIVATE_ER, PRIVATE_MF, TILE_COST,
+    ER_HEX, MAX_LAY_CANDIDATES, MF_PORT_HEX, NUM_PORTS, NUM_SUPPLY_TILES, PORT_TILE, PRIVATE_DR, PRIVATE_ER,
+    PRIVATE_MF, TILE_COST,
 )
 from g1889.entities.corp cimport corp_president
 from g1889.entities.hexmap cimport HexMap
 from g1889.entities.private cimport MF_PORT_USED, Private, private_owner
 from g1889.entities.turn cimport (
-    TurnState, turn_operating_corp, turn_pending_private, turn_pending_seller, turn_return_step, turn_step,
+    TurnState, turn_operating_corp, turn_pending_private, turn_step,
 )
 from g1889.state cimport GameState
 
@@ -46,12 +47,6 @@ from g1889.entities import hexmap as _hexmap, private as _private, turn as _turn
 cdef HexMap MAP = _hexmap.MAP
 cdef list PRIVATES = _private.PRIVATES
 cdef TurnState TURN = _turn.TURN
-
-
-cdef void _resume(GameState state) except *:
-    """Back to the step the interjection came from."""
-    TURN.set_step(state, turn_return_step(state))
-    TURN.set_return_step(state, -1)
 
 
 cdef void apply_interjection(GameState state, const ActionInfo* info) except *:
@@ -64,6 +59,7 @@ cdef void apply_interjection(GameState state, const ActionInfo* info) except *:
     elif info.type == ACTION_DR_EXCHANGE:
         (<Private>PRIVATES[<int>PRIVATE_DR]).exchange(state)
     else:
+        assert info.type == ACTION_MF_PORT, f"apply_interjection: action type {info.type}"
         TURN.set_return_step(state, turn_step(state))
         TURN.set_step(state, STEP_PORT)
 
@@ -86,7 +82,7 @@ cdef void apply_private_price(GameState state, const ActionInfo* info) except *:
     (<Private>PRIVATES[p]).sell_to_corp(state, turn_operating_corp(state), price)
     TURN.set_pending_private(state, -1)
     if p != <int>PRIVATE_ER:
-        _resume(state)
+        TURN.resume(state)
         return
     TURN.set_pending_seller(state, seller)
     TURN.set_active_player(state, seller)
@@ -107,7 +103,7 @@ cdef void apply_er_bonus(GameState state, const ActionInfo* info) except *:
         assert info.type == ACTION_PASS, f"apply_er_bonus: action type {info.type}"
     TURN.set_pending_seller(state, -1)
     TURN.set_active_player(state, corp_president(state, turn_operating_corp(state)))
-    _resume(state)
+    TURN.resume(state)
 
 
 cdef void apply_port(GameState state, const ActionInfo* info) except *:
@@ -116,9 +112,12 @@ cdef void apply_port(GameState state, const ActionInfo* info) except *:
     cdef Private mf = <Private>PRIVATES[<int>PRIVATE_MF]
     MAP.lay(state, info.hex, <int>PORT_TILE, info.count)
     mf.set_flags(state, mf.flags(state) | <int>MF_PORT_USED)
-    _resume(state)
+    TURN.resume(state)
 
 
 # The ER and port lays charge nothing: C4 and the port hexes have no terrain.
 assert TILE_COST[<int>NUM_SUPPLY_TILES + <int>ER_HEX] == 0
 assert all(TILE_COST[<int>NUM_SUPPLY_TILES + MF_PORT_HEX[i]] == 0 for i in range(<int>NUM_PORTS))
+
+# er_candidates' buffer is sized with the literal 15.
+assert <int>MAX_LAY_CANDIDATES == 15

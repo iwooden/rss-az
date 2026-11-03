@@ -2,7 +2,7 @@
 
 from libc.stdint cimport int16_t
 
-from g1889.constants cimport OWNER_CORP, OWNER_PLAYER
+from g1889.constants cimport OWNER_CORP, OWNER_PLAYER, SHARES_PER_CORP
 from g1889.data.tables cimport (
     CORP_TOKEN_PRICE, CORP_TOKENS, FLOAT_PERCENT, MARKET_SHARE_LIMIT, NUM_CORPS, NUM_PAR_PRICES, PAR_COL,
     PAR_PRICE, PAR_ROW,
@@ -51,6 +51,15 @@ cdef bint corp_floated(GameState state, int corp) noexcept nogil:
     return _get(state, corp, CORP_FIELDS.floated) != 0
 
 
+cdef int corp_floated_mask(GameState state) noexcept nogil:
+    """The floated corps, as a corp mask."""
+    cdef int mask = 0
+    cdef int c
+    for c in range(<int>NUM_CORPS):
+        mask |= corp_floated(state, c) << c
+    return mask
+
+
 cdef int corp_cash(GameState state, int corp) noexcept nogil:
     return _get(state, corp, CORP_FIELDS.cash)
 
@@ -96,7 +105,8 @@ cdef int corp_successor(GameState state, int corp) noexcept nogil:
     president keeps the corp while nobody holds more, since ties never change
     it. Otherwise the largest holder with at least the President's
     Certificate's two shares takes it, the nearest clockwise from the
-    president first; with none, the president stays."""
+    president first; with none, the president stays. The corp must have a
+    president; its callers assert it, as this nogil function cannot raise."""
     cdef int president = corp_president(state, corp)
     cdef int n = turn_num_players(state)
     cdef int most = 0
@@ -200,8 +210,7 @@ cdef class Corporation:
         return corp_president(state, self.corp_id)
 
     cpdef void set_president(self, GameState state, int player):
-        cdef int num_players = <int>state._data[LAYOUT.global_offset + GLOBALS.num_players]
-        assert -1 <= player < num_players, f"president {player} out of range"
+        assert -1 <= player < turn_num_players(state), f"president {player} out of range"
         _set(state, self.corp_id, CORP_FIELDS.president, player)
 
     cpdef int tokens_left(self, GameState state):
@@ -245,11 +254,11 @@ cdef class Corporation:
         cdef int corp = self.corp_id
         assert corp_par_index(state, corp) < 0 and 0 <= par_index < <int>NUM_PAR_PRICES, \
             f"cannot par {self.sym} at index {par_index}"
+        self._move_to_player(state, player, <int>PRESIDENT_SHARES, <int>PRESIDENT_SHARES * PAR_PRICE[par_index])
         self.set_par_index(state, par_index)
         MARKET.set_position(state, corp, PAR_ROW[par_index], PAR_COL[par_index])
         self.set_president(state, player)
         self.set_ipo_shares(state, corp_ipo_shares(state, corp) - <int>PRESIDENT_SHARES)
-        self._move_to_player(state, player, <int>PRESIDENT_SHARES, <int>PRESIDENT_SHARES * PAR_PRICE[par_index])
 
     cpdef void buy_share(self, GameState state, int player, bint from_pool):
         """``player`` buys a share from the IPO at par or from the pool at the
@@ -259,13 +268,14 @@ cdef class Corporation:
         cdef int corp = self.corp_id
         if from_pool:
             assert corp_pool_shares(state, corp) > 0, f"no {self.sym} share in the pool"
-            self.set_pool_shares(state, corp_pool_shares(state, corp) - 1)
             self._move_to_player(state, player, 1, market_price(state, corp))
+            self.set_pool_shares(state, corp_pool_shares(state, corp) - 1)
         else:
             assert corp_par_index(state, corp) >= 0 and corp_ipo_shares(state, corp) > 0, \
                 f"no {self.sym} share in the IPO"
-            self.set_ipo_shares(state, corp_ipo_shares(state, corp) - 1)
             self._move_to_player(state, player, 1, corp_par_price(state, corp))
+            self.set_ipo_shares(state, corp_ipo_shares(state, corp) - 1)
+        assert corp_president(state, corp) >= 0, f"{self.sym} has no president"
         self.set_president(state, corp_successor(state, corp))
         self.float_if_ready(state)
 
@@ -286,6 +296,7 @@ cdef class Corporation:
         self.set_ipo_shares(state, corp_ipo_shares(state, corp) - 1)
         holder.set_shares(state, corp, player_shares(state, player, corp) + 1)
         if parred:
+            assert corp_president(state, corp) >= 0, f"{self.sym} has no president"
             self.set_president(state, corp_successor(state, corp))
             self.float_if_ready(state)
 
@@ -299,6 +310,7 @@ cdef class Corporation:
         assert 0 < count <= corp_max_sale(state, player, corp), f"cannot sell {count} {self.sym} shares"
         self.set_pool_shares(state, corp_pool_shares(state, corp) + count)
         self._move_to_player(state, player, -count, count * market_price(state, corp))
+        assert corp_president(state, corp) >= 0, f"{self.sym} has no president"
         self.set_president(state, corp_successor(state, corp))
         for i in range(count):
             MARKET.move_down(state, corp)

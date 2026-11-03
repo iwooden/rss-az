@@ -53,7 +53,7 @@ _init_tables()
 
 # Python mirrors: a bare assignment would be shadowed by the cdef names.
 for _enum in (
-    Round, Step, DecisionPhase, Owner, EndReason, AuctionRules, AuctionAction, BidAction, StockAction,
+    Round, Step, DecisionPhase, Owner, EndReason, Shares, AuctionRules, AuctionAction, BidAction, StockAction,
     SellAmountAction, ParAction, TrackAction, TileAction, TokenAction, DividendAction, DiscardAction,
     TrainSource, BuyTrainAction, SelectTrainAction, TrainPriceAction, BuyPrivateAction, PrivatePriceAction,
     ErBonusAction, PortAction, PolicyDims,

@@ -50,7 +50,7 @@ from g1889.entities.player cimport Player, player_cash
 from g1889.entities.trains cimport Trains, trains_first_crowded
 from g1889.entities.turn cimport (
     TurnState, turn_ebuy_sold_mask, turn_operating_corp, turn_pending_corp, turn_pending_train_source,
-    turn_pending_train_type, turn_return_step,
+    turn_pending_train_type,
 )
 from g1889.phases.operating cimport end_game, resort_order
 from g1889.state cimport GameState
@@ -67,11 +67,15 @@ cdef TurnState TURN = _turn.TURN
 
 
 cdef void _bought(GameState state, int train_type) except *:
-    """After a purchase: the phase may advance (``Phase#buying_train!``), and
-    then the first corp over its new limit discards; otherwise BUY_TRAIN
-    goes on. A purchase after emergency sales spends the treasury, which
-    passes Ruby's step and clears ``last_share_sold_price``."""
+    """After a purchase: the pending source and type clear, and BUY_TRAIN
+    goes on, unless the phase advances (``Phase#buying_train!``) and a corp
+    is over its new limit: then the first such corp discards. A purchase
+    after emergency sales spends the treasury, which passes Ruby's step and
+    clears ``last_share_sold_price``."""
     cdef int crowded
+    TURN.set_pending_train_source(state, -1)
+    TURN.set_pending_train_type(state, -1)
+    TURN.set_step(state, STEP_BUY_TRAIN)
     TURN.set_ebuy_sold_any(state, 0)
     if not PHASE.on_train_bought(state, train_type):
         return
@@ -153,7 +157,8 @@ cdef void apply_select_train(GameState state, const ActionInfo* info) except *:
     """Buy a train of the chosen type from the pending source: from the depot
     or the pool at its list price, the president paying what the treasury
     lacks in an emergency, or a D for a traded 4, 5, or 6 and ¥800; or choose
-    another corp's train (TRAIN_PRICE follows). BUY_TRAIN goes on."""
+    another corp's train (TRAIN_PRICE follows). After a purchase, ``_bought``
+    picks the next step."""
     cdef int corp = turn_operating_corp(state)
     cdef int source = turn_pending_train_source(state)
     cdef int t = info.train_type
@@ -161,8 +166,6 @@ cdef void apply_select_train(GameState state, const ActionInfo* info) except *:
         TURN.set_pending_train_type(state, t)
         TURN.set_step(state, STEP_TRAIN_PRICE)
         return
-    TURN.set_pending_train_source(state, -1)
-    TURN.set_step(state, STEP_BUY_TRAIN)
     if info.type == ACTION_TRADE_IN:
         TRAINS.trade_in_for_d(state, corp, t)
         t = <int>D_TRAIN
@@ -177,13 +180,10 @@ cdef void apply_select_train(GameState state, const ActionInfo* info) except *:
 
 cdef void apply_train_price(GameState state, const ActionInfo* info) except *:
     """Buy the pending train from its corp for the chosen price, paid to the
-    seller (``Game#buy_train``), and go back to BUY_TRAIN."""
+    seller (``Game#buy_train``); ``_bought`` picks the next step."""
     cdef int t = turn_pending_train_type(state)
     TRAINS.buy_from_corp(state, turn_operating_corp(state), turn_pending_train_source(state) - TRAIN_SOURCE_CORP,
                          t, price_amount(state, info))
-    TURN.set_pending_train_source(state, -1)
-    TURN.set_pending_train_type(state, -1)
-    TURN.set_step(state, STEP_BUY_TRAIN)
     _bought(state, t)
 
 
@@ -206,7 +206,6 @@ cdef void apply_discard(GameState state, const ActionInfo* info) except *:
     TRAINS.discard(state, trains_first_crowded(state), info.train_type)
     corp = trains_first_crowded(state)
     if corp < 0:
-        TURN.set_step(state, turn_return_step(state))
-        TURN.set_return_step(state, -1)
+        TURN.resume(state)
         corp = turn_operating_corp(state)
     TURN.set_active_player(state, corp_president(state, corp))

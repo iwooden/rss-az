@@ -150,7 +150,7 @@ mirror (engine-design §1):
 
 | Module | Addition | Reused by |
 |---|---|---|
-| `entities/hexmap` | `map_put_tile(state, hex, tile, rotation)`: supply exchange, canonical rotation, `invalidate_connectivity` (`hexmap.pyx:55`) | `MAP.lay` after its asserts (`hexmap.pyx:215-228`) |
+| `entities/hexmap` | `map_put_tile(state, hex, tile, rotation)`: supply exchange, canonical rotation, `invalidate_connectivity` (`hexmap.pyx:47`) | `MAP.lay` after its asserts (`hexmap.pyx:204-217`) |
 | `entities/hexmap` | `map_put_token(state, hex, corp)`: `tokens_left` − 1, the mask bit | `MAP.place_token` (`:239-248`) |
 | `entities/trains` | `trains_set_count(state, corp, type, count)` | `TRAINS.set_corp_trains` (`trains.pyx:144-149`) |
 | `entities/market` | `market_moved(row, col, move, steps, int* row, int* col)`, pure | `MARKET.move_*` (`market.pyx:113-146`) |
@@ -159,9 +159,9 @@ Everything else extraction reads is already exported nogil: GRAPH
 (`graph.pxd:19-21`), `route_max` and `solve_routes` (`routes/solver.pxd:29-30`),
 `lay_candidates`, `er_candidates`, `can_token`, `can_buy_private`,
 `can_exchange_dr`, `must_buy_train`, `in_emergency`, and `price_amount`
-(`actions.pxd:78-98`), and the entity getters (`corp.pxd:21-34`,
-`player.pxd:9-22`, `private.pxd:11-22`, `trains.pxd:6-16`,
-`market.pxd:13-26`, `hexmap.pxd:18-28`). Fills read other raw slots by
+(`actions.pxd:78-98`), and the entity getters (`corp.pxd:21-35`,
+`player.pxd:9-23`, `private.pxd:11-22`, `trains.pxd:6-16`,
+`market.pxd:13-26`, `hexmap.pxd:19-29`). Fills read other raw slots by
 layout offsets, as RSS's extractors do.
 
 ## 4. The prologue, the cache write-back, and the scratch state
@@ -176,7 +176,7 @@ trainer fills relations before tokens, the eval worker tokens before
 relations, and the second finds the caches fresh.
 
 **Write-back.** The refresh writes the caches into the row it reads, as the
-engine's lazy getters do (`graph.pyx:190-206`, `solver.pyx:610-619`).
+engine's lazy getters do (`graph.pyx:189-205`, `solver.pyx:610-619`).
 
 - **What changes.** Only the graph block, `route_available`, `route_cache`,
   and the dirty bits `conn_dirty` and `route_dirty`; each written value is
@@ -207,7 +207,7 @@ scratch `GameState` of the batch's capacity before its nogil loop (a numpy
 buffer and `from_buffer`; **Test:** about 1 µs). For each hypothetical, nogil code
 copies the row in, applies the change through Section 3's primitives, and
 calls `graph_refresh`, `route_max`, or `lay_candidates` on it. A lay marks
-every corp stale (`hexmap.pyx:55-57`), so the scratch caches are recomputed.
+every corp stale (`hexmap.pyx:47-49`), so the scratch caches are recomputed.
 The live row is never touched beyond its own caches. The solver aborts above
 `MAX_ROUTES` (4) trains (`solver.pyx:560-562`), so a hypothetical train is
 added only to a corp holding fewer than 4.
@@ -363,7 +363,7 @@ slots, so step 8 can project both with one layer.
 | 2-77 | tile block | |
 | 78 | revenue to a D train /100 | `map_revenue(..., is_d=True)` |
 | 79, 80 | mountain, water | `TILE_TERRAIN` of the printed tile |
-| 81, 82, 83 | tokens /3, free slots /3, home reservation open | `hex_tokens`, `map_free_slots` (`hexmap.pyx:74-79`) |
+| 81, 82, 83 | tokens /3, free slots /3, home reservation open | `hex_tokens`, `map_free_slots` (`hexmap.pyx:66-71`) |
 | 84 | lay cost /100, before SMR | `TILE_COST[tile]` |
 | 85 | blocked by a private | `private_blocks_hex` |
 | 86-91 | dangling exits: track at a side whose hex across has none facing back | `hex_paths` of both |
@@ -397,7 +397,7 @@ operating corp is in its turn, which is all the row keeps.
 | 1 | is_selected: the actor | `active_player` |
 | 2-6 | seats after the actor, one-hot (0 = the actor) | |
 | 7 | priority holder | `priority_player` |
-| 8, 9 | cash, value /1000 | `player_value` (`player.pxd:22`) |
+| 8, 9 | cash, value /1000 | `player_value` (`player.pxd:23`) |
 | 10, 11 | certificates / limit; certificates /25 | `player_cert_count`, `CERT_LIMIT` |
 | 12-18, 19-25, 26-32 | shares /10, sold this SR, bids /100, by corp or private | `shares`, `sold_mask`, `bids` |
 | 33, 34 | passed, bankrupt | |
@@ -443,7 +443,7 @@ record count, as conformance asserts (`tests/test_game_adapter.py:419`).
 - **Reach is GRAPH's,** Ruby's `connected_hexes` and `connected_nodes`
   (`graph.pxd:1-10`). A reached hex is one where the corp's walks reach some
   side: the network's own hexes and the hexes across its dangling exits
-  (`graph.pyx:84-104`). That is where a lay can start, not "on the
+  (`graph.pyx:83-103`). That is where a lay can start, not "on the
   network" (Section 12). Corps without a token reach nothing.
 - **TRACK_LINK** is one symmetric plane, both entries set; direction comes
   from the static side planes.
@@ -523,7 +523,7 @@ self-play's denser maps.
 - **Mapping.** TILE slot k is candidate row k: `_enumerate_tile` emits ids
   0 to count − 1 over `enumerate_lay_candidates` (`actions.pyx:751-761`).
   ER_BONUS slot 1 + k is row k over `er_candidates` (`actions.pyx:1183-1213`;
-  `ER_BONUS_CANDIDATE` = 1, `constants.pxd:194-197`). Extraction calls the
+  `ER_BONUS_CANDIDATE` = 1, `constants.pxd:216-219`). Extraction calls the
   same functions, so the order cannot drift.
 - **Outcomes** (CANDIDATE 99-107). For each candidate, on the scratch
   state: `map_put_tile`, then `graph_refresh` and `route_max` for the
@@ -564,7 +564,7 @@ candidate attend to its hex and to the hexes across its exits (relations
 | PORT | port hex i × rotation r | the 4 port HEX rows and tile 437's mask at r, a static table | none |
 
 - **PORT** needs no candidate rows. Its ids are fixed, `6i + r`
-  (`constants.pxd:200-202`), and random play reached at most 10 of the 24.
+  (`constants.pxd:222-224`), and random play reached at most 10 of the 24.
   A port lay changes no route, and it is one decision per game.
 - **Train deltas** add one train of each type the policy set offers
   (depot, pool, or another corp's), or swap a traded 4, 5, or 6 for a D,
@@ -605,7 +605,7 @@ lands as its own step (here called 7b) before the comparison.
 - **Corp summaries** (revenue within 0, 1, 2 lays) and unfloated corps
   "as if stationed at home" (blueprint §7.1) go in a new token layout, id 3
   (Section 13, item 2). GRAPH
-  needs a token (`graph.pyx:167-172`), so the home case runs on a scratch
+  needs a token (`graph.pyx:166-171`), so the home case runs on a scratch
   row with a hypothetical home token.
 - **Validation** as blueprint §7.3:
   - exact minimum-lay search to depth 3 on self-play and fixture states;
@@ -746,7 +746,7 @@ on its existing fixture.
    `or_index`. The **train limit** (§5, global) is a function of the phase.
 5. **Build distance 0, "on network"** (§6.3). The v0 reach planes are
    GRAPH's: they include the hexes across dangling exits
-   (`graph.pyx:84-104`), so they mean "a lay can start here".
+   (`graph.pyx:83-103`), so they mean "a lay can start here".
 6. **Edge budget** (§6.4). Without build distance, v0 already bounds at
    1,844 (2,048 rounded), and reach accounts for 1,078 of it. Build distance
    adds 728, and the §8 planes up to 1,300.

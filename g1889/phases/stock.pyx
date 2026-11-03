@@ -29,7 +29,7 @@ from g1889.constants cimport (
     ROUND_OPERATING, ROUND_STOCK, STEP_OR_START, STEP_PAR, STEP_SELL_AMOUNT, STEP_SR_END, STEP_STOCK,
 )
 from g1889.data.tables cimport NUM_CORPS, PHASE_ORS
-from g1889.entities.corp cimport Corporation, corp_floated
+from g1889.entities.corp cimport Corporation, corp_floated_mask
 from g1889.entities.market cimport Market, market_sort_by_price
 from g1889.entities.phase cimport game_phase
 from g1889.entities.player cimport Player, all_passed, clear_passed, player_sold_mask
@@ -58,12 +58,19 @@ cdef inline Corporation _corp_at(int corp):
 # TURNS
 # =============================================================================
 
-cdef void _start_turn(GameState state, int player) except *:
-    """``start_entity``: the player's turn opens with nothing bought or sold."""
-    TURN.set_active_player(state, player)
+cdef void _clear_sr_turn(GameState state) except *:
+    """Clear the turn's purchase and sales (``sr_bought``, ``sr_sold_mask``,
+    ``sr_sold_then_bought``). Each turn's start clears them, and so does
+    SR_END, which keeps the OR's rows free of stale SR values."""
     TURN.set_sr_bought(state, 0)
     TURN.set_sr_sold_mask(state, 0)
     TURN.set_sr_sold_then_bought(state, 0)
+
+
+cdef void _start_turn(GameState state, int player) except *:
+    """``start_entity``: the player's turn opens with nothing bought or sold."""
+    TURN.set_active_player(state, player)
+    _clear_sr_turn(state)
     TURN.set_step(state, STEP_STOCK)
 
 
@@ -139,21 +146,16 @@ cdef void run_sr_end(GameState state) except *:
     length is fixed by the phase. The passes and SR sales clear, and the OR
     begins."""
     cdef int[7] order  # NUM_CORPS
-    cdef int floated = 0
-    cdef int c, i, count
+    cdef int i, count
     TURN.set_priority_player(state, TURN.next_player(state, turn_active_player(state)))
-    for c in range(<int>NUM_CORPS):
-        floated |= corp_floated(state, c) << c
-    count = market_sort_by_price(state, floated, order)
+    count = market_sort_by_price(state, corp_floated_mask(state), order)
     for i in range(count):
         if _corp_at(order[i]).sold_out(state):
             MARKET.move_up(state, order[i])
     clear_passed(state)
     for i in range(turn_num_players(state)):
         _player_at(i).set_sold_mask(state, 0)
-    TURN.set_sr_bought(state, 0)
-    TURN.set_sr_sold_mask(state, 0)
-    TURN.set_sr_sold_then_bought(state, 0)
+    _clear_sr_turn(state)
     TURN.set_or_count(state, PHASE_ORS[game_phase(state)])
     TURN.set_or_num(state, 1)
     TURN.set_round(state, ROUND_OPERATING)

@@ -42,6 +42,7 @@ cdef class TurnState:
     cpdef void set_step(self, GameState state, int value)
     cpdef int return_step(self, GameState state)
     cpdef void set_return_step(self, GameState state, int value)
+    cpdef void resume(self, GameState state)
     cpdef int turn(self, GameState state)
     cpdef void set_turn(self, GameState state, int value)
     cpdef int or_num(self, GameState state)

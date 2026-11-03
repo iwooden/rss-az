@@ -125,9 +125,8 @@ cdef class Private:
 
     cpdef void set_owner(self, GameState state, int owner):
         """Set the owner code: not in play, closed, unsold, a player, or a corp."""
-        cdef int num_players = <int>state._data[LAYOUT.global_offset + GLOBALS.num_players]
         assert (<int>OWNER_NOT_IN_PLAY <= owner <= <int>OWNER_UNSOLD
-                or <int>OWNER_PLAYER <= owner < <int>OWNER_PLAYER + num_players
+                or <int>OWNER_PLAYER <= owner < <int>OWNER_PLAYER + turn_num_players(state)
                 or <int>OWNER_CORP <= owner < <int>OWNER_CORP + <int>NUM_CORPS), f"owner code {owner}"
         state._data[_slot(self.private_id, PRIVATE_FIELDS.owner)] = <int16_t>owner
 

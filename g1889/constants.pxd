@@ -87,6 +87,10 @@ cpdef enum EndReason:
     END_REASON_BANK = 2
     NUM_END_REASONS = 3
 
+# A corp's shares, in 10% units; the President's Certificate counts 2 (entities/corp.pxd).
+cpdef enum Shares:
+    SHARES_PER_CORP = 10
+
 # A round of passes with A unsold takes this much off A's price (``all_passed!``).
 cpdef enum AuctionRules:
     AUCTION_DISCOUNT_STEP = 5

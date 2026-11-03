@@ -14,13 +14,14 @@ old one sold the certificate), so a change only rewrites ``president``.
 
 from g1889.state cimport GameState
 
+# The President's Certificate, in the 10% units of SHARES_PER_CORP (constants.pxd).
 cpdef enum CorpShares:
-    SHARES_PER_CORP = 10           # 10% units; the President's Certificate counts 2
     PRESIDENT_SHARES = 2
 
 cdef int corp_par_index(GameState state, int corp) noexcept nogil
 cdef int corp_par_price(GameState state, int corp) noexcept nogil
 cdef bint corp_floated(GameState state, int corp) noexcept nogil
+cdef int corp_floated_mask(GameState state) noexcept nogil
 cdef int corp_cash(GameState state, int corp) noexcept nogil
 cdef int corp_ipo_shares(GameState state, int corp) noexcept nogil
 cdef int corp_pool_shares(GameState state, int corp) noexcept nogil

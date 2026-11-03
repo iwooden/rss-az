@@ -210,8 +210,8 @@ cdef class Trains:
         then rusts as phase D begins."""
         assert trade_in_price(train_type) < TRAIN_PRICE[<int>D_TRAIN], f"type {train_type} has no trade-in"
         assert trains_depot_types(state) >> <int>D_TRAIN & 1, "the depot does not sell D yet"
-        self.discard(state, corp, train_type)
         BANK.transfer(state, <int>OWNER_CORP + corp, <int>BANK_ACCOUNT, trade_in_price(train_type))
+        self.discard(state, corp, train_type)
         self._give(state, corp, <int>D_TRAIN)
 
     cpdef void discard(self, GameState state, int corp, int train_type):

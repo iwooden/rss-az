@@ -47,9 +47,9 @@ from g1889.constants cimport (
     END_REASON_BANK, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND, STEP_GAME_OVER, STEP_OR_END, STEP_OR_START,
     STEP_ROUTE, STEP_TILE, STEP_TOKEN, STEP_TRACK, STEP_TURN_START,
 )
-from g1889.data.tables cimport CORP_HOME, NUM_CORPS
+from g1889.data.tables cimport CORP_HOME, MAX_LAY_CANDIDATES, NUM_CORPS
 from g1889.entities.bank cimport bank_broken
-from g1889.entities.corp cimport corp_floated, corp_president
+from g1889.entities.corp cimport corp_floated_mask, corp_president
 from g1889.entities.hexmap cimport HexMap, hex_tokens
 from g1889.entities.market cimport market_sort_by_price
 from g1889.entities.private cimport pay_revenue
@@ -82,12 +82,9 @@ cdef void run_or_start(GameState state) except *:
     price order. Ruby pays the privates player by player, but the bank only
     pays out, so the order cannot change the result."""
     cdef int[7] order  # NUM_CORPS
-    cdef int floated = 0
     cdef int c, i, count
     pay_revenue(state)
-    for c in range(<int>NUM_CORPS):
-        floated |= corp_floated(state, c) << c
-    count = market_sort_by_price(state, floated, order)
+    count = market_sort_by_price(state, corp_floated_mask(state), order)
     _clear_order(state)
     for i in range(count):
         c = order[i]
@@ -228,5 +225,6 @@ def setup_operating_round_py(GameState state, int or_num=1):
     TURN.set_step(state, STEP_OR_START)
 
 
-# The buffers for market_sort_by_price are sized with the literal 7.
-assert <int>NUM_CORPS == 7
+# The buffers for market_sort_by_price and enumerate_lay_candidates are sized
+# with the literals 7 and 15.
+assert <int>NUM_CORPS == 7 and <int>MAX_LAY_CANDIDATES == 15

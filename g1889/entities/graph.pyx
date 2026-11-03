@@ -31,9 +31,9 @@ from libc.stdint cimport int16_t, uint8_t, uint16_t, uint32_t, uint64_t
 
 from g1889.data.tables cimport (
     ENDPOINT_PAIRS, HEX_EXIT_MASK, HEX_NEIGHBOR, HEX_WALK_ORDER, NODE, NUM_CORPS, NUM_HEXES, NUM_SIDES, PAIR_A,
-    PAIR_B, RC_CITY, RC_OFFBOARD, TILE_MASK, TILE_PATH_COUNT, TILE_PATHS, TILE_RC, TILE_SLOTS,
+    PAIR_B, RC_OFFBOARD, TILE_MASK, TILE_PATH_COUNT, TILE_PATHS, TILE_RC,
 )
-from g1889.entities.hexmap cimport hex_paths, hex_rotation, hex_tile, hex_tokens, map_token_count
+from g1889.entities.hexmap cimport hex_paths, hex_rotation, hex_tile, hex_tokens, tile_blocks
 from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, GameState
 
 
@@ -77,8 +77,7 @@ cdef inline bint _blocks(GameState state, _Walk* w, int hex, int tile) noexcept 
     """``Node#blocks?``: an offboard, or a city whose slots hold only other corps' tokens."""
     if TILE_RC[tile] == <int>RC_OFFBOARD:
         return True
-    return (TILE_RC[tile] == <int>RC_CITY and not (hex_tokens(state, hex) >> w.corp & 1)
-            and map_token_count(state, hex) >= TILE_SLOTS[tile])
+    return tile_blocks(tile, hex_tokens(state, hex), w.corp)
 
 
 cdef inline void _record(_Walk* w, int hex, int slot, int pair) noexcept nogil:

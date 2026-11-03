@@ -10,6 +10,7 @@ slot from other corps' tokens but never blocks a route (``City#blocks?``).
 
 from libc.stdint cimport uint32_t
 
+from g1889.data.tables cimport RC_CITY, TILE_RC, TILE_SLOTS
 from g1889.state cimport GameState
 
 cdef int hex_tile(GameState state, int hex) noexcept nogil
@@ -26,6 +27,21 @@ cdef bint map_has_slot_for(GameState state, int hex, int corp) noexcept nogil
 cdef bint map_blocked_for(GameState state, int hex, int corp) noexcept nogil
 cdef int map_revenue(GameState state, int hex, int phase, bint is_d) noexcept nogil
 cdef int map_lay_cost(GameState state, int hex, int corp) noexcept nogil
+
+
+cdef inline int _count(int mask) noexcept nogil:
+    """The tokens in a token mask."""
+    cdef int n = 0
+    while mask:
+        mask &= mask - 1
+        n += 1
+    return n
+
+
+cdef inline bint tile_blocks(int tile, int tokens, int corp) noexcept nogil:
+    """``City#blocks?`` for ``tile`` holding the token mask ``tokens``: a city
+    whose slots are all filled, none by ``corp``. Reservations never block."""
+    return TILE_RC[tile] == <int>RC_CITY and not (tokens >> corp & 1) and _count(tokens) >= TILE_SLOTS[tile]
 
 
 cdef class HexMap:

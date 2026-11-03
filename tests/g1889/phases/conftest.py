@@ -57,9 +57,10 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
+from g1889.constants import SHARES_PER_CORP
 from g1889.driver import DRIVER, STATUS_GAME_OVER, STATUS_INVALID, STATUS_OK
 from g1889.entities.bank import BANK
-from g1889.entities.corp import CORPS, PRESIDENT_SHARES, SHARES_PER_CORP
+from g1889.entities.corp import CORPS, PRESIDENT_SHARES
 from g1889.entities.hexmap import MAP
 from g1889.entities.market import MARKET
 from g1889.entities.phase import PHASE

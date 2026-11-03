@@ -8,9 +8,9 @@ change the result. Ruby also marks the corp's trains as run
 """
 
 from g1889.actions cimport ACTION_PAYOUT, ACTION_WITHHOLD, ActionInfo
-from g1889.constants cimport OWNER_CORP, OWNER_PLAYER, STEP_BUY_TRAIN
+from g1889.constants cimport OWNER_CORP, OWNER_PLAYER, SHARES_PER_CORP, STEP_BUY_TRAIN
 from g1889.entities.bank cimport BANK_ACCOUNT, Bank
-from g1889.entities.corp cimport SHARES_PER_CORP, Corporation, corp_pool_shares
+from g1889.entities.corp cimport Corporation, corp_pool_shares
 from g1889.entities.market cimport Market
 from g1889.entities.player cimport player_shares
 from g1889.entities.turn cimport TurnState, turn_num_players, turn_operating_corp, turn_route_revenue

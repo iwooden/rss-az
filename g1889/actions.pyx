@@ -24,7 +24,7 @@ from g1889.constants cimport (
 )
 from g1889.data.tables cimport (
     CERT_LIMIT, D_TRAIN, DR_EXCHANGE_CORP, ENDPOINT_PAIRS, ER_HEX, ER_TILE, HEX_EXIT_MASK, HEX_NEIGHBOR,
-    MAX_LAY_CANDIDATES, MAX_OWNERSHIP_PERCENT, MAX_PLAYERS, MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS,
+    MAX_LAY_CANDIDATES, MAX_PLAYERS, MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS,
     NUM_ER_TILES, NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES,
     PAR_PRICE, PHASE_CAN_BUY_PRIVATES, PHASE_TILE_COLORS, PORT_TILE, PRIVATE_DR, PRIVATE_MF, PRIVATE_VALUE,
     TILE_BLOCKS_LAY, TILE_COLOR, TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, TRAIN_PRICE, UPG_ROT, UPG_START,
@@ -36,10 +36,10 @@ from g1889.entities.corp cimport (
 )
 from g1889.entities.graph cimport graph_node, graph_route_available, graph_sides, graph_walks_new_track
 from g1889.entities.hexmap cimport hex_paths, hex_rotation, hex_tile, map_has_slot_for, map_lay_cost, supply_count
-from g1889.entities.market cimport market_price, market_unlimited
+from g1889.entities.market cimport market_price
 from g1889.entities.player cimport (
-    player_available, player_can_gain, player_cash, player_cert_count, player_shares, player_sold_mask,
-    player_value,
+    player_available, player_can_gain, player_can_hold, player_cash, player_cert_count, player_shares,
+    player_sold_mask, player_value,
 )
 from g1889.entities.phase cimport game_phase
 from g1889.entities.private cimport (
@@ -574,7 +574,7 @@ cdef bint _must_sell(GameState state, int player) noexcept nogil:
         if _sale_limit(state, player, c) == 0:
             continue
         can_sell = True
-        if 10 * player_shares(state, player, c) > <int>MAX_OWNERSHIP_PERCENT and not market_unlimited(state, c):
+        if not player_can_hold(state, player, c, 0):
             return True
     return can_sell and player_cert_count(state, player) > CERT_LIMIT[turn_num_players(state)]
 
@@ -1194,7 +1194,7 @@ cdef bint can_exchange_dr(GameState state, int player) noexcept nogil:
         return False
     if corp_ipo_shares(state, corp) <= (0 if corp_par_index(state, corp) >= 0 else <int>PRESIDENT_SHARES):
         return False
-    return market_unlimited(state, corp) or 10 * (player_shares(state, player, corp) + 1) <= <int>MAX_OWNERSHIP_PERCENT
+    return player_can_hold(state, player, corp, 1)
 
 
 cdef int _append_dr(GameState state, uint16_t* ids, int count, int dr_id) noexcept nogil:

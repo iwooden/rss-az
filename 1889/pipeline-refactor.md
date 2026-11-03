@@ -710,6 +710,13 @@ block 1889 only at step 7, so the two tracks can alternate.
     the bot, Ruby has already moved on, so live play sends a chosen
     exchange or port lay as a use during another player's turn and a pass
     as nothing;
+  - live play's real game state runs with the three policy flags off
+    (engine-design §7), because `_forced_action` would otherwise apply a
+    lone policy point for a human, such as BID's one point under
+    `auction_pass_payout_cap`; search roots copied from it turn them on.
+    Nothing enforces this yet: live-play design should add an explicit
+    check, an assert that the live state's flags are off or a human-move
+    path that skips policy forcing;
   - 1889 has no live-play integration in `utils_18xx/`;
   - 18xx.games may change its 1889 implementation after the submodule's
     pinned commit, so live play should detect a desync. The same-president

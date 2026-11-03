@@ -4,6 +4,7 @@ from libc.stdint cimport INT16_MAX, INT16_MIN, int16_t
 
 from g1889.constants cimport OWNER_CORP, OWNER_PLAYER
 from g1889.data.tables cimport NUM_CORPS
+from g1889.entities.turn cimport turn_num_players
 from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, GameState
 
 
@@ -18,8 +19,7 @@ cdef bint bank_broken(GameState state) noexcept nogil:
 cdef int _cash_slot(GameState state, int account) except -1:
     if account == BANK_ACCOUNT:
         return LAYOUT.global_offset + GLOBALS.bank_cash
-    cdef int num_players = <int>state._data[LAYOUT.global_offset + GLOBALS.num_players]
-    if <int>OWNER_PLAYER <= account < <int>OWNER_PLAYER + num_players:
+    if <int>OWNER_PLAYER <= account < <int>OWNER_PLAYER + turn_num_players(state):
         return LAYOUT.players_offset + (account - <int>OWNER_PLAYER) * PLAYER_FIELDS.size + PLAYER_FIELDS.cash
     assert <int>OWNER_CORP <= account < <int>OWNER_CORP + <int>NUM_CORPS, f"no cash account {account}"
     return LAYOUT.corps_offset + (account - <int>OWNER_CORP) * CORP_FIELDS.size + CORP_FIELDS.cash

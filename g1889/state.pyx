@@ -12,7 +12,9 @@ from posix.time cimport clock_gettime, timespec, CLOCK_MONOTONIC
 cimport numpy as cnp
 import numpy as np
 
-from g1889.constants cimport OWNER_NOT_IN_PLAY, OWNER_UNSOLD, ROUND_AUCTION, STEP_AUCTION
+from g1889.constants cimport (
+    OWNER_NOT_IN_PLAY, OWNER_PLAYER, OWNER_UNSOLD, ROUND_AUCTION, SHARES_PER_CORP, STEP_AUCTION,
+)
 from g1889.data.tables cimport (
     BANK_CASH, CORP_TOKENS, MAX_PLAYERS, MIN_PLAYERS, NUM_CORPS, NUM_HEXES, NUM_PRIVATES,
     NUM_SUPPLY_TILES, NUM_TRAIN_TYPES, PHASE_ORS, PRIVATES_IN_PLAY, START_CASH, TILE_COUNT,
@@ -343,11 +345,8 @@ cdef class GameState:
     @staticmethod
     def from_array(array, int num_players, int max_players=0):
         """Copy ``array`` into a new GameState; the flags start off."""
-        cdef cnp.ndarray arr = np.asarray(array)
-        max_players = _validate_storage_players(num_players, max_players)
-        _check_row(arr, num_players, max_players)
-        state = GameState(num_players, max_players=max_players)
-        np.copyto(state._array, arr)
+        state = GameState(num_players, _alloc=False, max_players=max_players)
+        _bind_buffer(state, np.asarray(array).copy(), num_players, max_players)
         return state
 
     @staticmethod
@@ -386,7 +385,7 @@ cdef class GameState:
         cdef int i
         # Entity modules cimport this one, so they are imported at call time.
         from g1889.entities.bank import BANK, BANK_ACCOUNT
-        from g1889.entities.corp import CORPS, SHARES_PER_CORP
+        from g1889.entities.corp import CORPS
         from g1889.entities.hexmap import MAP
         from g1889.entities.private import PRIVATES
         from g1889.entities.trains import TRAINS
@@ -406,7 +405,7 @@ cdef class GameState:
 
         # Bank and starting cash (init_starting_cash).
         for i in range(num_players):
-            BANK.transfer(self, BANK_ACCOUNT, i, START_CASH[num_players])
+            BANK.transfer(self, BANK_ACCOUNT, <int>OWNER_PLAYER + i, START_CASH[num_players])
         # Privates in play for the player count (min_players; SIR leaves 2-player games).
         for i in range(<int>NUM_PRIVATES):
             if PRIVATES_IN_PLAY[num_players] >> i & 1:

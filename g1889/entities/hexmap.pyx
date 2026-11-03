@@ -23,14 +23,6 @@ cdef inline int _slot(int hex, int field) noexcept nogil:
     return LAYOUT.hexes_offset + hex * HEX_FIELDS.size + field
 
 
-cdef inline int _count(int mask) noexcept nogil:
-    cdef int n = 0
-    while mask:
-        mask &= mask - 1
-        n += 1
-    return n
-
-
 cdef int hex_tile(GameState state, int hex) noexcept nogil:
     return <int>state._data[_slot(hex, HEX_FIELDS.tile)]
 
@@ -91,11 +83,8 @@ cdef bint map_has_slot_for(GameState state, int hex, int corp) noexcept nogil:
 
 cdef bint map_blocked_for(GameState state, int hex, int corp) noexcept nogil:
     """A city whose slots are all filled by other corps' tokens, which routes
-    and connectivity may reach but not pass (``City#blocks?``). Reservations
-    never block."""
-    cdef int tile = hex_tile(state, hex)
-    cdef int tokens = hex_tokens(state, hex)
-    return TILE_RC[tile] == <int>RC_CITY and not (tokens >> corp & 1) and _count(tokens) >= TILE_SLOTS[tile]
+    and connectivity may reach but not pass (``tile_blocks``)."""
+    return tile_blocks(hex_tile(state, hex), hex_tokens(state, hex), corp)
 
 
 cdef int map_revenue(GameState state, int hex, int phase, bint is_d) noexcept nogil:
@@ -229,12 +218,12 @@ cdef class HexMap:
         self.set_tile(state, hex, tile, rotation)
 
     cpdef void lay_track(self, GameState state, int corp, int hex, int tile, int rotation):
-        """The corp pays the lay cost to the bank and lays the tile."""
+        """The corp lays the tile and pays the lay cost, priced before the lay, to the bank."""
         _check_corp(corp)
         cdef int cost = self.lay_cost(state, hex, corp)
+        self.lay(state, hex, tile, rotation)
         if cost:
             BANK.transfer(state, <int>OWNER_CORP + corp, <int>BANK_ACCOUNT, cost)
-        self.lay(state, hex, tile, rotation)
 
     cpdef void place_token(self, GameState state, int hex, int corp):
         """Put the corp's next charter token in the hex's city, unpaid: a slot
@@ -248,13 +237,13 @@ cdef class HexMap:
         self.set_tokens(state, hex, hex_tokens(state, hex) | 1 << corp)
 
     cpdef void buy_token(self, GameState state, int hex, int corp):
-        """The corp pays its next token's price (¥0 for the home token) to the
-        bank and places it (``Tokener#place_token``)."""
+        """The corp places its next token and pays its price (¥0 for the home
+        token) to the bank (``Tokener#place_token``)."""
         _check_corp(corp)
         cdef int price = corp_token_price(state, corp)
+        self.place_token(state, hex, corp)
         if price:
             BANK.transfer(state, <int>OWNER_CORP + corp, <int>BANK_ACCOUNT, price)
-        self.place_token(state, hex, corp)
 
 
 MAP = HexMap()

@@ -2,10 +2,11 @@
 
 from libc.stdint cimport int16_t
 
-from g1889.constants cimport OWNER_PLAYER
+from g1889.constants cimport OWNER_PLAYER, SHARES_PER_CORP
 from g1889.data.tables cimport CERT_LIMIT, MAX_OWNERSHIP_PERCENT, MAX_PLAYERS, NUM_CORPS, NUM_PRIVATES, PRIVATE_VALUE
 from g1889.entities.market cimport market_counts_for_limit, market_price, market_unlimited
-from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, PRIVATE_FIELDS, GameState
+from g1889.entities.turn cimport turn_num_players
+from g1889.state cimport CORP_FIELDS, LAYOUT, PLAYER_FIELDS, PRIVATE_FIELDS, GameState
 
 # Holdings are counted in 10% shares.
 cdef enum:
@@ -53,10 +54,6 @@ cdef int player_sold_mask(GameState state, int player) noexcept nogil:
     return <int>state._data[_slot(player, PLAYER_FIELDS.sold_mask)]
 
 
-cdef inline int _num_players(GameState state) noexcept nogil:
-    return <int>state._data[LAYOUT.global_offset + GLOBALS.num_players]
-
-
 # The corp president and private owner fields are read raw here: CORPS and
 # PRIVATES cimport this module, so it cannot cimport theirs.
 
@@ -77,15 +74,21 @@ cdef int player_cert_count(GameState state, int player) noexcept nogil:
     return count
 
 
+cdef bint player_can_hold(GameState state, int player, int corp, int shares) noexcept nogil:
+    """Whether the player may hold ``shares`` more of ``corp`` (``holding_ok?``):
+    at most 60% outside the orange zone."""
+    return (market_unlimited(state, corp)
+            or SHARE_PERCENT * (player_shares(state, player, corp) + shares) <= <int>MAX_OWNERSHIP_PERCENT)
+
+
 cdef bint player_can_gain(GameState state, int player, int corp, int shares) noexcept nogil:
     """Whether the player may take ``shares`` more of ``corp`` (``can_gain?``):
-    at most 60% outside the orange zone, and while below the certificate limit
-    unless the corp's shares do not count toward it."""
-    if (not market_unlimited(state, corp)
-            and SHARE_PERCENT * (player_shares(state, player, corp) + shares) > <int>MAX_OWNERSHIP_PERCENT):
-        return False
-    return (not market_counts_for_limit(state, corp)
-            or player_cert_count(state, player) < CERT_LIMIT[_num_players(state)])
+    they may hold them, and are below the certificate limit unless the corp's
+    shares do not count toward it. An exchange skips the limit
+    (``can_exchange_dr``)."""
+    return player_can_hold(state, player, corp, shares) and (
+        not market_counts_for_limit(state, corp)
+        or player_cert_count(state, player) < CERT_LIMIT[turn_num_players(state)])
 
 
 cdef int player_value(GameState state, int player) noexcept nogil:
@@ -106,7 +109,7 @@ cdef int player_value(GameState state, int player) noexcept nogil:
 
 
 cdef int _write_slot(GameState state, int player, int field) except -1:
-    cdef int num_players = _num_players(state)
+    cdef int num_players = turn_num_players(state)
     assert player < num_players, f"player {player} not in a {num_players}-player game"
     return _slot(player, field)
 
@@ -125,7 +128,7 @@ cdef class Player:
         return player_shares(state, self.player_id, corp)
 
     cpdef void set_shares(self, GameState state, int corp, int shares):
-        assert 0 <= corp < <int>NUM_CORPS and shares >= 0, f"shares {shares} of corp {corp}"
+        assert 0 <= corp < <int>NUM_CORPS and 0 <= shares <= <int>SHARES_PER_CORP, f"shares {shares} of corp {corp}"
         state._data[_write_slot(state, self.player_id, PLAYER_FIELDS.shares) + corp] = <int16_t>shares
 
     cpdef int sold_mask(self, GameState state):
@@ -182,7 +185,7 @@ cdef class Player:
 cpdef bint all_passed(GameState state):
     """Whether every player's passed flag is set (``entities.all?(&:passed?)``)."""
     cdef int i
-    for i in range(_num_players(state)):
+    for i in range(turn_num_players(state)):
         if not player_passed(state, i):
             return False
     return True
@@ -190,7 +193,7 @@ cpdef bint all_passed(GameState state):
 
 cpdef void clear_passed(GameState state):
     cdef int i
-    for i in range(_num_players(state)):
+    for i in range(turn_num_players(state)):
         state._data[_slot(i, PLAYER_FIELDS.passed)] = 0
 
 

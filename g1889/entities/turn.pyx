@@ -146,6 +146,11 @@ cdef class TurnState:
         _check(value, -1, <int>NUM_STEPS, 'return_step')
         _set(state, GLOBALS.return_step, value)
 
+    cpdef void resume(self, GameState state):
+        """Back to the step an interjection or a discard came from; ``return_step`` clears."""
+        self.set_step(state, turn_return_step(state))
+        self.set_return_step(state, -1)
+
     cpdef int turn(self, GameState state):
         return _get(state, GLOBALS.turn)
 

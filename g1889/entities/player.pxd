@@ -16,6 +16,7 @@ cdef int player_sold_mask(GameState state, int player) noexcept nogil
 
 # Stock round limits (rules §6.2, §6.8)
 cdef int player_cert_count(GameState state, int player) noexcept nogil
+cdef bint player_can_hold(GameState state, int player, int corp, int shares) noexcept nogil
 cdef bint player_can_gain(GameState state, int player, int corp, int shares) noexcept nogil
 
 # Ruby's Player#value, which final_scores reports
