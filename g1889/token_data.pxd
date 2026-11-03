@@ -11,7 +11,8 @@ functions (keyword-only layout_version), so they have no declarations here.
 into the row (§4); the relation fills run it too.
 """
 
-from g1889.state cimport GameState
+from g1889.data.tables cimport NUM_HEXES
+from g1889.state cimport LAYOUT, GameState
 
 cpdef enum TokenDataSize:
     TOKEN_DIM = 108                 # the widest row, CANDIDATE
@@ -50,8 +51,14 @@ cpdef int get_num_tokens(int max_players) noexcept nogil
 cpdef int get_token_dim(int layout_version) except -1
 cpdef object get_token_widths(int max_players, int layout_version)
 
-# Shared with the relation fills: the prologue, and the player-count checks
-# (3 <= num_players <= max_players <= 5; max_players 0 is the row's count).
+# Shared with the relation fills: the prologue, the player-count checks
+# (3 <= num_players <= max_players <= 5; max_players 0 is the row's count),
+# and the batches' scratch state.
 cdef void extraction_prologue(GameState state) noexcept nogil
 cdef int resolve_max_players(int num_players, int max_players, str func) except -1
-cdef int row_num_players(object row) except -1
+cdef GameState bind_row(GameState scratch, object row, int max_players, str func)
+
+
+cdef inline int graph_entry(GameState state, int corp, int hex) noexcept nogil:
+    """The corp's GRAPH entry for the hex, read raw: fresh after the prologue."""
+    return <int>state._data[LAYOUT.graph_offset + corp * <int>NUM_HEXES + hex]

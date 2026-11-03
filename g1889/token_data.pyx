@@ -227,10 +227,6 @@ cdef inline int _corp_field(GameState state, int corp, int field) noexcept nogil
     return <int>state._data[LAYOUT.corps_offset + corp * CORP_FIELDS.size + field]
 
 
-cdef inline int _graph(GameState state, int corp, int hex) noexcept nogil:
-    return <int>state._data[LAYOUT.graph_offset + corp * <int>NUM_HEXES + hex]
-
-
 cdef int _decision_corp(GameState state, int phase) noexcept nogil:
     """§5.2: the pending corp at PAR, the first crowded corp at DISCARD, and the
     operating corp at every other OR decision; none in the auction and the SR."""
@@ -296,8 +292,16 @@ cdef int resolve_max_players(int num_players, int max_players, str func) except 
     return max_players
 
 
-cdef int row_num_players(object row) except -1:
-    return int(row[LAYOUT.global_offset + GLOBALS.num_players])
+cdef GameState bind_row(GameState scratch, object row, int max_players, str func):
+    """``scratch`` repointed at the raw ``row``, or a new state over it if None,
+    after the player-count checks; ``max_players`` 0 is the row's count."""
+    cdef int num_players = int(row[LAYOUT.global_offset + GLOBALS.num_players])
+    cdef int capacity = get_storage_player_capacity(len(row))
+    resolve_max_players(num_players, max_players, func)
+    if scratch is None:
+        return GameState.from_buffer(row, num_players, max_players=capacity)
+    scratch.rebind(row, num_players, max_players=capacity)
+    return scratch
 
 
 # def rather than cpdef: cpdef cannot take the keyword-only layout_version.
@@ -321,7 +325,7 @@ def get_token_data_batch(list state_arrays, float[:, :, ::1] buffer, int max_pla
     scratch state is rebound across the rows, and each row's prologue and
     fill run without the GIL."""
     cdef int n = len(state_arrays)
-    cdef int num_tokens, num_players, i
+    cdef int num_tokens, i
     cdef GameState scratch = None
     _check_layout(layout_version)
     if n == 0:
@@ -332,16 +336,10 @@ def get_token_data_batch(list state_arrays, float[:, :, ::1] buffer, int max_pla
     assert buffer.shape[0] >= n and buffer.shape[1] >= num_tokens and buffer.shape[2] == <int>TOKEN_DIM, \
         f"get_token_data_batch: buffer {(buffer.shape[0], buffer.shape[1], buffer.shape[2])} for {n} rows"
     for i in range(n):
-        row = state_arrays[i]
-        num_players = row_num_players(row)
-        resolve_max_players(num_players, max_players, "get_token_data_batch")
-        if scratch is None:
-            scratch = GameState.from_buffer(row, num_players, max_players=get_storage_player_capacity(len(row)))
-        else:
-            scratch.rebind(row, num_players, max_players=get_storage_player_capacity(len(row)))
+        scratch = bind_row(scratch, state_arrays[i], max_players, "get_token_data_batch")
         with nogil:
             extraction_prologue(scratch)
-            _fill_buffer(scratch, buffer[i], num_players, num_tokens)
+            _fill_buffer(scratch, buffer[i], turn_num_players(scratch), num_tokens)
 
 
 # =============================================================================
@@ -430,7 +428,7 @@ cdef void _fill_corp(GameState state, float* row, int c, const _Context* x) noex
             row[C_OR_POSITION] = (i + 1) / <float>NUM_CORPS
             row[C_OPERATED] = i < _global(state, GLOBALS.or_index)
     for h in range(<int>NUM_HEXES):
-        entry = _graph(state, c, h)
+        entry = graph_entry(state, c, h)
         hexes += (entry & <int>GRAPH_SIDES) != 0
         if entry & <int>GRAPH_NODE:
             centers += 1
@@ -571,7 +569,7 @@ cdef void _fill_hex(GameState state, float* row, int h, const _Context* x) noexc
     row[H_UPGRADES] = upgrades / <float>MAX_LAY_CANDIDATES
     row[H_UPGRADES_ANY_PHASE] = upgrades_any_phase / <float>MAX_LAY_CANDIDATES
     if x.corp >= 0:
-        entry = _graph(state, x.corp, h)
+        entry = graph_entry(state, x.corp, h)
         for s in range(<int>NUM_SIDES):
             row[H_SIDES + s] = entry >> s & 1
         row[H_CENTER] = (entry & <int>GRAPH_NODE) != 0

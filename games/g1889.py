@@ -1,14 +1,13 @@
-"""Shikoku 1889 adapter over the g1889 engine (1889/engine-design.md §11).
+"""Shikoku 1889 adapter over the g1889 engine (1889/engine-design.md §11) and
+its extraction (``g1889.token_data``, ``g1889.relations``; 1889/extraction-design.md).
 
-The engine and token fields are complete (``g1889.token_data``). Relations
-land in pipeline step 7: until then their callables raise
-NotImplementedError, and their sizes are ``NO_SIZE``, which any buffer or
-layer sized from them rejects.
+The model takes the static relation planes from
+``g1889.relations.static_relation_planes`` itself (extraction-design §6.2).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -21,6 +20,14 @@ from g1889.actions import (
 )
 from g1889.driver import DRIVER
 from g1889.entities.turn import TURN
+from g1889.relations import (
+    RelationId,
+    RelationSize,
+    get_relation_coord_data,
+    get_relation_coord_data_batch,
+    get_relation_data,
+    get_relation_data_batch,
+)
 from g1889.state import (
     GameState,
     get_global_fields,
@@ -53,9 +60,6 @@ POLICY_LAYOUT = PolicyLayout(
     phases_with_pass_slot=K.PHASES_WITH_PASS_SLOT,
 )
 
-RELATIONS_STEP = "1889 relations land in pipeline step 7"
-NO_SIZE = -1  # num_relations and max_relation_edges until step 7
-
 # Only total_size depends on the player count.
 _NUM_PLAYERS_OFFSET = get_layout(0).global_offset + get_global_fields().num_players
 
@@ -77,10 +81,6 @@ def _scratch_state(root: GameState, row: np.ndarray) -> GameState:
     scratch.train_sale_same_president = root.train_sale_same_president
     scratch.auction_pass_payout_cap = root.auction_pass_payout_cap
     return scratch
-
-
-def _no_relations(*args: object, **kwargs: object) -> NoReturn:
-    raise NotImplementedError(RELATIONS_STEP)
 
 
 def make_game(config: TrainingConfig) -> Game:
@@ -115,13 +115,13 @@ def make_game(config: TrainingConfig) -> Game:
         final_scores=final_scores_py,
         num_tokens=get_num_tokens,
         token_dim=get_token_dim,
-        num_relations=NO_SIZE,
-        max_relation_edges=NO_SIZE,
+        num_relations=int(RelationId.NUM_RELATIONS),
+        max_relation_edges=int(RelationSize.MAX_RELATION_EDGES),
         fill_tokens=get_token_data,
         fill_tokens_batch=get_token_data_batch,
-        fill_relations_dense=_no_relations,
-        fill_relations_dense_batch=_no_relations,
-        fill_relations_sparse=_no_relations,
-        fill_relations_sparse_batch=_no_relations,
+        fill_relations_dense=get_relation_data,
+        fill_relations_dense_batch=get_relation_data_batch,
+        fill_relations_sparse=get_relation_coord_data,
+        fill_relations_sparse_batch=get_relation_coord_data_batch,
         new_selfplay_stats=EmptySelfPlayStats,
     )

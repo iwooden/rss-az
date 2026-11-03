@@ -446,9 +446,10 @@ record count, as conformance asserts (`tests/test_game_adapter.py:419`).
 ### 6.2 Static relations (model buffers)
 
 `static_relation_planes(max_players)` returns them as `(10, T, T)` uint8,
-so the model does not repeat the row map. Step 8 registers them as
-non-persistent buffers, as v3 does its synergy planes (`token-data-v3.md`,
-"Token Order"); they never cross IPC.
+so the model does not repeat the row map. Step 8's model calls it and
+registers them as non-persistent buffers, as v3 does its synergy planes
+(`token-data-v3.md`, "Token Order"); they never cross IPC, and the `Game`
+adapter has no field for them.
 
 | Plane | Query → key | Entries |
 |---|---|---|
@@ -490,11 +491,11 @@ self-play's denser maps.
 ### 6.4 Dense and sparse
 
 - **One emitter.** RSS writes its dense and sparse loops twice
-  (`core/relations.pyx:392-602`). Here `_emit(state, num_players, edges)`
-  writes up to 2,048 `(relation, query, key, value)` records to a stack
-  buffer (8 KB). Sparse copies them and zeroes the tail; dense zeroes its
-  planes and scatters them. The two are equal by construction, and
-  conformance checks it.
+  (`core/relations.pyx:392-602`). Here `_emit(state, num_players, out)`
+  writes up to 2,048 `(relation, query, key, value)` records: sparse emits
+  into its buffer and zeroes the tail; dense emits into a stack buffer
+  (8 KB), zeroes its planes, and scatters the records. The two are equal by
+  construction, and conformance checks it.
 - **Sizes per state:**
 
 | | 1889 | RSS v3 |
