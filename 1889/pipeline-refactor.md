@@ -693,8 +693,9 @@ block 1889 only at step 7, so the two tracks can alternate.
   another game's buffer with a warning, as it skips one with mismatched
   shapes, and metadata without the field is RSS's.
 - **Test:** Replay rebuilds tokens and relations every time a row is sampled.
-  Once 1889 extraction includes build distance and candidate features, check
-  that the trainer keeps up (step 7).
+  Check that the trainer keeps up with 1889 extraction: step 7 profiles it
+  with the candidate features (extraction-design 7.4), and 7b again once
+  build distance lands (extraction-design §8).
 - **Open:** What 1889 live play still needs (recorded 2026-11-02; no step
   owns it yet):
   - an engine-to-18xx.games action translator. Replay maps only Ruby's

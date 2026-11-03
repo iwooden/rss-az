@@ -460,10 +460,9 @@ index the candidates with a compact list.
 - **A compact list, not a 40 × 6 grid.** The candidates are the hex's
   canonical engine-legal targets, sorted by (supply tile, rotation). TILE
   then needs 15 slots and ER_BONUS 16, instead of 240 and 241, so the unified
-  dimension is 421 rather than 871 (320 rather than 770 since 6.10). Replay
-  stores a `uint8` mask and a `float32` target for each unified slot
-  (`train/replay_buffer.py:103-109`), so one sample, including its row, takes
-  about 3.8 KB instead of 6.1 KB (3.3 KB since 6.10).
+  dimension is 320 rather than 770. Replay stores a `uint8` mask and a
+  `float32` target for each unified slot (`train/replay_buffer.py:103-109`),
+  so one sample, including its row, takes about 3.3 KB instead of 5.5 KB.
 - **Scoring.** Slot i has no fixed meaning, so the model scores candidates
   from candidate token rows, the plan already made for outcome features
   (blueprint §9, pipeline-refactor §5). `enumerate_lay_candidates(state, hex,
@@ -1440,16 +1439,16 @@ joins `_GAME_MODULES`; importing `games` still imports no engine. It fills
 every engine field:
 
 - `policy`: a `PolicyLayout` of Section 5.2's sizes (unified dimension
-  320 since 6.10, 421 before), named as Section 5.2 names the metrics
-  (`div`, `train`, `private`, and the other phases in lower case). `phases_with_pass_slot` means what
+  320), named as Section 5.2 names the metrics (`div`, `train`, `private`,
+  and the other phases in lower case). `phases_with_pass_slot` means what
   it means for RSS: the phases whose slot 0 passes before several other
   choices, whose pass logit the trainer compares with theirs. RSS lists
   INVEST, BID, ACQ_SELECT_CORP, CLOSING, and IPO, and leaves out its zero
   dividend (an amount, not a pass) and its two-slot ACQ_OFFER and ISSUE.
   For 1889 that is `constants.PHASES_WITH_PASS_SLOT`, the phases whose slot
-  0 decodes to a pass: AUCTION, BID (since 6.10, which took RAISE's drop),
-  STOCK, TRACK, TOKEN, BUY_TRAIN, BUY_PRIVATE, and ER_BONUS. DIVIDEND's
-  withhold is a choice, like RSS's zero dividend, and the sub-phases have no
+  0 decodes to a pass: AUCTION, BID (the lowest bidder's drop), STOCK,
+  TRACK, TOKEN, BUY_TRAIN, BUY_PRIVATE, and ER_BONUS. DIVIDEND's withhold is
+  a choice, like RSS's zero dividend, and the sub-phases have no
   pass.
 - `state_size`, `storage_player_capacity`, and `num_players_from_row`
   from the layout (Section 3).
