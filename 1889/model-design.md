@@ -1,8 +1,8 @@
 # Shikoku 1889 Model Design
 
 Status: design for step 8 of [`pipeline-refactor.md`](pipeline-refactor.md),
-dated 2026-11-03, awaiting the user's review of Section 10; nothing is
-implemented. Step 8 builds the first 1889 model, `nn/transformer-1889.py` v0,
+dated 2026-11-03; the user reviewed it and settled Section 10 on 2026-11-04.
+Nothing is implemented. Step 8 builds the first 1889 model, `nn/transformer-1889.py` v0,
 on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
 in [`extraction-design.md`](extraction-design.md)), adds what the pipeline
 needs to train it, and runs it once.
@@ -20,8 +20,8 @@ implementation to check.
 
 - `nn/transformer-1889.py` v0: `INPUT_LAYOUT_VERSION = 1`,
   `build_model(config, spec)`, and the model of Sections 3-4;
-- the pipeline changes it needs, chiefly sparse relation records in replay
-  and the trainer for 1889 (Section 6);
+- the pipeline changes it needs, chiefly flat relation records in replay,
+  the trainer, and the eval server for 1889 (Section 6);
 - a 1889 self-play stats hook (Section 6.6);
 - `train_configs/1889-v0.json`, a local smoke config, and the first cloud run
   (Section 7);
@@ -44,6 +44,7 @@ Ryzen 9 9950X3D, 16 threads, torch 2.9.1, fp32.
 |---|---|
 | `params.py` | v3 at v3-10-01-26 and v2 at `bigger-multi.json`: parameters by group |
 | `cost_model.py` | FLOPs per state and CPU forward time, v3 against a cost proxy of this design at six sizes |
+| `bias_bench.py` | the relation bias path alone, padded against flat records, on synthetic records (Section 5.3) |
 | `size_grid.py` | the analytic FLOP and parameter model across widths and depths |
 | `game_length.py` | returned decisions per uniform random playout, RSS and 1889, 300 games per player count |
 | `fixture_length.py` | the decisions self-play would search in the four 18xx.games fixtures, replayed through the engine |
@@ -53,7 +54,7 @@ Ryzen 9 9950X3D, 16 threads, torch 2.9.1, fp32.
 
 The cost proxy has the design's shapes on random inputs: 95 rows of 108, the
 per-type projections with a shared tile block, the identity embeddings, v3's
-`TransformerBlock`, the sparse relation bias over E = 2,048 records with 25
+`TransformerBlock`, the sparse relation bias over E = 2,048 padded records with 25
 dynamic and 10 static relations, and the heads of Section 4 at their input
 widths and entity counts. It is a measuring aid, not the model.
 
@@ -70,7 +71,7 @@ The forward pass is v3's (`nn/transformer-v3.py:1595-1744`) on 1889's rows:
 3. L pre-RMSNorm blocks with SwiGLU, then a final RMSNorm (3.5);
 4. the selected rows: the actor, the decision corp, and the other
    `is_selected` slots (3.6);
-5. heads that fill the 18 phase blocks of the unified 320 slots, with
+5. heads that fill the 19 phase blocks of the unified 297 slots, with
    illegal slots at −1e9 (Section 4);
 6. a value per player row (3.7).
 
@@ -83,7 +84,7 @@ candidates).
 
 | Rows | Type | Projected slots | Projections | Added |
 |---|---|---|---|---|
-| 0 | GLOBAL | 1-42 | `global_proj` | type |
+| 0 | GLOBAL | 1-43 | `global_proj` | type |
 | 1 | PRICE | 1-23 | `price_proj` | type |
 | 2 | DIVIDEND | 1-7 | `dividend_proj` | type |
 | 3-9 | CORP | 1-50 | `corp_proj` | type, corp identity |
@@ -139,17 +140,26 @@ mask from slot 0.
 - **Scales:** a buffer of 25, shares (2, 3) × 1/10 and trains (12, 13) × 1/4,
   the rest 1, applied to record values or dense planes once per forward
   (`:899-906`, `:952-955`).
-- **Sparse records** (the eval server always; replay and the trainer for
-  1889, Section 6.1): `(B, E, 4)` uint8 with E from the input's shape, where
-  v3 compares it with a constant (`:1677-1681`). A record counts when its
-  value is above 0 and its id below 25; any other gets weight 0 and id 0, as
-  v2 filters (`nn/transformer-v2.py:832`), with no data-dependent shapes.
+- **Flat records** (every path but tests, Section 6.1): `(N, 5)` int16 rows
+  `(batch, relation, query, key, value)`, the batch's real records with no
+  padding, with N from the input's shape. Workers still write `(E, 4)` uint8
+  records with a zero tail, and the caller flattens them before the forward,
+  since `nonzero` would break the compiled graph. v3 pads every state to E
+  and scatters all of it (`:984-1016`), which here would be about 90% padding
+  (Section 5.3). A record counts when its value is above 0 and its id below
+  25; any other gets weight 0 and id 0, as v2 filters
+  (`nn/transformer-v2.py:832`).
+- **One dense tensor per layer.** SDPA needs a dense `(B, H, T, T)` mask, which
+  v3 builds in three tensors a layer: zeros, plus static, plus visibility
+  (`:1012-1016`, `:311-314`). v0 starts from a copy of the layer's static bias,
+  scatters the records into it, and hides keys in place, with the key mask
+  computed once per forward.
 - **Dense planes** (tests): `(B, R, T, T)` with R ≥ 25, sliced to the first 25.
 - **Static planes:** `static_relation_planes(cfg.num_players)` at
   construction, a non-persistent `(10, T, T)` buffer (Section 6.3), mixed per
   layer by its 10 columns of `relation_bias_mult` and broadcast over the
   batch (`:930-936`).
-- Dense and sparse inputs give the same outputs (**Test:** 8.1), as
+- Dense and flat inputs give the same outputs (**Test:** 8.1), as
   PIPELINE.md requires of v3.
 
 What a layer does with the map: through HEX_SIDE_s a hex attends to the hex
@@ -162,7 +172,7 @@ graph, which sets how much depth map reasoning needs (Section 5.5).
 ### 3.5 Trunk
 
 - **Blocks:** L copies of v3's `TransformerBlock` (`:263-322`): pre-RMSNorm,
-  biasless packed QKV, SDPA with the additive bias, SwiGLU of hidden width
+  biasless packed QKV, SDPA with 3.4's finished mask, SwiGLU of hidden width
   ⌈ff_mult · d⌉ rounded up to 64, and residuals; then a final RMSNorm. The
   module copies the block rather than sharing v3's (pipeline-refactor §5),
   and initializes as v3's `_init_weights` (`:1828-1850`).
@@ -171,7 +181,7 @@ graph, which sets how much depth map reasoning needs (Section 5.5).
   cost 37 d² per token, about 2.8 blocks' worth of token-wise FLOPs (a block
   is 13 d² at ff_mult 3), for one more round of the hops the bias already
   offers every layer.
-- **Phase conditioning is in the input,** as in v3: GLOBAL 1-18 carry the
+- **Phase conditioning is in the input,** as in v3: GLOBAL 1-19 carry the
   decision phase, the phase rows (PRICE, DIVIDEND, CANDIDATE) are visible
   only at their decisions, and every head reads GLOBAL. No adaLN: v2's
   `phase_conditioning` (`nn/transformer-v2.py:163`, `nn/transformer-v2.py:275-300`) is off in
@@ -189,7 +199,7 @@ its raw features (`:1323-1337`).
 | Selection | Row, slot | Read by |
 |---|---|---|
 | actor `a` | PLAYER 1 | every head |
-| decision corp `c` | CORP 1 | every head; zero at AUCTION, BID, STOCK, SELL_AMOUNT, and an SR's PORT (token-data-1889.md, "Conventions") |
+| decision corp `c` | CORP 1 | every head but `auction_private`, `bid`, and `stock_corp`, whose phases have none (token-data-1889.md, "Conventions"); zero in shared heads at SELL_AMOUNT, an SR's PORT, STOCK's DR and MF slots, and AUCTION's and STOCK's passes |
 | the train's seller | CORP 2 | SELECT_TRAIN, TRAIN_PRICE |
 | the sold corp | CORP 3 | SELL_AMOUNT, EMERGENCY_SELL_AMOUNT |
 | the private | PRIVATE 1 | BID, PRIVATE_PRICE |
@@ -217,9 +227,10 @@ Every head is v3's two-layer MLP, Linear(n_in, d), GELU (tanh), Linear(d,
 n_out), run on every row of the batch, with the legal mask selecting
 (`:1539-1589`). A head reads:
 
-- **the context** `[g, a, c]`: the final GLOBAL row, the actor, and the
-  decision corp, which token-data-1889.md's per-choice table gives every
-  head;
+- **the context:** `[g, a]`, the final GLOBAL row and the actor, plus the
+  decision corp `c` except in `auction_private`, `bid`, and `stock_corp`. Their
+  phases have no decision corp, so its d² weights in each would never train:
+  the input is zero at their own phases, and other phases' rows are masked;
 - **its rows:** the entity row the choice names (a pointer head, whose
   weights are shared across the rows of the type) or the phase row and
   selections (a joint head, which emits a fixed block);
@@ -230,33 +241,31 @@ n_out), run on every row of the batch, with the legal mask selecting
 
 ### 4.2 Readouts by phase
 
-| Phase (size) | Ids | Head | Reads, beyond `[g, a, c]` | Raw slots |
+| Phase (size) | Ids | Head | Reads, beyond the context | Raw slots |
 |---|---|---|---|---|
 | AUCTION (9) | 0 pass | pass | | |
-| | 1 buy the topmost, 2+p bid on p | `auction_private`: pointer over PRIVATE rows, (buy, bid) each; id 1 is the buy of the row PRIVATE 2 selects | PRIVATE p | PRIVATE 7-13 |
+| | 1 buy the topmost, 2+p bid on p | `auction_private`: pointer over PRIVATE rows, a bid logit per row and one buy logit, from the row PRIVATE 2 selects | PRIVATE p | PRIVATE 7-13 |
 | BID (17) | 0 drop, 1+k point k | `bid`: joint, 17 | PRICE; the private | PRICE 5-23 |
 | STOCK (31) | 0 pass | pass | | |
 | | 1+c IPO, 8+c pool, 15+c par, 22+c sell | `stock_corp`: pointer over CORP rows, 4 each, laid out by kind | CORP c | CORP 7-25, 44-48; the actor's PLAYER 12+c and 19+c |
 | | 29 DR, 30 MF | `private` (4.3) | | |
 | PAR (6) | par index | `par`: joint, 6 | PRICE | PRICE 5-23 |
 | SELL_AMOUNT (5) | n − 1 | `sale`: joint, 5 | the sold corp | its CORP 15-19, 48, 49 |
-| TRACK (62) | 0 pass | pass | | |
+| BUY_PRIVATE_PRE (10) | 0 done | pass | | |
+| | 1+p, 8 DR, 9 MF | `private` | | |
+| TRACK (53) | 0 pass | pass | | |
 | | 1+h | `track_hex`: pointer over HEX rows | HEX h | HEX 92-102 |
-| | 53+p, 60 DR, 61 MF | `private` | | |
 | TILE (15) | candidate k | `candidate`: pointer over CANDIDATE rows | CANDIDATE k; the hex | CANDIDATE 1, 99-107 |
-| TOKEN (61) | 0 pass | pass | | |
+| TOKEN (53) | 0 pass | pass | | |
 | | 1+h | `token_hex`: pointer over HEX rows | HEX h | HEX 103, 104 |
-| | 53+p, 60 DR | `private` | | |
-| DIVIDEND (10) | 0 withhold, 1 payout | `dividend`: joint, 2 | DIVIDEND | DIVIDEND 1-7 |
-| | 2+p, 9 DR | `private` | | |
+| DIVIDEND (2) | 0 withhold, 1 payout | `dividend`: joint, 2 | DIVIDEND | DIVIDEND 1-7 |
 | DISCARD (6) | type t | `discard`: pointer over TRAIN rows | TRAIN t | TRAIN 12 |
-| BUY_TRAIN (26) | 0 pass, 1 depot, 2 pool, 17 bankrupt | `buy_train`: joint, 4 | the six TRAIN rows | TRAIN 2-9 of each |
+| BUY_TRAIN (18) | 0 pass, 1 depot, 2 pool, 17 bankrupt | `buy_train`: joint, 4 | the six TRAIN rows | TRAIN 2-9 of each |
 | | 3+c c's trains, 10+c emergency sale of c | `buy_train_corp`: pointer over CORP rows, 2 each | CORP c | CORP 15-19, 46, 49 |
-| | 18+p, 25 DR | `private` | | |
-| SELECT_TRAIN (9) | type t; 6+i a D for `TRADE_IN_TYPE[i]` | `select_train`: pointer over TRAIN rows, (add, trade in) each; 6+i is the trade-in of type `TRADE_IN_TYPE[i]` | TRAIN t; the seller | TRAIN 10, 11 |
+| SELECT_TRAIN (9) | type t; 6+i a D for `TRADE_IN_TYPE[i]` | `select_train`: pointer over TRAIN rows, an add logit per row and a trade-in logit from the rows `TRADE_IN_TYPE` names | TRAIN t; the seller | TRAIN 10, 11 |
 | TRAIN_PRICE (5) | point k | `train_price`: joint, 5 | PRICE; the train type; the seller | PRICE 5-23 |
 | EMERGENCY_SELL_AMOUNT (5) | n − 1 | `sale`, shared with SELL_AMOUNT | the sold corp | its CORP 15-19, 48, 49 |
-| BUY_PRIVATE (9) | 0 done | pass | | |
+| BUY_PRIVATE_POST (9) | 0 done | pass | | |
 | | 1+p, 8 DR | `private` | | |
 | PRIVATE_PRICE (4) | point k | `private_price`: joint, 4 | PRICE; the private | PRICE 5-23 |
 | ER_BONUS (16) | 0 pass | pass | | |
@@ -278,30 +287,29 @@ n_out), run on every row of the batch, with the legal mask selecting
 
 ### 4.3 Interjection and pass slots
 
-**`private`** is one pointer over the PRIVATE rows with two outputs each,
-buy and ability, and raw PRIVATE 16-17 (`can_buy_private`,
-`can_exchange_dr`). The phases read it:
+**`private`** is one pointer over the PRIVATE rows: a buy logit per row, an
+ability logit from DR's and MF's rows, and raw PRIVATE 16-17
+(`can_buy_private`, `can_exchange_dr`). The phases read it:
 
-- buy private p: TRACK 53+p, TOKEN 53+p, DIVIDEND 2+p, BUY_TRAIN 18+p, and
-  BUY_PRIVATE 1+p;
-- DR's ability, the exchange: STOCK 29, TRACK 60, TOKEN 60, DIVIDEND 9,
-  BUY_TRAIN 25, and BUY_PRIVATE 8;
-- MF's ability, the port tile: STOCK 30 and TRACK 61.
+- buy private p: BUY_PRIVATE_PRE 1+p and BUY_PRIVATE_POST 1+p;
+- DR's ability, the exchange: STOCK 29, BUY_PRIVATE_PRE 8, and
+  BUY_PRIVATE_POST 8;
+- MF's ability, the port tile: STOCK 30 and BUY_PRIVATE_PRE 9.
 
-One head serves every phase because a corp's purchase of p is one decision
-wherever it is offered: Ruby's BuyCompany step joins whichever step it stops
-at (engine-design §5.1). Each phase's interjections are rare, so a head per
-phase would split thin data, and GLOBAL in the context carries the phase
-where it matters. AUCTION's buy is a player's purchase at auction, so it
-keeps its own head.
+These are the only decisions that offer them (engine-design §5.1); a human's
+move at any other reaches the engine through `DRIVER.override_private_slot`,
+never through a model. One head serves them because a corp's purchase of p is
+one decision at either end of its turn, and GLOBAL in the context says which
+end. AUCTION's buy is a player's purchase at auction, so it keeps its own
+head.
 
-**Passes:** one MLP on `[g, a, c]` with a column for each of AUCTION, STOCK,
-TRACK, TOKEN, BUY_PRIVATE, and ER_BONUS. A pass reads only the context, so
-the six share a hidden layer and keep their own output weights, where v3
-builds an MLP per pass (`:742-745`, `:752-755`, `:769-772`, `:791-794`).
-BID's drop and BUY_TRAIN's pass are outputs of their joint heads. The
-logit-scale diagnostic, `pass_action_logit_abs`, is v3's (`:1750-1792`) over
-1889's layout and all eight `PHASES_WITH_PASS_SLOT`.
+**Passes:** one MLP on the context with a column for each of AUCTION, STOCK,
+BUY_PRIVATE_PRE, TRACK, TOKEN, BUY_PRIVATE_POST, and ER_BONUS. A pass reads
+only the context, so the seven share a hidden layer and keep their own output
+weights, where v3 builds an MLP per pass (`:742-745`, `:752-755`, `:769-772`,
+`:791-794`). BID's drop and BUY_TRAIN's pass are outputs of their joint heads.
+The logit-scale diagnostic, `pass_action_logit_abs`, is v3's (`:1750-1792`)
+over 1889's layout and all nine `PHASES_WITH_PASS_SLOT`.
 
 ### 4.4 Fixed heads against entity readouts
 
@@ -320,15 +328,15 @@ candidates, train types, and port hexes. Joint heads take the rest:
 
 ### 4.5 The unified block
 
-The heads fill the 18 blocks in `DecisionPhase` order and concatenate them to
-320 (`games/g1889.py:50-61`). At construction the module checks each block
+The heads fill the 19 blocks in `DecisionPhase` order and concatenate them to
+297 (`games/g1889.py:50-61`). At construction the module checks each block
 against `PHASE_ACTION_SIZES` and the total against the layout's
 `unified_dim`, as v3's `_validate_policy_layout` does (`:1018-1120`), and the
 row widths against `get_token_widths(max_players, 1)`, as `_validate_layout`
 does (`:226-256`). Logits become fp32 before the −1e9 mask (`:1727-1735`).
 
-The heads hold about 5.5M parameters at d = 256 against v3's 3.17M: 18
-phases, and the 3d context in every input. They cost 4.5% of a forward
+The heads hold about 5.2M parameters at d = 256 against v3's 3.17M: 19
+phases, and the context in every input. They cost 4.5% of a forward
 (Section 5.2).
 
 ## 5. Model size
@@ -373,8 +381,9 @@ extends the formula, which matches the counts within 0.5%):
 | 1889, 384 × 20, 8 heads | 38.4M | 50.9M | 7.83 | 0.28 | 4.85 |
 | 1889, 512 × 20, 8 heads | 68.2M | 90.3M | 13.78 | 0.37 | 8.53 |
 
-At v3's shape, 1889's model has 2.3M more parameters, all in the heads, and
-does 1.66 times the work per evaluation. The input projections are 0.15% of
+The proxy fed `c` to every head, so its counts run 3d² high (0.2M at d = 256,
+which makes v0 18.2M) and its FLOPs under 0.1% high. At v3's shape, 1889's
+model has 2.1M more parameters, all in the heads, and does 1.66 times the work per evaluation. The input projections are 0.15% of
 it. Across widths and depths (`size_grid.py`; FLOPs per state against v3's,
 with the trunk's parameters):
 
@@ -390,8 +399,8 @@ The size at v3's cost per evaluation is about 192 × 12 or 192 × 15.
 
 ### 5.3 CPU forward
 
-**Measured** (`cost_model.py`; fp32, inference mode; median ms per batch,
-and the ratio to v3 at the same batch):
+**Measured** (`cost_model.py`; fp32, inference mode, padded records; median ms
+per batch, and the ratio to v3 at the same batch):
 
 | Model | B = 64 | B = 128 | B = 256 | FLOPs |
 |---|---|---|---|---|
@@ -409,20 +418,37 @@ and the ratio to v3 at the same batch):
   the FLOP ratio of 1.66.
 - **The bias is the T² cost that matters.** It adds 0.3-0.45 of v3's time at
   4 heads and 0.6-0.8 at 8: a `(B, H, 95, 95)` tensor per layer, with
-  H × 2,048 records scattered into it, most of them padding (the median state
-  has about 180, extraction-design §6.3). On the CPU that is 20-25% of the
-  1889 forward at 4 heads.
+  H × 2,048 records scattered into it, about 90% of them padding (the median
+  state has about 180, extraction-design §6.3). On the CPU that is 20-25% of
+  the 1889 forward at 4 heads.
 - **Larger models tilt toward the FLOP ratio,** as matmuls grow and the bias
   does not.
-- **On the GPU,** v3's forward is matmul-bound: 1.62 GFLOP × 256 states in
-  4.35 ms model-only (`v3-cloud-profile.json`, `v3_no_mixing` at batch 256),
-  about 95 TFLOP/s by this count. So FLOPs should predict GPU time better
-  than they predict CPU time, plus the bias's memory traffic, about 0.25 MB
-  per state and layer in bf16 at 4 heads. **Test:** model-only time on the
-  5090 at batch 64 and 256, 1889 at 256 × 15 against v3, measured as
-  `v3-cloud-profile.json` measured v3; expect 1.7-2.0 times. If the scatter
-  of padding shows (every padded record adds 0 to cell (0, 0) of its row and
-  head), send padding to per-record trash cells.
+
+**v0's bias path** drops the padding and builds one dense tensor a layer (3.4).
+**Measured** (`bias_bench.py`; the bias path alone, on synthetic records fitted
+to extraction-design §6.3):
+
+| Bias path per forward, 4 heads | B = 64 | B = 256 |
+|---|---|---|
+| padded, three dense tensors a layer (v3's) | 80 ms | 411 ms |
+| padded, one dense tensor | 68 ms | 325 ms |
+| flat, three dense tensors | 21 ms | 166 ms |
+| **flat, one dense tensor (v0)** | **13 ms** | **106 ms** |
+
+The first row reproduces the bias's cost in the table above, 83 and 396 ms.
+At B = 256 flat records are 55K values against 524K, and doubling the median
+to 360 records gives 15 and 114 ms. So a forward at B = 256 should take about
+1,450 ms against 1,746, with the bias at 7% of it.
+
+**On the GPU,** v3's forward is matmul-bound: 1.62 GFLOP × 256 states in
+4.35 ms model-only (`v3-cloud-profile.json`, `v3_no_mixing` at batch 256),
+about 95 TFLOP/s by this count. So FLOPs should predict GPU time better than
+they predict CPU time, plus the bias's memory traffic, about 0.07 MB per state
+and layer in bf16 at 4 heads on v0's path. **Test:** model-only time on the
+5090 at batch 64 and 256, 1889 at 256 × 15 against v3, measured as
+`v3-cloud-profile.json` measured v3; expect 1.7-2.0 times. Time the padded path
+too, to confirm the gain: every padded record in a state and head lands on one
+cell, which may contend on a GPU.
 
 ### 5.4 Game length and self-play cost
 
@@ -532,7 +558,7 @@ routes, reach, lay legality, and lay outcomes.
 ### 5.7 Recommendation and the capacity probe
 
 **v0 is v3's shape: d = 256, 4 heads, 15 layers, ff_mult 3.0.** 12.8M in the
-trunk and 18.4M in all, at 1.66 times v3's FLOPs per evaluation.
+trunk and 18.2M in all, at 1.66 times v3's FLOPs per evaluation.
 
 The user's intuition that 1889 needs more than RSS is right about
 computation and, on present evidence, wrong about parameters:
@@ -572,8 +598,8 @@ saved replay buffer, offline, with the last two epochs' rows held out.
 - **Shrink** to 192 × 12 if, at epoch 150, it is within the seed gap of
   256 × 15 on both: v0 is larger than its data needs, and the smaller net
   self-plays 2.2 times faster.
-- **8 heads** if they beat 4 by the same margin; they cost 15-20% on the CPU
-  (**Test:** on the GPU).
+- **8 heads** if they beat 4 by the same margin; they cost about 10% on the
+  CPU on v0's bias path, and 13-24% on padded records (**Test:** on the GPU).
 - Otherwise keep v0.
 
 The probe costs only training, hours of GPU time against weeks of self-play
@@ -594,23 +620,26 @@ fp32, against 8 KB of records (extraction-design §6.4, §9).
 
 Extraction-design §13 item 11 chose records for 1889, per game. The change:
 
-- **`Game.relation_format`:** `"dense"` for RSS, `"sparse"` for 1889. A
+- **`Game.relation_format`:** `"dense"` for RSS, `"flat"` for 1889. A
   per-game constant, not a config field: it follows from the game's sizes,
   and RSS must not move.
+- **`flatten_relation_records`:** one helper from `(B, E, 4)` uint8 records to
+  `(N, 5)` int16 (3.4), used by every path below.
 - **Replay:** `sample` and `sample_into` fill `(B, R, T, T)` with
   `fill_relations_dense_batch` or `(B, E, 4)` with
-  `fill_relations_sparse_batch`.
-- **Trainer:** `_ensure_scratch` sizes `_rel_h` and `_rel_d` by the format;
-  the forward call is unchanged.
+  `fill_relations_sparse_batch`, which the caller flattens.
+- **Trainer:** `_ensure_scratch` sizes `_rel_h` and `_rel_d` by the format, up
+  to B × E rows, and the forward call gets the first N.
 - **`NNEvaluator`** follows the field too. In single-process mode one compiled
   model serves the trainer and `NNEvaluator` (`train/main.py:1087-1124`), so
   both must send one format, and the warmup builds its dummy relations in it.
-- The eval server always ships records and does not change.
+- **The eval server** follows the field too: it flattens on the CPU as it packs
+  a batch, so the GPU receives only real records.
 
-RSS keeps dense planes everywhere, so its code paths and numerics are as
-today. **Test:** for 1889, `sample_into`'s records equal
-`fill_relations_sparse_batch` on the sampled rows, and a trainer step on
-records gives the loss of a step on dense planes, to fp32 tolerance.
+RSS keeps its dense planes and padded records, so its code paths and numerics
+are as today. **Test:** for 1889, `sample_into`'s flat records equal the
+flattened `fill_relations_sparse_batch` on the sampled rows, and a trainer step
+on them gives the loss of a step on dense planes, to fp32 tolerance.
 
 ### 6.2 Layout id, model path, and the module contract
 
@@ -621,7 +650,7 @@ records gives the loss of a step on dense planes, to fp32 tolerance.
   (`tests/test_model_factory_checkpoint.py:288-297`). The module declares
   `INPUT_LAYOUT_VERSION = 1` and `build_model(config, spec)`.
 - **`build_model`** asserts the spec: game "1889", layout 1, `token_dim` 108,
-  `num_tokens` 90 + `num_players`, `policy_dim` 320, `value_dim` =
+  `num_tokens` 90 + `num_players`, `policy_dim` 297, `value_dim` =
   `num_players`. It reads `d_model`, `num_heads`, `num_layers`, `ff_mult`, and
   `zero_sum_values`. Those fields have `TrainingConfig` defaults
   (`train/config.py:163-171`), which v3's config relies on, so 1889's config
@@ -648,30 +677,33 @@ loaded model, as with v3's; `tests/g1889` pins them against the tables.
 
 Extraction-design §13 item 10, adopted:
 
-- E from the input's shape; a dense input's planes past 25 are sliced off;
+- N from the input's shape; a dense input's planes past 25 are sliced off;
 - relation ids past 24 carry no weight;
 - the static planes from `static_relation_planes`;
 - `is_selected` and the decision corp as token-data-1889.md's "Conventions"
   give them: at most one row per slot, zero when none.
 
-**Test** (8.1): appending records with ids 25 and up, or padding E to 4,096,
+**Test** (8.1): appending records with ids 25 and up, or value-0 records,
 leaves the outputs unchanged.
 
 ### 6.5 Eval server and IPC
 
-No code change: sizes come from the spec and the `Game`
-(`train/eval_server.py:254-292`, `train/eval_server.py:646-684`).
+Sizes come from the spec and the `Game` (`train/eval_server.py:254-292`,
+`train/eval_server.py:646-684`); the one code change is flattening (6.1).
 
-- **Per slot:** tokens 20.5 KB as fp16, records 8 KB, the mask 320 B, and
-  priors 1.3 KB, about 30 KB against RSS's 14 KB.
+- **Per slot:** tokens 20.5 KB as fp16, records 8 KB of capacity, the mask
+  297 B, and priors 1.2 KB, about 30 KB against RSS's 14 KB.
 - **In all:** 128 workers × 8 leaves come to about 31 MB of shared memory
   (RSS 14 MB), the pinned buffers at batch 256, two deep, to about 15 MB, and
-  a batch of 256 sends about 7.4 MB to the GPU.
+  a batch of 256 sends about 5.9 MB to the GPU, 0.6 MB of it flat records.
 - **Workers:** extraction costs 4.9 µs median a state (extraction-design §9),
   small beside a GPU evaluation every ~45 µs.
-- The warmup compiles at E = 2,048 (`train/eval_server.py:606-625`).
-  **Test:** the 1889 model compiles on the 5090 in bucketed mode with no
-  graph breaks or recompiles, as `v3-cloud-profile.json` checks v3.
+- **N is a dynamic dimension in both batch-shape modes:** the warmup
+  (`train/eval_server.py:606-625`) marks it with `mark_unbacked`, as `dynamic`
+  mode marks the batch. **Test:** the 1889 model compiles on the 5090 in
+  bucketed mode with no graph breaks, and N varies with no recompiles, as
+  `v3-cloud-profile.json` checks v3. If Inductor won't keep N dynamic, round N
+  up to B × 512 or B × 2,048 with value-0 records, each on a cell of its own.
 
 ### 6.6 Tooling
 
@@ -762,8 +794,8 @@ and leaves `tests/test_v2_parity.py` passing on its fixture.
 
 | # | Scope | Acceptance |
 |---|---|---|
-| 8.1 | `nn/transformer-1889.py` (Sections 3-4), tested in `tests/g1889/test_model.py` | on random-playout states at 3-5 players, at capacities 3 and 5 and mixed: legal logits finite and −1e9 elsewhere; dense and sparse inputs agree within fp32 tolerance, also with extra records of ids 25 and up and with E = 4,096; a batch equals its states run alone; permuting the visible candidate rows, with their records, permutes TILE's logits; with the trunk's output held fixed, each pointer logit (TRACK and TOKEN 1+h, STOCK's four for corp c, SELECT_TRAIN's t) moves with its own row's raw slots and no other row's; zero-sum values sum to zero over real players, with padded slots zero; construction checks widths and blocks; parameters as Section 5.2 |
-| 8.2 | relation transport per game (6.1): the `Game` field, replay, the trainer, `NNEvaluator`, and the warmup | RSS's replay, trainer, and evaluator tests unchanged; 1889's `sample_into` records equal the direct fill; on CPU, a trainer step on a 1889 buffer of random-playout rows runs, matches its dense-plane twin, and overfits a fixed batch |
+| 8.1 | `nn/transformer-1889.py` (Sections 3-4), tested in `tests/g1889/test_model.py` | on random-playout states at 3-5 players, at capacities 3 and 5 and mixed: legal logits finite and −1e9 elsewhere; dense and flat inputs agree within fp32 tolerance, also with extra records of ids 25 and up and with value-0 records; a batch equals its states run alone; permuting the visible candidate rows, with their records, permutes TILE's logits; with the trunk's output held fixed, each pointer logit (TRACK and TOKEN 1+h, STOCK's four for corp c, SELECT_TRAIN's t) moves with its own row's raw slots and no other row's; zero-sum values sum to zero over real players, with padded slots zero; construction checks widths and blocks; parameters as Section 5.2 |
+| 8.2 | relation transport per game (6.1): the `Game` field, flattening, replay, the trainer, `NNEvaluator`, the eval server, and the warmup | RSS's replay, trainer, and evaluator tests unchanged; 1889's `sample_into` records equal the direct fill; on CPU, a trainer step on a 1889 buffer of random-playout rows runs, matches its dense-plane twin, and overfits a fixed batch |
 | 8.3 | the 1889 `SelfPlayStats` (6.6) | its scalars appear in TensorBoard after a 1889 smoke run |
 | 8.4 | the configs (Section 7); a local smoke run | 2 epochs at 3-5 players complete through self-play, the eval server, training, a checkpoint, and a resume |
 | 8.5 | the cloud run: compile and profile on the 5090, then launch | Section 5.3's and 6.5's GPU Tests recorded here; no graph breaks or recompiles; the epoch-20 rescale (7.1) done |
@@ -775,7 +807,7 @@ Milestone 6 compares v0 with v1, which adds build distance (7b), under
 matched configs. v0 leaves:
 
 - **Relation ids and E.** v0 consumes ids 0-24 by a module constant, gives
-  later ids no weight, and takes E from its input. 7b's relations (ids 25 and
+  later ids no weight, and takes N from its input. 7b's relations (ids 25 and
   up, E = 4,096: extraction-design §8) reach v0 unchanged, so v0's
   checkpoints keep playing on 7b's extraction.
 - **Layouts.** v0 reads layout 1 and v1 reads 7b's layout 2. Each evaluator
@@ -796,46 +828,51 @@ matched configs. v0 leaves:
 
 ## 10. Decisions
 
-Each item gives the options and a recommendation.
+The user settled these on 2026-11-04. Each item gives the options and the decision.
 
 1. **The tile block.** (a) One `tile_proj` for HEX and CANDIDATE slots 2-77,
    and a projection per type for the rest. (b) A projection per type over the
-   whole row. *Recommend (a):* candidates learn tiles from 52 hex rows in
+   whole row. *Decided (a):* candidates learn tiles from 52 hex rows in
    every state (3.2).
 2. **Identity embeddings.** (a) Hexes, corps, privates, and train types, with
    candidate rows taking their hex's. (b) (a) without the candidates'. (c)
-   Hexes and corps only. *Recommend (a)* (3.3).
+   Hexes and corps only. *Decided (a)* (3.3).
 3. **Relation input mixing.** (a) None. (b) v3's module over the 35 relations,
-   behind a config flag. *Recommend (a):* v3's run has it off, and it would
+   behind a config flag. *Decided (a):* v3's run has it off, and it would
    cost about 2.8 blocks of FLOPs (3.5).
 4. **Phase conditioning.** (a) In the input, as v3. (b) adaLN in each block.
-   *Recommend (a)* (3.5).
-5. **Head inputs.** (a) The context `[GLOBAL, actor, decision corp]`, the
-   choice's rows, and the raw per-choice slots (4.1). (b) Embeddings alone.
-   *Recommend (a),* v3's pattern.
-6. **Interjection slots.** (a) One private scorer shared by every phase that
-   offers them. (b) A scorer per phase. *Recommend (a)* (4.3).
+   *Decided (a)* (3.5).
+5. **Head inputs.** (a) The context `[GLOBAL, actor]`, with the decision corp
+   wherever the head's phases have one, the choice's rows, and the raw
+   per-choice slots (4.1). (b) Embeddings alone.
+   *Decided (a),* v3's pattern.
+6. **Interjection slots.** (a) One private scorer shared by BUY_PRIVATE_PRE,
+   BUY_PRIVATE_POST, and STOCK's DR and MF slots. (b) A scorer per phase. *Decided (a)* (4.3).
 7. **Pass slots.** (a) One context MLP with a column per pass. (b) An MLP per
-   phase, as v3. *Recommend (a):* each reads only the context (4.3).
+   phase, as v3. *Decided (a):* each reads only the context (4.3).
 8. **Price grids and sale blocks.** (a) Joint heads with the raw amounts. (b)
-   A shared per-point scorer. *Recommend (a),* v3's BID and PAR (4.4).
-9. **TILE and ER_BONUS** share one candidate scorer. *Recommend yes,*
+   A shared per-point scorer. *Decided (a),* v3's BID and PAR (4.4).
+9. **TILE and ER_BONUS** share one candidate scorer. *Decided yes,*
    extraction-design §7.1's sketch.
 10. **v0's size.** (a) 256 × 15, 4 heads, ff_mult 3: v3's shape, 1.66 times its
     FLOPs. (b) 192 × 12: v3's cost per evaluation. (c) 384 × 18, 6 heads: 4.4
-    times. *Recommend (a)* (5.7).
+    times. *Decided (a)* (5.7).
 11. **Settling the size.** (a) The capacity probe on v0's buffer at epochs 50
     and 150, with 5.7's criterion. (b) A second full run at another size. (c)
-    Neither. *Recommend (a):* it costs training, not self-play.
+    Neither. *Decided (a):* it costs training, not self-play.
 12. **Attention heads.** (a) 4, as v3. (b) 8, for 35 relation channels.
-    *Recommend (a) in v0,* with (b) in the probe: 15-20% slower on the CPU,
-    no evidence yet of a gain.
+    *Decided (a) in v0,* with (b) in the probe: about 10% slower on the CPU
+    on v0's bias path, and no evidence yet of a gain.
 13. **Where the transport choice lives.** (a) A `Game` field, read by replay,
-    the trainer, `NNEvaluator`, and the warmup. (b) A config field. (c) The
-    model declares it. *Recommend (a)* (6.1).
+    the trainer, `NNEvaluator`, the eval server, and the warmup. (b) A config field. (c) The
+    model declares it. *Decided (a)* (6.1).
 14. **The config.** (a) Section 7.1: v3-10-01-26 with buffer, steps, and
     temperature windows scaled to game length, rescaled at epoch 20. (b)
-    v3's values unchanged. *Recommend (a).*
+    v3's values unchanged. *Decided (a).*
 15. **Tooling in step 8.** (a) The 1889 stats hook, with analysis and
     tournaments left to milestone 6. (b) Port `train/analyze_game.py` too.
-    *Recommend (a)* (6.6).
+    *Decided (a)* (6.6).
+16. **The bias path.** (a) Flat records with no padding, and one dense tensor a
+    layer. (b) v3's padded records and three tensors. *Decided (a)* (3.4, 5.3):
+    the same outputs at about a quarter of the bias's CPU time, for the 5090 to
+    confirm.
