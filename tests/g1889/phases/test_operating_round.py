@@ -37,7 +37,7 @@ from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
     HEX, TILE, apply_and_verify, at_or, depot, enter_operating_round, hold, lay, legal_ids, past_pre, set_cash,
-    train_choices, train_decisions,
+    token_slot, track_slot, train_choices, train_decisions,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -232,7 +232,7 @@ class TestTrackTileToken:
         GRAPH.refresh(state, IR)
         cash, bank, nine = CORPS[KO].cash(state), BANK.cash(state), TILE['9']
         assert GRAPH.sides_reached(state, KO, HEX['K8']) == 0
-        apply_and_verify(state, K.TRACK_HEX + HEX['K6'])
+        apply_and_verify(state, track_slot('K6'))
         assert TURN.step(state) == K.STEP_TILE and TURN.pending_hex(state) == HEX['K6']
         candidates = A.lay_candidates_py(state, HEX['K6'])
         assert candidates == [(TILE['7'], 2), (TILE['8'], 3), (nine, 0)] and legal_ids(state) == [0, 1, 2]
@@ -249,14 +249,14 @@ class TestTrackTileToken:
         for name in ('7', '8'):
             MAP.set_supply(state, TILE[name], 0)
         enter_operating_round(state)
-        result = apply_and_verify(state, K.TRACK_HEX + HEX['K6'])
+        result = apply_and_verify(state, track_slot('K6'))
         assert result.forced[0] == (K.DPHASE_TILE, 0) and MAP.tile(state, HEX['K6']) == TILE['9']
 
     def test_one_lay_a_turn(self):
         state = at_or(3)
         hold(state, KO, {0: 6})
         enter_operating_round(state)
-        apply_and_verify(state, K.TRACK_HEX + HEX['J3'])
+        apply_and_verify(state, track_slot('J3'))
         apply_and_verify(state, 0)
         assert TURN.step(state) != K.STEP_TRACK and A.lay_hexes_py(state, KO)  # lays are left, the turn's is used
 
@@ -271,9 +271,9 @@ class TestTrackTileToken:
         lay(state, 'K8', '15', 1)
         enter_operating_round(state)
         apply_and_verify(state, K.TRACK_PASS)
-        assert legal_ids(state) == [K.TOKEN_PASS, K.TOKEN_HEX + HEX['K8']]
+        assert legal_ids(state) == [K.TOKEN_PASS, token_slot('K8')]
         cash, bank = CORPS[KO].cash(state), BANK.cash(state)
-        result = apply_and_verify(state, K.TOKEN_HEX + HEX['K8'])
+        result = apply_and_verify(state, token_slot('K8'))
         assert MAP.tokens(state, HEX['K8']) == 1 << KO and CORPS[KO].tokens_left(state) == 0
         assert result.steps[0] == K.STEP_ROUTE and result.forced[-2:] == BUY_2
         assert CORPS[KO].cash(state) == cash - 40 - 80 and BANK.cash(state) == bank + 40 + 80

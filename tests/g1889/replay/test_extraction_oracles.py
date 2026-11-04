@@ -99,7 +99,7 @@ def _check_track(fixture, index, state, snap, tokens) -> tuple[int, int]:
     forced = 0
     for h, ruby in by_hex.items():
         copy = GameState.from_array(state._array, TURN.num_players(state))
-        assert DRIVER.apply_action(copy, K.TRACK_HEX + h) == STATUS_OK
+        assert DRIVER.apply_action(copy, K.TRACK_HEX + D.HEX_TRACK_SLOT[h]) == STATUS_OK
         after, records = _extract(copy)
         if A.get_decision_phase_py(copy) != K.DPHASE_TILE:  # a lone lay, applied
             assert {_tile(after, R.ROW_HEX + h)} == ruby, (fixture, index, D.HEX_IDS[h])

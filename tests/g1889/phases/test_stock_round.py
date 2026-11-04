@@ -29,8 +29,8 @@ from g1889.entities.private import PRIVATES
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    apply_and_verify, apply_factored, end_auction, enter_auction, enter_stock_round, exact_id, hold, legal_ids,
-    new_game, opened, policy_ids,
+    apply_and_verify, apply_factored, bid_slot, end_auction, enter_auction, enter_stock_round, exact_id, hold,
+    legal_ids, new_game, opened, policy_ids,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -574,7 +574,7 @@ class TestDriver:
         (¥45), and the exact ¥46 and ¥47 above it, so BID waits."""
         state = new_game(3)
         enter_auction(state, 0, bids=[(0, D.PRIVATE_SIR, 373)])
-        apply_and_verify(state, K.AUCTION_BID + D.PRIVATE_ER)
+        apply_and_verify(state, bid_slot(D.PRIVATE_ER))
         assert TURN.step(state) == K.STEP_BID and policy_ids(state) == legal_ids(state) == [K.BID_POINT]
         assert DRIVER.forced_action_py(state) == -1
         assert A.is_legal_action_py(state, exact_id(state, 47)) and not A.is_legal_action_py(state, exact_id(state, 48))
@@ -584,7 +584,7 @@ class TestDriver:
     def test_a_one_value_bid_range_is_forced(self):
         state = new_game(3)
         enter_auction(state, 0, bids=[(0, D.PRIVATE_SIR, 375)])
-        result = apply_and_verify(state, K.AUCTION_BID + D.PRIVATE_ER)
+        result = apply_and_verify(state, bid_slot(D.PRIVATE_ER))
         assert result.forced == [(K.DPHASE_BID, K.BID_POINT)]
 
     def test_a_capped_bid_with_one_policy_point_is_forced(self):
@@ -594,5 +594,5 @@ class TestDriver:
         state = new_game(3, auction_pass_payout_cap=1)
         enter_auction(state, 0, bids=[(0, D.PRIVATE_SIR, 353)])
         TURN.set_auction_pass_payouts(state, 1)
-        result = apply_and_verify(state, K.AUCTION_BID + D.PRIVATE_ER)
+        result = apply_and_verify(state, bid_slot(D.PRIVATE_ER))
         assert result.forced == [(K.DPHASE_BID, K.BID_POINT)] and PLAYERS[0].bid(state, D.PRIVATE_ER) == 45

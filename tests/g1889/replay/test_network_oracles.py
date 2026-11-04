@@ -104,7 +104,7 @@ def test_operating_corp_track_tile_and_token_ids_match_ruby(fixture):
         if step == 'Track' and operating['lays'] is not None:
             lays = ruby_lays(operating['lays'][sym], snap['corporations'][sym]['cash'])
             hexes = sorted({HEX[hex_id] for hex_id, _, _ in lays})
-            assert _ids(state) == [K.TRACK_PASS] + [K.TRACK_HEX + h for h in hexes], (fixture, index)
+            assert _ids(state) == [K.TRACK_PASS] + [K.TRACK_HEX + D.HEX_TRACK_SLOT[h] for h in hexes], (fixture, index)
             TURN.set_step(state, K.STEP_TILE)
             for h in hexes:
                 TURN.set_pending_hex(state, h)
@@ -117,7 +117,7 @@ def test_operating_corp_track_tile_and_token_ids_match_ruby(fixture):
         elif step == 'Token':
             hexes = sorted(HEX[hex_id] for hex_id in operating['tokens'][sym])
             assert hexes, (fixture, index)  # Ruby skips the Token step when nothing can be tokened
-            assert _ids(state) == [K.TOKEN_PASS] + [K.TOKEN_HEX + h for h in hexes], (fixture, index)
+            assert _ids(state) == [K.TOKEN_PASS] + [K.TOKEN_HEX + D.HEX_TOKEN_SLOT[h] for h in hexes], (fixture, index)
             checked += 1
     assert checked == {'314': 59, '962': 72}.get(fixture, 1)
 

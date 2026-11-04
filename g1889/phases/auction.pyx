@@ -3,7 +3,8 @@
 Ruby's ``WaterfallAuction`` (``step/waterfall_auction.rb``) is the oracle.
 On a normal turn the turn player passes, buys the topmost private at its
 price, or selects a private to bid on and then names the amount in BID; a bid
-on the topmost private is a purchase at the bid. After each sale the new
+on the topmost private is a purchase at the bid (private 0's only through
+replay's ``DRIVER.override_topmost_bid``). After each sale the new
 topmost private resolves in place (``resolve_bids``): without bids normal
 turns resume; one bid wins it; two or more open a closed auction, in which the
 lowest bidder raises in BID or drops out (BID's slot 0) until one bid is
@@ -122,6 +123,12 @@ cdef void _all_passed(GameState state) except *:
 # HANDLERS
 # =============================================================================
 
+cdef void select_bid(GameState state, int private) except *:
+    """Open BID on ``private``, from AUCTION's slot or replay's override."""
+    TURN.set_pending_private(state, private)
+    TURN.set_step(state, STEP_BID)
+
+
 cdef void apply_auction(GameState state, const ActionInfo* info) except *:
     """A normal turn: pass, buy the topmost at its price, or select a private for BID."""
     cdef int player = turn_active_player(state)
@@ -136,8 +143,7 @@ cdef void apply_auction(GameState state, const ActionInfo* info) except *:
         _buy(state, player, top, private_price(state, top))
     else:
         assert info.type == ACTION_SELECT_BID, f"apply_auction: action type {info.type}"
-        TURN.set_pending_private(state, info.private)
-        TURN.set_step(state, STEP_BID)
+        select_bid(state, info.private)
 
 
 cdef void apply_bid(GameState state, const ActionInfo* info) except *:

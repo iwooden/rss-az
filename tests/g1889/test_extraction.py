@@ -522,7 +522,7 @@ def test_track_counts_each_hexs_lay_candidates(samples):
         expected = np.zeros(D.NUM_HEXES, np.float32)
         for action in legal_ids(before):
             if action >= K.TRACK_HEX:
-                expected[action - K.TRACK_HEX] = _f32(_candidate_count(_applied(row, action)), D.MAX_LAY_CANDIDATES)
+                expected[D.TRACK_HEXES[action - K.TRACK_HEX]] = _f32(_candidate_count(_applied(row, action)), D.MAX_LAY_CANDIDATES)
                 seen += 1
         np.testing.assert_array_equal(counts, expected)
     assert seen
@@ -542,7 +542,7 @@ def test_token_slots_describe_each_token(samples):
         expected = np.zeros((D.NUM_HEXES, 2), np.float32)
         for action in legal_ids(before):
             if action >= K.TOKEN_HEX:
-                expected[action - K.TOKEN_HEX] = 1, _route_delta(_applied(row, action), before, corp)
+                expected[D.TOKEN_HEXES[action - K.TOKEN_HEX]] = 1, _route_delta(_applied(row, action), before, corp)
                 seen += 1
         np.testing.assert_array_equal(slots, expected)
     assert seen
@@ -565,7 +565,8 @@ def test_train_deltas_describe_each_train_change(samples):
         expected = np.zeros((D.NUM_TRAIN_TYPES, 3), np.float32)
         for action in legal_ids(before):
             if phase == K.DPHASE_DISCARD:
-                t, slot, changes = action, 2, {action: -1}
+                t = D.DISCARD_TYPES[action]
+                slot, changes = 2, {t: -1}
             elif action < K.SELECT_TRAIN_TRADE_IN:
                 t, slot, changes = action, 0, {action: 1}
             else:

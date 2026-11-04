@@ -9,8 +9,8 @@ from libc.stdint cimport uint16_t
 
 from g1889.actions cimport (
     ACTION_BUY_PRIVATE, ACTION_DR_EXCHANGE, ACTION_MF_PORT, ActionInfo, decode_action, enumerate_legal_actions,
-    enumerate_policy_actions, get_decision_phase, has_exact_amounts, is_legal_action, override_slot_legal,
-    wide_amount_range,
+    enumerate_policy_actions, get_decision_phase, has_exact_amounts, is_legal_action, override_bid_legal,
+    override_slot_legal, wide_amount_range,
 )
 from g1889.constants cimport (
     DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE_POST, DPHASE_BUY_PRIVATE_PRE, DPHASE_BUY_TRAIN, DPHASE_DISCARD,
@@ -20,8 +20,9 @@ from g1889.constants cimport (
     STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END,
     STEP_TURN_START,
 )
+from g1889.data.tables cimport PRIVATE_TR
 from g1889.entities.turn cimport TurnState, turn_operating_corp, turn_round, turn_step
-from g1889.phases.auction cimport apply_auction, apply_bid
+from g1889.phases.auction cimport apply_auction, apply_bid, select_bid
 from g1889.phases.buy_train cimport (
     apply_buy_train, apply_discard, apply_emergency_sell_amount, apply_select_train, apply_train_price,
 )
@@ -56,7 +57,7 @@ cdef class GameDriver:
         off-grid bid left a range narrower than a grid step. When the policy
         drops legal grid points (the pass cap), self-play never uses exact
         amounts, so its one point is forced."""
-        cdef uint16_t ids[53]  # MAX_ACTION_SIZE
+        cdef uint16_t ids[46]  # MAX_ACTION_SIZE
         cdef int count = enumerate_policy_actions(state, ids)
         cdef int action_id, phase
         assert count > 0, f"_forced_action: no policy actions at step {Step(turn_step(state)).name}"
@@ -212,6 +213,20 @@ cdef class GameDriver:
         apply_interjection(state, &info)
         return self._auto_chain(state, history)
 
+    cpdef int override_topmost_bid(self, GameState state, object history=None) except -1:
+        """Replay only: a human's bid on private 0, which Ruby takes as a
+        purchase at the bid. Private 0 is the topmost while it is unsold, so
+        it is the one private with no bid slot (engine-design.md §12 item 8);
+        this opens BID on it, as a later private's slot does, then auto-chains,
+        and BID's amount goes through ``apply_action`` as usual. History gets
+        the auto-chain, not the override. The pipeline never calls it. Returns
+        STATUS_INVALID where AUCTION would not offer the bid
+        (``override_bid_legal``), else as ``apply_action``."""
+        if not override_bid_legal(state):
+            return STATUS_INVALID
+        select_bid(state, <int>PRIVATE_TR)
+        return self._auto_chain(state, history)
+
     def forced_action_py(self, GameState state):
         """The id the driver would apply by itself at the current decision, or -1."""
         return self._forced_action(state)
@@ -224,5 +239,5 @@ for _name, _member in ActionStatus.__members__.items():
     globals()[_name] = int(_member)
 del _name, _member
 
-# _forced_action's buffer is sized with the literal 53.
-assert <int>MAX_ACTION_SIZE == 53
+# _forced_action's buffer is sized with the literal 46.
+assert <int>MAX_ACTION_SIZE == 46

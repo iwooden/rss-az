@@ -29,6 +29,11 @@ cpdef enum TableDims:
     MAX_LAY_CANDIDATES = 15
     MAX_ROUTE_HEXES = 104
     MAX_TILE_PATHS = 6
+    NUM_TRACK_HEXES = 45
+    NUM_TOKEN_HEXES = 15
+    NUM_PORT_LAYS = 10
+    NUM_ER_CANDIDATES = 8
+    NUM_DISCARD_TYPES = 3
 
 cpdef enum TableRules:
     BANK_CASH = 7000
@@ -144,6 +149,17 @@ cdef uint8_t[92][6][6] TILE_PATHS
 cdef int16_t[553] UPG_START
 cdef uint8_t[1206] UPG_TILE
 cdef uint8_t[1206] UPG_ROT
+
+# Action slots: the slot-to-value tables, and for each value its slot or -1
+cdef int8_t[45] TRACK_HEXES
+cdef int8_t[52] HEX_TRACK_SLOT
+cdef int8_t[15] TOKEN_HEXES
+cdef int8_t[52] HEX_TOKEN_SLOT
+cdef int8_t[10] PORT_LAY_HEX
+cdef int8_t[10] PORT_LAY_ROT
+cdef int8_t[4][6] PORT_LAY_SLOT
+cdef int8_t[3] DISCARD_TYPES
+cdef int8_t[6] TRAIN_DISCARD_SLOT
 
 # Corporations and privates
 cdef int8_t[7] CORP_HOME

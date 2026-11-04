@@ -2,16 +2,18 @@
 
 Phase-local action ids follow 1889/engine-design.md §5.2. Each block of ids
 is named by its first id; "+ x" marks a block indexed by x (corp c, private p,
-hex h, train type t). A sale of n shares is encoded as n - 1. Exact amounts in
-BID, TRAIN_PRICE, and PRIVATE_PRICE are ``*_EXACT + amount``: at or above the
-phase size, legal by range check, and never enumerated.
+hex h, train type t, or an index into a slot table of g1889/data/tables.pxd,
+which holds only what can ever be legal, §12 item 8). A sale of n shares is
+encoded as n - 1. Exact amounts in BID, TRAIN_PRICE, and PRIVATE_PRICE are
+``*_EXACT + amount``: at or above the phase size, legal by range check, and
+never enumerated.
 """
 
 from libc.stdint cimport int8_t, int16_t
 
 from g1889.data.tables cimport (
-    MAX_LAY_CANDIDATES, NUM_CORPS, NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES,
-    NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES,
+    MAX_LAY_CANDIDATES, NUM_CORPS, NUM_DISCARD_TYPES, NUM_ER_CANDIDATES, NUM_PAR_PRICES, NUM_PORT_LAYS, NUM_PRIVATES,
+    NUM_TOKEN_HEXES, NUM_TRACK_HEXES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES,
 )
 
 cpdef enum Round:
@@ -97,12 +99,13 @@ cpdef enum Shares:
 cpdef enum AuctionRules:
     AUCTION_DISCOUNT_STEP = 5
 
-# AUCTION: the turn player passes, buys the topmost private at its price, or bids on private p.
+# AUCTION: the turn player passes, buys the topmost private at its price, or bids on private
+# p. Private 0, the topmost while unsold, has no bid slot; replay has ``override_topmost_bid``.
 cpdef enum AuctionAction:
     AUCTION_PASS = 0
     AUCTION_BUY = 1
-    AUCTION_BID = 2                 # + p
-    ACTION_SIZE_AUCTION = AUCTION_BID + NUM_PRIVATES
+    AUCTION_BID = 2                 # + p - 1
+    ACTION_SIZE_AUCTION = AUCTION_BID + NUM_PRIVATES - 1
 
 # BID: point k bids the minimum + ¥5k. Slot 0 drops out, legal only in a closed auction
 # (``auction_private``), where the lowest bidder acts and the minimum is the high bid + ¥5.
@@ -148,8 +151,8 @@ cpdef enum BuyPrivatePreAction:
 # TRACK: pass, or choose a hex (TILE follows).
 cpdef enum TrackAction:
     TRACK_PASS = 0
-    TRACK_HEX = 1                   # + h
-    ACTION_SIZE_TRACK = TRACK_HEX + NUM_HEXES
+    TRACK_HEX = 1                   # + i: TRACK_HEXES[i]
+    ACTION_SIZE_TRACK = TRACK_HEX + NUM_TRACK_HEXES
 
 # TILE: an index into the chosen hex's lay candidates.
 cpdef enum TileAction:
@@ -158,17 +161,17 @@ cpdef enum TileAction:
 # TOKEN: pass, or token a hex.
 cpdef enum TokenAction:
     TOKEN_PASS = 0
-    TOKEN_HEX = 1                   # + h
-    ACTION_SIZE_TOKEN = TOKEN_HEX + NUM_HEXES
+    TOKEN_HEX = 1                   # + i: TOKEN_HEXES[i]
+    ACTION_SIZE_TOKEN = TOKEN_HEX + NUM_TOKEN_HEXES
 
 cpdef enum DividendAction:
     DIVIDEND_WITHHOLD = 0
     DIVIDEND_PAYOUT = 1
     ACTION_SIZE_DIVIDEND = DIVIDEND_PAYOUT + 1
 
-# DISCARD: the train type to discard.
+# DISCARD: i: the train type DISCARD_TYPES[i] to discard.
 cpdef enum DiscardAction:
-    ACTION_SIZE_DISCARD = NUM_TRAIN_TYPES
+    ACTION_SIZE_DISCARD = NUM_DISCARD_TYPES
 
 # A train purchase's source (``pending_train_source``): the depot, the pool, or corp c.
 cpdef enum TrainSource:
@@ -218,12 +221,12 @@ cpdef enum PrivatePriceAction:
 cpdef enum ErBonusAction:
     ER_BONUS_PASS = 0
     ER_BONUS_CANDIDATE = 1          # + k
-    ACTION_SIZE_ER_BONUS = ER_BONUS_CANDIDATE + MAX_LAY_CANDIDATES
+    ACTION_SIZE_ER_BONUS = ER_BONUS_CANDIDATE + NUM_ER_CANDIDATES
 
-# PORT: MF's owner lays the port tile on MF_PORT_HEX[i] at rotation r.
+# PORT: MF's owner lays the port tile on PORT_LAY_HEX[i] at rotation PORT_LAY_ROT[i].
 cpdef enum PortAction:
-    PORT_LAY = 0                    # + NUM_SIDES·i + r
-    ACTION_SIZE_PORT = NUM_PORTS * NUM_SIDES
+    PORT_LAY = 0                    # + i
+    ACTION_SIZE_PORT = NUM_PORT_LAYS
 
 cpdef enum PolicyDims:
     MAX_ACTION_SIZE = ACTION_SIZE_TRACK

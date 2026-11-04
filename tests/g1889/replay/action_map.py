@@ -18,9 +18,11 @@ Actions with no engine decision map to ``[]``: ``message``, ``program_*``,
 and ``run_routes`` whose revenue the engine's ROUTE step already matches.
 Any other ``run_routes`` maps to ``(ROUTE_OVERRIDE, revenue)``, which the
 harness applies with ``DRIVER.override_route_revenue``: humans' routes often
-earn less than the maximum, and Ruby pays logged revenue unchecked. A
+earn less than the maximum, and Ruby pays logged revenue unchecked. A bid on
+private 0, which has no slot, maps to ``(TOPMOST_BID_OVERRIDE, 0)``,
+``DRIVER.override_topmost_bid``, and then BID. A
 ``discard_train`` by a crowded corp other than the one the engine's DISCARD
-is for maps to ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + type)``: Ruby takes
+is for maps to ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + slot)``: Ruby takes
 discards from any crowded corp, the engine in corp order, and the order
 cannot change the result, so the harness holds it until the engine reaches
 that corp (314 record 339, engine-design.md §10.2). ``end_game`` raises
@@ -74,11 +76,13 @@ from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TILE, TRAIN, legal_a
 
 Decision = tuple[int, int]
 # Not decision phases: ``(ROUTE_OVERRIDE, revenue)`` is ``DRIVER.override_route_revenue``,
-# ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + type)`` a discard the harness holds for its corp's turn,
-# and ``(PRIVATE_OVERRIDE, BUY_PRIVATE_PRE's slot)`` is ``DRIVER.override_private_slot``.
+# ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + slot)`` a discard the harness holds for its corp's turn,
+# ``(PRIVATE_OVERRIDE, BUY_PRIVATE_PRE's slot)`` is ``DRIVER.override_private_slot``, and
+# ``(TOPMOST_BID_OVERRIDE, 0)`` is ``DRIVER.override_topmost_bid``.
 ROUTE_OVERRIDE = -2
 HELD_DISCARD = -3
 PRIVATE_OVERRIDE = -4
+TOPMOST_BID_OVERRIDE = -5
 
 
 class UnsupportedAction(Exception):
@@ -118,6 +122,15 @@ def _slot(table: dict[int, Any], phase: int, what: str) -> Any:
     return table[phase]
 
 
+def _table_slot(slots: list[int], value: int, what: str) -> int:
+    """``value``'s action slot in a slot table of ``g1889.data.tables``. A Ruby
+    action that needs a slot the engine has removed (engine-design §12 item 8)
+    overturns the argument for removing it, so it stops the replay."""
+    if slots[value] < 0:
+        raise UnsupportedAction(f'{what}, which has no slot (engine-design §12 item 8)')
+    return slots[value]
+
+
 def _bid_id(minimum: int, price: int) -> int:
     """BID's grid point when the price lands on one, else an exact id. Forced
     decisions are always grid points, so the sync rule can match them."""
@@ -135,8 +148,10 @@ def _bid(action, pre, phase, state) -> list[Decision]:
         raise UnsupportedAction(f'bid: the topmost private bought for {price}, below its price {minimum}')
     if pre['purchase'] and price == minimum:
         return [(K.DPHASE_AUCTION, K.AUCTION_BUY)]
-    # A bid on another private, or on the topmost above its price: a purchase at the bid.
-    return [(K.DPHASE_AUCTION, K.AUCTION_BID + PRIVATE[pre['company']]), (K.DPHASE_BID, _bid_id(minimum, price))]
+    # A bid on another private, or on the topmost above its price: a purchase at the bid. Private 0 has no slot.
+    p = PRIVATE[pre['company']]
+    first = (K.DPHASE_AUCTION, K.AUCTION_BID + p - 1) if p else (TOPMOST_BID_OVERRIDE, 0)
+    return [first, (K.DPHASE_BID, _bid_id(minimum, price))]
 
 
 def _pass(action, pre, phase, state) -> list[Decision]:
@@ -214,18 +229,20 @@ def _lay_tile(action, pre, phase, state) -> list[Decision]:
         _own_turn(state, D.PRIVATE_MF, "MF's port tile")
         if tile != D.PORT_TILE or (h, lay[1]) not in A.port_lays_py(state):
             raise UnsupportedAction(f"MF's lay of {pre['tile']} on {pre['hex']} in {_phase_name(phase)}")
-        return [decision, (K.DPHASE_PORT, K.PORT_LAY + D.NUM_SIDES * D.MF_PORT_HEX.index(h) + lay[1])]
+        slots = D.PORT_LAY_SLOT[D.MF_PORT_HEX.index(h)]
+        return [decision, (K.DPHASE_PORT, K.PORT_LAY + _table_slot(slots, lay[1], f"MF's lay on {pre['hex']}"))]
     if action['entity_type'] != 'corporation':
         raise UnsupportedAction(f"lay_tile by private {action['entity']}")
+    slot = _table_slot(D.HEX_TRACK_SLOT, h, f"a lay on {pre['hex']}")
     candidates = A.lay_candidates_py(state, h, CORP[action['entity']])
     if lay not in candidates:
         raise ValueError(f"Ruby's lay of {pre['tile']} on {pre['hex']} at rotation {pre['rotation']} "
                          f'is not an engine candidate: {candidates}')
-    return [(K.DPHASE_TRACK, K.TRACK_HEX + h), (K.DPHASE_TILE, candidates.index(lay))]
+    return [(K.DPHASE_TRACK, K.TRACK_HEX + slot), (K.DPHASE_TILE, candidates.index(lay))]
 
 
 def _place_token(action, pre, phase, state) -> list[Decision]:
-    return [(K.DPHASE_TOKEN, K.TOKEN_HEX + HEX[pre['hex']])]
+    return [(K.DPHASE_TOKEN, K.TOKEN_HEX + _table_slot(D.HEX_TOKEN_SLOT, HEX[pre['hex']], f"a token on {pre['hex']}"))]
 
 
 def _run_routes(action, pre, phase, state) -> list[Decision]:
@@ -241,11 +258,12 @@ def _dividend(action, pre, phase, state) -> list[Decision]:
 
 
 def _discard_train(action, pre, phase, state) -> list[Decision]:
-    corp, train = CORP[action['entity']], TRAIN[pre['train_type']]
+    corp = CORP[action['entity']]
+    slot = _table_slot(D.TRAIN_DISCARD_SLOT, TRAIN[pre['train_type']], f"a discard of a {pre['train_type']}")
     crowded = TRAINS.first_crowded(state) if TURN.step(state) == K.STEP_DISCARD else -1
     if crowded >= 0 and crowded != corp:  # EQUIVALENT: Ruby takes discards in any order
-        return [(HELD_DISCARD, D.NUM_TRAIN_TYPES * corp + train)]
-    return [(K.DPHASE_DISCARD, train)]
+        return [(HELD_DISCARD, D.NUM_TRAIN_TYPES * corp + slot)]
+    return [(K.DPHASE_DISCARD, slot)]
 
 
 def _train_price_id(state, corp: int, train: int, price: int) -> int:

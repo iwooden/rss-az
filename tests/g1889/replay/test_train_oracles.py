@@ -134,7 +134,8 @@ def test_buy_train_and_discard_match_ruby(fixture):
             first = CORP[operating['crowded'][0]]
             assert [D.CORP_SYMS[c] for c in range(D.NUM_CORPS) if TRAINS.crowded(state, c)] == operating['crowded']
             assert TRAINS.first_crowded(state) == first and TURN.active_player(state) == CORPS[first].president(state)
-            assert _ids(state) == [t for t in range(D.NUM_TRAIN_TYPES) if TRAINS.corp_trains(state, first, t)]
+            assert _ids(state) == [D.TRAIN_DISCARD_SLOT[t] for t in range(D.NUM_TRAIN_TYPES)
+                                   if TRAINS.corp_trains(state, first, t)]
             discards += 1
     assert (snapshots, emergencies, choices, corps, pool, trades, discards) == COVERAGE[fixture]
     assert tuple(sub_phases) == SUB_PHASES[fixture]

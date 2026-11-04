@@ -222,6 +222,21 @@ class TestSales:
         assert CORPS[AR].pool_shares(state) == 2 and MARKET.price(state, AR) == 55
         assert PLAYERS[0].cash(state) == 10 + 130 - 80 and TRAINS.corp_trains(state, KO, T2) == 1
 
+    def test_a_five_share_block_is_legal(self):
+        """EMERGENCY_SELL_AMOUNT's fifth slot stays (engine-design §12 item 8),
+        though no game has shown it: two players at 50% of a sold-out corp is a
+        position the rules allow, the non-president may sell it all into an
+        empty pool, and a need of ¥300 at ¥65 a share falls short with four."""
+        def setup(state):
+            hold(state, IR, {1: 5, 0: 5}, par=PAR_65, president=1)
+        state = emergency(0, 0, phase=D.GAME_PHASE_6, ko_holdings={0: 4, 2: 4}, setup=setup)
+        result = apply_and_verify(state, K.TRACK_PASS)
+        assert (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_SELL + IR) in result.forced  # KO's own 40% holds the presidency
+        assert TRAINS.cheapest_price(state) == 300 and CORPS[IR].emergency_sale(state, 0) == 5
+        assert TURN.step(state) == K.STEP_EMERGENCY_SELL_AMOUNT and legal_ids(state) == [0, 1, 2, 3, 4]
+        apply_and_verify(state, 4)
+        assert CORPS[IR].pool_shares(state) == 5 and CORPS[IR].president(state) == 1
+
     def test_the_operating_corps_own_shares(self):
         state = emergency(5, 10, ko_holdings={0: 6, 1: 2}, setup=ir_with_a_train())
         to_buy_train(state)

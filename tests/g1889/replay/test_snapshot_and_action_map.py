@@ -20,7 +20,7 @@ from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
 
 from tests.g1889.replay.action_map import (
-    HELD_DISCARD, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, ReplayEnd, UnsupportedAction, map_action,
+    HELD_DISCARD, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, TOPMOST_BID_OVERRIDE, ReplayEnd, UnsupportedAction, map_action,
 )
 from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TRAIN, compare, load_state
@@ -298,7 +298,7 @@ def test_map_action_covers_the_fixtures():
                     continue
                 if decisions and decisions[0][0] == HELD_DISCARD:  # 314 record 339: UR's waits for SR's
                     assert decisions == [(HELD_DISCARD, D.NUM_TRAIN_TYPES * CORP[action['entity']]
-                                          + TRAIN[pre['train_type']])]
+                                          + D.TRAIN_DISCARD_SLOT[TRAIN[pre['train_type']]])]
                     held += 1
                     mapped += 1
                     continue
@@ -371,6 +371,21 @@ def test_map_action_skips_and_rejects():
         bought_in('Route', K.DPHASE_DIVIDEND)
     with pytest.raises(UnsupportedAction, match='DiscardTrain'):
         bought_in('DiscardTrain', K.DPHASE_DISCARD)
+    # A bid on private 0 has no slot: the override, then BID. Another private's has.
+    bid = {'type': 'bid', 'entity_type': 'player'}
+    above = dict(auctioning=None, purchase=True, company='TR', price=25, min_bid=20)
+    assert map_action(bid, above, K.DPHASE_AUCTION, scratch) == [(TOPMOST_BID_OVERRIDE, 0), (K.DPHASE_BID, K.BID_POINT + 1)]
+    above = dict(auctioning=None, purchase=True, company='MF', price=35, min_bid=30)
+    assert map_action(bid, above, K.DPHASE_AUCTION, scratch) == [(K.DPHASE_AUCTION, K.AUCTION_BID),
+                                                                 (K.DPHASE_BID, K.BID_POINT + 1)]
+    # A Ruby action that needs a removed slot stops the replay, rather than map to a wrong id (§12 item 8).
+    with pytest.raises(UnsupportedAction, match='B3, which has no slot'):
+        map_action({'type': 'place_token'}, {'hex': 'B3'}, K.DPHASE_TOKEN, scratch)
+    with pytest.raises(UnsupportedAction, match='discard of a D, which has no slot'):
+        map_action({'type': 'discard_train', 'entity': 'KO'}, {'train_type': 'D'}, K.DPHASE_DISCARD, scratch)
+    with pytest.raises(UnsupportedAction, match='a lay on J7, which has no slot'):
+        map_action({'type': 'lay_tile', 'entity': 'KO', 'entity_type': 'corporation'},
+                   {'hex': 'J7', 'tile': '8', 'rotation': 0}, K.DPHASE_TRACK, scratch)
     # DR and MF act only on their owner's turn (engine-design §12 item 4).
     PRIVATES[D.PRIVATE_DR].set_owner(scratch, K.OWNER_PLAYER + 1)
     TURN.set_active_player(scratch, 0)

@@ -71,7 +71,7 @@ The forward pass is v3's (`nn/transformer-v3.py:1595-1744`) on 1889's rows:
 3. L pre-RMSNorm blocks with SwiGLU, then a final RMSNorm (3.5);
 4. the selected rows: the actor, the decision corp, and the other
    `is_selected` slots (3.6);
-5. heads that fill the 19 phase blocks of the unified 297 slots, with
+5. heads that fill the 19 phase blocks of the unified 228 slots, with
    illegal slots at −1e9 (Section 4);
 6. a value per player row (3.7).
 
@@ -243,8 +243,8 @@ n_out), run on every row of the batch, with the legal mask selecting
 
 | Phase (size) | Ids | Head | Reads, beyond the context | Raw slots |
 |---|---|---|---|---|
-| AUCTION (9) | 0 pass | pass | | |
-| | 1 buy the topmost, 2+p bid on p | `auction_private`: pointer over PRIVATE rows, a bid logit per row and one buy logit, from the row PRIVATE 2 selects | PRIVATE p | PRIVATE 7-13 |
+| AUCTION (8) | 0 pass | pass | | |
+| | 1 buy the topmost, 1+p bid on p, p ≥ 1 | `auction_private`: pointer over PRIVATE rows but private 0's, a bid logit per row, and one buy logit from the row PRIVATE 2 selects | PRIVATE p | PRIVATE 7-13 |
 | BID (17) | 0 drop, 1+k point k | `bid`: joint, 17 | PRICE; the private | PRICE 5-23 |
 | STOCK (31) | 0 pass | pass | | |
 | | 1+c IPO, 8+c pool, 15+c par, 22+c sell | `stock_corp`: pointer over CORP rows, 4 each, laid out by kind | CORP c | CORP 7-25, 44-48; the actor's PLAYER 12+c and 19+c |
@@ -253,13 +253,13 @@ n_out), run on every row of the batch, with the legal mask selecting
 | SELL_AMOUNT (5) | n − 1 | `sale`: joint, 5 | the sold corp | its CORP 15-19, 48, 49 |
 | BUY_PRIVATE_PRE (10) | 0 done | pass | | |
 | | 1+p, 8 DR, 9 MF | `private` | | |
-| TRACK (53) | 0 pass | pass | | |
-| | 1+h | `track_hex`: pointer over HEX rows | HEX h | HEX 92-102 |
+| TRACK (46) | 0 pass | pass | | |
+| | 1+i | `track_hex`: pointer over the HEX rows `TRACK_HEXES` names | HEX `TRACK_HEXES[i]` | HEX 92-102 |
 | TILE (15) | candidate k | `candidate`: pointer over CANDIDATE rows | CANDIDATE k; the hex | CANDIDATE 1, 99-107 |
-| TOKEN (53) | 0 pass | pass | | |
-| | 1+h | `token_hex`: pointer over HEX rows | HEX h | HEX 103, 104 |
+| TOKEN (16) | 0 pass | pass | | |
+| | 1+i | `token_hex`: pointer over the HEX rows `TOKEN_HEXES` names | HEX `TOKEN_HEXES[i]` | HEX 103, 104 |
 | DIVIDEND (2) | 0 withhold, 1 payout | `dividend`: joint, 2 | DIVIDEND | DIVIDEND 1-7 |
-| DISCARD (6) | type t | `discard`: pointer over TRAIN rows | TRAIN t | TRAIN 12 |
+| DISCARD (3) | i | `discard`: pointer over the TRAIN rows `DISCARD_TYPES` names | TRAIN `DISCARD_TYPES[i]` | TRAIN 12 |
 | BUY_TRAIN (18) | 0 pass, 1 depot, 2 pool, 17 bankrupt | `buy_train`: joint, 4 | the six TRAIN rows | TRAIN 2-9 of each |
 | | 3+c c's trains, 10+c emergency sale of c | `buy_train_corp`: pointer over CORP rows, 2 each | CORP c | CORP 15-19, 46, 49 |
 | SELECT_TRAIN (9) | type t; 6+i a D for `TRADE_IN_TYPE[i]` | `select_train`: pointer over TRAIN rows, an add logit per row and a trade-in logit from the rows `TRADE_IN_TYPE` names | TRAIN t; the seller | TRAIN 10, 11 |
@@ -268,9 +268,9 @@ n_out), run on every row of the batch, with the legal mask selecting
 | BUY_PRIVATE_POST (9) | 0 done | pass | | |
 | | 1+p, 8 DR | `private` | | |
 | PRIVATE_PRICE (4) | point k | `private_price`: joint, 4 | PRICE; the private | PRICE 5-23 |
-| ER_BONUS (16) | 0 pass | pass | | |
+| ER_BONUS (9) | 0 pass | pass | | |
 | | 1+k | `candidate`, shared with TILE | CANDIDATE k; the hex | CANDIDATE 1, 99-107 |
-| PORT (24) | 6i + r | `port`: pointer over the 24 (port hex, rotation) pairs | HEX `MF_PORT_HEX[i]` | the port tile's path mask at r |
+| PORT (10) | i | `port`: pointer over the 10 (port hex, rotation) pairs | HEX `PORT_LAY_HEX[i]` | the port tile's path mask at `PORT_LAY_ROT[i]` |
 
 - **STOCK's four kinds** for corp c are four outputs of one scorer, so what
   it learns about a corp (price, zone, the actor's stake) serves all four, as
@@ -284,6 +284,11 @@ n_out), run on every row of the batch, with the legal mask selecting
   rotations are static, so a rotation's geometry is the 21-slot mask of
   `PORT_TILE` at r from `TILE_MASK` (`g1889/data`), a buffer built at
   construction.
+- **The slot tables.** Slots hold only what can ever be legal (engine-design
+  §12 item 8), so the pointers above score a subset of their rows, named by
+  `TRACK_HEXES`, `TOKEN_HEXES`, `DISCARD_TYPES`, and `PORT_LAY_HEX`, index
+  buffers built at construction from `g1889/data`. Every row stays in the
+  trunk, and the tables do not change the input layout.
 
 ### 4.3 Interjection and pass slots
 
@@ -329,7 +334,7 @@ candidates, train types, and port hexes. Joint heads take the rest:
 ### 4.5 The unified block
 
 The heads fill the 19 blocks in `DecisionPhase` order and concatenate them to
-297 (`games/g1889.py:50-61`). At construction the module checks each block
+228 (`games/g1889.py:50-61`). At construction the module checks each block
 against `PHASE_ACTION_SIZES` and the total against the layout's
 `unified_dim`, as v3's `_validate_policy_layout` does (`:1018-1120`), and the
 row widths against `get_token_widths(max_players, 1)`, as `_validate_layout`
@@ -650,7 +655,7 @@ on them gives the loss of a step on dense planes, to fp32 tolerance.
   (`tests/test_model_factory_checkpoint.py:288-297`). The module declares
   `INPUT_LAYOUT_VERSION = 1` and `build_model(config, spec)`.
 - **`build_model`** asserts the spec: game "1889", layout 1, `token_dim` 108,
-  `num_tokens` 90 + `num_players`, `policy_dim` 297, `value_dim` =
+  `num_tokens` 90 + `num_players`, `policy_dim` 228, `value_dim` =
   `num_players`. It reads `d_model`, `num_heads`, `num_layers`, `ff_mult`, and
   `zero_sum_values`. Those fields have `TrainingConfig` defaults
   (`train/config.py:163-171`), which v3's config relies on, so 1889's config
@@ -692,7 +697,7 @@ Sizes come from the spec and the `Game` (`train/eval_server.py:254-292`,
 `train/eval_server.py:646-684`); the one code change is flattening (6.1).
 
 - **Per slot:** tokens 20.5 KB as fp16, records 8 KB of capacity, the mask
-  297 B, and priors 1.2 KB, about 30 KB against RSS's 14 KB.
+  228 B, and priors 0.9 KB, about 30 KB against RSS's 14 KB.
 - **In all:** 128 workers × 8 leaves come to about 31 MB of shared memory
   (RSS 14 MB), the pinned buffers at batch 256, two deep, to about 15 MB, and
   a batch of 256 sends about 5.9 MB to the GPU, 0.6 MB of it flat records.
@@ -794,7 +799,7 @@ and leaves `tests/test_v2_parity.py` passing on its fixture.
 
 | # | Scope | Acceptance |
 |---|---|---|
-| 8.1 | `nn/transformer-1889.py` (Sections 3-4), tested in `tests/g1889/test_model.py` | on random-playout states at 3-5 players, at capacities 3 and 5 and mixed: legal logits finite and −1e9 elsewhere; dense and flat inputs agree within fp32 tolerance, also with extra records of ids 25 and up and with value-0 records; a batch equals its states run alone; permuting the visible candidate rows, with their records, permutes TILE's logits; with the trunk's output held fixed, each pointer logit (TRACK and TOKEN 1+h, STOCK's four for corp c, SELECT_TRAIN's t) moves with its own row's raw slots and no other row's; zero-sum values sum to zero over real players, with padded slots zero; construction checks widths and blocks; parameters as Section 5.2 |
+| 8.1 | `nn/transformer-1889.py` (Sections 3-4), tested in `tests/g1889/test_model.py` | on random-playout states at 3-5 players, at capacities 3 and 5 and mixed: legal logits finite and −1e9 elsewhere; dense and flat inputs agree within fp32 tolerance, also with extra records of ids 25 and up and with value-0 records; a batch equals its states run alone; permuting the visible candidate rows, with their records, permutes TILE's logits; with the trunk's output held fixed, each pointer logit (TRACK and TOKEN 1+i, STOCK's four for corp c, SELECT_TRAIN's t) moves with its own row's raw slots and no other row's; zero-sum values sum to zero over real players, with padded slots zero; construction checks widths and blocks; parameters as Section 5.2 |
 | 8.2 | relation transport per game (6.1): the `Game` field, flattening, replay, the trainer, `NNEvaluator`, the eval server, and the warmup | RSS's replay, trainer, and evaluator tests unchanged; 1889's `sample_into` records equal the direct fill; on CPU, a trainer step on a 1889 buffer of random-playout rows runs, matches its dense-plane twin, and overfits a fixed batch |
 | 8.3 | the 1889 `SelfPlayStats` (6.6) | its scalars appear in TensorBoard after a 1889 smoke run |
 | 8.4 | the configs (Section 7); a local smoke run | 2 epochs at 3-5 players complete through self-play, the eval server, training, a checkpoint, and a resume |

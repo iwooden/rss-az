@@ -397,7 +397,7 @@ def test_track_tile_and_token_ids(state):
         return [int(i) for i in ids[:A.enumerate_legal_actions_py(state, ids)]]
 
     TURN.set_step(state, K.STEP_TRACK)
-    assert legal() == [K.TRACK_PASS] + [K.TRACK_HEX + HEX[h] for h in ('J3', 'J5', 'K6')]
+    assert legal() == [K.TRACK_PASS] + [K.TRACK_HEX + D.HEX_TRACK_SLOT[HEX[h]] for h in ('J3', 'J5', 'K6')]
     assert A.enumerate_policy_actions_py(state, ids) == 4
     TURN.set_step(state, K.STEP_TILE)
     TURN.set_pending_hex(state, HEX['J3'])
@@ -409,4 +409,4 @@ def test_track_tile_and_token_ids(state):
     lay(state, 'K6', '9', 0)
     lay(state, 'K8', '6', 1)
     lay(state, 'K8', '15', 1)
-    assert legal() == [K.TOKEN_PASS, K.TOKEN_HEX + HEX['K8']]
+    assert legal() == [K.TOKEN_PASS, K.TOKEN_HEX + D.HEX_TOKEN_SLOT[HEX['K8']]]

@@ -5,9 +5,9 @@ import g1889.data.tables as D
 
 # Section 5.2, in decision-phase order.
 SIZES = {
-    'AUCTION': 9, 'BID': 17, 'STOCK': 31, 'PAR': 6, 'SELL_AMOUNT': 5, 'BUY_PRIVATE_PRE': 10, 'TRACK': 53, 'TILE': 15,
-    'TOKEN': 53, 'DIVIDEND': 2, 'DISCARD': 6, 'BUY_TRAIN': 18, 'SELECT_TRAIN': 9, 'TRAIN_PRICE': 5,
-    'EMERGENCY_SELL_AMOUNT': 5, 'BUY_PRIVATE_POST': 9, 'PRIVATE_PRICE': 4, 'ER_BONUS': 16, 'PORT': 24,
+    'AUCTION': 8, 'BID': 17, 'STOCK': 31, 'PAR': 6, 'SELL_AMOUNT': 5, 'BUY_PRIVATE_PRE': 10, 'TRACK': 46, 'TILE': 15,
+    'TOKEN': 16, 'DIVIDEND': 2, 'DISCARD': 3, 'BUY_TRAIN': 18, 'SELECT_TRAIN': 9, 'TRAIN_PRICE': 5,
+    'EMERGENCY_SELL_AMOUNT': 5, 'BUY_PRIVATE_POST': 9, 'PRIVATE_PRICE': 4, 'ER_BONUS': 9, 'PORT': 10,
 }
 OFFSETS = {
     'AUCTION_PASS': 0, 'AUCTION_BUY': 1, 'AUCTION_BID': 2,
@@ -42,8 +42,8 @@ def test_phase_sizes():
     assert K.NUM_DECISION_PHASES == len(SIZES)
     assert K.PHASE_ACTION_SIZES == list(SIZES.values())
     assert [getattr(K, f'ACTION_SIZE_{name}') for name in SIZES] == list(SIZES.values())
-    assert K.UNIFIED_ACTION_DIM == sum(SIZES.values()) == 297
-    assert K.MAX_ACTION_SIZE == max(SIZES.values()) == 53
+    assert K.UNIFIED_ACTION_DIM == sum(SIZES.values()) == 228
+    assert K.MAX_ACTION_SIZE == max(SIZES.values()) == 46
 
 
 def test_phase_local_offsets():
@@ -54,7 +54,7 @@ def test_phase_blocks_tile_each_phase():
     # (first id, length) of every block; together they cover [0, size) exactly.
     sale = (0, K.MAX_SALE_SHARES)
     blocks = {
-        'AUCTION': [(K.AUCTION_PASS, 1), (K.AUCTION_BUY, 1), (K.AUCTION_BID, D.NUM_PRIVATES)],
+        'AUCTION': [(K.AUCTION_PASS, 1), (K.AUCTION_BUY, 1), (K.AUCTION_BID, D.NUM_PRIVATES - 1)],
         'BID': [(K.BID_DROP, 1), (K.BID_POINT, K.BID_POINTS)],
         'STOCK': [(K.STOCK_PASS, 1), (K.STOCK_IPO, D.NUM_CORPS), (K.STOCK_POOL, D.NUM_CORPS),
                   (K.STOCK_PAR, D.NUM_CORPS), (K.STOCK_SELL, D.NUM_CORPS), (K.STOCK_DR, 1), (K.STOCK_MF, 1)],
@@ -62,11 +62,11 @@ def test_phase_blocks_tile_each_phase():
         'SELL_AMOUNT': [sale],
         'BUY_PRIVATE_PRE': [(K.BUY_PRIVATE_PRE_DONE, 1), (K.BUY_PRIVATE_PRE_PRIVATE, D.NUM_PRIVATES),
                             (K.BUY_PRIVATE_PRE_DR, 1), (K.BUY_PRIVATE_PRE_MF, 1)],
-        'TRACK': [(K.TRACK_PASS, 1), (K.TRACK_HEX, D.NUM_HEXES)],
+        'TRACK': [(K.TRACK_PASS, 1), (K.TRACK_HEX, D.NUM_TRACK_HEXES)],
         'TILE': [(0, D.MAX_LAY_CANDIDATES)],
-        'TOKEN': [(K.TOKEN_PASS, 1), (K.TOKEN_HEX, D.NUM_HEXES)],
+        'TOKEN': [(K.TOKEN_PASS, 1), (K.TOKEN_HEX, D.NUM_TOKEN_HEXES)],
         'DIVIDEND': [(K.DIVIDEND_WITHHOLD, 1), (K.DIVIDEND_PAYOUT, 1)],
-        'DISCARD': [(0, D.NUM_TRAIN_TYPES)],
+        'DISCARD': [(0, D.NUM_DISCARD_TYPES)],
         'BUY_TRAIN': [(K.BUY_TRAIN_PASS, 1), (K.BUY_TRAIN_DEPOT, 1), (K.BUY_TRAIN_POOL, 1),
                       (K.BUY_TRAIN_CORP, D.NUM_CORPS), (K.BUY_TRAIN_SELL, D.NUM_CORPS), (K.BUY_TRAIN_BANKRUPT, 1)],
         'SELECT_TRAIN': [(K.SELECT_TRAIN_TYPE, D.NUM_TRAIN_TYPES), (K.SELECT_TRAIN_TRADE_IN, D.NUM_TRADE_IN_TYPES)],
@@ -75,8 +75,8 @@ def test_phase_blocks_tile_each_phase():
         'BUY_PRIVATE_POST': [(K.BUY_PRIVATE_POST_DONE, 1), (K.BUY_PRIVATE_POST_PRIVATE, D.NUM_PRIVATES),
                              (K.BUY_PRIVATE_POST_DR, 1)],
         'PRIVATE_PRICE': [(0, K.PRIVATE_PRICE_POINTS)],
-        'ER_BONUS': [(K.ER_BONUS_PASS, 1), (K.ER_BONUS_CANDIDATE, D.MAX_LAY_CANDIDATES)],
-        'PORT': [(K.PORT_LAY, D.NUM_PORTS * D.NUM_SIDES)],
+        'ER_BONUS': [(K.ER_BONUS_PASS, 1), (K.ER_BONUS_CANDIDATE, D.NUM_ER_CANDIDATES)],
+        'PORT': [(K.PORT_LAY, D.NUM_PORT_LAYS)],
     }
     assert list(blocks) == list(SIZES)
     for phase, spans in blocks.items():

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+import g1889.data.tables as C
 from g1889.data import TABLES_PATH, load_tables, mask_exits
 from g1889.data import generate
 
@@ -92,3 +93,15 @@ def test_ability_tile_lays_match_ruby(oracle, legal):
                          for name, r in legal(hexes[h]['tile'], 0, hexes[h]['exit_mask']) if name in names}
     assert ours == {tuple(row) for row in oracle['abilities']}
     assert {row[0] for row in oracle['abilities']} == {'MF', 'ER'}
+
+
+def test_the_action_slots_are_what_ruby_allows(oracle):
+    """engine-design.md §12 item 8, in Ruby's own checks: the hexes with a lay
+    from the printed tile, MF's lays, and ER's, at full supply with every side
+    reached, are exactly the slot tables'."""
+    assert {row[0] for row in oracle['preprinted']} == {C.HEX_IDS[h] for h in C.TRACK_HEXES}
+    assert {(row[1], row[3]) for row in oracle['abilities'] if row[0] == 'MF'} == {
+        (C.HEX_IDS[h], r) for h, r in zip(C.PORT_LAY_HEX, C.PORT_LAY_ROT)}
+    er_lays = {(row[2], C.TILE_CANON_ROT[C.TILE_NAMES.index(row[2])][row[3]])
+               for row in oracle['abilities'] if row[0] == 'ER'}
+    assert len(er_lays) == C.NUM_ER_CANDIDATES

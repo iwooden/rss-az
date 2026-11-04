@@ -517,7 +517,7 @@ cdef void _fill_price(GameState state, float* row, const _Context* x) noexcept n
     each legal id at PR_AMOUNTS + id (``price_amount``; at PAR the President's
     Certificate, twice the par; BID's drop has none), the reference price, and
     the payer's funds."""
-    cdef uint16_t ids[53]  # MAX_ACTION_SIZE
+    cdef uint16_t ids[46]  # MAX_ACTION_SIZE
     cdef int count = enumerate_legal_actions(state, ids)
     cdef ActionInfo info
     cdef int i
@@ -844,7 +844,7 @@ cdef void _fill_train_outcomes(GameState state, GameState scratch, float[:, ::1]
     t (slot 10) or a D for a traded t (slot 11), and at DISCARD one fewer
     (slot 12). What a purchase does to the phase is left out, and no train is
     added past MAX_ROUTES, where the solver aborts (§4)."""
-    cdef uint16_t ids[53]  # MAX_ACTION_SIZE
+    cdef uint16_t ids[46]  # MAX_ACTION_SIZE
     cdef int count = enumerate_legal_actions(state, ids)
     cdef int c = x.corp
     cdef ActionInfo info
@@ -912,4 +912,4 @@ assert PL_SEAT + 5 == PL_PRIORITY and PL_EMERGENCY_SOLD + 1 == TW_PLAYER
 assert <int>TOKEN_DIM == max(TW_GLOBAL, TW_PRICE, TW_DIVIDEND, TW_CORP, TW_PRIVATE, TW_TRAIN, TW_HEX, TW_CANDIDATE,
                              TW_PLAYER)
 # The fills' buffers are sized with literals.
-assert MAX_LAY_CANDIDATES == 15 and NUM_CORPS == 7 and MAX_ACTION_SIZE == 53
+assert MAX_LAY_CANDIDATES == 15 and NUM_CORPS == 7 and MAX_ACTION_SIZE == 46

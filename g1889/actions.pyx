@@ -18,18 +18,19 @@ from g1889.constants cimport (
     DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
     DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE, MAX_SALE_SHARES, NUM_DECISION_PHASES,
     NUM_STEPS, NUM_TRAIN_SOURCES, OWNER_CORP, OWNER_PLAYER, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY,
-    PRIVATE_PRICE_POINTS, ROUND_GAME_OVER, ROUND_OPERATING, SELECT_TRAIN_TRADE_IN, SELECT_TRAIN_TYPE, STEP_BUY_TRAIN,
-    STEP_DIVIDEND, STEP_TOKEN, STEP_TO_DECISION_PHASE, STEP_TRACK, STOCK_DR, STOCK_IPO, STOCK_MF, STOCK_PAR,
-    STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_HEX, TOKEN_PASS, TRACK_HEX, TRACK_PASS, TRAIN_PRICE_POINTS,
+    PRIVATE_PRICE_POINTS, ROUND_GAME_OVER, ROUND_OPERATING, SELECT_TRAIN_TRADE_IN, SELECT_TRAIN_TYPE, STEP_AUCTION,
+    STEP_BUY_TRAIN, STEP_DIVIDEND, STEP_TOKEN, STEP_TO_DECISION_PHASE, STEP_TRACK, STOCK_DR, STOCK_IPO, STOCK_MF,
+    STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_HEX, TOKEN_PASS, TRACK_HEX, TRACK_PASS, TRAIN_PRICE_POINTS,
     TRAIN_SOURCE_CORP, TRAIN_SOURCE_POOL,
 )
 from g1889.data.tables cimport (
-    CERT_LIMIT, D_TRAIN, DR_EXCHANGE_CORP, ENDPOINT_PAIRS, ER_HEX, ER_TILE, HEX_EXIT_MASK, HEX_NEIGHBOR,
-    MAX_LAY_CANDIDATES, MAX_PLAYERS, MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS,
-    NUM_ER_TILES, NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PRIVATES, NUM_SIDES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES,
-    PAR_PRICE, PHASE_CAN_BUY_PRIVATES, PHASE_TILE_COLORS, PORT_TILE, PRIVATE_DR, PRIVATE_MF, PRIVATE_VALUE,
-    TILE_BLOCKS_LAY, TILE_COLOR, TILE_EXITS, TILE_MASK, TILE_REVENUE, TRADE_IN_TYPE, TRAIN_PRICE, UPG_ROT, UPG_START,
-    UPG_TILE,
+    CERT_LIMIT, D_TRAIN, DISCARD_TYPES, DR_EXCHANGE_CORP, ENDPOINT_PAIRS, ER_HEX, ER_TILE, HEX_EXIT_MASK, HEX_NEIGHBOR,
+    HEX_TOKEN_SLOT, HEX_TRACK_SLOT, MAX_LAY_CANDIDATES, MAX_PLAYERS, MF_PORT_HEX, MIN_BID_INCREMENT, NODE, NUM_CORPS,
+    NUM_DISCARD_TYPES, NUM_ER_CANDIDATES, NUM_ER_TILES, NUM_HEXES, NUM_PAR_PRICES, NUM_PORTS, NUM_PORT_LAYS,
+    NUM_PRIVATES, NUM_SIDES, NUM_TOKEN_HEXES, NUM_TRACK_HEXES, NUM_TRADE_IN_TYPES, NUM_TRAIN_TYPES, PAR_PRICE,
+    PHASE_CAN_BUY_PRIVATES, PHASE_TILE_COLORS, PORT_LAY_HEX, PORT_LAY_ROT, PORT_LAY_SLOT, PORT_TILE, PRIVATE_DR,
+    PRIVATE_MF, PRIVATE_TR, PRIVATE_VALUE, TILE_BLOCKS_LAY, TILE_COLOR, TILE_EXITS, TILE_MASK, TILE_REVENUE,
+    TOKEN_HEXES, TRACK_HEXES, TRADE_IN_TYPE, TRAIN_DISCARD_SLOT, TRAIN_PRICE, UPG_ROT, UPG_START, UPG_TILE,
 )
 from g1889.entities.corp cimport (
     PRESIDENT_SHARES, corp_cash, corp_emergency_sale, corp_ipo_shares, corp_max_sale, corp_par_index,
@@ -107,7 +108,7 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
         if t == ACTION_BUY_TOPMOST:
             return AUCTION_BUY
         if t == ACTION_SELECT_BID:
-            return AUCTION_BID + _index(info.private, <int>NUM_PRIVATES)
+            return AUCTION_BID + _index(info.private - 1, <int>NUM_PRIVATES - 1)
     elif phase == DPHASE_BID:
         if t == ACTION_PASS:
             return BID_DROP
@@ -154,7 +155,7 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
         if t == ACTION_PASS:
             return TRACK_PASS
         if t == ACTION_SELECT_HEX:
-            return TRACK_HEX + _index(info.hex, <int>NUM_HEXES)
+            return TRACK_HEX + _index(HEX_TRACK_SLOT[_index(info.hex, <int>NUM_HEXES)], <int>NUM_TRACK_HEXES)
     elif phase == DPHASE_TILE:
         if t == ACTION_LAY_CANDIDATE:
             return _index(info.count, PHASE_ACTION_SIZE[phase])
@@ -162,7 +163,7 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
         if t == ACTION_PASS:
             return TOKEN_PASS
         if t == ACTION_PLACE_TOKEN:
-            return TOKEN_HEX + _index(info.hex, <int>NUM_HEXES)
+            return TOKEN_HEX + _index(HEX_TOKEN_SLOT[_index(info.hex, <int>NUM_HEXES)], <int>NUM_TOKEN_HEXES)
     elif phase == DPHASE_DIVIDEND:
         if t == ACTION_WITHHOLD:
             return DIVIDEND_WITHHOLD
@@ -170,7 +171,7 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
             return DIVIDEND_PAYOUT
     elif phase == DPHASE_DISCARD:
         if t == ACTION_DISCARD:
-            return _index(info.train_type, <int>NUM_TRAIN_TYPES)
+            return _index(TRAIN_DISCARD_SLOT[_index(info.train_type, <int>NUM_TRAIN_TYPES)], <int>NUM_DISCARD_TYPES)
     elif phase == DPHASE_BUY_TRAIN:
         if t == ACTION_PASS:
             return BUY_TRAIN_PASS
@@ -203,8 +204,9 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
             return ER_BONUS_CANDIDATE + _index(info.count, PHASE_ACTION_SIZE[phase] - <int>ER_BONUS_CANDIDATE)
     elif phase == DPHASE_PORT:
         if t == ACTION_PORT_LAY:
-            return (PORT_LAY + <int>NUM_SIDES * _find(MF_PORT_HEX, <int>NUM_PORTS, info.hex)
-                    + _index(info.count, <int>NUM_SIDES))
+            return PORT_LAY + _index(
+                PORT_LAY_SLOT[_find(MF_PORT_HEX, <int>NUM_PORTS, info.hex)][_index(info.count, <int>NUM_SIDES)],
+                <int>NUM_PORT_LAYS)
     assert False, f"encode_action: no action of type {t} in decision phase {phase}"
     return 0
 
@@ -231,7 +233,7 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
             info.type = ACTION_BUY_TOPMOST
         elif action_id >= AUCTION_BID:
             info.type = ACTION_SELECT_BID
-            info.private = action_id - AUCTION_BID
+            info.private = action_id - AUCTION_BID + 1
     elif phase == DPHASE_BID:
         if action_id != BID_DROP:
             _decode_price(&info, action_id, BID_POINT, PHASE_ACTION_SIZE[phase])
@@ -272,19 +274,19 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
     elif phase == DPHASE_TRACK:
         if action_id != TRACK_PASS:
             info.type = ACTION_SELECT_HEX
-            info.hex = action_id - TRACK_HEX
+            info.hex = TRACK_HEXES[action_id - TRACK_HEX]
     elif phase == DPHASE_TILE:
         info.type = ACTION_LAY_CANDIDATE
         info.count = action_id
     elif phase == DPHASE_TOKEN:
         if action_id != TOKEN_PASS:
             info.type = ACTION_PLACE_TOKEN
-            info.hex = action_id - TOKEN_HEX
+            info.hex = TOKEN_HEXES[action_id - TOKEN_HEX]
     elif phase == DPHASE_DIVIDEND:
         info.type = ACTION_WITHHOLD if action_id == DIVIDEND_WITHHOLD else ACTION_PAYOUT
     elif phase == DPHASE_DISCARD:
         info.type = ACTION_DISCARD
-        info.train_type = action_id
+        info.train_type = DISCARD_TYPES[action_id]
     elif phase == DPHASE_BUY_TRAIN:
         if action_id == BUY_TRAIN_PASS:
             pass
@@ -321,8 +323,8 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
             info.count = action_id - ER_BONUS_CANDIDATE
     elif phase == DPHASE_PORT:
         info.type = ACTION_PORT_LAY
-        info.hex = MF_PORT_HEX[(action_id - PORT_LAY) // <int>NUM_SIDES]
-        info.count = (action_id - PORT_LAY) % <int>NUM_SIDES
+        info.hex = PORT_LAY_HEX[action_id - PORT_LAY]
+        info.count = PORT_LAY_ROT[action_id - PORT_LAY]
     return info
 
 
@@ -424,9 +426,19 @@ cdef int _enumerate_bid(GameState state, uint16_t* ids) noexcept nogil:
     return count
 
 
+cdef inline bint _can_bid(GameState state, int player, int private) noexcept nogil:
+    """Whether ``private`` is unsold and ``player`` can cover its minimum bid."""
+    return (private_owner(state, private) == <int>OWNER_UNSOLD
+            and private_min_bid(state, private) <= player_available(state, player, private))
+
+
 cdef int _enumerate_auction(GameState state, uint16_t* ids) noexcept nogil:
     """Pass; buy the topmost private at its price; select each unsold private
-    whose minimum bid the player can cover. On the topmost, BID's amount buys it."""
+    but private 0 whose minimum bid the player can cover. On the topmost,
+    BID's amount buys it. Private 0 is the topmost while it is unsold, so a bid
+    on it is always that purchase, which buying at the price dominates: it has
+    no slot, and replay takes a human's with ``DRIVER.override_topmost_bid``
+    (§12 item 8)."""
     cdef int player = turn_active_player(state)
     cdef int top = topmost_private(state)
     cdef int count = 1
@@ -435,12 +447,17 @@ cdef int _enumerate_auction(GameState state, uint16_t* ids) noexcept nogil:
     if private_price(state, top) <= player_available(state, player, top):
         ids[count] = AUCTION_BUY
         count += 1
-    for p in range(top, <int>NUM_PRIVATES):
-        if (private_owner(state, p) == <int>OWNER_UNSOLD
-                and private_min_bid(state, p) <= player_available(state, player, p)):
-            ids[count] = <uint16_t>(AUCTION_BID + p)
+    for p in range(max(top, 1), <int>NUM_PRIVATES):
+        if _can_bid(state, player, p):
+            ids[count] = <uint16_t>(AUCTION_BID + p - 1)
             count += 1
     return count
+
+
+cdef bint override_bid_legal(GameState state) noexcept nogil:
+    """Whether replay may take a bid on private 0 now: the turn player's normal
+    turn in the auction, as AUCTION would offer another private's slot."""
+    return turn_step(state) == STEP_AUCTION and _can_bid(state, turn_active_player(state), <int>PRIVATE_TR)
 
 
 # The pass cap (§7). Once ``auction_pass_payout_cap`` rounds of passes have paid
@@ -474,7 +491,7 @@ cdef int _filter_auction(GameState state, uint16_t* ids, int count) noexcept nog
         if ids[i] == AUCTION_PASS and no_pass:  # the actor can buy the topmost
             continue
         if ids[i] >= AUCTION_BID:
-            p = ids[i] - AUCTION_BID
+            p = ids[i] - AUCTION_BID + 1
             if p == top or (capped and private_min_bid(state, p) > _capped_bid_limit(state, p)):
                 continue
         ids[kept] = ids[i]
@@ -552,7 +569,7 @@ cdef bint _must_sell(GameState state, int player) noexcept nogil:
     return can_sell and player_cert_count(state, player) > CERT_LIMIT[turn_num_players(state)]
 
 
-cdef int _enumerate_stock(GameState state, uint16_t* ids) noexcept nogil:
+cdef int _enumerate_stock(GameState state, uint16_t* ids) except -1 nogil:
     """Pass; buys from the IPO, from the pool, and pars, unless the turn has
     bought; then each corp the player may sell. A must-sell turn offers only
     the sales. Then DR's exchange and MF's port tile while the player may use
@@ -731,8 +748,8 @@ cdef bint can_token(GameState state, int corp, int hex) noexcept nogil:
             and map_has_slot_for(state, hex, corp) and graph_node(state, corp, hex))
 
 
-cdef int _enumerate_track(GameState state, uint16_t* ids) noexcept nogil:
-    """Pass, then each hex with a lay candidate."""
+cdef int _enumerate_track(GameState state, uint16_t* ids) except -1 nogil:
+    """Pass, then each hex with a lay candidate, by its slot (§12 item 8)."""
     cdef int corp = turn_operating_corp(state)
     cdef int count = 1
     cdef int h
@@ -741,7 +758,8 @@ cdef int _enumerate_track(GameState state, uint16_t* ids) noexcept nogil:
         return count
     for h in range(<int>NUM_HEXES):
         if can_lay(state, corp, h):
-            ids[count] = <uint16_t>(TRACK_HEX + h)
+            assert HEX_TRACK_SLOT[h] >= 0, f"_enumerate_track: a lay on hex {h}, which has no slot"
+            ids[count] = <uint16_t>(TRACK_HEX + HEX_TRACK_SLOT[h])
             count += 1
     return count
 
@@ -755,8 +773,8 @@ cdef int _enumerate_tile(GameState state, uint16_t* ids) noexcept nogil:
     return _iota(ids, enumerate_lay_candidates(state, hex, candidates))
 
 
-cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
-    """Pass, then each city the corp may token."""
+cdef int _enumerate_token(GameState state, uint16_t* ids) except -1 nogil:
+    """Pass, then each city the corp may token, by its slot (§12 item 8)."""
     cdef int corp = turn_operating_corp(state)
     cdef int count = 1
     cdef int h
@@ -765,7 +783,8 @@ cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
         return count
     for h in range(<int>NUM_HEXES):
         if can_token(state, corp, h):
-            ids[count] = <uint16_t>(TOKEN_HEX + h)
+            assert HEX_TOKEN_SLOT[h] >= 0, f"_enumerate_token: a token on hex {h}, which has no slot"
+            ids[count] = <uint16_t>(TOKEN_HEX + HEX_TOKEN_SLOT[h])
             count += 1
     return count
 
@@ -1051,9 +1070,9 @@ cdef int _enumerate_train_price(GameState state, uint16_t* ids) noexcept nogil:
     return count
 
 
-cdef int _enumerate_discard(GameState state, uint16_t* ids) noexcept nogil:
+cdef int _enumerate_discard(GameState state, uint16_t* ids) except -1 nogil:
     """Each train type of the first crowded corp (``DiscardTrain``), whose
-    president chooses."""
+    president chooses, by its slot (§12 item 8)."""
     cdef int corp = trains_first_crowded(state)
     cdef int count = 0
     cdef int t
@@ -1061,7 +1080,8 @@ cdef int _enumerate_discard(GameState state, uint16_t* ids) noexcept nogil:
         return 0
     for t in range(<int>NUM_TRAIN_TYPES):
         if corp_train_count(state, corp, t):
-            ids[count] = <uint16_t>t
+            assert TRAIN_DISCARD_SLOT[t] >= 0, f"_enumerate_discard: corp {corp} holds type {t}, which has no slot"
+            ids[count] = <uint16_t>TRAIN_DISCARD_SLOT[t]
             count += 1
     return count
 
@@ -1155,8 +1175,8 @@ cdef int _append_dr(GameState state, uint16_t* ids, int count, int dr_id) noexce
     return count
 
 
-cdef int port_lays(GameState state, uint16_t* ids) noexcept nogil:
-    """PORT's ids, ``NUM_SIDES·i + rotation``, or with ``ids`` NULL their count:
+cdef int port_lays(GameState state, uint16_t* ids) except -1 nogil:
+    """PORT's ids (§12 item 8), or with ``ids`` NULL their count:
     while a player owns MF and its one lay is unused, the port tile, in supply,
     on each port hex it upgrades (only an empty port town: the tile is yellow)
     at each canonical rotation whose exits stay on open sides (Ruby's
@@ -1177,13 +1197,14 @@ cdef int port_lays(GameState state, uint16_t* ids) noexcept nogil:
             rotation = UPG_ROT[j]
             if UPG_TILE[j] != <int>PORT_TILE or TILE_EXITS[<int>PORT_TILE][rotation] & ~HEX_EXIT_MASK[h]:
                 continue
+            assert PORT_LAY_SLOT[i][rotation] >= 0, f"port_lays: port hex {i} at rotation {rotation} has no slot"
             if ids != NULL:
-                ids[count] = <uint16_t>(PORT_LAY + <int>NUM_SIDES * i + rotation)
+                ids[count] = <uint16_t>(PORT_LAY + PORT_LAY_SLOT[i][rotation])
             count += 1
     return count
 
 
-cdef int _append_mf(GameState state, uint16_t* ids, int count, int mf_id) noexcept nogil:
+cdef int _append_mf(GameState state, uint16_t* ids, int count, int mf_id) except -1 nogil:
     """The MF slot, for MF's owner when PORT has a lay."""
     if (private_owner(state, <int>PRIVATE_MF) == <int>OWNER_PLAYER + turn_active_player(state)
             and port_lays(state, NULL)):
@@ -1225,7 +1246,7 @@ cdef int er_candidates(GameState state, LayCandidate* buf) noexcept nogil:
     return count
 
 
-cdef int _enumerate_buy_private_pre(GameState state, uint16_t* ids) noexcept nogil:
+cdef int _enumerate_buy_private_pre(GameState state, uint16_t* ids) except -1 nogil:
     """The turn's opening window: done, each private the corp may buy, DR, and MF."""
     cdef int count = _append_private_buys(state, ids, 1, BUY_PRIVATE_PRE_PRIVATE)
     ids[0] = BUY_PRIVATE_PRE_DONE
@@ -1233,14 +1254,14 @@ cdef int _enumerate_buy_private_pre(GameState state, uint16_t* ids) noexcept nog
     return _append_mf(state, ids, count, BUY_PRIVATE_PRE_MF)
 
 
-cdef bint buy_private_pre_open(GameState state) noexcept nogil:
+cdef bint buy_private_pre_open(GameState state) except -1 nogil:
     """Whether the operating corp's turn opens at BUY_PRIVATE_PRE: some slot
     besides "done" is engine-legal, whatever the policy filter leaves."""
     cdef uint16_t ids[10]  # ACTION_SIZE_BUY_PRIVATE_PRE
     return _enumerate_buy_private_pre(state, ids) > 1
 
 
-cdef bint override_slot_legal(GameState state, int action_id) noexcept nogil:
+cdef bint override_slot_legal(GameState state, int action_id) except -1 nogil:
     """Whether replay may take BUY_PRIVATE_PRE's slot ``action_id``, not "done",
     at this step: one of the operating corp's decisions that offers no such
     slot, where the same slot would be legal at PRE. The sub-phases sit inside
@@ -1310,12 +1331,13 @@ cdef int _enumerate_private_price(GameState state, uint16_t* ids) noexcept nogil
     return count
 
 
-cdef int _enumerate_er_bonus(GameState state, uint16_t* ids) noexcept nogil:
+cdef int _enumerate_er_bonus(GameState state, uint16_t* ids) except -1 nogil:
     """Pass, which Ruby always offers (``TrackLayWhenCompanySold``), then each
-    candidate on C4."""
+    candidate on C4, whose printed tile bounds them (§12 item 8)."""
     cdef LayCandidate candidates[15]  # MAX_LAY_CANDIDATES
     cdef int count = er_candidates(state, candidates)
     cdef int k
+    assert count <= <int>NUM_ER_CANDIDATES, f"_enumerate_er_bonus: {count} candidates on C4"
     ids[0] = ER_BONUS_PASS
     for k in range(count):
         ids[1 + k] = <uint16_t>(ER_BONUS_CANDIDATE + k)
@@ -1397,7 +1419,7 @@ cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except 
 cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
     """Engine legality: a scan of the enumerated ids, or a range check for an
     exact amount. False at an automated step."""
-    cdef uint16_t ids[53]  # MAX_ACTION_SIZE
+    cdef uint16_t ids[46]  # MAX_ACTION_SIZE
     cdef int phase = get_decision_phase(state)
     cdef int count, i
     if phase < 0 or action_id < 0:
@@ -1562,7 +1584,7 @@ cpdef bint can_exchange_dr_py(GameState state, int player):
 
 cpdef list port_lays_py(GameState state):
     """``(hex, rotation)`` of each port tile lay MF's owner may make now, in PORT's order."""
-    cdef uint16_t ids[24]  # ACTION_SIZE_PORT
+    cdef uint16_t ids[10]  # ACTION_SIZE_PORT
     cdef int count = port_lays(state, ids)
     cdef ActionInfo info
     cdef int k
@@ -1596,10 +1618,10 @@ del _name, _member
 # IMPORT-TIME CHECKS
 # =============================================================================
 
-# Local id, candidate, price, and score buffers are sized with the literals 53, 15, 24, 10, 5, 4, and 6.
-assert <int>MAX_ACTION_SIZE == 53 and <int>MAX_LAY_CANDIDATES == 15 and <int>MAX_PLAYERS == 6
-assert <int>ACTION_SIZE_BUY_PRIVATE_PRE == 10
-assert <int>NUM_PORTS * <int>NUM_SIDES == 24 and <int>TRAIN_PRICE_POINTS == 5 and <int>PRIVATE_PRICE_POINTS == 4
+# Local id, candidate, price, and score buffers are sized with the literals 46, 15, 10, 5, 4, and 6.
+assert <int>MAX_ACTION_SIZE == 46 and <int>MAX_LAY_CANDIDATES == 15 and <int>MAX_PLAYERS == 6
+assert <int>ACTION_SIZE_BUY_PRIVATE_PRE == 10 and <int>NUM_PORT_LAYS == 10
+assert <int>TRAIN_PRICE_POINTS == 5 and <int>PRIVATE_PRICE_POINTS == 4
 
 
 def _check_round_trip():

@@ -38,7 +38,7 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    apply_and_verify, at_or, choose_train, depot, enter_operating_round, enter_phase, exact_id, from_corp,
+    apply_and_verify, at_or, choose_train, depot, discard_slot, enter_operating_round, enter_phase, exact_id, from_corp,
     give_train, hold, lay, legal_ids, opened, past_pre, policy_ids, pool, set_cash, trade, train_choices,
 )
 
@@ -482,13 +482,13 @@ class TestDiscard:
         choose_train(state, depot(T5))
         assert (TURN.step(state), TURN.return_step(state)) == (K.STEP_DISCARD, K.STEP_BUY_TRAIN)
         assert TRAINS.first_crowded(state) == IR and TURN.active_player(state) == 1
-        assert legal_ids(state) == [T3, T4]
+        assert legal_ids(state) == [discard_slot(T3), discard_slot(T4)]
         pool = TRAINS.pool(state, T3)
-        apply_and_verify(state, T3)
+        apply_and_verify(state, discard_slot(T3))
         assert trains_of(state, IR) == {'3': 1, '4': 1} and TRAINS.pool(state, T3) == pool + 1
         assert TRAINS.first_crowded(state) == KO and TURN.active_player(state) == 0
-        assert legal_ids(state) == [T3, T4, T5]
-        result = apply_and_verify(state, T4)
+        assert legal_ids(state) == [discard_slot(T3), discard_slot(T4), discard_slot(T5)]
+        result = apply_and_verify(state, discard_slot(T4))
         assert trains_of(state, KO) == {'3': 1, '5': 1}
         after = result.state_before_decision(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS)  # KO's BUY_TRAIN, at the limit
         assert (TURN.step(after), TURN.return_step(after), TURN.active_player(after)) == (K.STEP_BUY_TRAIN, -1, 0)
@@ -501,11 +501,11 @@ class TestDiscard:
         TRAINS.set_corp_trains(state, IR, T3, 3)
         TRAINS.set_pool(state, T3, TRAINS.pool(state, T3) - 1)
         result = choose_train(state, depot(T5))
-        assert result.forced == [(K.DPHASE_DISCARD, T3)] and TRAINS.first_crowded(state) == KO
+        assert result.forced == [(K.DPHASE_DISCARD, discard_slot(T3))] and TRAINS.first_crowded(state) == KO
 
     def test_discard_is_illegal_outside_a_crowded_corp(self):
         state = at_crowding_buy()
         TURN.set_step(state, K.STEP_DISCARD)
         row = state._array.copy()
-        assert legal_ids(state) == [] and DRIVER.apply_action(state, T3) == STATUS_INVALID
+        assert legal_ids(state) == [] and DRIVER.apply_action(state, discard_slot(T3)) == STATUS_INVALID
         np.testing.assert_array_equal(state._array, row)

@@ -13,14 +13,15 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
-from g1889.entities.bank import BANK
+from g1889.driver import DRIVER, STATUS_INVALID, STATUS_OK
+from g1889.entities.bank import BANK, BANK_ACCOUNT
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES, topmost
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    apply_and_verify, enter_auction, exact_id, find_legal_action, get_legal_actions, legal_ids, new_game,
-    policy_ids,
+    apply_and_verify, bid_slot, end_auction, enter_auction, enter_stock_round, exact_id, find_legal_action,
+    get_legal_actions, legal_ids, new_game, policy_ids,
 )
 
 TR, MF, ER, SMR, DR, SIR, UTF = range(D.NUM_PRIVATES)
@@ -56,7 +57,7 @@ def bid(state, private, amount):
     """Select ``private`` in AUCTION and bid ``amount`` in BID (or let the
     driver bid when the minimum is the only point)."""
     player = TURN.active_player(state)
-    result = apply_and_verify(state, K.AUCTION_BID + private, f'select {private}')
+    result = apply_and_verify(state, bid_slot(private), f'select {private}')
     if not result.forced:
         result = apply_and_verify(state, _amount_id(state, amount), f'bid {amount}')
     assert PLAYERS[player].bid(state, private) == amount
@@ -98,9 +99,9 @@ class TestOpening:
         assert in_play == list(range(5 if n == 2 else 6 if n == 3 else 7))
         assert TURN.active_player(game_state) == TURN.auction_turn(game_state) == 0
         assert TURN.priority_player(game_state) == 0
-        assert legal_ids(game_state) == [K.AUCTION_PASS, K.AUCTION_BUY] + [K.AUCTION_BID + p for p in in_play]
-        # Bidding on the topmost buys it at the bid; buying at its price dominates (§5.1).
-        assert policy_ids(game_state) == [K.AUCTION_PASS, K.AUCTION_BUY] + [K.AUCTION_BID + p for p in in_play[1:]]
+        # A has no bid slot: bidding on the topmost buys it at the bid, which buying at its price dominates (§5.1).
+        assert legal_ids(game_state) == [K.AUCTION_PASS, K.AUCTION_BUY] + [bid_slot(p) for p in in_play[1:]]
+        assert policy_ids(game_state) == legal_ids(game_state)
 
 
 # =============================================================================
@@ -123,19 +124,51 @@ class TestBuyTopmost:
         buy(state3)
         assert owner(state3, MF) == K.OWNER_PLAYER + 1 and cash(state3) == [400, 390, 420]
 
-    def test_bid_on_the_topmost_buys_it_at_the_bid(self, state3):
+    def test_a_bid_on_a_later_topmost_buys_it_at_the_bid(self, state3):
         """Engine-legal but outside the policy: Ruby takes a bid on the topmost as a purchase."""
-        apply_and_verify(state3, find_legal_action(state3, type=A.ACTION_SELECT_BID, private=TR))
-        assert TURN.step(state3) == K.STEP_BID and PRIVATES[TR].min_bid(state3) == 20
+        buy(state3)
+        apply_and_verify(state3, find_legal_action(state3, type=A.ACTION_SELECT_BID, private=MF))
+        assert TURN.step(state3) == K.STEP_BID and PRIVATES[MF].min_bid(state3) == 30
+        apply_and_verify(state3, K.BID_POINT + 2)
+        assert owner(state3, MF) == K.OWNER_PLAYER + 1 and cash(state3)[1] == 380
+        assert TURN.priority_player(state3) == 2 and bids_on(state3, MF) == {}
+
+    def test_replay_buys_private_0_at_a_bid_above_its_price(self, state3):
+        """Private 0 has no bid slot; ``override_topmost_bid`` opens BID on it, and the amount buys it."""
+        bids = [info.private for _, info in get_legal_actions(state3) if info.type == A.ACTION_SELECT_BID]
+        assert TR not in bids and MF in bids
+        history = []
+        assert DRIVER.override_topmost_bid(state3, history) == STATUS_OK and history == []
+        assert TURN.step(state3) == K.STEP_BID and TURN.pending_private(state3) == TR
+        assert PRIVATES[TR].min_bid(state3) == 20
         apply_and_verify(state3, K.BID_POINT + 2)
         assert owner(state3, TR) == K.OWNER_PLAYER and cash(state3)[0] == 390
         assert TURN.priority_player(state3) == 1 and bids_on(state3, TR) == {}
+
+    def test_replay_takes_an_exact_amount_above_the_grid_on_private_0(self, state3):
+        DRIVER.override_topmost_bid(state3)
+        apply_and_verify(state3, exact_id(state3, 23))
+        assert owner(state3, TR) == K.OWNER_PLAYER and cash(state3)[0] == 397
+
+    def test_the_override_is_invalid_where_auction_would_not_offer_the_bid(self, state3):
+        row = state3._array.copy()
+        BANK.transfer(state3, K.OWNER_PLAYER, BANK_ACCOUNT, 405)
+        assert DRIVER.override_topmost_bid(state3) == STATUS_INVALID  # ¥15, short of A's ¥20
+        state3._array[:] = row
+        buy(state3)  # A is sold
+        assert DRIVER.override_topmost_bid(state3) == STATUS_INVALID
+        apply_and_verify(state3, bid_slot(ER))  # at BID
+        assert DRIVER.override_topmost_bid(state3) == STATUS_INVALID
+        state = new_game(3)
+        end_auction(state, [0])
+        enter_stock_round(state, 0)  # past the auction
+        assert DRIVER.override_topmost_bid(state) == STATUS_INVALID
 
     def test_buy_needs_cash_beyond_other_bids(self, state3):
         """¥405 on SIR leaves ¥15: neither A nor a new bid is affordable, but raising SIR is."""
         bid(state3, SIR, 405)
         passes(state3, 2)
-        assert legal_ids(state3) == [K.AUCTION_PASS, K.AUCTION_BID + SIR]
+        assert legal_ids(state3) == [K.AUCTION_PASS, bid_slot(SIR)]
 
     def test_a_player_with_only_the_pass_is_passed_by_the_driver(self, state3):
         """Here the forced pass completes a round of passes."""
@@ -159,7 +192,7 @@ class TestBids:
 
     def test_bid_grid_starts_at_the_minimum(self, state3):
         bid(state3, ER, 45)
-        apply_and_verify(state3, K.AUCTION_BID + ER)
+        apply_and_verify(state3, bid_slot(ER))
         infos = [info for _, info in get_legal_actions(state3)]
         assert [i.count for i in infos] == list(range(K.BID_POINTS))  # ¥50, ¥55, ... ¥125
         assert all(i.type == A.ACTION_PRICE_POINT for i in infos)
@@ -170,7 +203,7 @@ class TestBids:
         """Cash less the player's other bids caps a bid: ¥70 after ¥350 on SIR."""
         bid(state3, SIR, 350)
         passes(state3, 2)
-        apply_and_verify(state3, K.AUCTION_BID + ER)
+        apply_and_verify(state3, bid_slot(ER))
         assert legal_ids(state3) == [K.BID_POINT + k for k in range(6)]  # ¥45-70
         assert A.is_legal_action_py(state3, exact_id(state3, 70))
         assert not A.is_legal_action_py(state3, exact_id(state3, 71))
@@ -179,8 +212,8 @@ class TestBids:
     def test_a_private_without_an_affordable_bid_cannot_be_selected(self, state3):
         bid(state3, SIR, 385)
         passes(state3, 2)
-        assert K.AUCTION_BID + MF in legal_ids(state3)  # ¥35 of ¥35
-        assert K.AUCTION_BID + ER not in legal_ids(state3)
+        assert bid_slot(MF) in legal_ids(state3)  # ¥35 of ¥35
+        assert bid_slot(ER) not in legal_ids(state3)
 
     def test_raising_an_own_bid_reuses_its_cash(self, state3):
         bid(state3, SIR, 400)
@@ -189,7 +222,7 @@ class TestBids:
         assert bids_on(state3, SIR) == {0: 420} and PLAYERS[0].available(state3) == 0
 
     def test_off_grid_amounts_are_exact_ids(self, state3):
-        apply_and_verify(state3, K.AUCTION_BID + ER)
+        apply_and_verify(state3, bid_slot(ER))
         apply_and_verify(state3, exact_id(state3, 47))
         assert bids_on(state3, ER) == {0: 47} and PRIVATES[ER].min_bid(state3) == 52
 
@@ -197,7 +230,7 @@ class TestBids:
         """With cash for only the minimum, BID has one policy point, which the driver applies."""
         bid(state3, SIR, 375)
         passes(state3, 2)
-        result = apply_and_verify(state3, K.AUCTION_BID + ER)
+        result = apply_and_verify(state3, bid_slot(ER))
         assert result.forced == [(K.DPHASE_BID, K.BID_POINT)]
         assert bids_on(state3, ER) == {0: 45} and TURN.step(state3) == K.STEP_AUCTION
 
@@ -447,7 +480,7 @@ class TestPassCap:
 
     def test_the_cap_off_keeps_the_pass(self):
         state = _after_payouts(0, 2)
-        assert policy_ids(state) == [i for i in legal_ids(state) if i != K.AUCTION_BID + MF]
+        assert policy_ids(state) == [i for i in legal_ids(state) if i != bid_slot(MF)]
 
     def test_a_player_who_cannot_buy_may_only_pass(self):
         """¥400 on SIR leaves player 0 ¥20, short of MF's ¥30. Once capped, raising
@@ -489,16 +522,16 @@ class TestPassCap:
         halves of the cap apply at once: player 1 can buy MF, so the pass
         goes, and the raise on SIR, within the limit, stays."""
         state = self._capped_with_cash_on_sir()
-        bids = [K.AUCTION_BID + p for p in (MF, ER, SMR, DR, SIR)]
+        bids = [bid_slot(p) for p in (MF, ER, SMR, DR, SIR)]
         assert legal_ids(state) == [K.AUCTION_PASS, K.AUCTION_BUY] + bids
-        assert policy_ids(state) == [K.AUCTION_BUY, K.AUCTION_BID + SIR]  # ER ¥50, SMR ¥55, DR ¥70 > ¥40
-        apply_and_verify(state, K.AUCTION_BID + SIR)
+        assert policy_ids(state) == [K.AUCTION_BUY, bid_slot(SIR)]  # ER ¥50, SMR ¥55, DR ¥70 > ¥40
+        apply_and_verify(state, bid_slot(SIR))
         assert legal_ids(state) == [K.BID_POINT + k for k in range(14)]  # ¥355-420
         assert policy_ids(state) == [K.BID_POINT + k for k in range(8)]  # ¥355-390, which leave ¥30
 
     def test_a_bid_selected_outside_the_policy_keeps_its_points(self):
         state = self._capped_with_cash_on_sir()
-        apply_and_verify(state, K.AUCTION_BID + ER)
+        apply_and_verify(state, bid_slot(ER))
         assert policy_ids(state) == legal_ids(state) == [K.BID_POINT + k for k in range(5)]  # ¥50-70
 
     @pytest.mark.parametrize('cap', [0, 1])
@@ -529,7 +562,7 @@ class TestPolicyAgainstEngine:
     def test_bid_policies_are_the_grid(self, closed4):
         assert policy_ids(closed4) == legal_ids(closed4)
         state = new_game(3)
-        apply_and_verify(state, K.AUCTION_BID + ER)
+        apply_and_verify(state, bid_slot(ER))
         assert policy_ids(state) == legal_ids(state) == [K.BID_POINT + k for k in range(K.BID_POINTS)]
 
     def test_exact_amounts_are_legal_but_never_enumerated(self, closed4):
@@ -539,5 +572,6 @@ class TestPolicyAgainstEngine:
         assert A.is_legal_action_py(closed4, size + 420) and not A.is_legal_action_py(closed4, size + 421)
 
     def test_policy_drops_only_the_topmost_bid_without_the_cap(self, game_state):
+        buy(game_state)  # A has no bid slot, so MF is the first topmost with one
         legal, policy = legal_ids(game_state), policy_ids(game_state)
-        assert [i for i in legal if i not in policy] == [K.AUCTION_BID + topmost(game_state)]
+        assert [i for i in legal if i not in policy] == [bid_slot(topmost(game_state))]

@@ -338,6 +338,34 @@ def choose_train(state, choice, msg='', expected_status=STATUS_OK):
     return apply_factored(state, first, phase, second, msg or str(choice), expected_status)
 
 
+def bid_slot(private):
+    """AUCTION's id for a bid on ``private``; private 0 has none (§12 item 8)."""
+    assert private > 0
+    return K.AUCTION_BID + private - 1
+
+
+def track_slot(hex_id):
+    """TRACK's id for a lay on the hex (engine-design §12 item 8), as are the others below."""
+    assert D.HEX_TRACK_SLOT[HEX[hex_id]] >= 0
+    return K.TRACK_HEX + D.HEX_TRACK_SLOT[HEX[hex_id]]
+
+
+def token_slot(hex_id):
+    assert D.HEX_TOKEN_SLOT[HEX[hex_id]] >= 0
+    return K.TOKEN_HEX + D.HEX_TOKEN_SLOT[HEX[hex_id]]
+
+
+def port_slot(hex_id, rotation=0):
+    slot = D.PORT_LAY_SLOT[D.MF_PORT_HEX.index(HEX[hex_id])][rotation]
+    assert slot >= 0
+    return K.PORT_LAY + slot
+
+
+def discard_slot(train):
+    assert D.TRAIN_DISCARD_SLOT[train] >= 0
+    return D.TRAIN_DISCARD_SLOT[train]
+
+
 def past_pre(state, msg=''):
     """Apply BUY_PRIVATE_PRE's "done" if the corp's turn opened there; TRACK follows."""
     if TURN.step(state) == K.STEP_BUY_PRIVATE_PRE:
@@ -465,9 +493,12 @@ def _assert_map(state, msg):
 
 
 def _assert_privates(state, msg):
-    """TR blocks K4 and ER blocks C4 exactly while a player owns them; after
-    phase 4 every private has closed but a player's UTF; and a used MF has
-    laid the port tile on a port hex."""
+    """TR blocks K4 and ER blocks C4 exactly while a player owns them, so ER's
+    bonus finds C4's printed tile (engine-design §12 item 8); after phase 4
+    every private has closed but a player's UTF; and a used MF has laid the
+    port tile on a port hex."""
+    if TURN.step(state) == K.STEP_ER_BONUS:
+        assert MAP.tile(state, D.ER_HEX) == D.NUM_SUPPLY_TILES + D.ER_HEX, f'{msg}: ER_BONUS on a laid C4'
     for p, hex_id in ((D.PRIVATE_TR, 'K4'), (D.PRIVATE_ER, 'C4')):
         owner = PRIVATES[p].owner(state)
         assert PRIVATES[p].blocks_hex(state, HEX[hex_id]) == (K.OWNER_PLAYER <= owner < K.OWNER_CORP), \

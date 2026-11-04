@@ -42,8 +42,8 @@ from g1889.phases.operating import setup_operating_round_py
 
 from tests.g1889.phases.conftest import (
     HEX, TILE, apply_and_verify, at_or, choose_train, depot, end_auction, enter_operating_round, enter_phase,
-    enter_stock_round, exact_id, give_train, hold, lay, legal_ids, new_game, past_pre, policy_ids, set_cash,
-    train_choices,
+    enter_stock_round, exact_id, give_train, hold, lay, legal_ids, new_game, past_pre, policy_ids, port_slot, set_cash,
+    token_slot, track_slot, train_choices,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -170,9 +170,9 @@ class TestWindow:
         lay(state, 'K8', '6', 1)
         lay(state, 'K8', '15', 1)
         assert A.purchasable_privates_py(state) == IN_PLAY_3
-        assert all(K.TRACK_HEX <= i for i in legal_ids(state)[1:]) and legal_ids(state)[0] == K.TRACK_PASS
+        assert legal_ids(state) == [K.TRACK_PASS] + [track_slot(D.HEX_IDS[h]) for h in A.lay_hexes_py(state)]
         apply_and_verify(state, K.TRACK_PASS)
-        assert legal_ids(state) == [K.TOKEN_PASS, K.TOKEN_HEX + HEX['K8']]
+        assert legal_ids(state) == [K.TOKEN_PASS, token_slot('K8')]
         apply_and_verify(state, K.TOKEN_PASS)
         assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) > 0
         assert legal_ids(state) == [K.DIVIDEND_WITHHOLD, K.DIVIDEND_PAYOUT]
@@ -218,7 +218,7 @@ class TestPre:
         hexes = A.lay_hexes_py(state)
         apply_and_verify(state, K.BUY_PRIVATE_PRE_DONE)
         assert TURN.step(state) == K.STEP_TRACK
-        assert legal_ids(state) == [K.TRACK_PASS] + [K.TRACK_HEX + h for h in hexes]
+        assert legal_ids(state) == [K.TRACK_PASS] + [track_slot(D.HEX_IDS[h]) for h in hexes]
 
     def test_it_repeats_after_a_purchase_until_done(self):
         state = at_pre()
@@ -320,7 +320,7 @@ class TestOverride:
         state = self._at(K.STEP_TRACK, owners=[0])
         assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_MF) == STATUS_OK
         assert TURN.step(state) == K.STEP_PORT and TURN.return_step(state) == K.STEP_TRACK
-        apply_and_verify(state, K.PORT_LAY + D.NUM_SIDES * D.MF_PORT_HEX.index(HEX['G10']))
+        apply_and_verify(state, port_slot('G10'))
         assert TURN.step(state) == K.STEP_TRACK and PRIVATES[P_MF].flags(state) & 1
 
     def test_history_gets_the_auto_chain_not_the_override(self):
@@ -484,7 +484,7 @@ class TestErBonus:
 
 def port_ids(state):
     """PORT's ids as (hex id, rotation)."""
-    return [(D.HEX_IDS[D.MF_PORT_HEX[i // D.NUM_SIDES]], i % D.NUM_SIDES) for i in legal_ids(state)]
+    return [(D.HEX_IDS[D.PORT_LAY_HEX[i]], D.PORT_LAY_ROT[i]) for i in legal_ids(state)]
 
 
 class TestPort:
@@ -501,7 +501,7 @@ class TestPort:
         expected = [(D.HEX_IDS[h], r) for h, r in A.port_lays_py(state)]
         assert port_ids(state) == expected and ('B11', 2) in expected and ('B11', 0) not in expected
         assert all(D.TILE_EXITS[D.PORT_TILE][r] & ~D.HEX_EXIT_MASK[HEX[h]] == 0 for h, r in expected)
-        apply_and_verify(state, K.PORT_LAY + D.NUM_SIDES * D.MF_PORT_HEX.index(HEX['B11']) + 2)
+        apply_and_verify(state, port_slot('B11', 2))
         assert MAP.tile(state, HEX['B11']) == D.PORT_TILE and PRIVATES[P_MF].flags(state) & 1
         assert MAP.supply(state, D.PORT_TILE) == 0 and PRIVATES[P_MF].owner(state) == K.OWNER_PLAYER  # stays open
         assert (TURN.step(state), TURN.active_player(state), TURN.sr_bought(state)) == (K.STEP_STOCK, 0, 0)
@@ -513,7 +513,7 @@ class TestPort:
         lays = A.lay_hexes_py(state)
         assert K.BUY_PRIVATE_PRE_MF in legal_ids(state)
         apply_and_verify(state, K.BUY_PRIVATE_PRE_MF)
-        apply_and_verify(state, K.PORT_LAY + D.NUM_SIDES * D.MF_PORT_HEX.index(HEX['G10']))
+        apply_and_verify(state, port_slot('G10'))
         assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE and K.BUY_PRIVATE_PRE_MF not in legal_ids(state)
         assert A.lay_hexes_py(state) == lays and TURN.return_step(state) == -1
 

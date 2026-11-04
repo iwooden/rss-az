@@ -10,8 +10,9 @@ History, when a list is passed, gets ``(row copy, decision phase, id)`` before
 each decision and ``(row copy, -1, step)`` before each automated step.
 ``advance`` runs the auto-chain on a state set up by hand.
 ``override_route_revenue`` lets replay pay a human's routes instead of the
-solver's maximum, and ``override_private_slot`` take a human's private move at
-a decision that offers no slot for it.
+solver's maximum, ``override_private_slot`` take a human's private move at a
+decision that offers no slot for it, and ``override_topmost_bid`` a human's bid
+on private 0, which has no slot.
 """
 
 from g1889.state cimport GameState
@@ -32,3 +33,4 @@ cdef class GameDriver:
     cpdef int advance(self, GameState state, object history=*) except -1
     cpdef int override_route_revenue(self, GameState state, int revenue, object history=*) except -1
     cpdef int override_private_slot(self, GameState state, int action_id, object history=*) except -1
+    cpdef int override_topmost_bid(self, GameState state, object history=*) except -1

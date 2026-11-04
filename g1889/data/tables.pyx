@@ -1037,6 +1037,33 @@ cdef uint8_t[1206] UPG_ROT = [
     0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2,  # K8 r0
 ]
 
+# Action slots: the slot-to-value tables, and for each value its slot or -1
+cdef int8_t[45] TRACK_HEXES = [
+    0, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 46, 47, 48, 49, 50,
+]
+cdef int8_t[52] HEX_TRACK_SLOT = [
+    0, 1, -1, 2, -1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, -1, 17, 18, 19, 20, 21, 22,
+    23, 24, 25, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, -1, 38, 39, -1, 40, 41, 42, 43,
+    44, -1,
+]
+cdef int8_t[15] TOKEN_HEXES = [1, 4, 7, 10, 15, 20, 23, 24, 28, 32, 36, 37, 47, 48, 50]
+cdef int8_t[52] HEX_TOKEN_SLOT = [
+    -1, 0, -1, -1, 1, -1, -1, 2, -1, -1, 3, -1, -1, -1, -1, 4, -1, -1, -1, -1, 5, -1, -1, 6, 7, -1,
+    -1, -1, 8, -1, -1, -1, 9, -1, -1, -1, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 13, -1,
+    14, -1,
+]
+cdef int8_t[10] PORT_LAY_HEX = [6, 27, 27, 27, 27, 41, 41, 46, 46, 46]
+cdef int8_t[10] PORT_LAY_ROT = [2, 0, 2, 3, 4, 1, 2, 0, 2, 4]
+cdef int8_t[4][6] PORT_LAY_SLOT = [
+    [-1, -1, 0, -1, -1, -1],  # B11
+    [1, -1, 2, 3, 4, -1],  # G10
+    [-1, 5, 6, -1, -1, -1],  # I12
+    [7, -1, 8, -1, 9, -1],  # J9
+]
+cdef int8_t[3] DISCARD_TYPES = [1, 2, 3]
+cdef int8_t[6] TRAIN_DISCARD_SLOT = [-1, 0, 1, 2, -1, -1]
+
 # Corporations and privates
 cdef int8_t[7] CORP_HOME = [50, 15, 36, 48, 23, 10, 4]
 cdef int8_t[7] CORP_TOKENS = [2, 2, 2, 2, 3, 1, 3]
@@ -1148,6 +1175,15 @@ globals()['TILE_PATHS'] = [[[<int>TILE_PATHS[i][j][k] for k in range(6)] for j i
 globals()['UPG_START'] = [<int>UPG_START[i] for i in range(553)]
 globals()['UPG_TILE'] = [<int>UPG_TILE[i] for i in range(1206)]
 globals()['UPG_ROT'] = [<int>UPG_ROT[i] for i in range(1206)]
+globals()['TRACK_HEXES'] = [<int>TRACK_HEXES[i] for i in range(45)]
+globals()['HEX_TRACK_SLOT'] = [<int>HEX_TRACK_SLOT[i] for i in range(52)]
+globals()['TOKEN_HEXES'] = [<int>TOKEN_HEXES[i] for i in range(15)]
+globals()['HEX_TOKEN_SLOT'] = [<int>HEX_TOKEN_SLOT[i] for i in range(52)]
+globals()['PORT_LAY_HEX'] = [<int>PORT_LAY_HEX[i] for i in range(10)]
+globals()['PORT_LAY_ROT'] = [<int>PORT_LAY_ROT[i] for i in range(10)]
+globals()['PORT_LAY_SLOT'] = [[<int>PORT_LAY_SLOT[i][j] for j in range(6)] for i in range(4)]
+globals()['DISCARD_TYPES'] = [<int>DISCARD_TYPES[i] for i in range(3)]
+globals()['TRAIN_DISCARD_SLOT'] = [<int>TRAIN_DISCARD_SLOT[i] for i in range(6)]
 globals()['CORP_HOME'] = [<int>CORP_HOME[i] for i in range(7)]
 globals()['CORP_TOKENS'] = [<int>CORP_TOKENS[i] for i in range(7)]
 globals()['CORP_TOKEN_PRICE'] = [[<int>CORP_TOKEN_PRICE[i][j] for j in range(3)] for i in range(7)]

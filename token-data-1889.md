@@ -341,21 +341,25 @@ takes E from its input's shape, not from a constant.
 ## Per-choice readouts
 
 What each policy head reads for its decision's choices; every head also has
-the trunk's context (the decision corp's and actor's rows, GLOBAL).
+the trunk's context (the decision corp's and actor's rows, GLOBAL). Action
+slots hold only what can ever be legal (engine-design §12 item 8), so TRACK,
+TOKEN, DISCARD, and PORT reach their rows through the tables of
+`g1889/data/tables.pxd`; every HEX and TRAIN row stays, and at ER_BONUS only
+CANDIDATE rows 0-7 can be visible.
 
 | Decision | Choice (phase-local id) | Row | Slots |
 |---|---|---|---|
-| AUCTION | buy (1); bid on p (2 + p) | the PRIVATE row slot 2 selects; PRIVATE p | 7-13 |
+| AUCTION | buy (1); bid on p, p ≥ 1 (1 + p) | the PRIVATE row slot 2 selects; PRIVATE p | 7-13 |
 | BID | point k (1-16), drop (0) | PRICE; the private slot 1 selects | 5 + id |
 | STOCK | IPO, pool, par, sell corp c (1 + c, 8 + c, 15 + c, 22 + c); DR (29); MF (30) | CORP c; PRIVATE DR, MF | 7-25, 44-48; 17; 15 |
 | PAR | par index i (0-5) | PRICE | 5 + id |
 | SELL_AMOUNT | n shares (n − 1) | the CORP row slot 3 selects | 15 + id |
 | BUY_PRIVATE_PRE | done (0); private p (1 + p); DR (8); MF (9) | PRIVATE p; PRIVATE DR, MF | 16; 17; 15 |
-| TRACK | hex h (1 + h) | HEX h | 92-102 |
+| TRACK | hex `TRACK_HEXES[i]` (1 + i) | that HEX row | 92-102 |
 | TILE | candidate k (k) | CANDIDATE k | 2-107 |
-| TOKEN | hex h (1 + h) | HEX h | 103, 104 |
+| TOKEN | hex `TOKEN_HEXES[i]` (1 + i) | that HEX row | 103, 104 |
 | DIVIDEND | withhold (0), payout (1) | DIVIDEND | 1, 4, 5 for withhold; 1-3, 6, 7 for payout |
-| DISCARD | type t (t) | TRAIN t | 12 |
+| DISCARD | type `DISCARD_TYPES[i]` (i) | that TRAIN row | 12 |
 | BUY_TRAIN | the depot (1), the pool (2), corp c (3 + c); emergency sale of corp c (10 + c); bankrupt (17) | TRAIN rows; CORP c | 2-9; 15-19, 46, 49 |
 | SELECT_TRAIN | type t (t); a D for traded `TRADE_IN_TYPE[i]` (6 + i: 4, 5, 6) | TRAIN t; TRAIN `TRADE_IN_TYPE[i]` | 10; 11 |
 | TRAIN_PRICE | point k (0-4) | PRICE; the TRAIN row slot 1 selects, its seller (CORP 2) | 5 + id |
@@ -363,7 +367,7 @@ the trunk's context (the decision corp's and actor's rows, GLOBAL).
 | BUY_PRIVATE_POST | done (0); private p (1 + p); DR (8) | PRIVATE p; PRIVATE DR | 16; 17 |
 | PRIVATE_PRICE | point k (0-3) | PRICE; the private slot 1 selects | 5 + id |
 | ER_BONUS | pass (0); candidate k (1 + k) | CANDIDATE k | 2-107 |
-| PORT | port hex i at rotation r (6i + r) | HEX `MF_PORT_HEX[i]` | the model's static table of tile 437's mask at r |
+| PORT | `PORT_LAY_HEX[i]` at `PORT_LAY_ROT[i]` (i) | that HEX row | the model's static table of tile 437's mask at that rotation |
 
 BUY_TRAIN reads no outcome deltas: SELECT_TRAIN's, the next decision, show
 them, as TILE's candidate rows show TRACK's.

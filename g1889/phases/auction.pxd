@@ -5,5 +5,6 @@ entity handles."""
 from g1889.actions cimport ActionInfo
 from g1889.state cimport GameState
 
+cdef void select_bid(GameState state, int private) except *
 cdef void apply_auction(GameState state, const ActionInfo* info) except *
 cdef void apply_bid(GameState state, const ActionInfo* info) except *

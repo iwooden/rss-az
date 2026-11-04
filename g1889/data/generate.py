@@ -269,9 +269,11 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
     """Stage 2: tables.json as the enums and C arrays of tables.pxd and tables.pyx.
 
     Derives TILE_EXITS, TILE_CANON_ROT, the upgrade CSR (canonical targets
-    only), MAX_LAY_CANDIDATES, and the path walk's tables: TILE_PATHS (each
+    only), MAX_LAY_CANDIDATES, the path walk's tables: TILE_PATHS (each
     tile's paths in Ruby's order, by rotation), HEX_WALK_ORDER, and
-    ENDPOINT_PAIRS. Every array gets a Python list mirror and every enum
+    ENDPOINT_PAIRS; and the action slots' tables (engine-design.md §12 item 8):
+    TRACK_HEXES, TOKEN_HEXES, PORT_LAY_HEX and PORT_LAY_ROT, DISCARD_TYPES, and
+    NUM_ER_CANDIDATES. Every array gets a Python list mirror and every enum
     member an int mirror, set through globals() as in core/data.pyx.
     """
     hexes, rcs, tiles = tables['hexes'], tables['revenue_centers'], tables['tiles']
@@ -310,6 +312,23 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
         for h in hexes
         for old, rot in [(h['tile'], 0)] + [(t, r) for t in range(num_supply) for r in range(NUM_SIDES)])
 
+    # The action slots that can ever be legal (engine-design.md §12 item 8).
+    # tests/g1889/test_action_slots.py proves each against the tables, not from these definitions.
+    def printed_targets(hex_index: int) -> list[tuple[int, int]]:
+        """The upgrade targets of a hex's printed tile with exits on its open sides."""
+        h = hexes[hex_index]
+        return [(new, r) for new, r in csr[h['tile'] * NUM_SIDES] if exits[new][r] & ~h['exit_mask'] == 0]
+
+    port_tile, er_hex = _one(mf['tiles']), _one(er['hexes'])
+    track_hexes = [h for h in range(len(hexes)) if printed_targets(h)]
+    token_hexes = sorted(rc['hex'] for rc in rcs if enums['rc_types'][rc['type']] == 'city')
+    port_lays = [(i, r) for i, h in enumerate(mf['hexes']) for new, r in printed_targets(h) if new == port_tile]
+    er_candidates = [target for target in printed_targets(er_hex) if target[0] in er['tiles']]
+    # A corp goes over its limit only as the limit drops: on the train that opens the phase, it can hold
+    # that rank and those below it that the same train does not rust.
+    limit_drops = [p['on'] for p, before in zip(phases[1:], phases) if p['train_limit'] < before['train_limit']]
+    discard_types = sorted({t for on in limit_drops for t in range(on + 1) if not 0 <= trains[t]['rusts_on'] <= on})
+
     def members(prefix: str, names: list[str], bits: bool = False) -> list[tuple[str, int]]:
         return [(f'{prefix}_{name.upper()}', 1 << i if bits else i) for i, name in enumerate(names)]
 
@@ -325,7 +344,9 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
             ('MIN_PLAYERS', min(counts)), ('MAX_PLAYERS', max(counts)),
             ('NUM_UPGRADE_TARGETS', sum(map(len, csr))), ('MAX_LAY_CANDIDATES', max_lay),
             ('MAX_ROUTE_HEXES', 2 * len(hexes)),  # a route can cross a hex twice on a crossing tile
-            ('MAX_TILE_PATHS', max_paths),
+            ('MAX_TILE_PATHS', max_paths), ('NUM_TRACK_HEXES', len(track_hexes)),
+            ('NUM_TOKEN_HEXES', len(token_hexes)), ('NUM_PORT_LAYS', len(port_lays)),
+            ('NUM_ER_CANDIDATES', len(er_candidates)), ('NUM_DISCARD_TYPES', len(discard_types)),
         ]),
         ('TableRules', [
             ('BANK_CASH', tables['rules']['BANK_CASH']), ('MIN_BID_INCREMENT', tables['rules']['MIN_BID_INCREMENT']),
@@ -429,6 +450,19 @@ def render_cython(tables: dict[str, Any]) -> tuple[str, str]:
           groups=[(key_labels[k], [new for new, _ in targets]) for k, targets in enumerate(csr)])
     array('uint8_t', 'UPG_ROT', [r for targets in csr for _, r in targets],
           groups=[(key_labels[k], [r for _, r in targets]) for k, targets in enumerate(csr)])
+    section('Action slots: the slot-to-value tables, and for each value its slot or -1')
+    array('int8_t', 'TRACK_HEXES', track_hexes)
+    array('int8_t', 'HEX_TRACK_SLOT', [track_hexes.index(h) if h in track_hexes else -1 for h in range(len(hexes))])
+    array('int8_t', 'TOKEN_HEXES', token_hexes)
+    array('int8_t', 'HEX_TOKEN_SLOT', [token_hexes.index(h) if h in token_hexes else -1 for h in range(len(hexes))])
+    array('int8_t', 'PORT_LAY_HEX', [mf['hexes'][i] for i, _ in port_lays])
+    array('int8_t', 'PORT_LAY_ROT', [r for _, r in port_lays])
+    array('int8_t', 'PORT_LAY_SLOT', [[port_lays.index((i, r)) if (i, r) in port_lays else -1
+                                       for r in range(NUM_SIDES)] for i in range(len(mf['hexes']))],
+          [hex_ids[h] for h in mf['hexes']])
+    array('int8_t', 'DISCARD_TYPES', discard_types)
+    array('int8_t', 'TRAIN_DISCARD_SLOT', [discard_types.index(t) if t in discard_types else -1
+                                           for t in range(len(trains))])
     section('Corporations and privates')
     array('int8_t', 'CORP_HOME', [c['home'] for c in corps])
     array('int8_t', 'CORP_TOKENS', [c['tokens'] for c in corps])

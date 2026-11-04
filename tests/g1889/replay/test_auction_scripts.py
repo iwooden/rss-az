@@ -6,14 +6,19 @@ like fixtures, compared after every action. They cover rounds of passes with
 A unsold (the discount down to the free A, which can end the auction),
 payouts once A is sold, passes that persist across other players' turns,
 closed auctions among three bidders, a raise by a player who had passed,
-purchases of the topmost above its price, off-grid amounts, a bid of all of
-a player's cash, and the forced pass that follows it.
+purchases of the topmost above its price, private 0's through
+``DRIVER.override_topmost_bid``, off-grid amounts, a bid of all of a player's
+cash, and the forced pass that follows it.
 """
 
 from __future__ import annotations
 
 import pytest
 
+import g1889.constants as K
+from g1889.state import GameState
+
+from tests.g1889.replay.action_map import TOPMOST_BID_OVERRIDE, map_action
 from tests.g1889.replay.extracts import load_game_extract
 from tests.g1889.replay.test_differential_replay import replay_extract
 
@@ -80,6 +85,14 @@ SCRIPTS = {
         (0, PASS),
         (1, 'TR', 15), (2, 'MF', 30), (3, 'ER', 40), (4, PASS), (0, PASS), (1, 'SMR', 50),
     ]),
+    # Private 0 has no bid slot, so these bids on it, one on the grid and one off, replay through
+    # ``DRIVER.override_topmost_bid``, each a purchase at the bid.
+    'above_price_on_private_0': (3, [
+        (0, 'TR', 25), (1, 'MF', 30), (2, 'ER', 40), (0, 'SMR', 50), (1, 'DR', 60), (2, 'SIR', 80),
+    ]),
+    'off_grid_on_private_0': (3, [
+        (0, PASS), (1, 'TR', 23), (2, 'MF', 30), (0, 'ER', 40), (1, 'SMR', 50), (2, 'DR', 60), (0, 'SIR', 80),
+    ]),
     # Six players: a three-way closed auction for UTF closes the auction.
     'six_players': (6, [
         (0, 'UTF', 155), (1, 'UTF', 160), (2, 'UTF', 165),
@@ -96,3 +109,15 @@ def test_scripted_auction_matches_ruby(label):
     progress = replay_extract(label, extract)
     assert progress.stop is None and progress.matched == len(extract['records']) - 1, str(progress)
     assert extract['records'][-1]['state']['game']['round'] == 'SR', 'the script should finish the auction'
+
+
+@pytest.mark.parametrize('label, seat, price', [('above_price_on_private_0', 0, 25), ('off_grid_on_private_0', 1, 23)])
+def test_a_bid_on_private_0_buys_it_at_the_bid_through_the_override(label, seat, price):
+    num_players, moves = SCRIPTS[label]
+    extract = load_game_extract(label, _game(label, num_players, moves))
+    record = next(r for r in extract['records'][1:] if r['action']['type'] == 'bid' and r['action']['company'] == 'TR')
+    assert record['pre']['purchase'] and record['pre']['price'] == price > record['pre']['min_bid']
+    assert map_action(record['action'], record['pre'], K.DPHASE_AUCTION, GameState(num_players))[0] == (
+        TOPMOST_BID_OVERRIDE, 0)
+    assert record['state']['privates']['TR']['owner'] == {'type': 'player', 'id': extract['players'][seat]['id']}
+    assert record['state']['players'][seat]['cash'] == 420 - price

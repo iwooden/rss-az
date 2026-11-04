@@ -167,6 +167,8 @@ def _ending(state):
 # decisions. The new stops draw from the generator, so every game after one
 # plays differently. (2026-11-04, with BUY_PRIVATE_PRE and BUY_PRIVATE_POST the
 # only OR slots: 97, 88, 48, and 35; 97, 90, 36, and 29; 53 and 37 bankruptcies.
+# With private 0's bid slot gone, the flags-off games play differently: 97, 83,
+# 51, and 41; 54 bankruptcies; the flags-on games are unchanged, §12 item 8.
 # 6.10, uniform at each step of a factored choice: 98, 90,
 # 51, and 39; 99, 92, 36, and 25; 53 and 38 bankruptcies; 998 decisions.
 # 6.8b, before the factoring: 99, 92, 61, and 51; 99, 92, 43, and 27; 63 and

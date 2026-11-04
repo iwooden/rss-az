@@ -5,8 +5,9 @@ dated 2026-11-02; the user accepted every recommendation in Section 13 on
 2026-11-03. Step 7 is implemented (Section 11): 7.1a 42126fc, 7.1b 7678a29,
 7.2 31d0874, 7.3 442078e, and 7.4, whose profile is in Section 9. The token
 contract step 8 reads is [`token-data-1889.md`](../token-data-1889.md), which
-wins where this doc's slot numbers or phase lists differ: BUY_PRIVATE_PRE
-(engine-design §12 item 6) came later and moved GLOBAL to 44 slots.
+wins where this doc's slot numbers, sizes, or phase lists differ: engine-design
+§12 items 6 and 8 came later, moving GLOBAL to 44 slots and the unified
+dimension to 228.
 
 Step 7 fills the extraction half of `games/g1889.py`, whose callables raise
 `NotImplementedError` and whose sizes are `NO_SIZE` (`games/g1889.py:49-50`,

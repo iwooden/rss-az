@@ -55,7 +55,8 @@ def test_exact_phases():
 @pytest.mark.parametrize('phase, action_id, expected', [
     (K.DPHASE_AUCTION, K.AUCTION_PASS, dict(type=A.ACTION_PASS)),
     (K.DPHASE_AUCTION, K.AUCTION_BUY, dict(type=A.ACTION_BUY_TOPMOST)),
-    (K.DPHASE_AUCTION, K.AUCTION_BID + D.PRIVATE_UTF, dict(type=A.ACTION_SELECT_BID, private=D.PRIVATE_UTF)),
+    (K.DPHASE_AUCTION, K.AUCTION_BID, dict(type=A.ACTION_SELECT_BID, private=D.PRIVATE_MF)),
+    (K.DPHASE_AUCTION, K.AUCTION_BID + D.PRIVATE_UTF - 1, dict(type=A.ACTION_SELECT_BID, private=D.PRIVATE_UTF)),
     (K.DPHASE_BID, K.BID_DROP, dict(type=A.ACTION_PASS)),
     (K.DPHASE_BID, K.BID_POINT, dict(type=A.ACTION_PRICE_POINT, count=0)),
     (K.DPHASE_BID, K.BID_POINT + 3, dict(type=A.ACTION_PRICE_POINT, count=3)),
@@ -72,12 +73,13 @@ def test_exact_phases():
      dict(type=A.ACTION_BUY_PRIVATE, private=D.PRIVATE_SIR)),
     (K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_DR, dict(type=A.ACTION_DR_EXCHANGE)),
     (K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_MF, dict(type=A.ACTION_MF_PORT)),
-    (K.DPHASE_TRACK, K.TRACK_HEX + 51, dict(type=A.ACTION_SELECT_HEX, hex=51)),
+    (K.DPHASE_TRACK, K.TRACK_HEX + D.NUM_TRACK_HEXES - 1, dict(type=A.ACTION_SELECT_HEX, hex=D.TRACK_HEXES[-1])),
     (K.DPHASE_TILE, 14, dict(type=A.ACTION_LAY_CANDIDATE, count=14)),
-    (K.DPHASE_TOKEN, K.TOKEN_HEX, dict(type=A.ACTION_PLACE_TOKEN, hex=0)),
+    (K.DPHASE_TOKEN, K.TOKEN_HEX, dict(type=A.ACTION_PLACE_TOKEN, hex=D.TOKEN_HEXES[0])),
     (K.DPHASE_DIVIDEND, K.DIVIDEND_WITHHOLD, dict(type=A.ACTION_WITHHOLD)),
     (K.DPHASE_DIVIDEND, K.DIVIDEND_PAYOUT, dict(type=A.ACTION_PAYOUT)),
-    (K.DPHASE_DISCARD, D.TRAIN_D, dict(type=A.ACTION_DISCARD, train_type=D.TRAIN_D)),
+    (K.DPHASE_DISCARD, 0, dict(type=A.ACTION_DISCARD, train_type=D.TRAIN_3)),
+    (K.DPHASE_DISCARD, 2, dict(type=A.ACTION_DISCARD, train_type=D.TRAIN_5)),
     (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_DEPOT, dict(type=A.ACTION_BUY_DEPOT_TRAIN)),
     (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_POOL, dict(type=A.ACTION_BUY_POOL_TRAIN)),
     (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_CORP + D.CORP_SR, dict(type=A.ACTION_BUY_CORP_TRAIN, corp=D.CORP_SR)),
@@ -93,7 +95,7 @@ def test_exact_phases():
     (K.DPHASE_BUY_PRIVATE_POST, K.BUY_PRIVATE_POST_DR, dict(type=A.ACTION_DR_EXCHANGE)),
     (K.DPHASE_ER_BONUS, K.ER_BONUS_PASS, dict(type=A.ACTION_PASS)),
     (K.DPHASE_ER_BONUS, K.ER_BONUS_CANDIDATE + 4, dict(type=A.ACTION_LAY_CANDIDATE, count=4)),
-    (K.DPHASE_PORT, 6 * 3 + 5, dict(type=A.ACTION_PORT_LAY, hex=D.MF_PORT_HEX[3], count=5)),
+    (K.DPHASE_PORT, D.NUM_PORT_LAYS - 1, dict(type=A.ACTION_PORT_LAY, hex=D.PORT_LAY_HEX[-1], count=D.PORT_LAY_ROT[-1])),
 ])
 def test_decoded_fields(phase, action_id, expected):
     assert decode(phase, action_id) == info(phase, **expected)
@@ -106,6 +108,12 @@ def test_decoded_fields(phase, action_id, expected):
     info(K.DPHASE_SELL_AMOUNT, A.ACTION_SELL, count=6),
     info(K.DPHASE_BUY_TRAIN, A.ACTION_SELECT_SALE, corp=D.NUM_CORPS),
     info(K.DPHASE_AUCTION, A.ACTION_SELECT_BID, private=D.NUM_PRIVATES),
+    info(K.DPHASE_AUCTION, A.ACTION_SELECT_BID, private=0),               # no slot: a replay override
+    info(K.DPHASE_TRACK, A.ACTION_SELECT_HEX, hex=D.HEX_TRACK_SLOT.index(-1)),  # a hex without a lay
+    info(K.DPHASE_TOKEN, A.ACTION_PLACE_TOKEN, hex=D.HEX_TOKEN_SLOT.index(-1)),  # a hex without a city
+    info(K.DPHASE_DISCARD, A.ACTION_DISCARD, train_type=D.TRAIN_D),       # no corp is crowded with a D
+    info(K.DPHASE_PORT, A.ACTION_PORT_LAY, hex=D.MF_PORT_HEX[0], count=0),  # a rotation off the map
+    info(K.DPHASE_ER_BONUS, A.ACTION_LAY_CANDIDATE, count=D.NUM_ER_CANDIDATES),
     info(K.DPHASE_SELECT_TRAIN, A.ACTION_TRADE_IN, train_type=D.TRAIN_3),  # no trade-in for a 3
     info(K.DPHASE_PORT, A.ACTION_PORT_LAY, hex=0, count=0),               # not a port hex
     info(K.DPHASE_BID, A.ACTION_EXACT_PRICE, amount=-1),

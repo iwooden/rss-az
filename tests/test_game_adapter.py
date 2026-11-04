@@ -696,7 +696,7 @@ def test_g1889_conventions_match_engine_constants(g1889_case: Case):
     assert (STATUS_OK, STATUS_GAME_OVER, STATUS_INVALID) == (G1889_OK, G1889_GAME_OVER, G1889_INVALID)
     policy = game.policy
     assert policy.phase_sizes == tuple(K1889.PHASE_ACTION_SIZES)
-    assert (policy.unified_dim, policy.max_action_size) == (297, K1889.MAX_ACTION_SIZE)  # engine-design §5.2
+    assert (policy.unified_dim, policy.max_action_size) == (228, K1889.MAX_ACTION_SIZE)  # engine-design §5.2
     # As in RSS, the phases whose slot 0 passes before their other choices.
     assert set(policy.phases_with_pass_slot) == {
         phase for phase in range(policy.num_phases) if g1889_decode(phase, 0).type == G1889_PASS

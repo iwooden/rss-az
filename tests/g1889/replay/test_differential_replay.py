@@ -76,8 +76,8 @@ from g1889.phases.operating import setup_operating_round_py
 from g1889.state import GameState, get_global_fields, get_layout
 
 from tests.g1889.replay.action_map import (
-    HELD_DISCARD, OVERRIDE_STEP_PHASE, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, Decision, ReplayEnd, UnsupportedAction,
-    map_action, skipped_sr_turn,
+    HELD_DISCARD, OVERRIDE_STEP_PHASE, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, TOPMOST_BID_OVERRIDE, Decision, ReplayEnd,
+    UnsupportedAction, map_action, skipped_sr_turn,
 )
 from tests.g1889.phases.conftest import end_auction, enter_stock_round, hold
 from tests.g1889.phases.conftest import new_game as fresh_game
@@ -104,7 +104,7 @@ PRIVATE_PATHS = {
 # A forced decision the driver applied: (decision phase, id, the player it was
 # for, and the row before it); the sync tests give only the first three.
 Forced = tuple[Any, ...]
-# A discard Ruby took early: (corp, train type, the players who may make it).
+# A discard Ruby took early: (corp, DISCARD's id, the players who may make it).
 Held = tuple[int, int, set[int]]
 ACTIVE_PLAYER_SLOT = get_layout(D.MIN_PLAYERS).global_offset + get_global_fields().active_player
 
@@ -164,14 +164,15 @@ def _apply(state: GameState, decisions: list[Decision], actors: set[int], pendin
     failure, or when the engine's active player is not one of ``actors``. A
     ``ROUTE_OVERRIDE`` pays a human's revenue (``override_route_revenue``) and
     a ``PRIVATE_OVERRIDE`` starts a human's private move
-    (``override_private_slot``), neither recording a decision of its own, and a
+    (``override_private_slot``), and a ``TOPMOST_BID_OVERRIDE`` a bid on private
+    0 (``override_topmost_bid``), none recording a decision of its own, and a
     ``HELD_DISCARD`` waits in ``held`` for its corp's turn to discard
     (``_release``). Then the engine passes for each SR turn Ruby skips or ends
     (``_pass_skipped_sr_turns``)."""
     for phase, action_id in decisions:
         if phase == HELD_DISCARD:  # by its corp's president, whose discard Ruby takes out of its order
-            corp, train = divmod(action_id, D.NUM_TRAIN_TYPES)
-            held.append((corp, train, {CORPS[corp].president(state)}))
+            corp, slot = divmod(action_id, D.NUM_TRAIN_TYPES)
+            held.append((corp, slot, {CORPS[corp].president(state)}))
             continue
         if not pending and phase != K.DPHASE_BUY_PRIVATE_PRE:
             _leave_pre(state, pending, log)
@@ -191,6 +192,10 @@ def _apply(state: GameState, decisions: list[Decision], actors: set[int], pendin
         elif phase == PRIVATE_OVERRIDE:
             if DRIVER.override_private_slot(state, action_id, history) == STATUS_INVALID:
                 return f'the private override of slot {action_id} is illegal at {K.Step(TURN.step(state)).name}'
+            forced = history
+        elif phase == TOPMOST_BID_OVERRIDE:
+            if DRIVER.override_topmost_bid(state, history) == STATUS_INVALID:
+                return f'the bid on private 0 is illegal at {K.Step(TURN.step(state)).name}'
             forced = history
         else:
             engine_phase = get_decision_phase_py(state)
@@ -247,15 +252,15 @@ def _release(state: GameState, pending: list[Forced], log: list, held: list[Held
     """Apply each held discard once the engine reaches its corp: consume the
     discard the driver forced for it, or make it at the engine's DISCARD."""
     while held:
-        corp, train, actors = held[0]
+        corp, slot, actors = held[0]
         hit = next((i for i, (phase, action_id, player, row) in enumerate(pending)
-                    if (phase, action_id) == (K.DPHASE_DISCARD, train) and _discarding(state, row) == corp
+                    if (phase, action_id) == (K.DPHASE_DISCARD, slot) and _discarding(state, row) == corp
                     and player in actors), None)
         if hit is not None:
             del pending[hit]
         elif _discarding(state) == corp:
             held.pop(0)
-            if error := _apply(state, [(K.DPHASE_DISCARD, train)], actors, pending, log, held):
+            if error := _apply(state, [(K.DPHASE_DISCARD, slot)], actors, pending, log, held):
                 return error
             continue
         else:

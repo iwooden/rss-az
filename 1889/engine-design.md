@@ -94,6 +94,7 @@ constants are a `cpdef enum`. Python mirrors are set through `globals()`
 | Revenue centers | `RC_HEX`, `RC_TYPE`, `RC_PORT` int8[25]; `RC_REVENUE` int16[25][6]; `RC_D_REVENUE` int16[25] |
 | Tiles | `TILE_COLOR`, `TILE_LABEL`, `TILE_RC`, `TILE_SLOTS`, `TILE_TERRAIN`, `TILE_BLOCKS_LAY` uint8[92]; `TILE_COUNT`, `TILE_REVENUE`, `TILE_COST` int16[92]; `TILE_MASK` uint32[92][6]; derived `TILE_EXITS` and `TILE_CANON_ROT` (the lowest rotation with an equal mask) uint8[92][6], `TILE_PATH_COUNT` uint8[92], and `TILE_PATHS` uint8[92][6][6] (each path's pair index by rotation, in Ruby's `Tile#paths` order) |
 | Upgrades | CSR over `tile·6 + rotation`, canonical targets only: `UPG_START` int16[553]; `UPG_TILE`, `UPG_ROT` uint8[~1,200] |
+| Action slots | derived (Section 12, item 8): `TRACK_HEXES` int8[45], `TOKEN_HEXES` int8[15], `PORT_LAY_HEX`, `PORT_LAY_ROT` int8[10], `DISCARD_TYPES` int8[3], `NUM_ER_CANDIDATES`; each value's slot or −1: `HEX_TRACK_SLOT`, `HEX_TOKEN_SLOT` int8[52], `PORT_LAY_SLOT` int8[4][6], `TRAIN_DISCARD_SLOT` int8[6] |
 | Corps, privates | `CORP_HOME`, `CORP_TOKENS` int8[7]; `CORP_TOKEN_PRICE` int16[7][3]; `PRIVATE_VALUE`, `PRIVATE_REVENUE` int16[7]; `MF_PORT_HEX` int8[4]; `ER_TILE` int8[6]; `UTF_LATE_REVENUE`, `SMR_DISCOUNT` |
 | Players | `START_CASH`, `CERT_LIMIT` int16[7]; `PRIVATES_IN_PLAY` uint8[7], indexed by player count |
 | Trains | `TRAIN_DISTANCE`, `TRAIN_PRICE`, `TRAIN_COUNT`, `TRAIN_RUSTS_ON`, `TRAIN_AVAILABLE_ON` int16[6]; `TRAIN_TRADE_IN` int16[6][6] |
@@ -295,7 +296,7 @@ the port hexes have no terrain (`phases/privates.pyx` asserts it).
   size, so code that maps ids to unified slots (the LUT, history, analysis)
   must skip them rather than index with them.
 - **Validation.** `is_legal_action(state, id)` scans the enumerated set (at
-  most 53 ids, as `core/driver.pyx:322-331`) or checks the amount range.
+  most 46 ids, as `core/driver.pyx:322-331`) or checks the amount range.
 - **Guards (2026-11-02).** As in RSS, input and invariant guards are
   `assert`s, which `setup.py --release` strips (`CYTHON_WITHOUT_ASSERTIONS`):
   a release build's callers must pass valid input, and anything else is
@@ -307,6 +308,8 @@ the port hexes have no terrain (`phases/privates.pyx` asserts it).
   in every build, as in `core/actions.pyx:1096-1104`.
 - **Permanent policy filters.** The policy never includes exact amounts, or
   a bid on the topmost private, which buying it at its price dominates.
+  Private 0 is the topmost while it is unsold, so a bid on it has no slot
+  at all (Section 12, item 8).
 - **Rotations.** Rotations with equal masks are one candidate
   (`TILE_CANON_ROT`). The 18xx mapper canonicalizes, since Ruby accepts any
   of them.
@@ -343,28 +346,29 @@ the port hexes have no terrain (`phases/privates.pyx` asserts it).
 
 | # | Phase | Size | Phase-local ids | Actor |
 |---|---|---|---|---|
-| 0 | AUCTION | 9 | 0 pass · 1 buy topmost at its price · 2+p bid on private p | turn player |
+| 0 | AUCTION | 8 | 0 pass · 1 buy topmost at its price · 2+(p−1) bid on private p, p ≥ 1 | turn player |
 | 1 | BID | 17 | 0 drop (a closed auction only) · 1+k: the minimum + ¥5k; exact 17 + amount | turn player; in a closed auction, the lowest bidder |
 | 2 | STOCK | 31 | 0 pass or done · 1+c IPO buy · 8+c pool buy · 15+c par · 22+c sell corp c · 29 DR · 30 MF | turn player |
 | 3 | PAR | 6 | par index (¥65-100) | same |
 | 4 | SELL_AMOUNT | 5 | n − 1: sell n shares of the pending corp | same |
 | 5 | BUY_PRIVATE_PRE | 10 | 0 done · 1+p buy private · 8 DR · 9 MF | president |
-| 6 | TRACK | 53 | 0 pass · 1+h hex | president |
+| 6 | TRACK | 46 | 0 pass · 1+i hex `TRACK_HEXES[i]` | president |
 | 7 | TILE | 15 | candidate index at the chosen hex | president |
-| 8 | TOKEN | 53 | 0 pass · 1+h hex | president |
+| 8 | TOKEN | 16 | 0 pass · 1+i city `TOKEN_HEXES[i]` | president |
 | 9 | DIVIDEND | 2 | 0 withhold · 1 payout | president |
-| 10 | DISCARD | 6 | train type | crowded corp's president |
+| 10 | DISCARD | 3 | i: train type `DISCARD_TYPES[i]` (3, 4, 5) | crowded corp's president |
 | 11 | BUY_TRAIN | 18 | 0 pass · 1 the depot · 2 the pool · 3+c corp c's trains · 10+c emergency sale of corp c · 17 bankrupt | president |
 | 12 | SELECT_TRAIN | 9 | t: a type-t train from the pending source · 6+i: from the depot, a D for a traded 4, 5, or 6 | president |
 | 13 | TRAIN_PRICE | 5 | price points; exact 5 + price | president |
 | 14 | EMERGENCY_SELL_AMOUNT | 5 | n − 1: the president sells n shares of the pending corp | president |
 | 15 | BUY_PRIVATE_POST | 9 | 0 done · 1+p · 8 DR | president |
 | 16 | PRIVATE_PRICE | 4 | price points; exact 4 + price | president |
-| 17 | ER_BONUS | 16 | 0 pass · 1+k candidate on C4 | ER's seller |
-| 18 | PORT | 24 | 6i + r: port hex i, rotation r | MF's owner |
+| 17 | ER_BONUS | 9 | 0 pass · 1+k candidate on C4 | ER's seller |
+| 18 | PORT | 10 | i: port hex `PORT_LAY_HEX[i]`, rotation `PORT_LAY_ROT[i]` | MF's owner |
 
-**Unified dimension: 297**; `max_action_size` 53, TRACK's and TOKEN's (RSS:
-255 and 53). Pass slots, whose slot 0 decodes to a pass ahead of the phase's
+**Unified dimension: 228**; `max_action_size` 46, TRACK's (RSS: 255 and 53).
+These slots hold only what can ever be legal (Section 12, item 8), through
+the tables Section 2 derives; token rows are unaffected. Pass slots, whose slot 0 decodes to a pass ahead of the phase's
 other choices: AUCTION, BID, STOCK, BUY_PRIVATE_PRE, TRACK, TOKEN, BUY_TRAIN,
 BUY_PRIVATE_POST, ER_BONUS. Metric names follow the phase names (`div`,
 `train`, `private_pre`, `private_post` for DIVIDEND, BUY_TRAIN,
@@ -392,12 +396,12 @@ bankruptcy at 93. Section 12, item 7 factored them (Section 5.3).
 
 | Selection | Stored in | Sub-phase | Then |
 |---|---|---|---|
-| AUCTION 2+p | `pending_private` | BID | the auction continues |
+| AUCTION 2+(p−1) | `pending_private` | BID | the auction continues |
 | two or more bids on the topmost private (a closed auction) | `auction_private` | BID, for its lowest bidder | the next lowest bidder's BID, until one bid is left |
 | STOCK 15+c | `pending_corp` | PAR | the same SR turn |
 | STOCK 22+c | `pending_corp` | SELL_AMOUNT | the same SR turn |
 | STOCK 30, BUY_PRIVATE_PRE 9 | `return_step` | PORT | `return_step` |
-| TRACK 1+h | `pending_hex` | TILE | TOKEN |
+| TRACK 1+i | `pending_hex` | TILE | TOKEN |
 | any buy-private slot | `pending_private`, `return_step` | PRIVATE_PRICE | ER_BONUS if p is ER (actor `pending_seller`), then `return_step` |
 | BUY_TRAIN 1+s (s: 0 the depot, 1 the pool, 2+c corp c) | `pending_train_source` (s) | SELECT_TRAIN | BUY_TRAIN; for corp c's train, TRAIN_PRICE (`pending_train_type`), then BUY_TRAIN |
 | BUY_TRAIN 10+c | `pending_corp` | EMERGENCY_SELL_AMOUNT | BUY_TRAIN |
@@ -464,12 +468,12 @@ passes go on as before.
 index the candidates with a compact list.
 
 - **Factored, not joint.** Joint (hex, tile, rotation) needs 12,480 dense
-  slots or a per-state list of up to 780; factoring needs 52 + 15, and TILE
+  slots or a per-state list of up to 780; factoring needs 45 + 15, and TILE
   auto-chains when the hex has one candidate.
 - **A compact list, not a 40 × 6 grid.** The candidates are the hex's
   canonical engine-legal targets, sorted by (supply tile, rotation). TILE
-  then needs 15 slots and ER_BONUS 16, instead of 240 and 241, so the unified
-  dimension is 297 rather than 747. Replay stores a `uint8` mask and a
+  then needs 15 slots and ER_BONUS 9, instead of 240 and 241, so the unified
+  dimension is 228 rather than 685. Replay stores a `uint8` mask and a
   `float32` target for each unified slot (`train/replay_buffer.py:103-109`),
   so one sample, including its row, takes about 3.3 KB instead of 5.5 KB.
 - **Scoring.** Slot i has no fixed meaning, so the model scores candidates
@@ -513,15 +517,15 @@ states, 29 µs at most (late 962, with many plain-track upgrades to walk).
 
 | 18xx action | Engine |
 |---|---|
-| `bid` | the topmost private at its price: AUCTION 1. Another private: AUCTION 2+p, then BID. In a closed auction: BID. BID takes a grid point or an exact amount |
+| `bid` | the topmost private at its price: AUCTION 1. Another private: AUCTION 2+(p−1), then BID. Private 0 above its price: `DRIVER.override_topmost_bid`, then BID. In a closed auction: BID. BID takes a grid point or an exact amount |
 | `pass` | slot 0 of the current phase; ER_BONUS 0 for entity ER |
 | `par` (`"70,4,3"`) | STOCK 15+c, then the PAR index for ¥70 |
 | `buy_shares` | STOCK 1+c or 8+c, chosen by the share's owner (extractor annotation). Entity DR is a private's move (below), on its owner's turn only |
 | `sell_shares` | of n = percent/10 shares of c: in an SR, STOCK 22+c, then SELL_AMOUNT n − 1; in an emergency, BUY_TRAIN 10+c, then EMERGENCY_SELL_AMOUNT n − 1. The engine performs any presidency swap |
-| `lay_tile` | by a corp: TRACK 1+h, then TILE (tile, canonical rotation), ignoring the copy suffix in names like `57-1`. By MF: a private's move (below), then PORT, on its owner's turn only. By ER: ER_BONUS 1+k |
-| `place_token` | TOKEN 1+h; the extractor supplies the hex, and `slot` is ignored |
+| `lay_tile` | by a corp: TRACK's slot for the hex, then TILE (tile, canonical rotation), ignoring the copy suffix in names like `57-1`. By MF: a private's move (below), then PORT, on its owner's turn only. By ER: ER_BONUS 1+k |
+| `place_token` | TOKEN's slot for the hex; the extractor supplies the hex, and `slot` is ignored |
 | `run_routes` | nothing, or `DRIVER.override_route_revenue` if the revenue differs |
-| `dividend`, `discard_train`, `bankrupt` | DIVIDEND 0 or 1; DISCARD, reordered to the engine's corp order (Section 10.2); BUY_TRAIN 17 |
+| `dividend`, `discard_train`, `bankrupt` | DIVIDEND 0 or 1; DISCARD's slot for the type, reordered to the engine's corp order (Section 10.2); BUY_TRAIN 17 |
 | `buy_train` | BUY_TRAIN's source (1 the depot, 2 the pool, 3+c the seller), then SELECT_TRAIN's type t (`exchange` maps to the depot and 6+i) at the list price, or ¥800 for a trade-in; TRAIN_PRICE follows for a buy from a corp, at the grid point its price lands on, or else the exact id |
 | `buy_company` | a private's move (below), then PRIVATE_PRICE at the grid point its price lands on, or else the exact id |
 | other actions | `undo`/`redo` are resolved by the extractor; `program_*` and `message` are skipped; `auto_actions` apply after their host action; `end_game` stops the replay |
@@ -539,6 +543,9 @@ Where the engine rests at PRE and Ruby does anything else, replay applies
 PRE's "done" first (Section 10.2). Ruby's Route step, which the engine runs by
 itself, and DiscardTrain, whose `return_step` the move would need, stay
 unsupported.
+
+A Ruby action that needs a slot Section 12, item 8 removed raises
+`UnsupportedAction`, as it overturns the argument for removing it.
 
 A factored action maps to its decisions in order; where the driver forces
 one of them (a corp's one legal block, a source's one train, a source or a
@@ -558,8 +565,8 @@ dispatches, and auto-chains (`:297-338`); history records `(row copy, decision
 phase, id)` before each mutation and `(row, −1, step)` for automated steps
 (`:147`, `:197`); a guard stops at 1,000 iterations (`:90`); status codes are
 0/1/2 (`core/driver.pxd:35-41`), with no step mode. Replay's other entry
-points are `override_route_revenue` (Section 8) and `override_private_slot`
-(Section 5.5).
+points are `override_route_revenue` (Section 8), `override_private_slot`, and
+`override_topmost_bid` (Section 5.5).
 
 **No development stop (6.9).** From 6.3 to 6.8b, a case a later sub-step
 owned raised NotImplementedError, and the auto-chain rested there. Every
@@ -1477,7 +1484,7 @@ joins `_GAME_MODULES`; importing `games` still imports no engine. It fills
 every engine field:
 
 - `policy`: a `PolicyLayout` of Section 5.2's sizes (unified dimension
-  297), named as Section 5.2 names the metrics (`div`, `train`, `private_pre`,
+  228), named as Section 5.2 names the metrics (`div`, `train`, `private_pre`,
   `private_post`, and the other phases in lower case). `phases_with_pass_slot` means what
   it means for RSS: the phases whose slot 0 passes before several other
   choices, whose pass logit the trainer compares with theirs. RSS lists
@@ -1593,6 +1600,51 @@ The user accepted every recommendation below (2026-11-01).
    *Built (6.10):* as above (Sections 5.2-5.3); SELL_AMOUNT follows PAR and
    SELECT_TRAIN, TRAIN_PRICE, and EMERGENCY_SELL_AMOUNT follow BUY_TRAIN in the phase
    order, and `pending_corp` holds the corp a sale is of.
+
+8. **Decided (2026-11-04):** the action slots hold only what can ever be
+   legal. The user's standard for a slot random play never reached: if the
+   rules, the map, or the tables show it can never be legal, remove it; on a
+   good argument short of that, remove it anyway and record the argument and
+   the doubt here, since a slot can come back on more evidence; with no
+   argument, only "never observed", keep it. A sweep over playouts only named
+   the candidates. *Adopted:* 69 slots went, taking the unified dimension from
+   297 to 228. `tests/g1889/test_action_slots.py` holds each argument against
+   the tables, and `test_data_vs_ruby.py` against Ruby's checks. An engine-legal
+   choice with no slot fails an assertion, and replay raises
+   `UnsupportedAction`, so a wrong argument cannot give a wrong id.
+   - **TRACK, 7 hexes (B3, B7, F1, G14, J1, J7, L7): airtight.** Their
+     printed tiles, gray or red, have no upgrade target, and no private's lay
+     names them, so their tiles never change.
+   - **TOKEN, 37 hexes: airtight.** A walk of the upgrade table from each
+     printed tile, whatever the phase, supply, or open sides, finds no city:
+     no upgrade makes one of plain track or a town, the port tile (a town) and
+     ER's tiles (on C4, a city) included. The 15 left are the printed cities.
+   - **ER_BONUS 9-15: airtight.** ER blocks C4 while a player owns it, no other
+     private's lay names C4, the auction sells ER before any OR at every
+     player count, and a corp never sells it on. So the bonus fires once, on
+     the printed tile, where full supply gives the most candidates, 8.
+   - **PORT, 14 hex and rotation pairs: airtight.** `port_lays` reads the state,
+     but only to remove lays: the upgrade table reaches the port tile only from
+     a printed tile, at rotation 0, and each pair left out has an exit off
+     the board.
+   - **DISCARD, types 2, 6, and D: airtight under the rules.** A corp goes over
+     its limit only as the limit drops, on the first 4 and the first 5. The 2s
+     rust on that 4; a 6 or a D ranks above that 5, and the depot sells by
+     rank; and at the limit a corp may only trade in, which keeps its count.
+     *Doubt:* Ruby's `buy_train_action` checks no room, so a hand-written
+     action, though not its UI (`assets/app/view/game/buy_trains.rb:217`),
+     could over-buy where a trade-in keeps BuyTrain open, then discard a 6 or
+     a D. The engine rejects such a purchase at BUY_TRAIN, so replay stops
+     there, as it already did.
+   - **AUCTION 2, a bid on private 0: airtight for the policy.** Private 0 is
+     in play at every player count and the topmost while it is unsold, so a
+     bid on it is always a purchase above the price, which the policy has
+     always dropped. It stays legal in Ruby: `DRIVER.override_topmost_bid` opens
+     BID for a human's, and BID's amount buys it. Later privates keep their
+     slots, which the policy drops while they are topmost.
+   - **Kept: EMERGENCY_SELL_AMOUNT's 5 shares.** No game has shown it, but
+     nothing bars it: two players at 50% of a sold-out corp may reach it, and
+     the non-president may then sell all five into an empty pool.
 
 Settled by following 18xx.games, and recorded in `1889-rules.md` §13-14:
 
