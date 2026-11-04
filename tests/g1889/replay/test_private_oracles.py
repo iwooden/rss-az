@@ -6,17 +6,19 @@ schema-7 oracles (``extracts.py``), which Ruby's own steps answer:
 
 - ``operating.companies``: what BuyCompany lets the operator buy
   (``purchasable_companies``, ``min_price``/``max_price``,
-  ``can_buy_company?``) against ``purchasable_privates_py``; and at the
-  engine's TRACK, TOKEN, DIVIDEND, BUY_TRAIN, and BUY_PRIVATE decisions, the
-  buy-private slots, where Ruby's step is the one Ruby stops at;
+  ``can_buy_company?``) against ``purchasable_privates_py``; against the
+  buy-private slots at BUY_PRIVATE_PRE (a Track snapshot before the lay) and
+  BUY_PRIVATE_POST (BuyCompany); and against what the override accepts at
+  TRACK, TOKEN, DIVIDEND, and BUY_TRAIN, which offer no slot;
 - ``operating.er_bonus``: ER's lays on C4 for its seller (1889's
   SpecialTrack) against ER_BONUS, whose pass Ruby always offers;
 - ``abilities.port``: MF's port lays while Ruby's ability is usable,
   whoever's turn it is, against ``port_lays_py``; and the MF slot at STOCK
-  and TRACK, legal exactly where its owner acts with a lay to make;
+  and BUY_PRIVATE_PRE, legal exactly where its owner acts with a lay to make;
 - ``abilities.exchange``: ``Exchange#can_exchange?`` against
-  ``can_exchange_dr_py``; and the DR slot at every top-level decision,
-  legal exactly where its owner acts and Ruby could exchange.
+  ``can_exchange_dr_py``; and the DR slot at STOCK, BUY_PRIVATE_PRE, and
+  BUY_PRIVATE_POST, and the override elsewhere, legal exactly where its owner
+  acts and Ruby could exchange.
 
 Ruby's non-blocking steps join only a step Ruby stops at, so every snapshot
 at one of these decisions is one the engine asks too.
@@ -31,6 +33,12 @@ games do, through Ruby's extractor, replayed and compared after every action:
 - ``dr_floats_ir_mid_or``: IR has four shares out after SR 1; in OR 1 the
   president of KO, which alone operates, exchanges DR at KO's Track step,
   and IR floats then, but runs only from the next OR (rules §12.10).
+- ``overrides_after_forced_decisions``: the same SR 1; KO's president owns MF
+  and DR. In OR 1 KO lays its track, which leaves it a must-buy with one
+  source, and the engine's forced rule runs on through the 2-train. Ruby waits:
+  MF's port tile comes at the Track step it keeps open after the lay, and DR's
+  exchange at BuyTrain, so the replay backs up each time, and both moves take
+  the override; then KO buys, as the driver forced again.
 """
 
 from __future__ import annotations
@@ -41,10 +49,11 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
-from g1889.driver import DRIVER
+from g1889.driver import DRIVER, STATUS_INVALID
 from g1889.entities.corp import CORPS
 from g1889.entities.private import PRIVATES
 from g1889.entities.turn import TURN
+from g1889.state import GameState
 
 from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_game_extract
 from tests.g1889.replay.snapshot import (
@@ -70,29 +79,39 @@ SCRIPTS = {
         # OR 1: KO's president exchanges DR at its Track step; IR floats, and the OR ends without it.
         ('DR', 'exchange', 'IR_3'), ('KO', PASS), ('KO', PASS),
     ]),
+    'overrides_after_forced_decisions': (3, [
+        (0, 'TR', 20), (1, 'MF', 30), (2, 'ER', 40), (0, 'SMR', 50), (1, 'DR', 60), (2, 'SIR', 80),
+        (0, 'par', 'IR', 65), (1, 'par', 'KO', 65), (2, 'buy', 'IR_1'), (0, 'buy', 'IR_2'), (1, 'buy', 'KO_1'),
+        (2, 'buy', 'KO_2'), (0, 'buy', 'KO_3'), (1, PASS), (2, PASS), (0, PASS),
+        ('KO', 'corp_lay', 'J3', '8-0', 3), ('MF', 'lay', 'B11', '437-0', 2), ('DR', 'exchange', 'IR_3'),
+        ('KO', 'buy_train', '2-0', 80, '2'), ('KO', PASS),
+    ]),
 }
 
 # Ruby's step at a snapshot, and the engine decision there that takes the
-# privates' slots; Track after the lay is the engine's TOKEN, past TRACK.
-DECISION_STEPS = {
-    'BuySellParShares': K.STEP_STOCK, 'Track': K.STEP_TRACK, 'Token': K.STEP_TOKEN, 'Dividend': K.STEP_DIVIDEND,
-    'BuyTrain': K.STEP_BUY_TRAIN, 'BuyCompany': K.STEP_BUY_PRIVATE,
-}
+# privates' slots. A Track snapshot before the lay loads at TRACK, and the
+# oracle moves it to BUY_PRIVATE_PRE, where the turn would be.
+DECISION_STEPS = {'BuySellParShares': K.STEP_STOCK, 'Track': K.STEP_BUY_PRIVATE_PRE,
+                  'BuyCompany': K.STEP_BUY_PRIVATE_POST}
+# The decisions of a corp's turn that offer no slot, where replay takes the override.
+OVERRIDE_STEPS = (K.STEP_TRACK, K.STEP_TOKEN, K.STEP_DIVIDEND, K.STEP_BUY_TRAIN)
 INTERJECTIONS = (A.ACTION_BUY_PRIVATE, A.ACTION_DR_EXCHANGE, A.ACTION_MF_PORT)
 
 # Per extract: (OR snapshots with an operator, of which the operator may buy a
-# private; snapshots at a top-level decision, of which some private is
+# private; snapshots at a decision with the slots, of which some private is
 # buyable there; ER bonus snapshots; snapshots where Ruby's port ability is
 # usable, and the decisions MF's owner takes then; snapshots where Ruby
 # answers DR's exchange, those it allows, and the decisions DR's owner takes
-# with an exchange to make).
+# with an exchange to make; snapshots at a decision without the slots, of which
+# the override may buy a private there, and may exchange DR).
 COVERAGE = {
-    '314': (197, 20, 413, 16, 1, 63, 19, 76, 76, 27),
-    '962': (243, 113, 389, 96, 1, 19, 5, 264, 221, 26),
-    'hs_jmmljkbw_17502': (2, 0, 40, 0, 0, 39, 5, 40, 40, 9),
-    'hs_lhglbbiz_17502': (2, 0, 37, 0, 0, 36, 5, 37, 37, 8),
-    'dr_and_mf_in_the_sr': (1, 0, 11, 0, 0, 3, 2, 2, 2, 1),
-    'dr_floats_ir_mid_or': (3, 0, 14, 0, 0, 13, 6, 11, 11, 4),
+    '314': (197, 20, 305, 10, 1, 63, 19, 76, 76, 23, 154, 9, 5),
+    '962': (243, 113, 274, 42, 1, 19, 5, 264, 221, 26, 172, 74, 0),
+    'hs_jmmljkbw_17502': (2, 0, 39, 0, 0, 39, 5, 40, 40, 8, 2, 0, 2),
+    'hs_lhglbbiz_17502': (2, 0, 36, 0, 0, 36, 5, 37, 37, 7, 2, 0, 2),
+    'dr_and_mf_in_the_sr': (1, 0, 11, 0, 0, 3, 2, 2, 2, 1, 1, 0, 0),
+    'dr_floats_ir_mid_or': (3, 0, 13, 0, 0, 13, 6, 11, 11, 4, 3, 0, 1),
+    'overrides_after_forced_decisions': (5, 0, 12, 0, 0, 12, 4, 13, 13, 4, 5, 0, 3),
 }
 
 
@@ -115,10 +134,16 @@ def _owner(state, private) -> int:
     return owner - K.OWNER_PLAYER if K.OWNER_PLAYER <= owner < K.OWNER_CORP else -1
 
 
+def _override_accepts(state, slot: int) -> bool:
+    """Whether ``DRIVER.override_private_slot`` takes BUY_PRIVATE_PRE's ``slot`` here, on a copy."""
+    copy = GameState.from_array(state._array, TURN.num_players(state), state.max_players)
+    return DRIVER.override_private_slot(copy, slot) != STATUS_INVALID
+
+
 @pytest.mark.parametrize('label', (*FIXTURES, *SCRIPTS))
 def test_privates_match_ruby(label):
     extract = _extract(label)
-    counts = [0] * 10
+    counts = [0] * 13
     for record in extract['records']:
         snap, index = record['state'], record['index']
         g, operating, abilities = snap['game'], snap['operating'], snap['abilities']
@@ -144,14 +169,27 @@ def test_privates_match_ruby(label):
             assert A.can_exchange_dr_py(state, _owner(state, D.PRIVATE_DR)) == abilities['exchange'], where
             counts[7] += 1
             counts[8] += abilities['exchange']
+        if TURN.step(state) in OVERRIDE_STEPS and corp >= 0:
+            assert not {info.type for _, info in _legal(state)} & set(INTERJECTIONS), where
+            ruby = ruby_private_buys(operating['companies'], CORPS[corp].cash(state))
+            accepted = [sym for p, sym in enumerate(D.PRIVATE_SYMS)
+                        if _override_accepts(state, K.BUY_PRIVATE_PRE_PRIVATE + p)]
+            assert accepted == ruby, where
+            exchange = bool(abilities['exchange']) and _owner(state, D.PRIVATE_DR) == TURN.active_player(state)
+            assert _override_accepts(state, K.BUY_PRIVATE_PRE_DR) == exchange, where
+            counts[10] += 1
+            counts[11] += bool(ruby)
+            counts[12] += exchange
         step = DECISION_STEPS.get(g['step'])
+        if step == K.STEP_BUY_PRIVATE_PRE and TURN.step(state) == K.STEP_TRACK:
+            TURN.set_step(state, step)
         if step is None or TURN.step(state) != step or track_after_lay(snap):
             continue
         legal = _legal(state)
-        # The decision's own actions (BUY_PRIVATE's are its purchases) hold one beyond slot 0: Ruby asks.
+        # The decision's own actions (POST's are its purchases) hold one beyond slot 0: Ruby asks.
         own = [i for i, info in legal if info.type not in INTERJECTIONS
-               or step == K.STEP_BUY_PRIVATE and info.type == A.ACTION_BUY_PRIVATE]
-        assert step == K.STEP_TRACK or len(own) > 1 or own and own[0] != 0, where
+               or step == K.STEP_BUY_PRIVATE_POST and info.type == A.ACTION_BUY_PRIVATE]
+        assert step == K.STEP_BUY_PRIVATE_PRE or len(own) > 1 or own and own[0] != 0, where
         counts[2] += 1
         actor = TURN.active_player(state)
         kinds = [info.type for _, info in legal]
@@ -159,7 +197,8 @@ def test_privates_match_ruby(label):
             buys = [D.PRIVATE_SYMS[info.private] for _, info in legal if info.type == A.ACTION_BUY_PRIVATE]
             assert buys == ruby_private_buys(operating['companies'], CORPS[corp].cash(state)), where
             counts[3] += bool(buys)
-        port = bool(abilities['port']) and _owner(state, D.PRIVATE_MF) == actor and step in (K.STEP_STOCK, K.STEP_TRACK)
+        port = (bool(abilities['port']) and _owner(state, D.PRIVATE_MF) == actor
+                and step in (K.STEP_STOCK, K.STEP_BUY_PRIVATE_PRE))
         assert (A.ACTION_MF_PORT in kinds) == port, where
         counts[6] += port
         exchange = bool(abilities['exchange']) and _owner(state, D.PRIVATE_DR) == actor
@@ -168,11 +207,31 @@ def test_privates_match_ruby(label):
     assert tuple(counts) == COVERAGE[label]
 
 
+# The privates' moves each script makes, by the path they replay through.
+SCRIPT_PATHS = {
+    'dr_and_mf_in_the_sr': {'STOCK': 2},
+    'dr_floats_ir_mid_or': {'BUY_PRIVATE_PRE': 1},
+    'overrides_after_forced_decisions': {'backed up': 2, 'override at Track': 1, 'override at BuyTrain': 1},
+}
+
+
 @pytest.mark.parametrize('label', SCRIPTS)
 def test_scripted_game_replays_end_to_end(label):
     extract = _extract(label)
     progress = replay_extract(label, extract)
     assert progress.stop is None and progress.matched == len(extract['records']) - 1, str(progress)
+    assert progress.private_moves == SCRIPT_PATHS[label]
+
+
+def test_the_overrides_script_takes_its_paths_in_ruby():
+    """Ruby waits at Track, kept open after the lay, for the port tile, and at
+    BuyTrain for the exchange, each time past where the driver forces itself."""
+    records = _extract('overrides_after_forced_decisions')['records']
+    lay, port, exchange = records[-5], records[-4], records[-3]
+    assert lay['action']['type'] == 'lay_tile' and track_after_lay(lay['state'])
+    assert port['pre']['step'] == 'Track' and port['state']['hexes']['B11']['tile'] == '437'
+    assert exchange['pre']['step'] == 'BuyTrain' and exchange['state']['privates']['DR']['closed']
+    assert exchange['state']['operating']['must_buy']['fresh']
 
 
 def test_scripts_take_their_paths_in_ruby():
@@ -200,7 +259,7 @@ def test_scripted_exchange_floats_ir_for_the_next_or():
     order, and gets its capital; the SR follows OR 1."""
     extract = _extract('dr_floats_ir_mid_or')
     state = load_state(extract['records'][-4]['state'], len(extract['players']))
-    assert TURN.step(state) == K.STEP_TRACK and K.TRACK_DR in [i for i, _ in _legal(state)]
-    DRIVER.apply_action(state, K.TRACK_DR)
+    assert TURN.step(state) == K.STEP_TRACK and A.can_exchange_dr_py(state, TURN.active_player(state))
+    DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_DR)
     assert CORPS[CORP['IR']].floated(state) and CORPS[CORP['IR']].cash(state) == 650
     assert [TURN.or_order(state, i) for i in range(2)] == [CORP['KO'], -1] and TURN.step(state) == K.STEP_TRACK

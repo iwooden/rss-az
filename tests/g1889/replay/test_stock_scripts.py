@@ -41,9 +41,10 @@ PASS = None
 def _game(label: str, num_players: int, moves: list[tuple]) -> dict:
     """A 1889 game JSON. ``moves`` are ``(actor, PASS)`` for a player seat or a
     corp symbol, ``(seat, private, price)`` bids, ``(seat, 'par', corp, price)``,
-    ``(seat, 'buy', share id)``, ``(seat, 'sell', share ids, percent)``, and
-    for a private, ``('DR', 'exchange', share id)`` and ``('MF', 'lay', hex,
-    tile id, rotation)``."""
+    ``(seat, 'buy', share id)``, ``(seat, 'sell', share ids, percent)``; for a
+    private, ``('DR', 'exchange', share id)`` and ``('MF', 'lay', hex, tile id,
+    rotation)``; and for a corp, ``(corp, 'corp_lay', hex, tile id, rotation)``
+    and ``(corp, 'buy_train', train id, price, variant)``."""
     ids = [101 + i for i in range(num_players)]
     actions = []
     for i, (actor, kind, *args) in enumerate(moves, 1):
@@ -54,6 +55,14 @@ def _game(label: str, num_players: int, moves: list[tuple]) -> dict:
             hex_id, tile, rotation = args
             action = {'type': 'lay_tile', 'entity': actor, 'entity_type': 'company', 'hex': hex_id, 'tile': tile,
                       'rotation': rotation}
+        elif kind == 'corp_lay':
+            hex_id, tile, rotation = args
+            action = {'type': 'lay_tile', 'entity': actor, 'entity_type': 'corporation', 'hex': hex_id, 'tile': tile,
+                      'rotation': rotation}
+        elif kind == 'buy_train':
+            train, price, variant = args
+            action = {'type': 'buy_train', 'entity': actor, 'entity_type': 'corporation', 'train': train,
+                      'price': price, 'variant': variant}
         elif isinstance(actor, str):
             action = {'type': 'pass', 'entity': actor, 'entity_type': 'corporation'}
         else:

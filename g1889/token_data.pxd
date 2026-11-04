@@ -34,7 +34,7 @@ cpdef enum TokenRow:
 
 # Each row type's width; the slots past it are zero.
 cpdef enum TokenWidth:
-    TW_GLOBAL = 43
+    TW_GLOBAL = 44
     TW_PRICE = 24
     TW_DIVIDEND = 8
     TW_CORP = 51

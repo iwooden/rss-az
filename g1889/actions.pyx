@@ -9,17 +9,18 @@ from libc.stdio cimport fprintf, stderr
 from libc.stdlib cimport abort
 
 from g1889.constants cimport (
-    AUCTION_BID, AUCTION_BUY, AUCTION_PASS, BID_DROP, BID_POINT, BID_POINTS, BUY_PRIVATE_DONE, BUY_PRIVATE_DR,
-    BUY_PRIVATE_PRIVATE, BUY_TRAIN_BANKRUPT, BUY_TRAIN_BUY_PRIVATE, BUY_TRAIN_CORP, BUY_TRAIN_DEPOT, BUY_TRAIN_DR,
-    BUY_TRAIN_PASS, BUY_TRAIN_POOL, BUY_TRAIN_SELL, DIVIDEND_BUY_PRIVATE, DIVIDEND_DR, DIVIDEND_PAYOUT,
-    DIVIDEND_WITHHOLD, DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD,
-    DPHASE_DIVIDEND, DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE,
+    ACTION_SIZE_BUY_PRIVATE_PRE, AUCTION_BID, AUCTION_BUY, AUCTION_PASS, BID_DROP, BID_POINT, BID_POINTS,
+    BUY_PRIVATE_POST_DONE, BUY_PRIVATE_POST_DR, BUY_PRIVATE_POST_PRIVATE, BUY_PRIVATE_PRE_DONE, BUY_PRIVATE_PRE_DR,
+    BUY_PRIVATE_PRE_MF, BUY_PRIVATE_PRE_PRIVATE, BUY_TRAIN_BANKRUPT, BUY_TRAIN_CORP, BUY_TRAIN_DEPOT, BUY_TRAIN_PASS,
+    BUY_TRAIN_POOL, BUY_TRAIN_SELL, DIVIDEND_PAYOUT, DIVIDEND_WITHHOLD, DPHASE_AUCTION, DPHASE_BID,
+    DPHASE_BUY_PRIVATE_POST, DPHASE_BUY_PRIVATE_PRE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND,
+    DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE,
     DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
     DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE, MAX_SALE_SHARES, NUM_DECISION_PHASES,
     NUM_STEPS, NUM_TRAIN_SOURCES, OWNER_CORP, OWNER_PLAYER, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY,
-    PRIVATE_PRICE_POINTS, ROUND_GAME_OVER, SELECT_TRAIN_TRADE_IN, SELECT_TRAIN_TYPE, STEP_TO_DECISION_PHASE,
-    STOCK_DR, STOCK_IPO, STOCK_MF, STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_BUY_PRIVATE, TOKEN_DR,
-    TOKEN_HEX, TOKEN_PASS, TRACK_BUY_PRIVATE, TRACK_DR, TRACK_HEX, TRACK_MF, TRACK_PASS, TRAIN_PRICE_POINTS,
+    PRIVATE_PRICE_POINTS, ROUND_GAME_OVER, ROUND_OPERATING, SELECT_TRAIN_TRADE_IN, SELECT_TRAIN_TYPE, STEP_BUY_TRAIN,
+    STEP_DIVIDEND, STEP_TOKEN, STEP_TO_DECISION_PHASE, STEP_TRACK, STOCK_DR, STOCK_IPO, STOCK_MF, STOCK_PAR,
+    STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_HEX, TOKEN_PASS, TRACK_HEX, TRACK_PASS, TRAIN_PRICE_POINTS,
     TRAIN_SOURCE_CORP, TRAIN_SOURCE_POOL,
 )
 from g1889.data.tables cimport (
@@ -140,17 +141,20 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
     elif phase == DPHASE_SELL_AMOUNT or phase == DPHASE_EMERGENCY_SELL_AMOUNT:
         if t == ACTION_SELL:
             return _index(info.count - 1, <int>MAX_SALE_SHARES)
+    elif phase == DPHASE_BUY_PRIVATE_PRE:
+        if t == ACTION_PASS:
+            return BUY_PRIVATE_PRE_DONE
+        if t == ACTION_BUY_PRIVATE:
+            return BUY_PRIVATE_PRE_PRIVATE + _index(info.private, <int>NUM_PRIVATES)
+        if t == ACTION_DR_EXCHANGE:
+            return BUY_PRIVATE_PRE_DR
+        if t == ACTION_MF_PORT:
+            return BUY_PRIVATE_PRE_MF
     elif phase == DPHASE_TRACK:
         if t == ACTION_PASS:
             return TRACK_PASS
         if t == ACTION_SELECT_HEX:
             return TRACK_HEX + _index(info.hex, <int>NUM_HEXES)
-        if t == ACTION_BUY_PRIVATE:
-            return TRACK_BUY_PRIVATE + _index(info.private, <int>NUM_PRIVATES)
-        if t == ACTION_DR_EXCHANGE:
-            return TRACK_DR
-        if t == ACTION_MF_PORT:
-            return TRACK_MF
     elif phase == DPHASE_TILE:
         if t == ACTION_LAY_CANDIDATE:
             return _index(info.count, PHASE_ACTION_SIZE[phase])
@@ -159,19 +163,11 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
             return TOKEN_PASS
         if t == ACTION_PLACE_TOKEN:
             return TOKEN_HEX + _index(info.hex, <int>NUM_HEXES)
-        if t == ACTION_BUY_PRIVATE:
-            return TOKEN_BUY_PRIVATE + _index(info.private, <int>NUM_PRIVATES)
-        if t == ACTION_DR_EXCHANGE:
-            return TOKEN_DR
     elif phase == DPHASE_DIVIDEND:
         if t == ACTION_WITHHOLD:
             return DIVIDEND_WITHHOLD
         if t == ACTION_PAYOUT:
             return DIVIDEND_PAYOUT
-        if t == ACTION_BUY_PRIVATE:
-            return DIVIDEND_BUY_PRIVATE + _index(info.private, <int>NUM_PRIVATES)
-        if t == ACTION_DR_EXCHANGE:
-            return DIVIDEND_DR
     elif phase == DPHASE_DISCARD:
         if t == ACTION_DISCARD:
             return _index(info.train_type, <int>NUM_TRAIN_TYPES)
@@ -188,22 +184,18 @@ cdef int encode_action(ActionInfo info) except -1 nogil:
             return BUY_TRAIN_SELL + _index(info.corp, <int>NUM_CORPS)
         if t == ACTION_BANKRUPT:
             return BUY_TRAIN_BANKRUPT
-        if t == ACTION_BUY_PRIVATE:
-            return BUY_TRAIN_BUY_PRIVATE + _index(info.private, <int>NUM_PRIVATES)
-        if t == ACTION_DR_EXCHANGE:
-            return BUY_TRAIN_DR
     elif phase == DPHASE_SELECT_TRAIN:
         if t == ACTION_TRAIN_TYPE:
             return SELECT_TRAIN_TYPE + _index(info.train_type, <int>NUM_TRAIN_TYPES)
         if t == ACTION_TRADE_IN:
             return SELECT_TRAIN_TRADE_IN + _find(TRADE_IN_TYPE, <int>NUM_TRADE_IN_TYPES, info.train_type)
-    elif phase == DPHASE_BUY_PRIVATE:
+    elif phase == DPHASE_BUY_PRIVATE_POST:
         if t == ACTION_PASS:
-            return BUY_PRIVATE_DONE
+            return BUY_PRIVATE_POST_DONE
         if t == ACTION_BUY_PRIVATE:
-            return BUY_PRIVATE_PRIVATE + _index(info.private, <int>NUM_PRIVATES)
+            return BUY_PRIVATE_POST_PRIVATE + _index(info.private, <int>NUM_PRIVATES)
         if t == ACTION_DR_EXCHANGE:
-            return BUY_PRIVATE_DR
+            return BUY_PRIVATE_POST_DR
     elif phase == DPHASE_ER_BONUS:
         if t == ACTION_PASS:
             return ER_BONUS_PASS
@@ -269,41 +261,27 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
     elif phase == DPHASE_SELL_AMOUNT or phase == DPHASE_EMERGENCY_SELL_AMOUNT:
         info.type = ACTION_SELL
         info.count = action_id + 1
-    elif phase == DPHASE_TRACK:
-        if action_id == TRACK_PASS:
+    elif phase == DPHASE_BUY_PRIVATE_PRE:
+        if action_id == BUY_PRIVATE_PRE_DONE:
             pass
-        elif action_id < TRACK_BUY_PRIVATE:
+        elif action_id < BUY_PRIVATE_PRE_DR:
+            info.type = ACTION_BUY_PRIVATE
+            info.private = action_id - BUY_PRIVATE_PRE_PRIVATE
+        else:
+            info.type = ACTION_MF_PORT if action_id == BUY_PRIVATE_PRE_MF else ACTION_DR_EXCHANGE
+    elif phase == DPHASE_TRACK:
+        if action_id != TRACK_PASS:
             info.type = ACTION_SELECT_HEX
             info.hex = action_id - TRACK_HEX
-        elif action_id < TRACK_DR:
-            info.type = ACTION_BUY_PRIVATE
-            info.private = action_id - TRACK_BUY_PRIVATE
-        else:
-            info.type = ACTION_MF_PORT if action_id == TRACK_MF else ACTION_DR_EXCHANGE
     elif phase == DPHASE_TILE:
         info.type = ACTION_LAY_CANDIDATE
         info.count = action_id
     elif phase == DPHASE_TOKEN:
-        if action_id == TOKEN_PASS:
-            pass
-        elif action_id < TOKEN_BUY_PRIVATE:
+        if action_id != TOKEN_PASS:
             info.type = ACTION_PLACE_TOKEN
             info.hex = action_id - TOKEN_HEX
-        elif action_id < TOKEN_DR:
-            info.type = ACTION_BUY_PRIVATE
-            info.private = action_id - TOKEN_BUY_PRIVATE
-        else:
-            info.type = ACTION_DR_EXCHANGE
     elif phase == DPHASE_DIVIDEND:
-        if action_id == DIVIDEND_WITHHOLD:
-            info.type = ACTION_WITHHOLD
-        elif action_id == DIVIDEND_PAYOUT:
-            info.type = ACTION_PAYOUT
-        elif action_id < DIVIDEND_DR:
-            info.type = ACTION_BUY_PRIVATE
-            info.private = action_id - DIVIDEND_BUY_PRIVATE
-        else:
-            info.type = ACTION_DR_EXCHANGE
+        info.type = ACTION_WITHHOLD if action_id == DIVIDEND_WITHHOLD else ACTION_PAYOUT
     elif phase == DPHASE_DISCARD:
         info.type = ACTION_DISCARD
         info.train_type = action_id
@@ -320,13 +298,8 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
         elif action_id < BUY_TRAIN_BANKRUPT:
             info.type = ACTION_SELECT_SALE
             info.corp = action_id - BUY_TRAIN_SELL
-        elif action_id == BUY_TRAIN_BANKRUPT:
-            info.type = ACTION_BANKRUPT
-        elif action_id < BUY_TRAIN_DR:
-            info.type = ACTION_BUY_PRIVATE
-            info.private = action_id - BUY_TRAIN_BUY_PRIVATE
         else:
-            info.type = ACTION_DR_EXCHANGE
+            info.type = ACTION_BANKRUPT
     elif phase == DPHASE_SELECT_TRAIN:
         if action_id < SELECT_TRAIN_TRADE_IN:
             info.type = ACTION_TRAIN_TYPE
@@ -334,12 +307,12 @@ cdef ActionInfo decode_action(int phase, int action_id) noexcept nogil:
         else:
             info.type = ACTION_TRADE_IN
             info.train_type = TRADE_IN_TYPE[action_id - SELECT_TRAIN_TRADE_IN]
-    elif phase == DPHASE_BUY_PRIVATE:
-        if action_id == BUY_PRIVATE_DONE:
+    elif phase == DPHASE_BUY_PRIVATE_POST:
+        if action_id == BUY_PRIVATE_POST_DONE:
             pass
-        elif action_id < BUY_PRIVATE_DR:
+        elif action_id < BUY_PRIVATE_POST_DR:
             info.type = ACTION_BUY_PRIVATE
-            info.private = action_id - BUY_PRIVATE_PRIVATE
+            info.private = action_id - BUY_PRIVATE_POST_PRIVATE
         else:
             info.type = ACTION_DR_EXCHANGE
     elif phase == DPHASE_ER_BONUS:
@@ -645,8 +618,8 @@ cdef int _enumerate_par(GameState state, uint16_t* ids) noexcept nogil:
 # Ruby's Track and Token steps (step/tracker.rb, step/tokener.rb). A lay is
 # factored (§5.4): TRACK picks a hex that has a candidate, and TILE an index
 # into the hex's candidates, the upgrade table's canonical targets that pass
-# Ruby's checks, sorted by (tile, rotation). TRACK and TOKEN also take the
-# interjection slots (section INTERJECTIONS below).
+# Ruby's checks, sorted by (tile, rotation). With nothing to lay or token, the
+# pass is forced.
 
 
 cdef uint32_t _enterable_paths(GameState state, int hex) noexcept nogil:
@@ -759,8 +732,7 @@ cdef bint can_token(GameState state, int corp, int hex) noexcept nogil:
 
 
 cdef int _enumerate_track(GameState state, uint16_t* ids) noexcept nogil:
-    """Pass, then each hex with a lay candidate, then the interjection slots:
-    Ruby always asks at Track, whose lay costs nothing (``can_lay_tile?``)."""
+    """Pass, then each hex with a lay candidate."""
     cdef int corp = turn_operating_corp(state)
     cdef int count = 1
     cdef int h
@@ -771,9 +743,7 @@ cdef int _enumerate_track(GameState state, uint16_t* ids) noexcept nogil:
         if can_lay(state, corp, h):
             ids[count] = <uint16_t>(TRACK_HEX + h)
             count += 1
-    count = _append_private_buys(state, ids, count, TRACK_BUY_PRIVATE)
-    count = _append_dr(state, ids, count, TRACK_DR)
-    return _append_mf(state, ids, count, TRACK_MF)
+    return count
 
 
 cdef int _enumerate_tile(GameState state, uint16_t* ids) noexcept nogil:
@@ -786,8 +756,7 @@ cdef int _enumerate_tile(GameState state, uint16_t* ids) noexcept nogil:
 
 
 cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
-    """Pass, then each city the corp may token; with one, Ruby asks, and the
-    interjection slots follow."""
+    """Pass, then each city the corp may token."""
     cdef int corp = turn_operating_corp(state)
     cdef int count = 1
     cdef int h
@@ -798,28 +767,22 @@ cdef int _enumerate_token(GameState state, uint16_t* ids) noexcept nogil:
         if can_token(state, corp, h):
             ids[count] = <uint16_t>(TOKEN_HEX + h)
             count += 1
-    if _asks(ids, count, TOKEN_PASS):
-        count = _append_private_buys(state, ids, count, TOKEN_BUY_PRIVATE)
-        count = _append_dr(state, ids, count, TOKEN_DR)
     return count
 
 
 # =============================================================================
-# DIVIDEND, BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE, EMERGENCY_SELL_AMOUNT, DISCARD,
-# BUY_PRIVATE
+# DIVIDEND, BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE, EMERGENCY_SELL_AMOUNT, DISCARD
 # =============================================================================
 #
-# Ruby's Dividend, BuyTrain, DiscardTrain, and BuyCompany steps
-# (step/dividend.rb, step/buy_train.rb, step/train.rb, step/discard_train.rb,
-# step/buy_company.rb). Ruby skips Dividend at zero revenue with a withhold,
-# so DIVIDEND then offers only that, and the driver applies it. BUY_TRAIN
-# buys one train at a time until the corp passes: it picks the source (the
+# Ruby's Dividend, BuyTrain, and DiscardTrain steps (step/dividend.rb,
+# step/buy_train.rb, step/train.rb, step/discard_train.rb). Ruby skips Dividend
+# at zero revenue with a withhold, so DIVIDEND then offers only that, and the
+# driver applies it. BUY_TRAIN buys one train at a time until the corp passes: it picks the source (the
 # depot, the pool, or another corp), and SELECT_TRAIN the train; a buy from
 # another corp names its price in TRAIN_PRICE. A must-buy the treasury cannot
 # fund is an emergency (step/emergency_money.rb, step/bankrupt.rb): the
 # president's cash, their share sales (BUY_TRAIN picks the corp and
-# EMERGENCY_SELL_AMOUNT the block), and bankruptcy. Each top-level decision
-# Ruby asks also takes the interjection slots (section INTERJECTIONS below).
+# EMERGENCY_SELL_AMOUNT the block), and bankruptcy.
 
 
 cdef bint must_buy_train(GameState state, int corp) noexcept nogil:
@@ -832,23 +795,18 @@ cdef bint must_buy_train(GameState state, int corp) noexcept nogil:
 
 
 cdef int _enumerate_dividend(GameState state, uint16_t* ids) noexcept nogil:
-    """Withhold, then pay out when there is revenue (1889 has no half pay),
-    where Ruby asks, and the interjection slots."""
-    cdef int count
+    """Withhold, then pay out when there is revenue (1889 has no half pay)."""
     ids[0] = DIVIDEND_WITHHOLD
     if turn_route_revenue(state) == 0:
         return 1
     ids[1] = DIVIDEND_PAYOUT
-    count = _append_private_buys(state, ids, 2, DIVIDEND_BUY_PRIVATE)
-    return _append_dr(state, ids, count, DIVIDEND_DR)
+    return 2
 
 
 cdef int _enumerate_buy_train(GameState state, uint16_t* ids) noexcept nogil:
     """Pass unless the corp must buy; each source with a train to offer
     (``_source_trains``); and in an emergency each corp whose shares the
-    president may sell, then bankruptcy (``_append_emergency``). Where Ruby
-    asks, the interjection slots follow: Ruby's BuyCompany offers privates in
-    an emergency too (``can_buy_company?`` ignores it)."""
+    president may sell, then bankruptcy (``_append_emergency``)."""
     cdef int corp = turn_operating_corp(state)
     cdef bint must_buy, emergency
     cdef int count = 0
@@ -867,9 +825,6 @@ cdef int _enumerate_buy_train(GameState state, uint16_t* ids) noexcept nogil:
             count += 1
     if emergency:
         count = _append_emergency(state, corp, ids, count)
-    if _asks(ids, count, BUY_TRAIN_PASS):
-        count = _append_private_buys(state, ids, count, BUY_TRAIN_BUY_PRIVATE)
-        count = _append_dr(state, ids, count, BUY_TRAIN_DR)
     return count
 
 
@@ -1112,44 +1067,40 @@ cdef int _enumerate_discard(GameState state, uint16_t* ids) noexcept nogil:
 
 
 # =============================================================================
-# INTERJECTIONS: BUY_PRIVATE, PRIVATE_PRICE, ER_BONUS, PORT, DR
+# INTERJECTIONS: BUY_PRIVATE_PRE, BUY_PRIVATE_POST, PRIVATE_PRICE, ER_BONUS, PORT, DR
 # =============================================================================
 #
 # Ruby's BuyCompany, Exchange, and SpecialTrack steps are non-blocking: their
-# actions join whatever step Ruby stops at (``Round::Base#actions_for``), and
-# Ruby skips a blocking step with nothing to do (``skip_steps``). So in an OR
-# the interjection slots (§5.1) join the top-level decisions Ruby asks: TRACK
-# always (its lay costs nothing, ``can_lay_tile?``), and any other whose own
-# actions hold one besides the pass (``_asks``). A decision with nothing else
-# is Ruby's skipped step, which the forced rule applies, so the engine stops
-# wherever Ruby does and nowhere else. STOCK offers DR and MF on every turn of
-# their owner instead (§12 item 4): Ruby's player may use them during another
-# player's turn too (DR's exchange is ``when: 'any'``), which the engine does
-# not offer, so a turn Ruby skips or ends with nothing else to do is the
-# owner's one chance. The OR loses nothing that way, as a president always
-# gets TRACK.
+# actions join whatever step Ruby stops at (``Round::Base#actions_for``). The
+# action space offers them in three places only (§5.1), and replay takes a
+# human's others through ``DRIVER.override_private_slot``:
+#
+# - BUY_PRIVATE_PRE opens the corp's turn when any slot besides "done" is
+#   legal: each private the corp may buy, DR, and MF.
+# - BUY_PRIVATE_POST is Ruby's blocking BuyCompany after BuyTrain, in phases
+#   3-4: "done", each private, and with a private to buy, DR. Ruby skips it
+#   with nothing to do (``skip_steps``), and "done" is then forced.
+# - STOCK offers DR and MF on every turn of their owner (§12 item 4): Ruby's
+#   player may use them during another player's turn too (DR's exchange is
+#   ``when: 'any'``), which the engine does not offer, so a turn Ruby skips or
+#   ends with nothing else to do is the owner's one chance. The OR loses
+#   nothing that way, as a president with a use for either gets PRE.
+#
+# The slots:
 #
 # - Buy private p (phases 3-4, the operating corp's treasury): PRIVATE_PRICE
 #   names the price, then ER_BONUS follows a sale of ER, and the step resumes
-#   (``return_step``). BUY_PRIVATE is Ruby's blocking BuyCompany after
-#   BuyTrain: its own buys, and "done".
+#   (``return_step``).
 # - DR: the active player exchanges DR for an IR share in place.
 # - MF: PORT lays the port tile, then the step resumes. Ruby allows it at the
 #   owner's SR turn and in an OR at the Track step of a corp the owner is
 #   president of, or before any corp's turn has acted; the engine offers the
-#   owner's own turns only (§12 item 4), at STOCK and at TRACK before the lay.
+#   owner's own turns only (§12 item 4), at STOCK and at PRE, before the lay.
 #   Ruby keeps Track open after the lay for it (§10.2), which the engine
 #   does not offer.
 #
 # Every 1889 private and its abilities are open in phases 2-4 only, so none
 # of this reaches phase 5.
-
-
-cdef inline bint _asks(const uint16_t* ids, int count, int pass_id) noexcept nogil:
-    """Whether Ruby asks the player at this decision: its own ``ids``, before
-    the interjection slots, hold one besides ``pass_id`` (the pass or done).
-    The ids are distinct, so any two do."""
-    return count > 1 or (count == 1 and ids[0] != pass_id)
 
 
 cdef inline int _private_price_low(int private) noexcept nogil:
@@ -1274,13 +1225,46 @@ cdef int er_candidates(GameState state, LayCandidate* buf) noexcept nogil:
     return count
 
 
-cdef int _enumerate_buy_private(GameState state, uint16_t* ids) noexcept nogil:
+cdef int _enumerate_buy_private_pre(GameState state, uint16_t* ids) noexcept nogil:
+    """The turn's opening window: done, each private the corp may buy, DR, and MF."""
+    cdef int count = _append_private_buys(state, ids, 1, BUY_PRIVATE_PRE_PRIVATE)
+    ids[0] = BUY_PRIVATE_PRE_DONE
+    count = _append_dr(state, ids, count, BUY_PRIVATE_PRE_DR)
+    return _append_mf(state, ids, count, BUY_PRIVATE_PRE_MF)
+
+
+cdef bint buy_private_pre_open(GameState state) noexcept nogil:
+    """Whether the operating corp's turn opens at BUY_PRIVATE_PRE: some slot
+    besides "done" is engine-legal, whatever the policy filter leaves."""
+    cdef uint16_t ids[10]  # ACTION_SIZE_BUY_PRIVATE_PRE
+    return _enumerate_buy_private_pre(state, ids) > 1
+
+
+cdef bint override_slot_legal(GameState state, int action_id) noexcept nogil:
+    """Whether replay may take BUY_PRIVATE_PRE's slot ``action_id``, not "done",
+    at this step: one of the operating corp's decisions that offers no such
+    slot, where the same slot would be legal at PRE. The sub-phases sit inside
+    one Ruby action, and PRE and POST have their own slots."""
+    cdef uint16_t ids[10]  # ACTION_SIZE_BUY_PRIVATE_PRE
+    cdef int step = turn_step(state)
+    cdef int count, i
+    if turn_round(state) != ROUND_OPERATING or not (
+            step == STEP_TRACK or step == STEP_TOKEN or step == STEP_DIVIDEND or step == STEP_BUY_TRAIN):
+        return False
+    count = _enumerate_buy_private_pre(state, ids)
+    for i in range(1, count):
+        if ids[i] == action_id:
+            return True
+    return False
+
+
+cdef int _enumerate_buy_private_post(GameState state, uint16_t* ids) noexcept nogil:
     """Ruby's blocking BuyCompany: done, each private the corp may buy, and,
-    where Ruby asks, DR."""
-    cdef int count = _append_private_buys(state, ids, 1, BUY_PRIVATE_PRIVATE)
-    ids[0] = BUY_PRIVATE_DONE
-    if _asks(ids, count, BUY_PRIVATE_DONE):
-        count = _append_dr(state, ids, count, BUY_PRIVATE_DR)
+    with one to buy, where Ruby asks, DR."""
+    cdef int count = _append_private_buys(state, ids, 1, BUY_PRIVATE_POST_PRIVATE)
+    ids[0] = BUY_PRIVATE_POST_DONE
+    if count > 1:
+        count = _append_dr(state, ids, count, BUY_PRIVATE_POST_DR)
     return count
 
 
@@ -1355,6 +1339,8 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
         count = _enumerate_par(state, action_ids)
     elif phase == DPHASE_SELL_AMOUNT:
         count = _enumerate_sell_amount(state, action_ids)
+    elif phase == DPHASE_BUY_PRIVATE_PRE:
+        count = _enumerate_buy_private_pre(state, action_ids)
     elif phase == DPHASE_TRACK:
         count = _enumerate_track(state, action_ids)
     elif phase == DPHASE_TILE:
@@ -1373,8 +1359,8 @@ cdef int enumerate_legal_actions(GameState state, uint16_t* action_ids) except -
         count = _enumerate_emergency_sell_amount(state, action_ids)
     elif phase == DPHASE_DISCARD:
         count = _enumerate_discard(state, action_ids)
-    elif phase == DPHASE_BUY_PRIVATE:
-        count = _enumerate_buy_private(state, action_ids)
+    elif phase == DPHASE_BUY_PRIVATE_POST:
+        count = _enumerate_buy_private_post(state, action_ids)
     elif phase == DPHASE_PRIVATE_PRICE:
         count = _enumerate_private_price(state, action_ids)
     elif phase == DPHASE_ER_BONUS:
@@ -1399,24 +1385,19 @@ cdef int enumerate_policy_actions(GameState state, uint16_t* action_ids) except 
         return _filter_auction(state, action_ids, count)
     if phase == DPHASE_BID:
         return _filter_bid(state, count)
-    if phase == DPHASE_TRACK:
-        return _filter_private_buys(state, action_ids, count, TRACK_BUY_PRIVATE)
-    if phase == DPHASE_TOKEN:
-        return _filter_private_buys(state, action_ids, count, TOKEN_BUY_PRIVATE)
-    if phase == DPHASE_DIVIDEND:
-        return _filter_private_buys(state, action_ids, count, DIVIDEND_BUY_PRIVATE)
+    if phase == DPHASE_BUY_PRIVATE_PRE:
+        return _filter_private_buys(state, action_ids, count, BUY_PRIVATE_PRE_PRIVATE)
     if phase == DPHASE_BUY_TRAIN:
-        count = _filter_buy_train(state, action_ids, count)
-        return _filter_private_buys(state, action_ids, count, BUY_TRAIN_BUY_PRIVATE)
-    if phase == DPHASE_BUY_PRIVATE:
-        return _filter_private_buys(state, action_ids, count, BUY_PRIVATE_PRIVATE)
+        return _filter_buy_train(state, action_ids, count)
+    if phase == DPHASE_BUY_PRIVATE_POST:
+        return _filter_private_buys(state, action_ids, count, BUY_PRIVATE_POST_PRIVATE)
     return count  # no flag restricts the others
 
 
 cdef bint is_legal_action(GameState state, int action_id) except -1 nogil:
     """Engine legality: a scan of the enumerated ids, or a range check for an
     exact amount. False at an automated step."""
-    cdef uint16_t ids[62]  # MAX_ACTION_SIZE
+    cdef uint16_t ids[53]  # MAX_ACTION_SIZE
     cdef int phase = get_decision_phase(state)
     cdef int count, i
     if phase < 0 or action_id < 0:
@@ -1615,8 +1596,9 @@ del _name, _member
 # IMPORT-TIME CHECKS
 # =============================================================================
 
-# Local id, candidate, price, and score buffers are sized with the literals 62, 15, 24, 5, 4, and 6.
-assert <int>MAX_ACTION_SIZE == 62 and <int>MAX_LAY_CANDIDATES == 15 and <int>MAX_PLAYERS == 6
+# Local id, candidate, price, and score buffers are sized with the literals 53, 15, 24, 10, 5, 4, and 6.
+assert <int>MAX_ACTION_SIZE == 53 and <int>MAX_LAY_CANDIDATES == 15 and <int>MAX_PLAYERS == 6
+assert <int>ACTION_SIZE_BUY_PRIVATE_PRE == 10
 assert <int>NUM_PORTS * <int>NUM_SIDES == 24 and <int>TRAIN_PRICE_POINTS == 5 and <int>PRIVATE_PRICE_POINTS == 4
 
 

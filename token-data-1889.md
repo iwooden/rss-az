@@ -40,7 +40,7 @@ output is the same whether those caches were fresh or stale.
 
 | First row | Type | Count | Width | Visible (slot 0 = 1) |
 |---|---|---|---|---|
-| 0 | GLOBAL | 1 | 43 | always |
+| 0 | GLOBAL | 1 | 44 | always |
 | 1 | PRICE | 1 | 24 | at BID, PAR, TRAIN_PRICE, PRIVATE_PRICE |
 | 2 | DIVIDEND | 1 | 8 | at DIVIDEND |
 | 3 | CORP | 7 | 51 | always |
@@ -71,8 +71,9 @@ output is the same whether those caches were fresh or stale.
   none at GAME_OVER or an automated step.
 - **The decision corp** is the pending corp at PAR, the first crowded corp
   at DISCARD (`trains_first_crowded`), and the operating corp at every other
-  OR decision (SELECT_TRAIN, TRAIN_PRICE, EMERGENCY_SELL_AMOUNT,
-  BUY_PRIVATE, PRIVATE_PRICE, ER_BONUS, and an OR's PORT included). The
+  OR decision (BUY_PRIVATE_PRE, SELECT_TRAIN, TRAIN_PRICE,
+  EMERGENCY_SELL_AMOUNT, BUY_PRIVATE_POST, PRIVATE_PRICE, ER_BONUS, and an
+  OR's PORT included). The
   auction, STOCK, SELL_AMOUNT, and an SR's PORT have none; CORP 3 marks the
   corp a sale is of.
 - Actor and decision-corp features are 0 when there is none.
@@ -85,20 +86,20 @@ output is the same whether those caches were fresh or stale.
   bank, and counts by their natural maximum (stated per slot). Revenue
   deltas are signed.
 
-## GLOBAL (43)
+## GLOBAL (44)
 
 | Slots | Feature |
 |---|---|
-| 1-18 | decision phase one-hot, in `DecisionPhase` order (AUCTION, BID, STOCK, PAR, SELL_AMOUNT, TRACK, TILE, TOKEN, DIVIDEND, DISCARD, BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE, EMERGENCY_SELL_AMOUNT, BUY_PRIVATE, PRIVATE_PRICE, ER_BONUS, PORT); all zero without a decision |
-| 19-21 | round: auction, stock, operating; all zero at GAME_OVER |
-| 22-27 | game phase one-hot: 2, 3, 4, 5, 6, D |
-| 28 | SR number ≤ 1: the first SR bars sales |
-| 29-31 | the OR's number in its set, one-hot (1, 2, 3); all zero outside an OR |
-| 32 | ORs in the set /3: the current set's in an OR, else the coming set's (`PHASE_ORS`) |
-| 33, 34 | bank cash /7000 (negative once broken), bank broken |
-| 35-37 | player count one-hot: 3, 4, 5 |
-| 38, 39 | all-pass auction payouts /3, A's auction discount /20 |
-| 40-42 | the train's source at SELECT_TRAIN and TRAIN_PRICE: the depot, the pool, a corp (CORP 2 names it) |
+| 1-19 | decision phase one-hot, in `DecisionPhase` order (AUCTION, BID, STOCK, PAR, SELL_AMOUNT, BUY_PRIVATE_PRE, TRACK, TILE, TOKEN, DIVIDEND, DISCARD, BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE, EMERGENCY_SELL_AMOUNT, BUY_PRIVATE_POST, PRIVATE_PRICE, ER_BONUS, PORT); all zero without a decision |
+| 20-22 | round: auction, stock, operating; all zero at GAME_OVER |
+| 23-28 | game phase one-hot: 2, 3, 4, 5, 6, D |
+| 29 | SR number ≤ 1: the first SR bars sales |
+| 30-32 | the OR's number in its set, one-hot (1, 2, 3); all zero outside an OR |
+| 33 | ORs in the set /3: the current set's in an OR, else the coming set's (`PHASE_ORS`) |
+| 34, 35 | bank cash /7000 (negative once broken), bank broken |
+| 36-38 | player count one-hot: 3, 4, 5 |
+| 39, 40 | all-pass auction payouts /3, A's auction discount /20 |
+| 41-43 | the train's source at SELECT_TRAIN and TRAIN_PRICE: the depot, the pool, a corp (CORP 2 names it) |
 
 ## PRICE (24)
 
@@ -170,8 +171,8 @@ Slots 7-19 are 0 while the corp is unparred.
 | 10, 11, 12, 13 | while unsold: high bid /100, bids /5, minimum bid /100, the actor's bid /100 |
 | 14 | blocking its hex (TR on K4, ER on C4) |
 | 15 | MF's port tile used |
-| 16 | the decision corp may buy it now (`can_buy_private`) |
-| 17 | the actor may exchange it (DR only, `can_exchange_dr`) |
+| 16 | the decision corp meets `can_buy_private` now, the slot's legality at BUY_PRIVATE_PRE and BUY_PRIVATE_POST |
+| 17 | the actor meets `can_exchange_dr` now (DR only), the slot's legality at STOCK and BUY_PRIVATE_PRE |
 
 ## TRAIN (13)
 
@@ -264,7 +265,7 @@ corp's, the buyer at ER_BONUS, against the current state.
 
 Values are of order 1 under self-play's flags. Under uncapped engine-legal
 play, the auction can loop on passes, paying the sold privates' revenue
-each round without end: GLOBAL 38 then grows without bound, and with the
+each round without end: GLOBAL 39 then grows without bound, and with the
 players' cash (PLAYER 8-9) the bid slots grow too: PRICE 5-23 at BID,
 PRIVATE 10, 12, and 13, and PLAYER 26-32. Self-play's
 `auction_pass_payout_cap` (1) bounds them.
@@ -349,16 +350,17 @@ the trunk's context (the decision corp's and actor's rows, GLOBAL).
 | STOCK | IPO, pool, par, sell corp c (1 + c, 8 + c, 15 + c, 22 + c); DR (29); MF (30) | CORP c; PRIVATE DR, MF | 7-25, 44-48; 17; 15 |
 | PAR | par index i (0-5) | PRICE | 5 + id |
 | SELL_AMOUNT | n shares (n − 1) | the CORP row slot 3 selects | 15 + id |
-| TRACK | hex h (1 + h); buy private p (53 + p); DR (60); MF (61) | HEX h; PRIVATE p | 92-102; 16 |
+| BUY_PRIVATE_PRE | done (0); private p (1 + p); DR (8); MF (9) | PRIVATE p; PRIVATE DR, MF | 16; 17; 15 |
+| TRACK | hex h (1 + h) | HEX h | 92-102 |
 | TILE | candidate k (k) | CANDIDATE k | 2-107 |
-| TOKEN | hex h (1 + h); buy private p (53 + p); DR (60) | HEX h; PRIVATE p | 103, 104; 16 |
-| DIVIDEND | withhold (0), payout (1); buy private p (2 + p); DR (9) | DIVIDEND; PRIVATE p | 1, 4, 5 for withhold; 1-3, 6, 7 for payout; 16 |
+| TOKEN | hex h (1 + h) | HEX h | 103, 104 |
+| DIVIDEND | withhold (0), payout (1) | DIVIDEND | 1, 4, 5 for withhold; 1-3, 6, 7 for payout |
 | DISCARD | type t (t) | TRAIN t | 12 |
-| BUY_TRAIN | the depot (1), the pool (2), corp c (3 + c); emergency sale of corp c (10 + c); bankrupt (17); private p (18 + p); DR (25) | TRAIN rows; CORP c; PRIVATE p | 2-9; 15-19, 46, 49; 16 |
+| BUY_TRAIN | the depot (1), the pool (2), corp c (3 + c); emergency sale of corp c (10 + c); bankrupt (17) | TRAIN rows; CORP c | 2-9; 15-19, 46, 49 |
 | SELECT_TRAIN | type t (t); a D for traded `TRADE_IN_TYPE[i]` (6 + i: 4, 5, 6) | TRAIN t; TRAIN `TRADE_IN_TYPE[i]` | 10; 11 |
 | TRAIN_PRICE | point k (0-4) | PRICE; the TRAIN row slot 1 selects, its seller (CORP 2) | 5 + id |
 | EMERGENCY_SELL_AMOUNT | n shares (n − 1) | the CORP row slot 3 selects | 15 + id |
-| BUY_PRIVATE | done (0); private p (1 + p); DR (8) | PRIVATE p | 16 |
+| BUY_PRIVATE_POST | done (0); private p (1 + p); DR (8) | PRIVATE p; PRIVATE DR | 16; 17 |
 | PRIVATE_PRICE | point k (0-3) | PRICE; the private slot 1 selects | 5 + id |
 | ER_BONUS | pass (0); candidate k (1 + k) | CANDIDATE k | 2-107 |
 | PORT | port hex i at rotation r (6i + r) | HEX `MF_PORT_HEX[i]` | the model's static table of tile 437's mask at r |

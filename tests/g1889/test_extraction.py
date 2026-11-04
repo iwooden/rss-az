@@ -66,7 +66,7 @@ LAYOUT = get_layout(0)  # every offset but the row width is the same at every ca
 ALL_CORPS = (1 << D.NUM_CORPS) - 1
 
 SETUPS = ((3, 3), (3, 5), (4, 5), (5, 5))  # (num_players, max_players)
-SEEDS = range(3)
+SEEDS = range(6)
 MAX_DECISIONS = 3000
 # All-pass payouts after which the auction's players keep to the capped
 # policy set: uniform passes would loop the auction, paying out without end.
@@ -99,7 +99,7 @@ PER_CHOICE = {'PRICE': range(1, 24), 'DIVIDEND': range(1, 8), 'CORP': range(15, 
 # play; LOSS is a route revenue lost.
 MONEY, PRICE, SOFT, BANK, LOSS = (0, 6), (0, 10), (0, 3), (-4, 1), (-10, 0)
 WIDE = {
-    'GLOBAL': {33: BANK, 38: SOFT},
+    'GLOBAL': {34: BANK, 39: SOFT},
     'PRICE': dict.fromkeys(range(5, 24), MONEY),
     'DIVIDEND': {5: MONEY, **dict.fromkeys((1, 3, 4, 6, 7), PRICE)},
     'CORP': {21: MONEY, 43: SOFT, 50: SOFT, **dict.fromkeys((7, 8, 25, 33, 34, 42, *range(15, 20)), PRICE)},
@@ -224,7 +224,7 @@ def test_sizes_follow_the_row_map():
     assert get_token_dim(1) == TOKEN_DIM == 108
     for max_players in (3, 4, 5):
         assert get_num_tokens(max_players) == 90 + max_players
-        expected = np.repeat([43, 24, 8, 51, 18, 13, 105, 108, 38], [1, 1, 1, 7, 7, 6, 52, 15, max_players])
+        expected = np.repeat([44, 24, 8, 51, 18, 13, 105, 108, 38], [1, 1, 1, 7, 7, 6, 52, 15, max_players])
         np.testing.assert_array_equal(get_token_widths(max_players, 1), expected)
         assert get_token_widths(max_players, 1).dtype == np.uint8
 
@@ -289,6 +289,31 @@ def test_selections_mark_at_most_one_row(samples):
             assert tokens[R.ROW_HEX + TURN.pending_hex(after), 1] == 1
         seen.add(phase)
     assert seen == set(range(K.NUM_DECISION_PHASES)) | {-1}, sorted(seen)  # every phase, and the game's end
+
+
+def test_the_privates_slots_read_their_legality_at_pre_and_post(samples):
+    """At BUY_PRIVATE_PRE and BUY_PRIVATE_POST, whose decision corp is the
+    operating corp: PRIVATE 16 is exactly the purchase slots' engine legality
+    (flags or not), and PRIVATE 17 DR's slot, which POST also holds back with
+    nothing to buy."""
+    seen = {K.DPHASE_BUY_PRIVATE_PRE: 0, K.DPHASE_BUY_PRIVATE_POST: 0}
+    for row, before, _, tokens in samples:
+        phase = A.get_decision_phase_py(before)
+        if phase not in seen:
+            continue
+        seen[phase] += 1
+        legal = legal_ids(before)
+        first = K.BUY_PRIVATE_PRE_PRIVATE if phase == K.DPHASE_BUY_PRIVATE_PRE else K.BUY_PRIVATE_POST_PRIVATE
+        dr = K.BUY_PRIVATE_PRE_DR if phase == K.DPHASE_BUY_PRIVATE_PRE else K.BUY_PRIVATE_POST_DR
+        corp = np.flatnonzero(tokens[R.ROW_CORP:R.ROW_PRIVATE, 1])
+        assert corp.tolist() == [TURN.operating_corp(before)]
+        buyable = tokens[R.ROW_PRIVATE:R.ROW_TRAIN, 16]
+        assert [p for p in range(D.NUM_PRIVATES) if buyable[p]] == [p for p in range(D.NUM_PRIVATES)
+                                                                    if first + p in legal]
+        exchange = tokens[R.ROW_PRIVATE + D.PRIVATE_DR, 17] == 1
+        assert (dr in legal) == (exchange and (phase == K.DPHASE_BUY_PRIVATE_PRE or bool(buyable.any())))
+        assert tokens[R.ROW_GLOBAL, 1 + phase] == 1
+    assert all(seen.values()), seen
 
 
 def test_extraction_is_deterministic_whatever_the_caches(samples):
@@ -496,7 +521,7 @@ def test_track_counts_each_hexs_lay_candidates(samples):
             continue
         expected = np.zeros(D.NUM_HEXES, np.float32)
         for action in legal_ids(before):
-            if K.TRACK_HEX <= action < K.TRACK_BUY_PRIVATE:
+            if action >= K.TRACK_HEX:
                 expected[action - K.TRACK_HEX] = _f32(_candidate_count(_applied(row, action)), D.MAX_LAY_CANDIDATES)
                 seen += 1
         np.testing.assert_array_equal(counts, expected)
@@ -516,7 +541,7 @@ def test_token_slots_describe_each_token(samples):
         corp = TURN.operating_corp(before)
         expected = np.zeros((D.NUM_HEXES, 2), np.float32)
         for action in legal_ids(before):
-            if K.TOKEN_HEX <= action < K.TOKEN_BUY_PRIVATE:
+            if action >= K.TOKEN_HEX:
                 expected[action - K.TOKEN_HEX] = 1, _route_delta(_applied(row, action), before, corp)
                 seen += 1
         np.testing.assert_array_equal(slots, expected)

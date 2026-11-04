@@ -11,14 +11,13 @@ BuyTrain, then a blocking BuyCompany) are the oracle. An OR runs:
   corp that floats during the OR waits for the next.
 - ``TURN_START`` (``start_operating``): the next corp operates, its
   president acting.
-- TRACK (with TILE for a chosen hex), TOKEN, the automated ROUTE, DIVIDEND
+- BUY_PRIVATE_PRE (``privates.pyx``) when a private's slot is legal, TRACK
+  (with TILE for a chosen hex), TOKEN, the automated ROUTE, DIVIDEND
   (``dividend.pyx``), BUY_TRAIN with SELECT_TRAIN, TRAIN_PRICE,
   EMERGENCY_SELL_AMOUNT, and DISCARD (``buy_train.pyx``), and in phases
-  3-4 BUY_PRIVATE (``privates.pyx``,
-  with the slots that buy privates and use DR and MF at the turn's
-  decisions). Where Ruby skips a step because there is nothing to choose,
-  the engine offers one action, which the driver's forced rule applies: a
-  pass, or the withhold at zero revenue.
+  3-4 BUY_PRIVATE_POST (``privates.pyx``). Where Ruby skips a step because
+  there is nothing to choose, the engine offers one action, which the
+  driver's forced rule applies: a pass, or the withhold at zero revenue.
 - ``TURN_END`` (``next_entity!``): the next corp, or ``OR_END``.
 - ``OR_END`` (``next_round!``): the set's next OR, or else the next SR,
   with the SR number up and ``or_num`` back to 1; after the set's last OR,
@@ -41,11 +40,12 @@ fields, as Ruby keeps its round, and ``end_reason`` tells which.
 """
 
 from g1889.actions cimport (
-    ACTION_PASS, ACTION_PLACE_TOKEN, ACTION_SELECT_HEX, ActionInfo, LayCandidate, enumerate_lay_candidates,
+    ACTION_PASS, ACTION_PLACE_TOKEN, ACTION_SELECT_HEX, ActionInfo, LayCandidate, buy_private_pre_open,
+    enumerate_lay_candidates,
 )
 from g1889.constants cimport (
-    END_REASON_BANK, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND, STEP_GAME_OVER, STEP_OR_END, STEP_OR_START,
-    STEP_ROUTE, STEP_TILE, STEP_TOKEN, STEP_TRACK, STEP_TURN_START,
+    END_REASON_BANK, ROUND_GAME_OVER, ROUND_OPERATING, STEP_BUY_PRIVATE_PRE, STEP_DIVIDEND, STEP_GAME_OVER,
+    STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_TILE, STEP_TOKEN, STEP_TRACK, STEP_TURN_START,
 )
 from g1889.data.tables cimport CORP_HOME, MAX_LAY_CANDIDATES, NUM_CORPS
 from g1889.entities.bank cimport bank_broken
@@ -95,11 +95,12 @@ cdef void run_or_start(GameState state) except *:
 
 
 cdef void run_turn_start(GameState state) except *:
-    """``start_operating``: the corp at ``or_index`` operates, its president acting."""
+    """``start_operating``: the corp at ``or_index`` operates, its president
+    acting, from BUY_PRIVATE_PRE when a private's slot is legal, else from TRACK."""
     cdef int corp = TURN.or_order(state, TURN.or_index(state))
     TURN.set_operating_corp(state, corp)
     TURN.set_active_player(state, corp_president(state, corp))
-    TURN.set_step(state, STEP_TRACK)
+    TURN.set_step(state, STEP_BUY_PRIVATE_PRE if buy_private_pre_open(state) else STEP_TRACK)
 
 
 cdef void run_turn_end(GameState state) except *:

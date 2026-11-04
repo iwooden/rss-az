@@ -19,7 +19,9 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
 
-from tests.g1889.replay.action_map import HELD_DISCARD, ROUTE_OVERRIDE, ReplayEnd, UnsupportedAction, map_action
+from tests.g1889.replay.action_map import (
+    HELD_DISCARD, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, ReplayEnd, UnsupportedAction, map_action,
+)
 from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TRAIN, compare, load_state
 from tests.g1889.replay.test_differential_replay import new_game
@@ -215,7 +217,7 @@ def test_compare_equivalences():
 RUBY_STEP_PHASE = {
     'BuySellParShares': K.DPHASE_STOCK, 'Track': K.DPHASE_TRACK, 'Token': K.DPHASE_TOKEN,
     'Dividend': K.DPHASE_DIVIDEND, 'BuyTrain': K.DPHASE_BUY_TRAIN, 'DiscardTrain': K.DPHASE_DISCARD,
-    'BuyCompany': K.DPHASE_BUY_PRIVATE, 'SpecialTrack': K.DPHASE_ER_BONUS, 'Route': -1,
+    'BuyCompany': K.DPHASE_BUY_PRIVATE_POST, 'SpecialTrack': K.DPHASE_ER_BONUS, 'Route': -1,
 }
 
 
@@ -300,7 +302,8 @@ def test_map_action_covers_the_fixtures():
                     held += 1
                     mapped += 1
                     continue
-                decoded = [A.decode_action_py(phase, action_id) for phase, action_id in decisions]
+                decoded = [A.decode_action_py(K.DPHASE_BUY_PRIVATE_PRE if phase == PRIVATE_OVERRIDE else phase, i)
+                           for phase, i in decisions]
                 assert not decoded or _expected(kind, pre, decoded), (fixture, record['index'], kind, decoded)
                 if kind == 'lay_tile':
                     tile = D.TILE_NAMES.index(pre['tile'])
@@ -350,10 +353,24 @@ def test_map_action_skips_and_rejects():
         [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS)]
     with pytest.raises(UnsupportedAction, match='Dividend'):
         map_action(corp_pass, {'round': 'OR', 'step': 'Dividend'}, K.DPHASE_DIVIDEND, scratch)
-    # The privates' slots join Ruby's step; the engine runs Route by itself.
+    # A purchase is PRE's slot while the engine is there, POST's at Ruby's blocking BuyCompany, and at
+    # Ruby's other stops the override; the engine runs Route by itself, and DISCARD has its own return.
+    purchase = {'type': 'buy_company', 'entity_type': 'corporation', 'entity': 'KO'}
+
+    def bought_in(step, phase):
+        return map_action(purchase, {'round': 'OR', 'step': step, 'company': 'SIR', 'price': 80}, phase, scratch)[0]
+
+    sir = D.PRIVATE_SIR
+    assert bought_in('Track', K.DPHASE_BUY_PRIVATE_PRE) == (K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_PRIVATE + sir)
+    assert bought_in('BuyCompany', K.DPHASE_BUY_PRIVATE_POST) == (K.DPHASE_BUY_PRIVATE_POST,
+                                                                  K.BUY_PRIVATE_POST_PRIVATE + sir)
+    for step, phase in (('Track', K.DPHASE_TRACK), ('Token', K.DPHASE_TOKEN), ('Dividend', K.DPHASE_DIVIDEND),
+                        ('BuyTrain', K.DPHASE_BUY_TRAIN)):
+        assert bought_in(step, phase) == (PRIVATE_OVERRIDE, K.BUY_PRIVATE_PRE_PRIVATE + sir)
     with pytest.raises(UnsupportedAction, match='Route'):
-        map_action({'type': 'buy_company', 'entity_type': 'corporation', 'entity': 'KO'},
-                   {'round': 'OR', 'step': 'Route', 'company': 'SIR', 'price': 80}, K.DPHASE_DIVIDEND, scratch)
+        bought_in('Route', K.DPHASE_DIVIDEND)
+    with pytest.raises(UnsupportedAction, match='DiscardTrain'):
+        bought_in('DiscardTrain', K.DPHASE_DISCARD)
     # DR and MF act only on their owner's turn (engine-design §12 item 4).
     PRIVATES[D.PRIVATE_DR].set_owner(scratch, K.OWNER_PLAYER + 1)
     TURN.set_active_player(scratch, 0)

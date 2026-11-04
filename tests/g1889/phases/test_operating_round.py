@@ -36,7 +36,7 @@ from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
-    HEX, TILE, apply_and_verify, at_or, depot, enter_operating_round, hold, lay, legal_ids, set_cash,
+    HEX, TILE, apply_and_verify, at_or, depot, enter_operating_round, hold, lay, legal_ids, past_pre, set_cash,
     train_choices, train_decisions,
 )
 
@@ -137,6 +137,8 @@ class TestTurns:
         hold(state, KO, {1: 6})
         hold(state, IR, {2: 6}, par=PAR_100)
         enter_operating_round(state)
+        assert turn_of(state) == (IR, 0, 2, K.STEP_BUY_PRIVATE_PRE)  # seat 2 owns DR and MF, and KO's seat 1 neither
+        past_pre(state)
         assert turn_of(state) == (IR, 0, 2, K.STEP_TRACK)
         results = pass_turn(state)
         assert steps(results)[-2:] == [K.STEP_TURN_END, K.STEP_TURN_START]
@@ -338,6 +340,7 @@ def to_buy_train(state, cell=None):
     """KO operates alone and passes its lay; the driver takes it to BUY_TRAIN."""
     hold(state, KO, {0: 6}, cell=cell)
     enter_operating_round(state)
+    past_pre(state)
     return apply_and_verify(state, K.TRACK_PASS)
 
 
@@ -394,7 +397,7 @@ class TestBuyTrain:
         assert TRAINS.depot_types(state) == 1 << D.TRAIN_D
 
     def test_in_phases_3_and_4_the_buy_private_window_follows(self):
-        """BUY_PRIVATE offers each private the corp may buy, and "done" ends
+        """BUY_PRIVATE_POST offers each private the corp may buy, and "done" ends
         the turn; ``test_privates.py`` covers the purchases."""
         state = at_or(3)
         PHASE.set_current(state, D.GAME_PHASE_3)
@@ -404,9 +407,9 @@ class TestBuyTrain:
         TRAINS.set_pool(state, D.TRAIN_3, 1)
         to_buy_train(state)
         apply_and_verify(state, K.BUY_TRAIN_PASS)
-        assert TURN.step(state) == K.STEP_BUY_PRIVATE and legal_ids(state) == [K.BUY_PRIVATE_DONE] + [
-            K.BUY_PRIVATE_PRIVATE + p for p in A.purchasable_privates_py(state)] and len(legal_ids(state)) > 1
-        result = apply_and_verify(state, K.BUY_PRIVATE_DONE)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_POST and legal_ids(state) == [K.BUY_PRIVATE_POST_DONE] + [
+            K.BUY_PRIVATE_POST_PRIVATE + p for p in A.purchasable_privates_py(state)] and len(legal_ids(state)) > 1
+        result = apply_and_verify(state, K.BUY_PRIVATE_POST_DONE)
         assert result.steps[0] == K.STEP_TURN_END and TURN.round(state) == K.ROUND_OPERATING
 
 

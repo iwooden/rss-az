@@ -41,17 +41,13 @@ from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
     apply_and_verify, at_or, choose_train, depot, enter_operating_round, enter_phase, from_corp, give_train, hold,
-    lay, legal_ids, pool, sale, set_cash, train_choices, train_decisions,
+    lay, legal_ids, past_pre, pool, sale, set_cash, train_choices, train_decisions,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
 PAR_65, PAR_70, PAR_75, PAR_80, PAR_100 = 0, 1, 2, 3, 5
 T2, T3, T4 = D.TRAIN_2, D.TRAIN_3, D.TRAIN_4
 PHASE_3, PHASE_4 = D.GAME_PHASE_3, D.GAME_PHASE_4
-
-
-def private_buys(state):
-    return [K.BUY_TRAIN_BUY_PRIVATE + p for p in A.purchasable_privates_py(state)]
 
 
 def set_player_cash(state, player, cash):
@@ -73,6 +69,7 @@ def emergency(ko_cash, president_cash, phase=None, ko_holdings=None, setup=None)
     set_cash(state, KO, ko_cash)
     set_player_cash(state, 0, president_cash)
     enter_operating_round(state)
+    past_pre(state)
     assert TURN.operating_corp(state) == KO and TURN.step(state) == K.STEP_TRACK
     return state
 
@@ -122,7 +119,7 @@ class TestTrains:
         state = emergency(50, 420, phase=PHASE_3, setup=ir_with_a_train())
         to_buy_train(state)
         assert TRAINS.cheapest_type(state) == T2 and TRAINS.cheapest_in_pool(state)
-        assert private_buys(state) and train_choices(state) == [pool(T2), from_corp(IR, T2), *private_buys(state)]
+        assert train_choices(state) == [pool(T2), from_corp(IR, T2)]
         choose_train(state, pool(T2))
         assert TRAINS.corp_trains(state, KO, T2) == 1 and PLAYERS[0].cash(state) == 390
 
@@ -138,7 +135,7 @@ class TestTrains:
         to_buy_train(state)
         assert TRAINS.pool(state, T4) == 1 and TRAINS.cheapest_type(state) == T4
         assert not TRAINS.cheapest_in_pool(state)
-        assert train_choices(state) == [depot(T4), from_corp(IR, T3), from_corp(SR, T3), *private_buys(state)]
+        assert train_choices(state) == [depot(T4), from_corp(IR, T3), from_corp(SR, T3)]
 
     def test_a_depot_buy_still_changes_the_phase(self):
         """Every 2 is held, so the cheapest train is the depot's first 3, which
@@ -170,9 +167,9 @@ class TestTrains:
 
     def test_no_train_of_another_corp_after_a_sale(self):
         """Ruby's ``EBUY_FROM_OTHERS = :never``: once the president has sold a
-        share, other corps' trains are out; and each corp sells once, so AR's
-        other two shares stay, and the president goes bankrupt or KO buys a
-        private."""
+        share, other corps' trains are out, which leaves AR as BUY_TRAIN's one
+        choice; and each corp sells once, so AR's other two shares stay, and
+        the president goes bankrupt, the one choice left."""
         def setup(state):
             ir_with_a_train(T3)(state)
             hold(state, AR, {1: 4, 0: 3}, par=PAR_65)
@@ -180,14 +177,13 @@ class TestTrains:
         state = emergency(10, 0, phase=PHASE_4, ko_holdings={0: 4, 2: 4}, setup=setup)
         to_buy_train(state)
         assert TRAINS.cheapest_price(state) == 180  # the pool's 3s: the need is ¥170
-        assert train_choices(state) == [from_corp(IR, T3), sale(AR, 1), sale(AR, 2), sale(AR, 3), sale(SR, 1),
-                                    *private_buys(state)]
+        assert train_choices(state) == [from_corp(IR, T3), sale(AR, 1), sale(AR, 2), sale(AR, 3), sale(SR, 1)]
         choose_train(state, sale(SR, 1))
         assert TURN.ebuy_sold_any(state) and TURN.ebuy_sold_mask(state) == 1 << SR
-        assert train_choices(state) == [sale(AR, 1), sale(AR, 2), *private_buys(state)]  # ¥105 short: not 3
-        choose_train(state, sale(AR, 1))
-        assert PLAYERS[0].shares(state, AR) == 2
-        assert train_choices(state) == [K.BUY_TRAIN_BANKRUPT, *private_buys(state)]
+        assert TURN.step(state) == K.STEP_EMERGENCY_SELL_AMOUNT and TURN.pending_corp(state) == AR
+        assert legal_ids(state) == [0, 1]  # ¥105 short: not 3
+        result = apply_and_verify(state, 0, expected_status=None)
+        assert PLAYERS[0].shares(state, AR) == 2 and result.forced == [(K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_BANKRUPT)]
 
 
 # =============================================================================

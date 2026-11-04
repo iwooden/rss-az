@@ -22,7 +22,7 @@ legal and policy sets on a rebound copy of the row.
 The players pass in an SR half the time they may, so rounds end, and a corp
 that can buy from the depot does, its newest offer (a D by trade-in
 included), which moves the phases on. A decision that offers a private's slot (a
-private's purchase, BUY_PRIVATE's included, DR's exchange, or MF's port
+private's purchase, DR's exchange, or MF's port
 tile) besides other choices takes one a tenth of the time, as uniform
 purchases at up to twice face value drain the treasuries (only 13 of the
 flags-on games reach phase D that way); every other choice is uniform.
@@ -165,7 +165,9 @@ def _ending(state):
 # 35 games with the flags off, and 99, 88, 33, and 21 with them on; 55 and 39
 # games end in a bankruptcy, the rest at a broken bank's OR set, within 1,204
 # decisions. The new stops draw from the generator, so every game after one
-# plays differently. (6.10, uniform at each step of a factored choice: 98, 90,
+# plays differently. (2026-11-04, with BUY_PRIVATE_PRE and BUY_PRIVATE_POST the
+# only OR slots: 97, 88, 48, and 35; 97, 90, 36, and 29; 53 and 37 bankruptcies.
+# 6.10, uniform at each step of a factored choice: 98, 90,
 # 51, and 39; 99, 92, 36, and 25; 53 and 38 bankruptcies; 998 decisions.
 # 6.8b, before the factoring: 99, 92, 61, and 51; 99, 92, 43, and 27; 63 and
 # 43 bankruptcies; 1,126 decisions.)
@@ -180,10 +182,10 @@ def test_random_games_run_to_the_end(flags):
     auctions, sell in SRs, lay track, place tokens, pay out and withhold, buy
     from the depot, the pool, and each other at grid and exact prices, trade
     in for Ds, and discard; in emergencies the presidents pay toward trains,
-    sell shares, and go bankrupt; corps buy privates at every top-level OR
-    decision, at grid and exact prices; ER's sellers lay on C4 and pass; DR's
-    owners exchange in SRs and ORs, and MF's lay the port tile from STOCK and
-    TRACK. Every decision phase occurs."""
+    sell shares, and go bankrupt; corps buy privates at BUY_PRIVATE_PRE and
+    BUY_PRIVATE_POST, at grid and exact prices; ER's sellers lay on C4 and
+    pass; DR's owners exchange in SRs and ORs, and MF's lay the port tile from
+    STOCK and BUY_PRIVATE_PRE. Every decision phase occurs."""
     seen, phases, endings = Counter(), Counter(), Counter()
     for num_players in range(D.MIN_PLAYERS, D.MAX_PLAYERS + 1):
         for seed in SEEDS:
@@ -213,13 +215,13 @@ def test_random_games_run_to_the_end(flags):
         assert seen[(K.DPHASE_BUY_TRAIN, kind)], kind
     assert seen[(K.DPHASE_SELECT_TRAIN, A.ACTION_TRAIN_TYPE)] and seen[(K.DPHASE_SELECT_TRAIN, A.ACTION_TRADE_IN)]
     assert seen[(K.DPHASE_TRAIN_PRICE, A.ACTION_PRICE_POINT)] and seen[(K.DPHASE_DISCARD, A.ACTION_DISCARD)]
-    assert seen[(K.DPHASE_BUY_PRIVATE, A.ACTION_PASS)]
+    assert seen[(K.DPHASE_BUY_PRIVATE_PRE, A.ACTION_PASS)] and seen[(K.DPHASE_BUY_PRIVATE_POST, A.ACTION_PASS)]
     assert bool(seen[(K.DPHASE_TRAIN_PRICE, A.ACTION_EXACT_PRICE)]) != flags
-    for phase in (K.DPHASE_TRACK, K.DPHASE_TOKEN, K.DPHASE_DIVIDEND, K.DPHASE_BUY_TRAIN, K.DPHASE_BUY_PRIVATE):
+    for phase in (K.DPHASE_BUY_PRIVATE_PRE, K.DPHASE_BUY_PRIVATE_POST):
         assert seen[(phase, A.ACTION_BUY_PRIVATE)], phase
     assert seen[(K.DPHASE_PRIVATE_PRICE, A.ACTION_PRICE_POINT)]
     assert bool(seen[(K.DPHASE_PRIVATE_PRICE, A.ACTION_EXACT_PRICE)]) != flags
     assert seen[(K.DPHASE_ER_BONUS, A.ACTION_PASS)] and seen[(K.DPHASE_ER_BONUS, A.ACTION_LAY_CANDIDATE)]
-    assert seen[(K.DPHASE_STOCK, A.ACTION_DR_EXCHANGE)] and seen[(K.DPHASE_TRACK, A.ACTION_DR_EXCHANGE)]
-    assert seen[(K.DPHASE_STOCK, A.ACTION_MF_PORT)] and seen[(K.DPHASE_TRACK, A.ACTION_MF_PORT)]
+    assert seen[(K.DPHASE_STOCK, A.ACTION_DR_EXCHANGE)] and seen[(K.DPHASE_BUY_PRIVATE_PRE, A.ACTION_DR_EXCHANGE)]
+    assert seen[(K.DPHASE_STOCK, A.ACTION_MF_PORT)] and seen[(K.DPHASE_BUY_PRIVATE_PRE, A.ACTION_MF_PORT)]
     assert seen[(K.DPHASE_PORT, A.ACTION_PORT_LAY)]

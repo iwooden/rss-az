@@ -9,11 +9,12 @@ from libc.stdint cimport uint16_t
 
 from g1889.actions cimport (
     ACTION_BUY_PRIVATE, ACTION_DR_EXCHANGE, ACTION_MF_PORT, ActionInfo, decode_action, enumerate_legal_actions,
-    enumerate_policy_actions, get_decision_phase, has_exact_amounts, is_legal_action, wide_amount_range,
+    enumerate_policy_actions, get_decision_phase, has_exact_amounts, is_legal_action, override_slot_legal,
+    wide_amount_range,
 )
 from g1889.constants cimport (
-    DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE, DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND,
-    DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE,
+    DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE_POST, DPHASE_BUY_PRIVATE_PRE, DPHASE_BUY_TRAIN, DPHASE_DISCARD,
+    DPHASE_DIVIDEND, DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR, DPHASE_PORT, DPHASE_PRIVATE_PRICE,
     DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
     DPHASE_TRAIN_PRICE, MAX_ACTION_SIZE, NUM_STEPS, ROUND_GAME_OVER, ROUND_OPERATING, STEP_DIVIDEND,
     STEP_GAME_OVER, STEP_OR_END, STEP_OR_START, STEP_ROUTE, STEP_SR_END, STEP_TO_DECISION_PHASE, STEP_TURN_END,
@@ -29,7 +30,8 @@ from g1889.phases.operating cimport (
     apply_tile, apply_token, apply_track, run_or_end, run_or_start, run_route, run_turn_end, run_turn_start,
 )
 from g1889.phases.privates cimport (
-    apply_buy_private, apply_er_bonus, apply_interjection, apply_port, apply_private_price,
+    apply_buy_private_post, apply_buy_private_pre, apply_er_bonus, apply_interjection, apply_port,
+    apply_private_price,
 )
 from g1889.phases.stock cimport apply_par, apply_sell_amount, apply_stock, run_sr_end
 from g1889.state cimport GameState
@@ -54,7 +56,7 @@ cdef class GameDriver:
         off-grid bid left a range narrower than a grid step. When the policy
         drops legal grid points (the pass cap), self-play never uses exact
         amounts, so its one point is forced."""
-        cdef uint16_t ids[62]  # MAX_ACTION_SIZE
+        cdef uint16_t ids[53]  # MAX_ACTION_SIZE
         cdef int count = enumerate_policy_actions(state, ids)
         cdef int action_id, phase
         assert count > 0, f"_forced_action: no policy actions at step {Step(turn_step(state)).name}"
@@ -83,6 +85,8 @@ cdef class GameDriver:
             apply_par(state, &info)
         elif phase == DPHASE_SELL_AMOUNT:
             apply_sell_amount(state, &info)
+        elif phase == DPHASE_BUY_PRIVATE_PRE:
+            apply_buy_private_pre(state, &info)
         elif phase == DPHASE_TRACK:
             apply_track(state, &info)
         elif phase == DPHASE_TILE:
@@ -101,8 +105,8 @@ cdef class GameDriver:
             apply_emergency_sell_amount(state, &info)
         elif phase == DPHASE_DISCARD:
             apply_discard(state, &info)
-        elif phase == DPHASE_BUY_PRIVATE:
-            apply_buy_private(state, &info)
+        elif phase == DPHASE_BUY_PRIVATE_POST:
+            apply_buy_private_post(state, &info)
         elif phase == DPHASE_PRIVATE_PRICE:
             apply_private_price(state, &info)
         elif phase == DPHASE_ER_BONUS:
@@ -190,6 +194,24 @@ cdef class GameDriver:
         TURN.set_route_revenue(state, revenue)
         return self._auto_chain(state, history)
 
+    cpdef int override_private_slot(self, GameState state, int action_id, object history=None) except -1:
+        """Replay only: a human's purchase, DR exchange, or port tile at a
+        decision of the corp's turn that offers no such slot (TRACK, TOKEN,
+        DIVIDEND, or BUY_TRAIN; Ruby joins them to whatever step it stops at).
+        ``action_id`` names it as BUY_PRIVATE_PRE's slot does, and it runs as
+        that slot does: PRIVATE_PRICE, then ER_BONUS if due, or PORT, or the
+        exchange in place, and back to this decision. Then it auto-chains; the
+        human's exact price goes through ``apply_action`` as usual. History gets
+        the auto-chain, not the override. The pipeline never calls it. Returns
+        STATUS_INVALID where the slot is not legal or the decision has its own
+        (``override_slot_legal``), else as ``apply_action``."""
+        cdef ActionInfo info
+        if not override_slot_legal(state, action_id):
+            return STATUS_INVALID
+        info = decode_action(DPHASE_BUY_PRIVATE_PRE, action_id)
+        apply_interjection(state, &info)
+        return self._auto_chain(state, history)
+
     def forced_action_py(self, GameState state):
         """The id the driver would apply by itself at the current decision, or -1."""
         return self._forced_action(state)
@@ -202,5 +224,5 @@ for _name, _member in ActionStatus.__members__.items():
     globals()[_name] = int(_member)
 del _name, _member
 
-# _forced_action's buffer is sized with the literal 62.
-assert <int>MAX_ACTION_SIZE == 62
+# _forced_action's buffer is sized with the literal 53.
+assert <int>MAX_ACTION_SIZE == 53

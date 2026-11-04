@@ -121,15 +121,16 @@ END_REASONS = {K.END_REASON_NONE: None, K.END_REASON_BANKRUPT: 'bankrupt', K.END
 # PRIVATE_PRICE) and automated steps are absent.
 RUBY_STEPS = {
     K.STEP_AUCTION: 'WaterfallAuction', K.STEP_BID: 'WaterfallAuction', K.STEP_STOCK: 'BuySellParShares',
-    K.STEP_PAR: 'BuySellParShares', K.STEP_TRACK: 'Track', K.STEP_TILE: 'Track', K.STEP_TOKEN: 'Token',
-    K.STEP_DIVIDEND: 'Dividend', K.STEP_BUY_TRAIN: 'BuyTrain', K.STEP_TRAIN_PRICE: 'BuyTrain',
-    K.STEP_DISCARD: 'DiscardTrain', K.STEP_BUY_PRIVATE: 'BuyCompany', K.STEP_ER_BONUS: 'SpecialTrack',
+    K.STEP_PAR: 'BuySellParShares', K.STEP_BUY_PRIVATE_PRE: 'Track', K.STEP_TRACK: 'Track', K.STEP_TILE: 'Track',
+    K.STEP_TOKEN: 'Token', K.STEP_DIVIDEND: 'Dividend', K.STEP_BUY_TRAIN: 'BuyTrain', K.STEP_TRAIN_PRICE: 'BuyTrain',
+    K.STEP_DISCARD: 'DiscardTrain', K.STEP_BUY_PRIVATE_POST: 'BuyCompany', K.STEP_ER_BONUS: 'SpecialTrack',
     K.STEP_ROUTE: 'Route',  # automated: the engine is there from load_state, or replay's row before it
 }
-# The engine step each Ruby OR step loads as.
+# The engine step each Ruby OR step loads as. Track is TRACK even at the turn's
+# start, so a snapshot's first private move there replays through the override.
 OR_STEPS = {
     'Track': K.STEP_TRACK, 'Token': K.STEP_TOKEN, 'Route': K.STEP_ROUTE, 'Dividend': K.STEP_DIVIDEND,
-    'BuyTrain': K.STEP_BUY_TRAIN, 'DiscardTrain': K.STEP_DISCARD, 'BuyCompany': K.STEP_BUY_PRIVATE,
+    'BuyTrain': K.STEP_BUY_TRAIN, 'DiscardTrain': K.STEP_DISCARD, 'BuyCompany': K.STEP_BUY_PRIVATE_POST,
     'SpecialTrack': K.STEP_ER_BONUS,
 }
 # Ruby applies the auction discount only to the cheapest private, A.
@@ -530,8 +531,6 @@ def engine_train_buys(state: GameState) -> set[tuple[str, ...]]:
     sources = {A.ACTION_BUY_DEPOT_TRAIN: 'depot', A.ACTION_BUY_POOL_TRAIN: 'pool', A.ACTION_BUY_CORP_TRAIN: None}
     buys: set[tuple[str, ...]] = set()
     for action_id, info in legal_actions(state):
-        if info.type in (A.ACTION_BUY_PRIVATE, A.ACTION_DR_EXCHANGE):  # the interjection slots
-            continue
         if info.type == A.ACTION_SELECT_SALE:
             buys |= {('sell', D.CORP_SYMS[info.corp], 10 * sale.count) for _, sale in sub_decisions(state, action_id)}
         elif info.type in sources:

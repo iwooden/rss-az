@@ -6,16 +6,18 @@
 times).
 
 Covers the purchase window (phases 3-4, a player's private, half its face in
-the treasury) and the decisions it joins, the ones Ruby asks; PRIVATE_PRICE's
-grid, exact amounts, and its forced single price; a sale's effects (the
-seller's cash and certificates, TR's and ER's blocks, SMR's discount, UTF's
-revenue and closing); ER's bonus lay on C4 for its seller, on top of the
-corp's lay; MF's port tile on its owner's SR turn and at the Track of a corp
-its owner is president of, before the lay, without using the corp's lay;
-DR's exchange (before IR is parred, the presidency, the 60% limit, the
-certificate limit, and a float mid-OR); and the ``private_sale_same_president``
-flag. Everything runs through the driver; ``tests/g1889/replay/`` checks the
-same rules against Ruby at every fixture snapshot.
+the treasury) and BUY_PRIVATE_PRE and BUY_PRIVATE_POST, the decisions that
+offer it; ``DRIVER.override_private_slot``, replay's way to the turn's other
+decisions; PRIVATE_PRICE's grid, exact amounts, and its forced single price; a
+sale's effects (the seller's cash and certificates, TR's and ER's blocks,
+SMR's discount, UTF's revenue and closing); ER's bonus lay on C4 for its
+seller, on top of the corp's lay; MF's port tile on its owner's SR turn and at
+the start of the turn of a corp its owner is president of, without using the
+corp's lay; DR's exchange (before IR is parred, the presidency, the 60% limit,
+the certificate limit, and a float mid-OR); and the
+``private_sale_same_president`` flag. Everything runs through the driver;
+``tests/g1889/replay/`` checks the same rules against Ruby at every fixture
+snapshot.
 
 KO (president seat 0) operates from Takamatsu (K4); the privates belong to
 seat 2 unless a test says otherwise. J3's tile 8 at rotation 3 joins K4 to
@@ -27,17 +29,21 @@ import pytest
 import g1889.actions as A
 import g1889.constants as K
 import g1889.data.tables as D
+from g1889.driver import DRIVER, STATUS_INVALID, STATUS_OK
 from g1889.entities.corp import CORPS
 from g1889.entities.hexmap import MAP
 from g1889.entities.market import MARKET
 from g1889.entities.phase import PHASE
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
+from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
+from g1889.phases.operating import setup_operating_round_py
 
 from tests.g1889.phases.conftest import (
-    HEX, TILE, apply_and_verify, at_or, depot, end_auction, enter_operating_round, enter_phase, enter_stock_round,
-    exact_id, give_train, hold, lay, legal_ids, new_game, policy_ids, set_cash, train_choices,
+    HEX, TILE, apply_and_verify, at_or, choose_train, depot, end_auction, enter_operating_round, enter_phase,
+    enter_stock_round, exact_id, give_train, hold, lay, legal_ids, new_game, past_pre, policy_ids, set_cash,
+    train_choices,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -48,8 +54,8 @@ PHASE_2, PHASE_3, PHASE_4, PHASE_5 = D.GAME_PHASE_2, D.GAME_PHASE_3, D.GAME_PHAS
 IN_PLAY_3 = [P_TR, P_MF, P_ER, P_SMR, P_DR, P_SIR]  # UTF needs four players
 
 
-def at_track(phase=PHASE_3, owners=(), num_players=3, cash=None, route=False):
-    """KO at its first TRACK choice in ``phase``; ``route`` gives it a 2-train
+def at_turn(phase=PHASE_3, owners=(), num_players=3, cash=None, route=False):
+    """KO at its turn's first choice in ``phase``; ``route`` gives it a 2-train
     and J3's track, so it earns ¥50."""
     state = at_or(num_players, owners)
     enter_phase(state, phase)
@@ -60,7 +66,22 @@ def at_track(phase=PHASE_3, owners=(), num_players=3, cash=None, route=False):
     if cash is not None:
         set_cash(state, KO, cash)
     enter_operating_round(state)
-    assert TURN.step(state) == K.STEP_TRACK and TURN.operating_corp(state) == KO
+    assert TURN.operating_corp(state) == KO
+    return state
+
+
+def at_pre(*args, **kwargs):
+    """KO at BUY_PRIVATE_PRE, a private's slot legal."""
+    state = at_turn(*args, **kwargs)
+    assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
+    return state
+
+
+def at_track(*args, **kwargs):
+    """KO at its first TRACK choice, past BUY_PRIVATE_PRE if it opens."""
+    state = at_turn(*args, **kwargs)
+    past_pre(state)
+    assert TURN.step(state) == K.STEP_TRACK
     return state
 
 
@@ -87,68 +108,78 @@ def prices(state):
 class TestWindow:
     @pytest.mark.parametrize('phase, open_', [(PHASE_2, False), (PHASE_3, True), (PHASE_4, True)])
     def test_phases_3_and_4_open_the_window(self, phase, open_):
-        state = at_track(phase)
+        state = at_turn(phase)
         assert A.purchasable_privates_py(state) == (IN_PLAY_3 if open_ else [])
-        own = [i for i in legal_ids(state) if i < K.TRACK_BUY_PRIVATE]
-        assert legal_ids(state) == own + (buy_slot(K.TRACK_BUY_PRIVATE, IN_PLAY_3) if open_ else [])
+        assert TURN.step(state) == (K.STEP_BUY_PRIVATE_PRE if open_ else K.STEP_TRACK)
+        if open_:
+            assert legal_ids(state) == [K.BUY_PRIVATE_PRE_DONE] + buy_slot(K.BUY_PRIVATE_PRE_PRIVATE, IN_PLAY_3)
 
     def test_the_privates_close_at_phase_5(self):
-        state = at_track(PHASE_5)
+        state = at_turn(PHASE_5)
         assert all(PRIVATES[p].owner(state) == K.OWNER_CLOSED for p in IN_PLAY_3)
-        assert A.purchasable_privates_py(state) == [] and all(i < K.TRACK_BUY_PRIVATE for i in legal_ids(state))
+        assert A.purchasable_privates_py(state) == [] and TURN.step(state) == K.STEP_TRACK
+
+    def test_the_first_5_closes_the_window_before_post(self):
+        """engine-design §5.1's limitation: PRE is past, the 5 closes the
+        privates, and the turn ends with no POST, where the withhold's cash
+        could have bought one."""
+        state = at_or(3)
+        enter_phase(state, PHASE_4)
+        hold(state, KO, {0: 6}, par=PAR_100)
+        TRAINS.set_pool(state, D.TRAIN_4, TRAINS.pool(state, D.TRAIN_4) + TRAINS.depot(state, D.TRAIN_4))
+        TRAINS.set_depot(state, D.TRAIN_4, 0)
+        enter_operating_round(state)
+        past_pre(state)
+        apply_and_verify(state, K.TRACK_PASS)
+        assert TURN.step(state) == K.STEP_BUY_TRAIN and A.purchasable_privates_py(state) == IN_PLAY_3
+        choose_train(state, depot(D.TRAIN_5))
+        assert PHASE.current(state) == PHASE_5 and A.purchasable_privates_py(state) == []
+        result = apply_and_verify(state, K.BUY_TRAIN_PASS)
+        assert K.STEP_TURN_END in result.steps and not [phase for phase, _ in result.forced
+                                                        if phase == K.DPHASE_BUY_PRIVATE_POST]
 
     def test_a_private_needs_half_its_face_in_the_treasury(self):
         """``min_price`` is ⌈face/2⌉ (TR ¥10, MF ¥15, ER ¥20, SMR ¥25, DR ¥30, SIR ¥40)."""
-        state = at_track(cash=29)
+        state = at_pre(cash=29)
         assert A.purchasable_privates_py(state) == [P_TR, P_MF, P_ER, P_SMR]
         set_cash(state, KO, 9)
         assert A.purchasable_privates_py(state) == []
 
     def test_only_a_players_private_is_for_sale(self):
-        state = at_track()
-        buy(state, K.TRACK_BUY_PRIVATE, P_SIR, price_point=0)
-        assert PRIVATES[P_SIR].owner(state) == K.OWNER_CORP + KO and TURN.step(state) == K.STEP_TRACK
+        state = at_pre()
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_SIR, price_point=0)
+        assert PRIVATES[P_SIR].owner(state) == K.OWNER_CORP + KO and TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
         assert P_SIR not in A.purchasable_privates_py(state)
         assert P_SIR not in A.purchasable_privates_py(state, IR)  # nor to another corp (``company_sellable``)
 
-    def test_the_slots_join_only_decisions_ruby_asks(self):
+    def test_post_asks_when_the_turns_decisions_are_forced(self):
         """KO cannot token and earns nothing, so Ruby skips Token and Dividend,
         and with nothing to buy it skips BuyTrain: the driver forces each,
-        whatever the privates, and BUY_PRIVATE asks."""
+        whatever the privates, and BUY_PRIVATE_POST asks."""
         state = at_track(cash=50)
         result = apply_and_verify(state, K.TRACK_PASS)
         assert result.forced == [(K.DPHASE_TOKEN, K.TOKEN_PASS), (K.DPHASE_DIVIDEND, K.DIVIDEND_WITHHOLD),
                                  (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS)]
-        assert TURN.step(state) == K.STEP_BUY_PRIVATE
-        assert legal_ids(state) == [K.BUY_PRIVATE_DONE] + buy_slot(K.BUY_PRIVATE_PRIVATE, IN_PLAY_3)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_POST
+        assert legal_ids(state) == [K.BUY_PRIVATE_POST_DONE] + buy_slot(K.BUY_PRIVATE_POST_PRIVATE, IN_PLAY_3)
 
-    def test_token_dividend_and_buy_train_take_the_slots_when_they_ask(self):
+    def test_track_token_dividend_and_buy_train_offer_no_slot(self):
+        """Each offers only its own choices, in the window with every private buyable."""
         state = at_track(route=True)
         lay(state, 'K6', '9', 0)  # K8, AR's home, has a slot KO may token
         lay(state, 'K8', '6', 1)
         lay(state, 'K8', '15', 1)
+        assert A.purchasable_privates_py(state) == IN_PLAY_3
+        assert all(K.TRACK_HEX <= i for i in legal_ids(state)[1:]) and legal_ids(state)[0] == K.TRACK_PASS
         apply_and_verify(state, K.TRACK_PASS)
-        assert legal_ids(state) == [K.TOKEN_PASS, K.TOKEN_HEX + HEX['K8']] + buy_slot(K.TOKEN_BUY_PRIVATE, IN_PLAY_3)
+        assert legal_ids(state) == [K.TOKEN_PASS, K.TOKEN_HEX + HEX['K8']]
         apply_and_verify(state, K.TOKEN_PASS)
         assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) > 0
-        assert legal_ids(state) == [K.DIVIDEND_WITHHOLD, K.DIVIDEND_PAYOUT] + buy_slot(K.DIVIDEND_BUY_PRIVATE,
-                                                                                      IN_PLAY_3)
-        buy(state, K.DIVIDEND_BUY_PRIVATE, P_TR, price_point=0)  # the revenue waits through the purchase
-        assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) > 0
+        assert legal_ids(state) == [K.DIVIDEND_WITHHOLD, K.DIVIDEND_PAYOUT]
         apply_and_verify(state, K.DIVIDEND_WITHHOLD)
         assert TURN.step(state) == K.STEP_BUY_TRAIN and depot(T3) in train_choices(state)
-        assert [i for i in legal_ids(state) if i >= K.BUY_TRAIN_BUY_PRIVATE] == buy_slot(
-            K.BUY_TRAIN_BUY_PRIVATE, [P_MF, P_ER, P_SMR, P_DR, P_SIR])
-
-    def test_a_purchase_can_end_a_decision_ruby_asked(self):
-        """After buying from BUY_TRAIN, KO cannot afford a train, so Ruby
-        passes BuyTrain, and the driver does."""
-        state = at_track(route=True)
-        apply_and_verify(state, K.TRACK_PASS)
-        apply_and_verify(state, K.DIVIDEND_WITHHOLD)
-        set_cash(state, KO, D.TRAIN_PRICE[T3] + 10)
-        result = buy(state, K.BUY_TRAIN_BUY_PRIVATE, P_SIR, price_point=3)  # ¥160, leaving less than a pool 2
-        assert (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS) in result.forced and TURN.step(state) == K.STEP_BUY_PRIVATE
+        assert A.purchasable_privates_py(state) == IN_PLAY_3
+        assert all(not isinstance(choice, int) or choice == K.BUY_TRAIN_PASS for choice in train_choices(state))
 
     def test_the_same_president_flag_keeps_other_players_privates_out_of_the_policy(self):
         state = at_or(3, owners=[0, 2])  # seat 0, KO's president, owns TR, ER, DR
@@ -156,11 +187,181 @@ class TestWindow:
         enter_phase(state, PHASE_3)
         hold(state, KO, {0: 6}, par=PAR_100)
         enter_operating_round(state)
-        slots = buy_slot(K.TRACK_BUY_PRIVATE, IN_PLAY_3)
+        slots = buy_slot(K.BUY_PRIVATE_PRE_PRIVATE, IN_PLAY_3)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
         assert [i for i in legal_ids(state) if i in slots] == slots
-        assert [i for i in policy_ids(state) if i in slots] == buy_slot(K.TRACK_BUY_PRIVATE, [P_TR, P_ER, P_DR])
+        assert [i for i in policy_ids(state) if i in slots] == buy_slot(K.BUY_PRIVATE_PRE_PRIVATE, [P_TR, P_ER, P_DR])
         state.private_sale_same_president = False
         assert policy_ids(state) == legal_ids(state)
+
+
+# =============================================================================
+# BUY_PRIVATE_PRE
+# =============================================================================
+
+class TestPre:
+    def test_it_stops_only_with_a_slot_besides_done(self):
+        """A turn with nothing to buy, exchange, or lay goes straight to TRACK: PRE is not in its history."""
+        state = at_or(3)
+        enter_phase(state, PHASE_3)
+        hold(state, KO, {0: 6}, par=PAR_100)
+        set_cash(state, KO, 9)  # below every private's minimum, seat 2's DR and MF not KO's president's
+        history = []
+        TURN.set_or_count(state, 1)
+        setup_operating_round_py(state)
+        DRIVER.advance(state, history)
+        assert TURN.step(state) == K.STEP_TRACK
+        assert not [phase for _, phase, _ in history if phase == K.DPHASE_BUY_PRIVATE_PRE]
+
+    def test_done_opens_track(self):
+        state = at_pre()
+        hexes = A.lay_hexes_py(state)
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_DONE)
+        assert TURN.step(state) == K.STEP_TRACK
+        assert legal_ids(state) == [K.TRACK_PASS] + [K.TRACK_HEX + h for h in hexes]
+
+    def test_it_repeats_after_a_purchase_until_done(self):
+        state = at_pre()
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_TR, price_point=0)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_SMR, price_point=0)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
+        assert legal_ids(state) == [K.BUY_PRIVATE_PRE_DONE] + buy_slot(K.BUY_PRIVATE_PRE_PRIVATE,
+                                                                       [P_MF, P_ER, P_DR, P_SIR])
+
+    def test_a_purchase_of_the_last_private_it_can_afford_forces_done(self):
+        """¥50: SIR at its ¥40 minimum leaves ¥10, for TR alone; then nothing is left."""
+        state = at_pre(cash=50)
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_SIR, price_point=0)
+        assert A.purchasable_privates_py(state) == [P_TR] and TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
+        result = apply_and_verify(state, K.BUY_PRIVATE_PRE_PRIVATE + P_TR)  # its one price, then "done", are forced
+        assert result.forced[:2] == [(K.DPHASE_PRIVATE_PRICE, 0), (K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_DONE)]
+        assert TURN.step(state) != K.STEP_BUY_PRIVATE_PRE
+
+    def test_the_flags_force_done_where_only_rivals_own_privates(self):
+        """Engine-legal purchases open PRE, but the policy leaves "done", which costs no search."""
+        state = at_or(3)  # seat 2 owns every private; seat 0 presides KO
+        state.private_sale_same_president = True
+        enter_phase(state, PHASE_3)
+        hold(state, KO, {0: 6}, par=PAR_100)
+        TURN.set_or_count(state, 1)
+        setup_operating_round_py(state)
+        history = []
+        DRIVER.advance(state, history)
+        forced = [(phase, action_id) for _, phase, action_id in history if phase >= 0]
+        assert (K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_DONE) in forced
+        assert TURN.step(state) != K.STEP_BUY_PRIVATE_PRE
+
+    @pytest.mark.parametrize('phase', [PHASE_2, PHASE_3, PHASE_4])
+    def test_dr_and_mf_open_it_in_their_owners_turn(self, phase):
+        """In phase 2 too, where nothing can be bought; only they are offered there."""
+        state = at_pre(phase, owners=[0])
+        own = [K.BUY_PRIVATE_PRE_DR, K.BUY_PRIVATE_PRE_MF]
+        if phase == PHASE_2:
+            assert legal_ids(state) == [K.BUY_PRIVATE_PRE_DONE] + own
+        else:
+            assert legal_ids(state) == [K.BUY_PRIVATE_PRE_DONE] + buy_slot(K.BUY_PRIVATE_PRE_PRIVATE, IN_PLAY_3) + own
+
+    def test_the_decision_is_the_presidents(self):
+        state = at_pre()
+        assert TURN.active_player(state) == CORPS[KO].president(state) == 0 and TURN.operating_corp(state) == KO
+
+
+# =============================================================================
+# REPLAY'S OVERRIDE
+# =============================================================================
+
+class TestOverride:
+    def _at(self, step, **kwargs):
+        """KO at a decision of its turn, in the window: ``step`` is one of TRACK, DIVIDEND, or BUY_TRAIN."""
+        state = at_track(route=True, **kwargs)
+        if step != K.STEP_TRACK:
+            apply_and_verify(state, K.TRACK_PASS)
+        if step == K.STEP_BUY_TRAIN:
+            apply_and_verify(state, K.DIVIDEND_WITHHOLD)
+        assert TURN.step(state) == step
+        return state
+
+    @pytest.mark.parametrize('step', [K.STEP_TRACK, K.STEP_DIVIDEND, K.STEP_BUY_TRAIN])
+    def test_a_purchase_returns_to_the_decision_it_interrupted(self, step):
+        state = self._at(step)
+        before = legal_ids(state)
+        cash, seller = CORPS[KO].cash(state), PLAYERS[2].cash(state)
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR) == STATUS_OK
+        assert TURN.step(state) == K.STEP_PRIVATE_PRICE and TURN.return_step(state) == step
+        assert apply_and_verify(state, exact_id(state, 123)).status == STATUS_OK
+        assert PRIVATES[P_SIR].owner(state) == K.OWNER_CORP + KO
+        assert CORPS[KO].cash(state) == cash - 123 and PLAYERS[2].cash(state) == seller + 123
+        assert TURN.step(state) == step and legal_ids(state) == before and TURN.return_step(state) == -1
+
+    def test_the_revenue_waits_through_it_at_dividend(self):
+        state = self._at(K.STEP_DIVIDEND)
+        revenue = TURN.route_revenue(state)
+        assert revenue > 0 and DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_TR) == STATUS_OK
+        apply_and_verify(state, 0)
+        assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) == revenue
+
+    def test_er_chains_through_its_bonus(self):
+        state = self._at(K.STEP_BUY_TRAIN)
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_ER) == STATUS_OK
+        apply_and_verify(state, 0)
+        assert TURN.step(state) == K.STEP_ER_BONUS and TURN.active_player(state) == 2 == TURN.pending_seller(state)
+        apply_and_verify(state, K.ER_BONUS_PASS)
+        assert TURN.step(state) == K.STEP_BUY_TRAIN and TURN.active_player(state) == 0
+
+    def test_dr_exchanges_in_place(self):
+        state = self._at(K.STEP_DIVIDEND, owners=[0])
+        before = legal_ids(state)
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_DR) == STATUS_OK
+        assert PRIVATES[P_DR].owner(state) == K.OWNER_CLOSED and PLAYERS[0].shares(state, IR) == 1
+        assert TURN.step(state) == K.STEP_DIVIDEND and legal_ids(state) == before
+
+    def test_mf_lays_its_port_tile_and_returns(self):
+        state = self._at(K.STEP_TRACK, owners=[0])
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_MF) == STATUS_OK
+        assert TURN.step(state) == K.STEP_PORT and TURN.return_step(state) == K.STEP_TRACK
+        apply_and_verify(state, K.PORT_LAY + D.NUM_SIDES * D.MF_PORT_HEX.index(HEX['G10']))
+        assert TURN.step(state) == K.STEP_TRACK and PRIVATES[P_MF].flags(state) & 1
+
+    def test_history_gets_the_auto_chain_not_the_override(self):
+        """¥40 in the treasury: SIR has one price, which the driver forces."""
+        state = at_track(route=True)
+        set_cash(state, KO, 40)
+        history = []
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR, history) == STATUS_OK
+        assert [(phase, action_id) for _, phase, action_id in history][0] == (K.DPHASE_PRIVATE_PRICE, 0)
+        assert CORPS[KO].cash(state) == 0
+
+    def test_it_is_invalid_where_it_does_not_apply(self):
+        state = self._at(K.STEP_BUY_TRAIN)
+        row = state._array.copy()
+        for action_id in (K.BUY_PRIVATE_PRE_DONE,  # not a move
+                          K.BUY_PRIVATE_PRE_DR, K.BUY_PRIVATE_PRE_MF,  # seat 2's, not the president's
+                          K.ACTION_SIZE_BUY_PRIVATE_PRE, -1):
+            assert DRIVER.override_private_slot(state, action_id) == STATUS_INVALID, action_id
+        assert (state._array == row).all()
+        PRIVATES[P_SIR].close(state)  # no longer a player's
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR) == STATUS_INVALID
+
+    def test_it_is_invalid_at_the_decisions_with_their_own_slots_and_outside_a_turn(self):
+        slot = K.BUY_PRIVATE_PRE_PRIVATE + P_SIR
+        state = at_pre(cash=50)  # too little for a train, so POST follows the lay
+        assert DRIVER.override_private_slot(state, slot) == STATUS_INVALID  # PRE offers it
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_DONE)
+        apply_and_verify(state, K.TRACK_PASS)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_POST
+        assert DRIVER.override_private_slot(state, slot) == STATUS_INVALID
+        apply_and_verify(state, K.BUY_PRIVATE_POST_PRIVATE + P_SIR)  # PRIVATE_PRICE, a sub-phase
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_TR) == STATUS_INVALID
+        state = new_game(3)
+        end_auction(state, [0])
+        enter_stock_round(state, 0)  # DR is usable, but not through the override in an SR
+        assert K.STOCK_DR in legal_ids(state)
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_DR) == STATUS_INVALID
+
+    def test_it_is_invalid_past_the_window(self):
+        state = at_track(PHASE_5)
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR) == STATUS_INVALID
 
 
 # =============================================================================
@@ -169,8 +370,8 @@ class TestWindow:
 
 class TestPrivatePrice:
     def test_the_grid_runs_from_half_to_twice_face(self):
-        state = at_track()
-        apply_and_verify(state, K.TRACK_BUY_PRIVATE + P_SIR)
+        state = at_pre()
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR)
         assert prices(state) == [(0, 40), (1, 80), (2, 120), (3, 160)]
         assert A.is_legal_action_py(state, exact_id(state, 41)) and A.is_legal_action_py(state, exact_id(state, 160))
         assert not A.is_legal_action_py(state, exact_id(state, 39))
@@ -178,50 +379,50 @@ class TestPrivatePrice:
 
     def test_the_treasury_caps_the_price(self):
         """¥100 drops 1½·face (¥120), and the top point is the treasury."""
-        state = at_track(cash=100)
-        apply_and_verify(state, K.TRACK_BUY_PRIVATE + P_SIR)
+        state = at_pre(cash=100)
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR)
         assert prices(state) == [(0, 40), (1, 80), (3, 100)]
         assert not A.is_legal_action_py(state, exact_id(state, 101))
 
     def test_equal_points_are_offered_once(self):
         """TR at ¥20 with ¥20: ⌈face/2⌉ ¥10, face ¥20, and the cap ¥20 again."""
-        state = at_track(cash=20)
-        apply_and_verify(state, K.TRACK_BUY_PRIVATE + P_TR)
+        state = at_pre(cash=20)
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_PRIVATE + P_TR)
         assert prices(state) == [(0, 10), (1, 20)]
 
     def test_a_single_price_is_forced(self):
-        state = at_track(cash=40)
-        result = apply_and_verify(state, K.TRACK_BUY_PRIVATE + P_SIR)
-        assert result.forced == [(K.DPHASE_PRIVATE_PRICE, 0)] and CORPS[KO].cash(state) == 0
-        assert PRIVATES[P_SIR].owner(state) == K.OWNER_CORP + KO and TURN.step(state) == K.STEP_TRACK
+        state = at_pre(cash=40)
+        result = apply_and_verify(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR)
+        assert result.forced[0] == (K.DPHASE_PRIVATE_PRICE, 0) and CORPS[KO].cash(state) == 0
+        assert PRIVATES[P_SIR].owner(state) == K.OWNER_CORP + KO
 
     def test_a_sale_pays_the_seller_from_the_treasury(self):
-        state = at_track()
+        state = at_pre()
         seller, ko, certs = PLAYERS[2].cash(state), CORPS[KO].cash(state), PLAYERS[2].cert_count(state)
-        buy(state, K.TRACK_BUY_PRIVATE, P_SIR, exact=123)
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_SIR, exact=123)
         assert PLAYERS[2].cash(state) == seller + 123 and CORPS[KO].cash(state) == ko - 123
         assert PLAYERS[2].cert_count(state) == certs - 1  # privates count toward the limit
         assert TURN.return_step(state) == -1 and TURN.active_player(state) == 0
 
     def test_tr_blocks_k4_until_a_corp_owns_it(self):
-        state = at_track()
+        state = at_pre()
         assert PRIVATES[P_TR].blocks_hex(state, HEX['K4']) and HEX['K4'] not in A.lay_hexes_py(state)
-        buy(state, K.TRACK_BUY_PRIVATE, P_TR, price_point=0)
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_TR, price_point=0)
         assert not PRIVATES[P_TR].blocks_hex(state, HEX['K4']) and HEX['K4'] in A.lay_hexes_py(state)
 
     def test_smr_discounts_its_corps_pure_mountain(self):
-        state = at_track()
+        state = at_pre()
         assert MAP.lay_cost(state, HEX['E4'], KO) == 80
-        buy(state, K.TRACK_BUY_PRIVATE, P_SMR, price_point=0)
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_SMR, price_point=0)
         assert MAP.lay_cost(state, HEX['E4'], KO) == 0 and MAP.lay_cost(state, HEX['E4'], IR) == 80
         assert MAP.lay_cost(state, HEX['H5'], KO) == 80  # river and mountain
 
     def test_utf_pays_its_corp_and_closes_with_it_at_phase_5(self):
         """A player's UTF earns ¥50 from phase 5 and stays open; a corp's earns
         ¥30 and closes (``close`` binds only for a player owner)."""
-        state = at_track(num_players=4)
+        state = at_pre(num_players=4)
         assert P_UTF in A.purchasable_privates_py(state)
-        buy(state, K.TRACK_BUY_PRIVATE, P_UTF, price_point=0)
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_UTF, price_point=0)
         assert PRIVATES[P_UTF].revenue(state) == 30
         PHASE.advance(state)  # to phase 4
         PHASE.advance(state)  # to phase 5
@@ -237,8 +438,8 @@ ER_LAYS = [('12', 0), ('13', 0), ('14', 1), ('15', 5), ('205', 1), ('205', 5), (
 
 class TestErBonus:
     def test_selling_er_lets_its_seller_lay_on_c4(self):
-        state = at_track()
-        buy(state, K.TRACK_BUY_PRIVATE, P_ER, price_point=0)
+        state = at_pre()
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_ER, price_point=0)
         assert TURN.step(state) == K.STEP_ER_BONUS and TURN.active_player(state) == 2 == TURN.pending_seller(state)
         assert not PRIVATES[P_ER].blocks_hex(state, HEX['C4'])
         assert A.er_candidates_py(state) == [(TILE[name], r) for name, r in ER_LAYS]
@@ -247,33 +448,34 @@ class TestErBonus:
         apply_and_verify(state, K.ER_BONUS_CANDIDATE + ER_LAYS.index(('14', 1)))
         assert (MAP.tile(state, HEX['C4']), MAP.rotation(state, HEX['C4'])) == (TILE['14'], 1)
         assert PLAYERS[2].cash(state) == seller  # C4 costs nothing
-        # Back at KO's TRACK, its own lay still to come.
-        assert TURN.step(state) == K.STEP_TRACK and TURN.active_player(state) == 0 and A.lay_hexes_py(state)
+        # Back at KO's PRE, its own lay still to come.
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE and TURN.active_player(state) == 0 and A.lay_hexes_py(state)
         assert TURN.pending_seller(state) == -1 and TURN.return_step(state) == -1
 
     def test_the_seller_may_pass(self):
-        state = at_track()
-        buy(state, K.TRACK_BUY_PRIVATE, P_ER, price_point=0)
+        state = at_pre()
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_ER, price_point=0)
         apply_and_verify(state, K.ER_BONUS_PASS)
-        assert MAP.tile(state, HEX['C4']) == D.NUM_SUPPLY_TILES + HEX['C4'] and TURN.step(state) == K.STEP_TRACK
+        assert MAP.tile(state, HEX['C4']) == D.NUM_SUPPLY_TILES + HEX['C4']
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
 
     def test_without_a_tile_the_pass_is_forced(self):
         """Ruby still asks (``TrackLayWhenCompanySold``); the driver applies the pass."""
-        state = at_track()
+        state = at_pre()
         for name, _ in ER_LAYS:
             MAP.set_supply(state, TILE[name], 0)
-        apply_and_verify(state, K.TRACK_BUY_PRIVATE + P_ER)
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_PRIVATE + P_ER)
         result = apply_and_verify(state, 0)
-        assert result.forced == [(K.DPHASE_ER_BONUS, K.ER_BONUS_PASS)] and TURN.step(state) == K.STEP_TRACK
+        assert result.forced == [(K.DPHASE_ER_BONUS, K.ER_BONUS_PASS)] and TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
 
     def test_the_bonus_returns_to_the_purchase_step(self):
         state = at_track(cash=200)
         apply_and_verify(state, K.TRACK_PASS)
         apply_and_verify(state, K.BUY_TRAIN_PASS)
-        assert TURN.step(state) == K.STEP_BUY_PRIVATE
-        buy(state, K.BUY_PRIVATE_PRIVATE, P_ER, price_point=0)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_POST
+        buy(state, K.BUY_PRIVATE_POST_PRIVATE, P_ER, price_point=0)
         apply_and_verify(state, K.ER_BONUS_PASS)
-        assert TURN.step(state) == K.STEP_BUY_PRIVATE and TURN.active_player(state) == 0
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_POST and TURN.active_player(state) == 0
 
 
 # =============================================================================
@@ -305,33 +507,33 @@ class TestPort:
         assert (TURN.step(state), TURN.active_player(state), TURN.sr_bought(state)) == (K.STEP_STOCK, 0, 0)
         assert K.STOCK_MF not in legal_ids(state)
 
-    def test_mf_lays_at_its_owners_track_before_the_lay(self):
+    def test_mf_lays_at_its_owners_pre(self):
         """962 action 39: the port tile uses no lay of the corp's."""
-        state = at_track(PHASE_2, owners=[0])
+        state = at_pre(PHASE_2, owners=[0])
         lays = A.lay_hexes_py(state)
-        assert K.TRACK_MF in legal_ids(state)
-        apply_and_verify(state, K.TRACK_MF)
+        assert K.BUY_PRIVATE_PRE_MF in legal_ids(state)
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_MF)
         apply_and_verify(state, K.PORT_LAY + D.NUM_SIDES * D.MF_PORT_HEX.index(HEX['G10']))
-        assert TURN.step(state) == K.STEP_TRACK and K.TRACK_MF not in legal_ids(state)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE and K.BUY_PRIVATE_PRE_MF not in legal_ids(state)
         assert A.lay_hexes_py(state) == lays and TURN.return_step(state) == -1
 
     def test_another_players_mf_waits(self):
-        state = at_track(PHASE_2)  # seat 2 owns MF
-        assert K.TRACK_MF not in legal_ids(state) and A.port_lays_py(state)
+        state = at_turn(PHASE_2)  # seat 2 owns MF
+        assert TURN.step(state) == K.STEP_TRACK and A.port_lays_py(state)
 
     def test_a_port_hex_with_a_tile_is_not_offered(self):
-        state = at_track(PHASE_2, owners=[0])
+        state = at_pre(PHASE_2, owners=[0])
         lay(state, 'B11', '3', 2)
         lay(state, 'G10', '3', 2)
         lay(state, 'I12', '58', 1)
         assert {D.HEX_IDS[h] for h, _ in A.port_lays_py(state)} == {'J9'}
         lay(state, 'J9', '58', 0)
-        assert A.port_lays_py(state) == [] and K.TRACK_MF not in legal_ids(state)
+        assert A.port_lays_py(state) == [] and K.BUY_PRIVATE_PRE_MF not in legal_ids(state)
 
     def test_mf_loses_its_ability_to_a_corp(self):
-        state = at_track(owners=[0])
-        buy(state, K.TRACK_BUY_PRIVATE, P_MF, price_point=0)
-        assert A.port_lays_py(state) == [] and K.TRACK_MF not in legal_ids(state)
+        state = at_pre(owners=[0])
+        buy(state, K.BUY_PRIVATE_PRE_PRIVATE, P_MF, price_point=0)
+        assert A.port_lays_py(state) == [] and K.BUY_PRIVATE_PRE_MF not in legal_ids(state)
 
 
 # =============================================================================
@@ -384,27 +586,33 @@ class TestDrExchange:
         assert PLAYERS[0].cert_count(state) == D.CERT_LIMIT[3]
         assert not PLAYERS[0].can_gain(state, IR) and A.can_exchange_dr_py(state, 0)
 
-    def test_dr_joins_every_or_decision_of_its_owner(self):
-        state = at_track(route=True, owners=[0])
-        assert K.TRACK_DR in legal_ids(state)
+    def test_dr_joins_pre_and_post_of_its_owner(self):
+        state = at_pre(route=True, owners=[0])
+        assert K.BUY_PRIVATE_PRE_DR in legal_ids(state)
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_DONE)
         apply_and_verify(state, K.TRACK_PASS)
-        assert TURN.step(state) == K.STEP_DIVIDEND and K.DIVIDEND_DR in legal_ids(state)
+        assert TURN.step(state) == K.STEP_DIVIDEND
         apply_and_verify(state, K.DIVIDEND_WITHHOLD)
-        assert K.BUY_TRAIN_DR in legal_ids(state)
         apply_and_verify(state, K.BUY_TRAIN_PASS)
-        assert TURN.step(state) == K.STEP_BUY_PRIVATE and K.BUY_PRIVATE_DR in legal_ids(state)
-        apply_and_verify(state, K.BUY_PRIVATE_DR)
-        assert TURN.step(state) == K.STEP_BUY_PRIVATE and PLAYERS[0].shares(state, IR) == 1
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_POST and K.BUY_PRIVATE_POST_DR in legal_ids(state)
+        apply_and_verify(state, K.BUY_PRIVATE_POST_DR)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_POST and PLAYERS[0].shares(state, IR) == 1
+
+    def test_the_exchange_stays_at_pre(self):
+        state = at_pre(owners=[0])
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_DR)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE and PLAYERS[0].shares(state, IR) == 1
+        assert K.BUY_PRIVATE_PRE_DR not in legal_ids(state)
 
     def test_an_exchange_floats_ir_for_the_next_or(self):
-        """KO's president exchanges at KO's TRACK, the fifth IR share out:
+        """KO's president exchanges at KO's PRE, the fifth IR share out:
         IR floats with its capital, but OR 1's order stays (rules §12.10)."""
         state = at_or(3, owners=[0])
         hold(state, IR, {1: 2, 2: 2})
         hold(state, KO, {0: 6}, par=PAR_100)
         enter_operating_round(state, or_count=2)
         bank = CORPS[IR].cash(state)
-        apply_and_verify(state, K.TRACK_DR)
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_DR)
         assert CORPS[IR].floated(state) and CORPS[IR].cash(state) == bank + 10 * D.PAR_PRICE[PAR_65]
         assert [TURN.or_order(state, i) for i in range(2)] == [KO, -1]
         while TURN.or_num(state) == 1:

@@ -38,7 +38,7 @@ from g1889.actions cimport (
     ACTION_PASS, ACTION_SELECT_SALE, ACTION_TRADE_IN, ActionInfo, price_amount,
 )
 from g1889.constants cimport (
-    END_REASON_BANKRUPT, OWNER_CORP, OWNER_PLAYER, STEP_BUY_PRIVATE, STEP_BUY_TRAIN, STEP_DISCARD,
+    END_REASON_BANKRUPT, OWNER_CORP, OWNER_PLAYER, STEP_BUY_PRIVATE_POST, STEP_BUY_TRAIN, STEP_DISCARD,
     STEP_EMERGENCY_SELL_AMOUNT, STEP_SELECT_TRAIN, STEP_TRAIN_PRICE, STEP_TURN_END, TRAIN_SOURCE_CORP,
     TRAIN_SOURCE_DEPOT, TRAIN_SOURCE_POOL,
 )
@@ -136,7 +136,7 @@ cdef void apply_buy_train(GameState state, const ActionInfo* info) except *:
     or go bankrupt."""
     cdef int source = TRAIN_SOURCE_DEPOT
     if info.type == ACTION_PASS:
-        TURN.set_step(state, STEP_BUY_PRIVATE if PHASE_CAN_BUY_PRIVATES[game_phase(state)] else STEP_TURN_END)
+        TURN.set_step(state, STEP_BUY_PRIVATE_POST if PHASE_CAN_BUY_PRIVATES[game_phase(state)] else STEP_TURN_END)
     elif info.type == ACTION_SELECT_SALE:
         TURN.set_pending_corp(state, info.corp)
         TURN.set_step(state, STEP_EMERGENCY_SELL_AMOUNT)

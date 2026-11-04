@@ -7,20 +7,23 @@ Ruby's non-blocking OR and SR steps for privates are the oracle:
 ``step/track_lay_when_company_sold.rb``), with the blocking BuyCompany after
 BuyTrain. ``actions.pyx`` has the legality.
 
-- **Buy private p** at TRACK, TOKEN, DIVIDEND, BUY_TRAIN, or BUY_PRIVATE
-  (phases 3-4): ``pending_private`` holds p and ``return_step`` the step, and
+- **Buy private p** at BUY_PRIVATE_PRE or BUY_PRIVATE_POST (phases 3-4):
+  ``pending_private`` holds p and ``return_step`` the step, and
   PRIVATE_PRICE names the price. The sale pays the seller from the corp's
   treasury (``PRIVATES[p].sell_to_corp``). A sale of ER then opens ER_BONUS
   for its seller (``pending_seller``), who may lay a green city tile on C4
   free, on top of the corp's own lay; then the step resumes, its president
   acting again.
-- **DR's exchange** at the active player's STOCK, TRACK, TOKEN, DIVIDEND,
-  BUY_TRAIN, or BUY_PRIVATE: DR closes for an IR share, and the decision
-  goes on. Ruby's Exchange step tracks no SR action (``current_actions``),
-  so it neither ends the turn nor resets the passes.
-- **MF's port tile** at its owner's STOCK or TRACK: PORT lays it, and the
-  step resumes. Ruby's SpecialTrack uses no lay of the corp's, so TRACK
-  still offers the corp's own (962 action 39).
+- **DR's exchange** at the active player's STOCK, BUY_PRIVATE_PRE, or
+  BUY_PRIVATE_POST: DR closes for an IR share, and the decision goes on.
+  Ruby's Exchange step tracks no SR action (``current_actions``), so it
+  neither ends the turn nor resets the passes.
+- **MF's port tile** at its owner's STOCK or BUY_PRIVATE_PRE: PORT lays it,
+  and the step resumes. Ruby's SpecialTrack uses no lay of the corp's, so
+  TRACK still offers the corp's own (962 action 39).
+
+``DRIVER.override_private_slot`` enters the same handlers for replay at the
+turn's other decisions.
 """
 
 from g1889.actions cimport (
@@ -28,7 +31,7 @@ from g1889.actions cimport (
     LayCandidate, er_candidates, price_amount,
 )
 from g1889.constants cimport (
-    OWNER_PLAYER, STEP_ER_BONUS, STEP_PORT, STEP_PRIVATE_PRICE, STEP_TURN_END,
+    OWNER_PLAYER, STEP_ER_BONUS, STEP_PORT, STEP_PRIVATE_PRICE, STEP_TRACK, STEP_TURN_END,
 )
 from g1889.data.tables cimport (
     ER_HEX, MAX_LAY_CANDIDATES, MF_PORT_HEX, NUM_PORTS, NUM_SUPPLY_TILES, PORT_TILE, PRIVATE_DR, PRIVATE_ER,
@@ -51,7 +54,8 @@ cdef TurnState TURN = _turn.TURN
 
 cdef void apply_interjection(GameState state, const ActionInfo* info) except *:
     """Choose a private to buy (PRIVATE_PRICE follows), exchange DR, or use
-    MF (PORT follows), from any decision that offers the slot."""
+    MF (PORT follows), from any decision that offers the slot or takes
+    replay's override."""
     if info.type == ACTION_BUY_PRIVATE:
         TURN.set_pending_private(state, info.private)
         TURN.set_return_step(state, turn_step(state))
@@ -64,10 +68,17 @@ cdef void apply_interjection(GameState state, const ActionInfo* info) except *:
         TURN.set_step(state, STEP_PORT)
 
 
-cdef void apply_buy_private(GameState state, const ActionInfo* info) except *:
-    """Done: the corp's turn ends. BUY_PRIVATE's purchases are interjections
+cdef void apply_buy_private_pre(GameState state, const ActionInfo* info) except *:
+    """Done: on to the corp's lay. BUY_PRIVATE_PRE's slots are interjections
     (``apply_interjection``) that return here."""
-    assert info.type == ACTION_PASS, f"apply_buy_private: action type {info.type}"
+    assert info.type == ACTION_PASS, f"apply_buy_private_pre: action type {info.type}"
+    TURN.set_step(state, STEP_TRACK)
+
+
+cdef void apply_buy_private_post(GameState state, const ActionInfo* info) except *:
+    """Done: the corp's turn ends. BUY_PRIVATE_POST's slots are interjections
+    (``apply_interjection``) that return here."""
+    assert info.type == ACTION_PASS, f"apply_buy_private_post: action type {info.type}"
     TURN.set_step(state, STEP_TURN_END)
 
 

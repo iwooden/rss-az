@@ -12,7 +12,7 @@ action maps to, sub-phases such as PRIVATE_PRICE and PORT included, must be
 the engine's active player's, one of Ruby's active players before the action;
 ``compare`` checks the active player at every snapshot too.
 
-Four equivalences need the harness. Track after the lay (engine-design
+Six equivalences need the harness. Track after the lay (engine-design
 §10.2): Ruby keeps Track open after a corp's lay while its president owns MF,
 for the port tile, and the engine moves on to TOKEN. That snapshot is
 compared with the engine at TOKEN (``snapshot.track_after_lay``), and Ruby's
@@ -31,16 +31,19 @@ and MF on every SR turn of their owner, so it stops at a turn whose only
 other choice is the pass, which Ruby skips or ends without logging
 anything; after each Ruby action the harness applies that pass
 (``skipped_sr_turn``), and queues the forced decisions after it as usual.
+BUY_PRIVATE_PRE (§5.5): Ruby has no such step, so the engine at PRE compares
+with Ruby's Track, and where Ruby then does anything but PRE's own moves the
+harness applies PRE's "done" first (``_leave_pre``). A human's private move at
+another of Ruby's stops takes the override, which returns to the decision it
+interrupted; if the driver has already forced that decision for lack of a
+choice, the harness backs up to it first (``_forced_at_ruby_step``).
 
 Replay stops at the first unsupported action or mismatch; an engine error
 propagates. When it stops at an action while forced decisions are pending,
 Ruby may be waiting at one of them (a Track step whose only choice is the
 pass, which Ruby asks), so the record before is compared with the engine
 where Ruby rests (``_ruby_rests``); so is a record whose forced decisions
-are pending when the replay runs out. Ruby acting at a Track step it keeps
-open after the lay (MF's port tile, a private's purchase, DR's exchange) is
-unsupported: the engine has left TRACK, and offers MF's port tile before the
-lay only (engine-design §10.2).
+are pending when the replay runs out.
 Since 6.8b every fixture replays end to end, 314 to its bankruptcy and 962
 to the game's end after the bank breaks, and the engine's final scores equal
 Ruby's ``result`` (the ``hs_*`` fixtures' players end the game by hand,
@@ -52,8 +55,9 @@ alone.
 from __future__ import annotations
 
 import warnings
+from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -68,21 +72,34 @@ from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
+from g1889.phases.operating import setup_operating_round_py
 from g1889.state import GameState, get_global_fields, get_layout
 
 from tests.g1889.replay.action_map import (
-    HELD_DISCARD, ROUTE_OVERRIDE, Decision, ReplayEnd, UnsupportedAction, map_action, skipped_sr_turn,
+    HELD_DISCARD, OVERRIDE_STEP_PHASE, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, Decision, ReplayEnd, UnsupportedAction,
+    map_action, skipped_sr_turn,
 )
-from tests.g1889.phases.conftest import end_auction, enter_stock_round
+from tests.g1889.phases.conftest import end_auction, enter_stock_round, hold
 from tests.g1889.phases.conftest import new_game as fresh_game
 from tests.g1889.replay.extracts import Extract, FIXTURES, load_fixture_extract, load_new_game_extract
-from tests.g1889.replay.snapshot import CORP, END_REASONS, compare, engine_result, load_state, track_after_lay
+from tests.g1889.replay.snapshot import (
+    CORP, END_REASONS, RUBY_STEPS, compare, engine_result, load_state, track_after_lay,
+)
 
 # How each fixture's game ends in Ruby: 314 when TR's president goes bankrupt
 # (record 457), 962 after the OR set in which the bank broke (record 446), and
 # the hs_* fixtures by hand (end_game), which the engine does not model.
 ENDINGS = {'314': 'bankrupt', '962': 'bank', 'hs_jmmljkbw_17502': 'manually_ended',
            'hs_lhglbbiz_17502': 'manually_ended'}
+
+# The privates' moves in a replay from the start, by path: 314 buys only at
+# Ruby's blocking BuyCompany. 962 lays MF's port tile before its first lay
+# (record 33), lays ER's bonus, and buys 4 at BuyCompany and 3 at BuyTrain.
+PRIVATE_PATHS = {
+    '314': {'BUY_PRIVATE_POST': 6},
+    '962': {'BUY_PRIVATE_PRE': 1, 'BUY_PRIVATE_POST': 4, 'ER_BONUS': 1, 'override at BuyTrain': 3},
+    'hs_jmmljkbw_17502': {}, 'hs_lhglbbiz_17502': {},
+}
 
 # A forced decision the driver applied: (decision phase, id, the player it was
 # for, and the row before it); the sync tests give only the first three.
@@ -100,6 +117,7 @@ class Progress:
     stop: str | None = None        # 'unsupported' or 'mismatch'; None when replay ran out
     detail: str = ''
     state: GameState | None = None  # the engine's state, where replay stopped
+    private_moves: Counter = field(default_factory=Counter)  # the privates' moves Ruby logged, by the path they took
 
     def __str__(self) -> str:
         end = f'stopped ({self.stop}): {self.detail}' if self.stop else f'complete ({self.detail or "all records"})'
@@ -144,15 +162,19 @@ def _apply(state: GameState, decisions: list[Decision], actors: set[int], pendin
     """Apply decisions by one of ``actors`` through the driver, queueing the
     forced ones it adds and adding its history to ``log``; an error message on
     failure, or when the engine's active player is not one of ``actors``. A
-    ``ROUTE_OVERRIDE`` pays a human's revenue (``override_route_revenue``),
-    which records no decision of its own, and a ``HELD_DISCARD`` waits in
-    ``held`` for its corp's turn to discard (``_release``). Then the engine
-    passes for each SR turn Ruby skips or ends (``_pass_skipped_sr_turns``)."""
+    ``ROUTE_OVERRIDE`` pays a human's revenue (``override_route_revenue``) and
+    a ``PRIVATE_OVERRIDE`` starts a human's private move
+    (``override_private_slot``), neither recording a decision of its own, and a
+    ``HELD_DISCARD`` waits in ``held`` for its corp's turn to discard
+    (``_release``). Then the engine passes for each SR turn Ruby skips or ends
+    (``_pass_skipped_sr_turns``)."""
     for phase, action_id in decisions:
         if phase == HELD_DISCARD:  # by its corp's president, whose discard Ruby takes out of its order
             corp, train = divmod(action_id, D.NUM_TRAIN_TYPES)
             held.append((corp, train, {CORPS[corp].president(state)}))
             continue
+        if not pending and phase != K.DPHASE_BUY_PRIVATE_PRE:
+            _leave_pre(state, pending, log)
         player = pending[0][2] if pending else TURN.active_player(state)
         if player not in actors:
             return f'{_phase_name(phase)} is player {player}\'s in the engine, not one of Ruby\'s {sorted(actors)}'
@@ -165,6 +187,10 @@ def _apply(state: GameState, decisions: list[Decision], actors: set[int], pendin
         if phase == ROUTE_OVERRIDE:
             if DRIVER.override_route_revenue(state, action_id, history) == STATUS_INVALID:
                 return f'the route override to {action_id} is illegal at {K.Step(TURN.step(state)).name}'
+            forced = history
+        elif phase == PRIVATE_OVERRIDE:
+            if DRIVER.override_private_slot(state, action_id, history) == STATUS_INVALID:
+                return f'the private override of slot {action_id} is illegal at {K.Step(TURN.step(state)).name}'
             forced = history
         else:
             engine_phase = get_decision_phase_py(state)
@@ -193,6 +219,19 @@ def _pass_skipped_sr_turns(state: GameState, pending: list[Forced], log: list) -
     while decisions := skipped_sr_turn(state):
         history: list = []
         assert DRIVER.apply_action(state, decisions[0][1], history) != STATUS_INVALID
+        _queue(pending, history[1:])
+        log += history
+
+
+def _leave_pre(state: GameState, pending: list[Forced], log: list) -> None:
+    """EQUIVALENT: PRE's "done" where the engine rests at PRE and Ruby, at its
+    Track step, does something else. Ruby logs no such decision, so the sync
+    rule never takes a Ruby action for it; the forced decisions after it are
+    queued as usual, and the action that follows may be one of them (a Track
+    pass with nothing to lay)."""
+    if get_decision_phase_py(state) == K.DPHASE_BUY_PRIVATE_PRE:
+        history: list = []
+        assert DRIVER.apply_action(state, K.BUY_PRIVATE_PRE_DONE, history) != STATUS_INVALID
         _queue(pending, history[1:])
         log += history
 
@@ -238,12 +277,29 @@ def _closes_track(record) -> bool:
     return host['type'] == 'pass' and record['pre']['step'] == 'Track' and not host.get('auto_actions')
 
 
-def _acts_at_open_track(record) -> bool:
-    """A private's purchase, DR's exchange, or MF's port tile at a Track step
-    Ruby keeps open after the lay, which the engine has left."""
-    host = record['action']
-    by_private = host['type'] in ('lay_tile', 'buy_shares') and host['entity_type'] == 'company'
-    return record['pre']['step'] == 'Track' and (host['type'] == 'buy_company' or by_private)
+def _is_private_move(action) -> bool:
+    """A corp's purchase, DR's exchange, or a private's tile."""
+    return action['type'] == 'buy_company' or (
+        action['type'] in ('lay_tile', 'buy_shares') and action['entity_type'] == 'company')
+
+
+def _forced_at_ruby_step(pending: list[Forced], action, pre, track_open: bool) -> int | None:
+    """The pending forced decision a human's private move interrupts, or None:
+    the driver forced it for lack of a choice in the engine's action space, as
+    it can a must-buy's one source, where Ruby still waits and joins the
+    private's move to its step. With Track kept open after the lay it is the
+    first, as the engine has left TRACK."""
+    if not _is_private_move(action) or pre.get('round') != 'OR' or pre['step'] not in OVERRIDE_STEP_PHASE:
+        return None
+    if track_open:
+        return 0 if pending else None
+    phase = OVERRIDE_STEP_PHASE[pre['step']]
+    return next((j for j, forced in enumerate(pending) if forced[0] == phase), None)
+
+
+def _private_path(phase: int, pre) -> str:
+    """How a private's move replays: its slot's phase, or the override at Ruby's step."""
+    return f"override at {pre['step']}" if phase == PRIVATE_OVERRIDE else _phase_name(phase).removeprefix('DPHASE_')
 
 
 def replay(fixture: str) -> Progress:
@@ -301,20 +357,27 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
         log: list = []
         if track_open and _closes_track(record):  # EQUIVALENT: Track after the lay; no decision of its own
             singles = []
-        elif track_open and _acts_at_open_track(record):
-            return stop('unsupported', f'{where}: Ruby acts at its Track step kept open after the lay, '
-                                       f'which the engine has left (engine-design §10.2)')
-        track_open = False
+        was_open, track_open = track_open, False
         try:
             for action, pre in singles:
                 actors = {ids.index(player) for player in pre['active_players']}
                 decisions = consume(pending, lambda phase: map_action(action, pre, phase, state), actors)
                 if decisions is None:
+                    forced = _forced_at_ruby_step(pending, action, pre, was_open)
+                    if forced is not None:  # EQUIVALENT: Ruby still waits there; back up to it
+                        state._array[:] = pending[forced][3]
+                        pending.clear()
+                        if deferred is not None and not held and not matches(deferred, state):
+                            return progress
+                        deferred = None
+                        progress.private_moves['backed up'] += 1
                     decisions = map_action(action, pre, get_decision_phase_py(state), state)
                     if pending:  # Ruby skipped these forced decisions without logging them
                         pending.clear()
                         if deferred is not None and not held and not matches(deferred):
                             return progress
+                    if decisions and _is_private_move(action):
+                        progress.private_moves[_private_path(decisions[0][0], pre)] += 1
                 if error := _apply(state, decisions, actors, pending, log, held):
                     progress.stop, progress.detail = 'mismatch', f'{where}: {error}'
                     return progress
@@ -360,6 +423,7 @@ def test_replay_runs_end_to_end(fixture):
     by_hand = ENDINGS[fixture] == 'manually_ended'
     assert final['end_reason'] == ENDINGS[fixture]
     assert progress.stop is None and progress.matched == progress.records - 1 - by_hand, str(progress)
+    assert progress.private_moves == PRIVATE_PATHS[fixture]
     state, ids = progress.state, [p['id'] for p in extract['players']]
     assert is_terminal_py(state) != by_hand
     assert END_REASONS[TURN.end_reason(state)] == (None if by_hand else ENDINGS[fixture])
@@ -563,8 +627,9 @@ def test_sync_drops_forced_decisions_ruby_skipped_before_a_logged_one():
 
 
 def test_sync_returns_the_rest_of_a_partly_forced_action():
-    pending = [(K.DPHASE_TRACK, K.TRACK_BUY_PRIVATE + 2, 3)]
-    decisions = [(K.DPHASE_TRACK, K.TRACK_BUY_PRIVATE + 2), (K.DPHASE_PRIVATE_PRICE, K.PRIVATE_PRICE_EXACT + 80)]
+    pending = [(K.DPHASE_BUY_PRIVATE_POST, K.BUY_PRIVATE_POST_PRIVATE + 2, 3)]
+    decisions = [(K.DPHASE_BUY_PRIVATE_POST, K.BUY_PRIVATE_POST_PRIVATE + 2),
+                 (K.DPHASE_PRIVATE_PRICE, K.PRIVATE_PRICE_EXACT + 80)]
     assert consume(pending, lambda phase: decisions, {3}) == decisions[1:] and pending == []
 
 
@@ -593,6 +658,44 @@ def test_the_harness_passes_for_an_sr_turn_ruby_skips():
     assert PLAYERS[1].passed(state) and PRIVATES[D.PRIVATE_DR].owner(state) == K.OWNER_PLAYER + 1
     par = [(K.DPHASE_STOCK, K.STOCK_PAR + CORP['KO']), (K.DPHASE_PAR, 0)]
     assert _apply(state, par, {2}, pending, log, []) is None and CORPS[CORP['KO']].president(state) == 2
+
+
+def test_the_harness_applies_pre_done_before_rubys_other_actions():
+    """KO's president owns DR, so the turn opens at PRE. Ruby logs a lay or a
+    pass at its Track step, and the harness applies "done" first, not queued
+    for the sync rule; the forced decisions after it are, and a Track pass
+    with nothing to lay is one of them."""
+    state = fresh_game(3)
+    end_auction(state, [0])
+    hold(state, CORP['KO'], {0: 6})
+    TURN.set_or_count(state, 1)
+    setup_operating_round_py(state)
+    DRIVER.advance(state)
+    assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE
+    pending: list[Forced] = []
+    log: list = []
+    assert _apply(state, [(K.DPHASE_TRACK, K.TRACK_PASS)], {0}, pending, log, []) is None
+    assert [(phase, action_id) for row, phase, action_id in log][:2] == [
+        (K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_DONE), (K.DPHASE_TRACK, K.TRACK_PASS)]
+    assert pending and pending[0][:2] == (K.DPHASE_TOKEN, K.TOKEN_PASS)
+    assert PRIVATES[D.PRIVATE_DR].owner(state) == K.OWNER_PLAYER  # the exchange waits for Ruby to log it
+
+
+def test_pre_keeps_its_own_move_and_compares_as_rubys_track():
+    """A private's move while the engine is at PRE takes PRE's slot; ``compare``
+    takes PRE for Ruby's Track, as ``test_replay_runs_end_to_end`` exercises."""
+    state = fresh_game(3)
+    end_auction(state, [0])
+    hold(state, CORP['KO'], {0: 6})
+    TURN.set_or_count(state, 1)
+    setup_operating_round_py(state)
+    DRIVER.advance(state)
+    pending: list[Forced] = []
+    log: list = []
+    assert _apply(state, [(K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_DR)], {0}, pending, log, []) is None
+    assert [(phase, action_id) for row, phase, action_id in log] == [(K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_DR)]
+    assert TURN.step(state) == K.STEP_BUY_PRIVATE_PRE and PRIVATES[D.PRIVATE_DR].owner(state) == K.OWNER_CLOSED
+    assert RUBY_STEPS[K.STEP_BUY_PRIVATE_PRE] == 'Track'
 
 
 def test_sync_matches_only_the_forced_player():

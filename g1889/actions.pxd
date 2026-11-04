@@ -95,8 +95,11 @@ cdef bint in_emergency(GameState state, int corp) noexcept nogil
 cdef bint can_go_bankrupt(GameState state, int corp) noexcept nogil
 
 # Privates (§5.1, §5.3): purchases by the operating corp, DR's exchange, MF's
-# port tile (PORT's ids), and ER's lays on C4 sorted like TILE's.
+# port tile (PORT's ids), and ER's lays on C4 sorted like TILE's; whether a
+# corp's turn opens at BUY_PRIVATE_PRE, and replay's use of its slots elsewhere.
 cdef bint can_buy_private(GameState state, int corp, int private) noexcept nogil
+cdef bint buy_private_pre_open(GameState state) noexcept nogil
+cdef bint override_slot_legal(GameState state, int action_id) noexcept nogil
 cdef bint can_exchange_dr(GameState state, int player) noexcept nogil
 cdef int port_lays(GameState state, uint16_t* ids) noexcept nogil
 cdef int er_candidates(GameState state, LayCandidate* buf) noexcept nogil

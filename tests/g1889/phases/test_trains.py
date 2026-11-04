@@ -39,7 +39,7 @@ from g1889.entities.turn import TURN
 
 from tests.g1889.phases.conftest import (
     apply_and_verify, at_or, choose_train, depot, enter_operating_round, enter_phase, exact_id, from_corp,
-    give_train, hold, lay, legal_ids, opened, policy_ids, pool, set_cash, trade, train_choices,
+    give_train, hold, lay, legal_ids, opened, past_pre, policy_ids, pool, set_cash, trade, train_choices,
 )
 
 AR, IR, SR, KO, TR, KU, UR = range(D.NUM_CORPS)
@@ -47,11 +47,6 @@ PAR_65, PAR_100 = 0, 5
 T2, T3, T4, T5, T6, TD = range(D.NUM_TRAIN_TYPES)
 PHASE_3, PHASE_4, PHASE_5, PHASE_6, PHASE_D = D.GAME_PHASE_3, D.GAME_PHASE_4, D.GAME_PHASE_5, D.GAME_PHASE_6, \
     D.GAME_PHASE_D
-
-
-def private_buys(state):
-    """BUY_TRAIN's buy-private slots: in phases 3-4 the corp may buy privates too."""
-    return [K.BUY_TRAIN_BUY_PRIVATE + p for p in A.purchasable_privates_py(state)]
 
 
 def trains_of(state, corp):
@@ -225,6 +220,7 @@ class TestBuyTrain:
         TRAINS.set_depot(state, T3, 0)
         TRAINS.set_pool(state, T3, D.TRAIN_COUNT[T3] - 2)
         enter_operating_round(state)
+        past_pre(state)
         result = apply_and_verify(state, K.TRACK_PASS)
         assert TRAINS.depot_types(state) == 1 << T4 and (K.DPHASE_BUY_TRAIN, K.BUY_TRAIN_PASS) in result.forced
         assert trains_of(state, KO) == {'2': 2, '3': 2} and PHASE.current(state) == PHASE_3
@@ -241,9 +237,9 @@ class TestBuyTrain:
         enter_operating_round(state)
         to_buy_train(state)
         assert TURN.operating_corp(state) == KO and A.must_buy_train_py(state)
-        assert train_choices(state) == [depot(T3), pool(T2), pool(T3), from_corp(IR, T2), *private_buys(state)]
+        assert train_choices(state) == [depot(T3), pool(T2), pool(T3), from_corp(IR, T2)]
         set_cash(state, KO, 100)  # the pool's 2 alone is in reach, and IR's train
-        assert train_choices(state) == [pool(T2), from_corp(IR, T2), *private_buys(state)]
+        assert train_choices(state) == [pool(T2), from_corp(IR, T2)]
 
     def test_a_must_buy_the_treasury_cannot_fund_is_an_emergency(self):
         """Short of every depot and pool train, KO may buy the cheapest with its
@@ -381,7 +377,7 @@ class TestPhases:
     def test_the_first_3_opens_phase_3_and_the_private_window(self):
         """Buying the depot's last 2 makes 3s available, and the first 3
         starts phase 3: nothing rusts, the limit stays 4, the set's length
-        changes when the next SR ends, and BUY_PRIVATE follows the pass."""
+        changes when the next SR ends, and BUY_PRIVATE_POST follows the pass."""
         state = at_or(3)
         hold(state, KO, {0: 6}, par=PAR_100)
         TRAINS.set_depot(state, T2, 1)
@@ -394,7 +390,8 @@ class TestPhases:
         assert PHASE.current(state) == PHASE_3 and TRAINS.limit(state) == 4 and trains_of(state, KO) == {'2': 1, '3': 1}
         assert TURN.or_count(state) == 1  # the set's length changes when the next SR ends
         apply_and_verify(state, K.BUY_TRAIN_PASS)
-        assert TURN.step(state) == K.STEP_BUY_PRIVATE and K.BUY_PRIVATE_PRIVATE + D.PRIVATE_SIR in legal_ids(state)
+        assert TURN.step(state) == K.STEP_BUY_PRIVATE_POST
+        assert K.BUY_PRIVATE_POST_PRIVATE + D.PRIVATE_SIR in legal_ids(state)
 
     def test_the_first_4_rusts_every_2_in_the_pool_too(self):
         state = at_or(3)

@@ -89,17 +89,17 @@ from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, GameState,
 cdef enum:
     # GLOBAL (§5.3)
     G_PHASE = 1                     # + decision phase
-    G_ROUND = 19                    # + round: auction, stock, operating
-    G_GAME_PHASE = 22               # + game phase
-    G_FIRST_SR = 28
-    G_OR_NUM = 29                   # + the OR's number in its set - 1
-    G_OR_COUNT = 32
-    G_BANK_CASH = 33
-    G_BANK_BROKEN = 34
-    G_PLAYERS = 35                  # + player count - 3
-    G_PASS_PAYOUTS = 38
-    G_DISCOUNT = 39
-    G_TRAIN_SOURCE = 40             # + the depot, the pool, a corp
+    G_ROUND = 20                    # + round: auction, stock, operating
+    G_GAME_PHASE = 23               # + game phase
+    G_FIRST_SR = 29
+    G_OR_NUM = 30                   # + the OR's number in its set - 1
+    G_OR_COUNT = 33
+    G_BANK_CASH = 34
+    G_BANK_BROKEN = 35
+    G_PLAYERS = 36                  # + player count - 3
+    G_PASS_PAYOUTS = 39
+    G_DISCOUNT = 40
+    G_TRAIN_SOURCE = 41             # + the depot, the pool, a corp
 
     # PRICE and DIVIDEND (§5.4)
     PR_KIND = 1                     # + BID, PAR, TRAIN_PRICE, PRIVATE_PRICE
@@ -517,7 +517,7 @@ cdef void _fill_price(GameState state, float* row, const _Context* x) noexcept n
     each legal id at PR_AMOUNTS + id (``price_amount``; at PAR the President's
     Certificate, twice the par; BID's drop has none), the reference price, and
     the payer's funds."""
-    cdef uint16_t ids[62]  # MAX_ACTION_SIZE
+    cdef uint16_t ids[53]  # MAX_ACTION_SIZE
     cdef int count = enumerate_legal_actions(state, ids)
     cdef ActionInfo info
     cdef int i
@@ -844,7 +844,7 @@ cdef void _fill_train_outcomes(GameState state, GameState scratch, float[:, ::1]
     t (slot 10) or a D for a traded t (slot 11), and at DISCARD one fewer
     (slot 12). What a purchase does to the phase is left out, and no train is
     added past MAX_ROUTES, where the solver aborts (§4)."""
-    cdef uint16_t ids[62]  # MAX_ACTION_SIZE
+    cdef uint16_t ids[53]  # MAX_ACTION_SIZE
     cdef int count = enumerate_legal_actions(state, ids)
     cdef int c = x.corp
     cdef ActionInfo info
@@ -912,4 +912,4 @@ assert PL_SEAT + 5 == PL_PRIORITY and PL_EMERGENCY_SOLD + 1 == TW_PLAYER
 assert <int>TOKEN_DIM == max(TW_GLOBAL, TW_PRICE, TW_DIVIDEND, TW_CORP, TW_PRIVATE, TW_TRAIN, TW_HEX, TW_CANDIDATE,
                              TW_PLAYER)
 # The fills' buffers are sized with literals.
-assert MAX_LAY_CANDIDATES == 15 and NUM_CORPS == 7 and MAX_ACTION_SIZE == 62
+assert MAX_LAY_CANDIDATES == 15 and NUM_CORPS == 7 and MAX_ACTION_SIZE == 53

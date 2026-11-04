@@ -55,13 +55,8 @@ def _graph_differences(state, c: int, ruby: dict) -> list[str]:
 
 
 def _ids(state) -> list[int]:
-    """The legal ids but the privates' interjection slots, which
-    ``test_private_oracles.py`` checks."""
     ids = np.zeros(K.MAX_ACTION_SIZE, dtype=np.uint16)
-    phase = A.get_decision_phase_py(state)
-    return [int(i) for i in ids[:A.enumerate_legal_actions_py(state, ids)]
-            if A.decode_action_py(phase, int(i)).type not in (A.ACTION_BUY_PRIVATE, A.ACTION_DR_EXCHANGE,
-                                                               A.ACTION_MF_PORT)]
+    return [int(i) for i in ids[:A.enumerate_legal_actions_py(state, ids)]]
 
 
 def _or_snapshots(fixture):

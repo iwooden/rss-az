@@ -48,7 +48,8 @@
 - ``enter_operating_round(state, or_num)``: an OR on hand-built holdings and
   map, through ``setup_operating_round_py`` and ``DRIVER.advance``, verified
   as ``apply_and_verify`` does; ``at_or``, ``lay``, ``set_cash``,
-  ``enter_phase``, and ``give_train`` build its state.
+  ``enter_phase``, and ``give_train`` build its state, and ``past_pre`` leaves
+  BUY_PRIVATE_PRE, where a turn with a private's slot legal opens.
 """
 
 import numpy as np
@@ -79,13 +80,14 @@ HEX = {hex_id: h for h, hex_id in enumerate(D.HEX_IDS)}
 TILE = {name: t for t, name in enumerate(D.TILE_NAMES)}
 # The steps of a corp's turn, from TURN_START to TURN_END.
 BUY_TRAIN_STEPS = (K.STEP_BUY_TRAIN, K.STEP_SELECT_TRAIN, K.STEP_TRAIN_PRICE, K.STEP_EMERGENCY_SELL_AMOUNT)
-TURN_STEPS = (K.STEP_TRACK, K.STEP_TILE, K.STEP_TOKEN, K.STEP_ROUTE, K.STEP_DIVIDEND, *BUY_TRAIN_STEPS,
-              K.STEP_DISCARD, K.STEP_BUY_PRIVATE, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS, K.STEP_PORT)
+TURN_STEPS = (K.STEP_BUY_PRIVATE_PRE, K.STEP_TRACK, K.STEP_TILE, K.STEP_TOKEN, K.STEP_ROUTE, K.STEP_DIVIDEND,
+              *BUY_TRAIN_STEPS, K.STEP_DISCARD, K.STEP_BUY_PRIVATE_POST, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS,
+              K.STEP_PORT)
 # The sub-phases that return to the step they interject in (``return_step``).
 RETURNING_STEPS = (K.STEP_DISCARD, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS, K.STEP_PORT)
 OR_STEPS = (K.STEP_OR_START, K.STEP_TURN_START, *TURN_STEPS, K.STEP_TURN_END, K.STEP_OR_END)
 # Where a turn's emergency sales may stand: from BUY_TRAIN to the turn's end, or a bankruptcy's game end.
-EBUY_STEPS = (*BUY_TRAIN_STEPS, K.STEP_DISCARD, K.STEP_BUY_PRIVATE, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS,
+EBUY_STEPS = (*BUY_TRAIN_STEPS, K.STEP_DISCARD, K.STEP_BUY_PRIVATE_POST, K.STEP_PRIVATE_PRICE, K.STEP_ER_BONUS,
               K.STEP_TURN_END, K.STEP_GAME_OVER)
 
 
@@ -336,6 +338,12 @@ def choose_train(state, choice, msg='', expected_status=STATUS_OK):
     return apply_factored(state, first, phase, second, msg or str(choice), expected_status)
 
 
+def past_pre(state, msg=''):
+    """Apply BUY_PRIVATE_PRE's "done" if the corp's turn opened there; TRACK follows."""
+    if TURN.step(state) == K.STEP_BUY_PRIVATE_PRE:
+        apply_and_verify(state, K.BUY_PRIVATE_PRE_DONE, msg)
+
+
 def exact_id(state, amount):
     """The exact-amount id of ``amount`` in the current BID, TRAIN_PRICE, or PRIVATE_PRICE."""
     return K.PHASE_ACTION_SIZES[A.get_decision_phase_py(state)] + amount
@@ -390,7 +398,7 @@ def assert_invariants(state, msg=''):
         assert (TURN.pending_private(state) >= 0) == (step == K.STEP_PRIVATE_PRICE), f'{msg}: pending private'
         assert (TURN.pending_seller(state) >= 0) == (step == K.STEP_ER_BONUS), f'{msg}: pending seller'
         assert (TURN.return_step(state) >= 0) == (step in RETURNING_STEPS), f'{msg}: return step'
-        if step == K.STEP_PORT:  # in an SR or at TRACK, MF's owner lays its port tile
+        if step == K.STEP_PORT:  # in an SR or an OR, MF's owner lays its port tile
             mf = PRIVATES[D.PRIVATE_MF]
             assert mf.owner(state) == K.OWNER_PLAYER + active and not mf.flags(state) & 1, f'{msg}: PORT for MF'
         if TURN.round(state) == K.ROUND_STOCK:
