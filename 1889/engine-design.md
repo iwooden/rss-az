@@ -6,8 +6,9 @@ same day. Every sub-step, 6.1 through 6.10, is implemented, with "As built"
 notes where the code departs from or refines this design: the engine plays
 complete games, and `games/g1889.py` wires its engine half into the adapter
 (Section 11). 6.10 refactored the decision phases (Section 12, item 7).
-A code review of `g1889/` paused after three runs (Section 13). Step 7 adds
-extraction.
+A code review of `g1889/` paused after three runs (Section 13). Step 7 added
+extraction ([`extraction-design.md`](extraction-design.md)), so Section 11's
+raising extraction callables describe the adapter as step 6 left it.
 
 The rules are [`1889-rules.md`](1889-rules.md). Where they are silent or
 disagree with 18xx.games, the engine follows 18xx.games (rules §14,

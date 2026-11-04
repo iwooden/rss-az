@@ -150,3 +150,7 @@ cdef class GameState:
 
     cpdef void initialize_game(
         self, int num_players, int seed=*, int max_players=*, int priority_player=*)
+
+
+# ``view`` repointed at a raw row, or a new state over it (the extraction batches).
+cdef GameState view_row(GameState view, object row)

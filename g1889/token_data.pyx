@@ -78,7 +78,7 @@ from g1889.entities.turn cimport (
     turn_route_revenue, turn_sr_bought_corp, turn_sr_sold_mask, turn_turn,
 )
 from g1889.routes.solver cimport MAX_ROUTES, route_max
-from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, GameState, get_storage_player_capacity
+from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, GameState, view_row
 
 
 # =============================================================================
@@ -401,14 +401,11 @@ cdef int resolve_max_players(int num_players, int max_players, str func) except 
 
 
 cdef GameState bind_row(GameState view, object row, int max_players, str func):
-    """``view`` repointed at the raw ``row``, or a new state over it if None,
-    after the player-count checks; ``max_players`` 0 is the row's count."""
-    cdef int num_players = int(row[LAYOUT.global_offset + GLOBALS.num_players])
-    cdef int capacity = get_storage_player_capacity(len(row))
-    resolve_max_players(num_players, max_players, func)
-    if view is None:
-        return GameState.from_buffer(row, num_players, max_players=capacity)
-    view.rebind(row, num_players, max_players=capacity)
+    """``view`` repointed at the raw ``row``, or a new state over it if None
+    (``view_row``), after the player-count checks; ``max_players`` 0 is the
+    row's count."""
+    view = view_row(view, row)
+    resolve_max_players(turn_num_players(view), max_players, func)
     return view
 
 

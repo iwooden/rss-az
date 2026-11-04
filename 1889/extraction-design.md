@@ -2,7 +2,9 @@
 
 Status: design for step 7 of [`pipeline-refactor.md`](pipeline-refactor.md),
 dated 2026-11-02; the user accepted every recommendation in Section 13 on
-2026-11-03. Implementation follows Section 11's sub-steps.
+2026-11-03. Step 7 is implemented (Section 11): 7.1a 42126fc, 7.1b 7678a29,
+7.2 31d0874, 7.3 442078e, and 7.4, whose profile is in Section 9. The token
+contract step 8 reads is [`token-data-1889.md`](../token-data-1889.md).
 
 Step 7 fills the extraction half of `games/g1889.py`, whose callables raise
 `NotImplementedError` and whose sizes are `NO_SIZE` (`games/g1889.py:49-50`,
@@ -402,7 +404,7 @@ operating corp is in its turn, which is all the row keeps.
 |---|---|---|---|
 | reach relations, CORP 40-43, HEX 94-101 | graph block | every state | the prologue |
 | CORP 34, 35 | `route_cache`, `route_available` | every state | the prologue |
-| HEX 102 | `lay_candidates` per hex (semi-restrictive walks) | TRACK | **Test:** about TRACK's enumeration, 1.5 µs median (engine-design §5.4) |
+| HEX 102 | `lay_candidates` per hex (semi-restrictive walks) | TRACK | **Measured:** 1.0 µs median, up to 127 µs (Section 9) |
 | HEX 104 | scratch token, `route_max` | TOKEN | Section 9 |
 | CANDIDATE 101-107 | scratch lay, GRAPH × 7, `route_max` × 1 | TILE, ER_BONUS | Section 9 |
 | TRAIN 10-12 | scratch train change, `route_max` | SELECT_TRAIN, DISCARD | Section 9 |
@@ -662,6 +664,90 @@ sparse 1.33 µs, dense 1.90 µs.
   time limit is planned (engine-design §8's conclusion); recheck on
   self-play states once step 8 trains.
 
+**Measured (7.4)** on 216,959 returned decisions of 300 random playouts
+(100 per player count, capacity 5, uniform over the policy set with the
+self-play flags). Each row is saved before its fill, so its caches ride from
+the previous decision as on a live state or a pool row (Section 4), and is
+timed on fresh copies in game order, on one pinned core of the local Ryzen 9
+9950X3D, in the development build. A single fill is the row's minimum over
+three passes and includes two Python calls; a batch is 64 rows of one phase,
+per state, the median over the batches, against single calls on the same
+rows. Scripts and outputs: `scratchpad/g1889_74/` (`profile.py`,
+`tails.py`, `batch_vs_single.py` against HEAD's build in `ref/`,
+`outputs.py`, `trainer_rate.py`). In µs:
+
+| Phase (share) | Tokens + sparse: median | p99 | p99.9 | Max | Dense, single | Batch of 64 | Single, same rows |
+|---|---|---|---|---|---|---|---|
+| all | 4.91 (mean 6.84) | 29.9 | 76.6 | 689 | 2.05 | 5.46 | 5.70 |
+| STOCK (60.3%) | 4.82 | 5.78 | 8.9 | 40 | 2.00 | 4.55 | 4.83 |
+| TRACK (9.1%) | 7.78 | 31.0 | 56.9 | 244 | 2.20 | 8.71 | 8.62 |
+| BUY_TRAIN (7.2%) | 5.74 | 27.3 | 76.0 | 352 | 2.67 | 7.00 | 7.00 |
+| DIVIDEND (6.4%) | 11.2 | 49.2 | 121 | 368 | 8.46 | 13.4 | 13.2 |
+| TILE (5.1%) | 11.8 | 90.7 | 248 | 689 | 2.35 | 15.6 | 16.4 |
+| TOKEN (1.2%) | 14.9 | 54.3 | 162 | 365 | 9.28 | 20.7 | 21.0 |
+| SELECT_TRAIN (0.8%) | 8.39 | 32.4 | 82.2 | 99 | 2.11 | 10.8 | 11.3 |
+| DISCARD (0.2%) | 14.3 | 39.4 | 54.5 | 60 | 7.67 | 16.8 | 17.2 |
+| ER_BONUS (0.1%) | 14.9 | 26.7 | 33.3 | 34 | 2.58 | 14.0 | 15.0 |
+| the nine others (9.7%) | 4.8-5.4 | ≤ 10.3 | ≤ 12.3 | ≤ 13 | 1.9-2.5 | 4.4-5.8 | 4.7-6.0 |
+
+| | Target | Measured |
+|---|---|---|
+| Tokens + sparse records: median | ≤ 10 µs | 4.91 µs: met |
+| The same: p99 | ≤ 100 µs | 29.9 µs: met |
+| TILE states: median | ≤ 25 µs | 11.8 µs: met |
+| Batch, per state | ≤ single | 5.46 against 5.70 µs in game order; 0.4-1.0 µs below at 8 rows, the leaf batch: met, after the fix below |
+| Dense planes, per state | about 10 µs | 2.05 µs single and 3.07 µs in 64-row batches, where the planes stay in cache; 8.4 µs at the trainer's 512 |
+
+- **Batches** repoint one view per row with C-level checks
+  (`g1889.state.view_row`). Going through `GameState.rebind`, whose
+  `_bind_buffer` runs `np.asarray` and Python-level checks, costs about
+  0.35 µs per bind, twice per row (tokens, then relations), which cancels
+  the batch's savings; RSS's batches still rebind that way
+  (`core/token_data_v3.pyx`, `get_token_data_batch`). Where a batch reads
+  0.1-0.2 µs above single calls (TRACK, DIVIDEND), the cause is output
+  traffic: 64 rows write 3.1 MB of tokens and records, past the core's 1 MB
+  L2, where single calls rewrite one 49 KB buffer.
+- **The TILE tail** (p99 91 µs, max 689 µs) is the candidates' work, not the
+  prologue: a refill with fresh caches costs the same. The slowest are maps
+  in phases 5-D with six or seven corps' networks, where the decision corp
+  runs two long trains (3 + 4, 5 + D, D + D) or the hex has 9-14
+  candidates: 5-14 candidates at 20-70 µs each for the refreshes and the
+  solve. TILE is 5% of decisions, so the overall p99 stays at 30 µs.
+- **The TRACK tail** (p99 31 µs, max 244 µs) is mostly the prologue: the
+  slowest TRACK rows refill in 4-8 µs with fresh caches, so up to 190 µs
+  goes to recomputing stale caches on phase-D maps: every corp's at an OR's
+  first turn, and the buyer's and seller's after a train changes hands.
+  HEX 102 adds the rest: `lay_candidates` on all 52 hexes runs the full
+  semi-restrictive scan where TRACK's legality stops at the first candidate
+  (`can_lay`). 7.3's before and after put it at 1.0 µs median, p99 19 µs,
+  and max 127 µs per TRACK state; here a refill with fresh caches reaches
+  90 µs at a state with 23 candidates in all.
+- **DIVIDEND, TOKEN, and DISCARD** medians (11-15 µs) are the prologue's:
+  the lay, token, or purchase before them marks caches stale (Section 4).
+
+**Trainer** (pipeline-refactor §9's **Test:**). The CPU half of
+`Trainer.train_step` at batch 512: `ReplayBuffer.sample_into` into the
+trainer's own scratch, the relation fill, and `_fill_token_batch`, on 1M-row
+buffers tiled from the playout rows, stored with fresh caches as self-play
+stores its roots; the sparse rows call `fill_relations_sparse_batch` on the
+sampled rows instead (Section 13, item 11's option (b)). Same core, ms per
+batch, three runs:
+
+| | Sample | Relations | Tokens | Total | Samples/s | Relations per batch |
+|---|---|---|---|---|---|---|
+| 1889, dense | 0.56 | 4.3-4.5 | 3.6 | 8.4-8.7 | 59,000-61,000 | 115.5 MB |
+| 1889, sparse | 0.50 | 1.10 | 3.3-3.4 | 4.9-5.0 | 102,000-104,000 | 4.2 MB |
+| RSS v3, dense | 0.5-0.6 | 1.3-1.5 | 1.5-1.6 | 3.4-3.7 | 137,000-152,000 | 21.4 MB |
+| RSS v3, sparse | 0.4-0.5 | 0.9 | 1.4-1.5 | 2.8-2.9 | 179,000-186,000 | 0.5 MB |
+
+The CPU keeps up with either transport: 1,000 steps cost 8.5 s dense or 5 s
+sparse, against RSS v3's 3.4 s. Dense's extra 3.4 ms is writing 115 MB of
+planes, which spill to memory at 512 rows. The GPU side was not measured
+(CPU only): those planes also cross to the device every step and become
+462 MB of fp32 in a v3-style model, and at 5.4 times RSS's bytes per sample
+the local host's fp32 limit of about 150 RSS samples would come to about 28.
+Section 13, item 11's recommendation (b) stands.
+
 ## 10. Testing plan
 
 1. **Invariants** (`tests/g1889/test_extraction.py`, on random-playout
@@ -741,6 +827,11 @@ on its existing fixture.
 | 7.3 | PRICE and DIVIDEND rows; HEX 102-104; TRAIN 10-12; CORP sale prices | item 2 for the rest |
 | 7.4 | the oracle tests; the profile, recorded in this document; `token-data-1889.md` as the contract step 8 reads; status lines here and in pipeline-refactor | oracles equal at every snapshot; Section 9's targets met, or the gap recorded with its cause |
 | 7b | build distance and the §8 planes, after step 8's first run | Section 8's validation; its own design note first |
+
+**Status:** 7.1-7.4 are implemented (7.1a 42126fc, 7.1b 7678a29, 7.2
+31d0874, 7.3 442078e, then 7.4), each meeting its acceptance: the oracles
+equal Ruby at every snapshot (`tests/g1889/replay/test_extraction_oracles.py`),
+and Section 9's targets are met. 7b waits for step 8's first run.
 
 ## 12. Where the blueprint is wrong or underspecified
 
@@ -841,7 +932,9 @@ recommendation on 2026-11-03.
     `fill_relations_sparse_batch`, 8 KB per sample. *Recommend (b)* in step
     8, chosen per game so RSS's training is unchanged, unless 7.4's trainer
     profile shows dense keeping up and fp32 dense batches fit locally. Step 7
-    provides both and proves them equal.
+    provides both and proves them equal. **7.4:** the CPU keeps up with
+    dense at half sparse's rate, but dense ships 115 MB per batch of 512, so
+    (b) stands (Section 9).
 12. **Build distance timing.** (a) In step 7. (b) 7b, after step 8's first
     run, with Section 8's hooks. *Recommend (b).*
 13. **Module names.** *Recommend* `g1889/token_data` and `g1889/relations`,

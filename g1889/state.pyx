@@ -315,6 +315,27 @@ cdef _bind_buffer(GameState state, object buffer, int num_players, int max_playe
     state.max_players = max_players
 
 
+cdef GameState view_row(GameState view, object row):
+    """``view`` repointed at the raw ``row``, or a new state over it if None, at
+    the player count the row stores and the capacity its width implies. For
+    loops over raw rows (the extraction batches): the checks are C-level and
+    nothing dispatches to Python, which ``rebind`` costs per row."""
+    cdef cnp.ndarray arr = row
+    cdef int capacity, num_players
+    assert (cnp.PyArray_TYPE(arr) == cnp.NPY_INT16 and cnp.PyArray_ISNOTSWAPPED(arr) and cnp.PyArray_NDIM(arr) == 1
+            and cnp.PyArray_IS_C_CONTIGUOUS(arr) and cnp.PyArray_ISWRITEABLE(arr)), \
+        f"expected a writeable, C-contiguous 1-D int16 row, got {arr.dtype} of shape {(<object>arr).shape}"
+    capacity = get_storage_player_capacity(<int>cnp.PyArray_DIM(arr, 0))
+    num_players = (<int16_t*>cnp.PyArray_DATA(arr))[LAYOUT.global_offset + GLOBALS.num_players]
+    _validate_storage_players(num_players, capacity)
+    if view is None:
+        view = GameState(num_players, _alloc=False, max_players=capacity)
+    view._array = arr
+    view._data = <int16_t*>cnp.PyArray_DATA(arr)
+    view.max_players = capacity
+    return view
+
+
 cdef inline int _seeded_priority(int seed, int num_players) noexcept nogil:
     """The seed's first player: splitmix64's finalizer, reduced mod num_players."""
     cdef uint64_t x = <uint64_t>seed + 0x9E3779B97F4A7C15ULL

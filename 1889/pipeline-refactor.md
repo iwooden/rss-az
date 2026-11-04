@@ -420,9 +420,8 @@ adapter:
 
 It runs for RSS from step 1 and catches 1889 contract slips as soon as the
 adapter exists. Since step 6 (engine-design 6.9) it runs every engine check
-for 1889, with the self-play flags and with them off, and skips the
-extraction checks, whose 1889 callables raise until step 7, with that
-reason.
+for 1889, with the self-play flags and with them off, and since step 7
+(extraction-design 7.1) the extraction checks too.
 
 ### 6.4 Boundary test
 
@@ -662,7 +661,9 @@ Engine track, independent of the pipeline track:
 7. Feature extraction (milestone 4), the extraction half of
    `games/g1889.py`, and extraction conformance for 1889. The engine half and
    its conformance landed with step 6.
-   Design: [`extraction-design.md`](extraction-design.md).
+   Design: [`extraction-design.md`](extraction-design.md). Implemented
+   2026-11-03 (7.1a 42126fc, 7.1b 7678a29, 7.2 31d0874, 7.3 442078e, and
+   7.4); the token contract is [`token-data-1889.md`](../token-data-1889.md).
 
 Then both tracks join:
 
@@ -691,9 +692,12 @@ block 1889 only at step 7, so the two tracks can alternate.
 - **Settled (step 4):** Replay metadata records the game. Resume skips
   another game's buffer with a warning, as it skips one with mismatched
   shapes, and metadata without the field is RSS's.
-- **Test:** Replay rebuilds tokens and relations every time a row is sampled.
-  Check that the trainer keeps up with 1889 extraction: step 7 profiles it
-  with the candidate features (extraction-design 7.4), and 7b again once
+- **Settled (step 7):** Replay rebuilds tokens and relations every time a
+  row is sampled, and the trainer keeps up with 1889 extraction. At batch
+  512 on one CPU core, sampling and extraction take 8.4-8.7 ms with dense
+  planes and 4.9-5.0 ms with sparse records, against RSS v3's 3.4-3.7 ms
+  (extraction-design §9), so sparse records stay step 8's transport
+  (extraction-design §13, item 11). **Test:** 7b profiles it again once
   build distance lands (extraction-design §8).
 - **Open:** What 1889 live play still needs (recorded 2026-11-02; no step
   owns it yet):
