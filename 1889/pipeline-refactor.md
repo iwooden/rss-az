@@ -669,6 +669,7 @@ Then both tracks join:
 
 8. `nn/transformer-1889.py` v0 without build-distance planes and a first
    training run, then the build-distance comparison (milestone 6).
+   Design: [`model-design.md`](model-design.md).
 
 Steps 0-1 are small, and they fix the contract the engine targets. Steps 2-4
 block 1889 only at step 7, so the two tracks can alternate.
