@@ -10,7 +10,9 @@ that, a Ruby action that matches a forced decision applied since the last sync,
 by the same player and as taken at that decision's row, is consumed instead of
 applied; one that matches none means Ruby skipped the pending forced decisions,
 so they are dropped too. States are compared whenever no forced decision is
-pending. A chat, note, or programmed move's setting (``no_decision``) leaves
+pending, and a record whose forced decisions are pending is compared when the
+next action settles where Ruby rested: at the row of the forced decision it
+takes, or else past them all. A chat, note, or programmed move's setting (``no_decision``) leaves
 the game and the sync alone, and its snapshot stands with the one before it.
 Every decision a Ruby action maps to, sub-phases such as PRIVATE_PRICE and PORT
 included, must be the engine's active player's, one of Ruby's active players
@@ -98,6 +100,7 @@ class Progress:
     detail: str = ''
     state: GameState | None = None  # the engine's state, where replay stopped
     private_moves: Counter = field(default_factory=Counter)  # the privates' moves Ruby logged, by the path they took
+    verified: set[int] = field(default_factory=set)  # the records whose snapshots compared equal
 
     def __str__(self) -> str:
         end = f'stopped ({self.stop}): {self.detail}' if self.stop else f'complete ({self.detail or "all records"})'
@@ -118,12 +121,13 @@ def new_game(extract: Extract, max_players: int = 0) -> GameState:
 
 
 def consume(pending: list[Forced], decisions_in: Callable[[Forced], list[Decision]],
-            actors: set[int]) -> list[Decision] | None:
+            actors: set[int], rested: list[Forced] | None = None) -> list[Decision] | None:
     """The sync rule for one Ruby action by one of ``actors``. ``decisions_in(forced)``
     maps the action as taken at that forced decision, in its phase and on its
     row; an action that cannot be taken there does not match it. If its decisions
     continue the pending forced ones for that player from some entry on, drop the
-    pending decisions through the match and return the decisions still to apply;
+    pending decisions through the match and return the decisions still to apply,
+    adding the entry the match starts at, where Ruby was resting, to ``rested``;
     return None when nothing matches."""
     for j, entry in enumerate(pending):
         try:
@@ -133,6 +137,8 @@ def consume(pending: list[Forced], decisions_in: Callable[[Forced], list[Decisio
         m = min(len(decisions), len(pending) - j)
         if m and all(forced[:2] == decisions[k] and forced[2] in actors
                      for k, forced in enumerate(pending[j:j + m])):
+            if rested is not None:
+                rested.append(pending[j])
             del pending[:j + m]
             return decisions[m:]
     return None
@@ -345,6 +351,7 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
             progress.stop, progress.detail = 'mismatch', f"record {record['index']}: " + '; '.join(diffs)
             return False
         progress.matched = record['index']
+        progress.verified.add(record['index'])
         return True
 
     def rests(record) -> bool:
@@ -395,8 +402,13 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
                 actors = {ids.index(player) for player in pre['active_players']}
                 # EQUIVALENT: Ruby takes this discard before the one the driver forced.
                 row = _discard_behind_another(state, pending, action)
+                rested: list[Forced] = []
                 decisions = None if row is not None else consume(
-                    pending, lambda forced: map_action(action, pre, forced[0], at_row(forced[3])), actors)
+                    pending, lambda forced: map_action(action, pre, forced[0], at_row(forced[3])), actors, rested)
+                if rested and deferred is not None:  # Ruby logs a forced decision, so it was resting at its row
+                    if not held and not matches(deferred, at_row(rested[0][3])):
+                        return progress
+                    deferred = None
                 if decisions is None:
                     if row is None:
                         row = _forced_at_ruby_step(pending, action, pre, was_open, route_row)
@@ -445,6 +457,15 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
     elif deferred is not None:  # no Ruby action is left to log what is pending
         rests(deferred)
     return progress
+
+
+def unverified_records(extract: Extract, progress: Progress) -> list[int]:
+    """The records a replay left uncompared, but for those it cannot compare: a
+    discard Ruby takes out of the engine's order, and a snapshot equal to the
+    record's before, whose compare stands for it."""
+    records = extract['records']
+    return [r['index'] for r in records[1:] if r['index'] not in progress.verified
+            and r['action']['type'] != 'discard_train' and r['state'] != records[r['index'] - 1]['state']]
 
 
 def _later_srs(extract: Extract) -> list[tuple[int, int]]:

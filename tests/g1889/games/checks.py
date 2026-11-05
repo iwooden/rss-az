@@ -13,7 +13,7 @@ from g1889.actions import is_terminal_py
 from g1889.entities.turn import TURN
 
 from tests.g1889.replay.extracts import forget_extracts, load_scraped_extract
-from tests.g1889.replay.harness import _later_srs, _or_turns, replay_extract
+from tests.g1889.replay.harness import _later_srs, _or_turns, replay_extract, unverified_records
 from tests.g1889.replay.snapshot import END_REASONS, engine_result
 from tests.g1889.replay.test_extraction_oracles import check_extraction
 from tests.g1889.replay.test_network_oracles import check_must_buy, check_network, check_operating_corp_ids
@@ -35,6 +35,7 @@ def check_whole_game(label, extract) -> tuple[int, ...]:
     assert is_terminal_py(state), f'{label}: the engine has not ended where Ruby has'
     assert END_REASONS[TURN.end_reason(state)] == final['end_reason'], f'{label}: {TURN.end_reason(state)}'
     assert engine_result(state, [p['id'] for p in extract['players']]) == final['result'], label
+    assert unverified_records(extract, progress) == [], f'{label}: snapshots never compared'
     return (progress.records,)
 
 

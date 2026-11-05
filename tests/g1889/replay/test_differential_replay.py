@@ -12,6 +12,7 @@ alone.
 
 from __future__ import annotations
 
+import copy
 import warnings
 
 import pytest
@@ -33,10 +34,10 @@ from g1889.state import GameState
 from tests.g1889.replay.action_map import HELD_DISCARD, UnsupportedAction, map_action, skipped_sr_turn
 from tests.g1889.phases.conftest import end_auction, enter_stock_round, hold
 from tests.g1889.phases.conftest import new_game as fresh_game
-from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_new_game_extract
+from tests.g1889.replay.extracts import Extract, FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.harness import (
     ACTIVE_PLAYER_SLOT, Forced, Held, _apply, _discard_behind_another, _discarding, _later_srs, _or_turns, _queue,
-    consume, new_game, replay_extract,
+    consume, new_game, replay_extract, unverified_records,
 )
 from tests.g1889.replay.snapshot import CORP, END_REASONS, RUBY_STEPS, compare, engine_result
 
@@ -77,6 +78,7 @@ def test_replay_runs_end_to_end(fixture):
     assert is_terminal_py(state) != by_hand
     assert END_REASONS[TURN.end_reason(state)] == (None if by_hand else ENDINGS[fixture])
     assert engine_result(state, ids) == final['result']
+    assert unverified_records(extract, progress) == ([progress.records - 1] if by_hand else [])  # by hand: its end_game
 
 
 @pytest.mark.parametrize('fixture', FIXTURES)
@@ -239,6 +241,36 @@ def test_sync_drops_forced_decisions_ruby_skipped_before_a_logged_one():
         return [(forced[0], 0)]
 
     assert consume(pending, stock_only, {1}) == [] and pending == []
+
+
+def test_sync_says_where_ruby_was_resting():
+    """Ruby skipped the forced TOKEN pass and logs the STOCK pass, so it rested at the latter's row."""
+    pending, rested = [(K.DPHASE_TOKEN, K.TOKEN_PASS, 0), PASS_STOCK], []
+    assert consume(pending, lambda forced: [(K.DPHASE_STOCK, K.STOCK_PASS)], {1}, rested) == []
+    assert rested == [PASS_STOCK]
+    assert consume([PASS_AUCTION], lambda forced: [], {0}, rested) is None and rested == [PASS_STOCK]
+
+
+def _with_snapshot_cash_off_by_one(extract: Extract, index: int) -> Extract:
+    record = extract['records'][index]
+    state = copy.deepcopy(record['state'])
+    state['players'][0]['cash'] += 1
+    records = list(extract['records'])
+    records[index] = {**record, 'state': state}
+    return {**extract, 'records': records}
+
+
+@pytest.mark.parametrize('index, kind', [(23, 'pass'), (452, 'sell_shares')])
+def test_a_snapshot_is_compared_where_ruby_rests_before_a_forced_decision_it_logs(index, kind):
+    """314's snapshot here leaves a forced train purchase pending, and Ruby logs
+    it next. A wrong value in it must stop the replay: this snapshot equals no
+    state the engine rests at, only the row before that forced decision."""
+    extract = load_fixture_extract('314')
+    records = extract['records']
+    assert records[index]['action']['type'] == kind and records[index + 1]['action']['type'] == 'buy_train'
+    assert replay_extract('314', extract, end=index + 1).stop is None
+    progress = replay_extract('314', _with_snapshot_cash_off_by_one(extract, index), end=index + 1)
+    assert progress.stop == 'mismatch' and f'record {index}:' in progress.detail, str(progress)
 
 
 def test_sync_returns_the_rest_of_a_partly_forced_action():

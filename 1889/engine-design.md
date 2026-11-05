@@ -1234,7 +1234,8 @@ equal its `result`.
      18xx.games live in `tests/g1889/games/data/`, gitignored and not in the
      repo; with none on disk the tests skip. Per game, `checks.py` replays
      from record 0 to Ruby's natural end (`bank` or `bankrupt`), every record
-     equal, with the same end reason and scores; replays each OR turn and
+     equal and none left uncompared but discards in Ruby's order, with the same
+     end reason and scores; replays each OR turn and
      later SR alone from `load_state`, allowing no stop; and runs the route,
      network, train, private, and extraction oracles, with no exact counts
      but at least one snapshot seen. Extraction applies at 3 or more players.
