@@ -9,8 +9,8 @@ from libc.stdint cimport uint16_t
 
 from g1889.actions cimport (
     ACTION_BUY_PRIVATE, ACTION_DR_EXCHANGE, ACTION_MF_PORT, ActionInfo, decode_action, enumerate_legal_actions,
-    enumerate_policy_actions, get_decision_phase, has_exact_amounts, is_legal_action, override_bid_legal,
-    override_slot_legal, wide_amount_range,
+    enumerate_policy_actions, get_decision_phase, has_exact_amounts, is_legal_action, out_of_turn_legal,
+    override_bid_legal, override_slot_legal, wide_amount_range,
 )
 from g1889.constants cimport (
     DPHASE_AUCTION, DPHASE_BID, DPHASE_BUY_PRIVATE_POST, DPHASE_BUY_PRIVATE_PRE, DPHASE_BUY_TRAIN, DPHASE_DISCARD,
@@ -31,8 +31,8 @@ from g1889.phases.operating cimport (
     apply_tile, apply_token, apply_track, run_or_end, run_or_start, run_route, run_turn_end, run_turn_start,
 )
 from g1889.phases.privates cimport (
-    apply_buy_private_post, apply_buy_private_pre, apply_er_bonus, apply_interjection, apply_port,
-    apply_private_price,
+    apply_buy_private_post, apply_buy_private_pre, apply_dr_out_of_turn, apply_er_bonus, apply_interjection,
+    apply_port, apply_private_price,
 )
 from g1889.phases.stock cimport apply_par, apply_sell_amount, apply_stock, run_sr_end
 from g1889.state cimport GameState
@@ -198,19 +198,32 @@ cdef class GameDriver:
     cpdef int override_private_slot(self, GameState state, int action_id, object history=None) except -1:
         """Replay only: a human's purchase, DR exchange, or port tile at a
         decision of the corp's turn that offers no such slot (TRACK, TOKEN,
-        DIVIDEND, or BUY_TRAIN; Ruby joins them to whatever step it stops at).
-        ``action_id`` names it as BUY_PRIVATE_PRE's slot does, and it runs as
-        that slot does: PRIVATE_PRICE, then ER_BONUS if due, or PORT, or the
-        exchange in place, and back to this decision. Then it auto-chains; the
-        human's exact price goes through ``apply_action`` as usual. History gets
-        the auto-chain, not the override. The pipeline never calls it. Returns
-        STATUS_INVALID where the slot is not legal or the decision has its own
-        (``override_slot_legal``), else as ``apply_action``."""
+        DIVIDEND, or BUY_TRAIN; Ruby joins them to whatever step it stops at),
+        or at ROUTE, which then runs on what the move left. ``action_id`` names
+        it as BUY_PRIVATE_PRE's slot does, and it runs as that slot does:
+        PRIVATE_PRICE, then ER_BONUS if due, or PORT, or the exchange in place,
+        and back to this step. Then it auto-chains; the human's exact price goes
+        through ``apply_action`` as usual. History gets the auto-chain, not the
+        override. The pipeline never calls it. Returns STATUS_INVALID where the
+        slot is not legal or the decision has its own (``override_slot_legal``),
+        else as ``apply_action``."""
         cdef ActionInfo info
         if not override_slot_legal(state, action_id):
             return STATUS_INVALID
         info = decode_action(DPHASE_BUY_PRIVATE_PRE, action_id)
         apply_interjection(state, &info)
+        return self._auto_chain(state, history)
+
+    cpdef int apply_out_of_turn(self, GameState state, int private, object history=None) except -1:
+        """Replay only: ``private``'s ability from its owner, whoever's decision
+        this is, as Ruby's Exchange step joins whatever step it stops at; only
+        DR's exchange (``out_of_turn_legal``). The decision goes on, then it
+        auto-chains. History gets the auto-chain, not the exchange. The pipeline
+        never calls it. Returns STATUS_INVALID where it is not legal, else as
+        ``apply_action``."""
+        if not out_of_turn_legal(state, private):
+            return STATUS_INVALID
+        apply_dr_out_of_turn(state)
         return self._auto_chain(state, history)
 
     cpdef int override_topmost_bid(self, GameState state, object history=None) except -1:

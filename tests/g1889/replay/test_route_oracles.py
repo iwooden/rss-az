@@ -99,6 +99,8 @@ def test_the_solver_matches_auto_router_at_every_route_snapshot(fixture):
 def test_the_maximum_covers_every_human_revenue_but_one(fixture):
     below, above = 0, set()
     for _, record, state, corp in _route_snapshots(fixture):
+        if record['action']['type'] != 'run_routes':  # a private's move or a note, at Route
+            continue
         logged, best = record['pre']['revenue'], max_route_revenue(state, corp)
         below += logged < best
         if logged > best:

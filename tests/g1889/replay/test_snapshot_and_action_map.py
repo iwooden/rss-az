@@ -20,7 +20,8 @@ from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
 
 from tests.g1889.replay.action_map import (
-    HELD_DISCARD, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, TOPMOST_BID_OVERRIDE, ReplayEnd, UnsupportedAction, map_action,
+    HELD_DISCARD, OUT_OF_TURN, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, TOPMOST_BID_OVERRIDE, ReplayEnd, UnsupportedAction,
+    map_action,
 )
 from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TRAIN, compare, load_state
@@ -342,6 +343,7 @@ def test_map_action_covers_the_fixtures():
 def test_map_action_skips_and_rejects():
     scratch = GameState(3)
     assert map_action({'type': 'message'}, {}, K.DPHASE_STOCK, scratch) == []
+    assert map_action({'type': 'log'}, {}, K.DPHASE_STOCK, scratch) == []
     assert map_action({'type': 'program_share_pass'}, {}, K.DPHASE_STOCK, scratch) == []
     with pytest.raises(UnsupportedAction, match="'undo'"):
         map_action({'type': 'undo'}, {}, K.DPHASE_STOCK, scratch)
@@ -354,7 +356,7 @@ def test_map_action_skips_and_rejects():
     with pytest.raises(UnsupportedAction, match='Dividend'):
         map_action(corp_pass, {'round': 'OR', 'step': 'Dividend'}, K.DPHASE_DIVIDEND, scratch)
     # A purchase is PRE's slot while the engine is there, POST's at Ruby's blocking BuyCompany, and at
-    # Ruby's other stops the override; the engine runs Route by itself, and DISCARD has its own return.
+    # Ruby's other stops, Route too, the override; DISCARD has its own return.
     purchase = {'type': 'buy_company', 'entity_type': 'corporation', 'entity': 'KO'}
 
     def bought_in(step, phase):
@@ -364,11 +366,9 @@ def test_map_action_skips_and_rejects():
     assert bought_in('Track', K.DPHASE_BUY_PRIVATE_PRE) == (K.DPHASE_BUY_PRIVATE_PRE, K.BUY_PRIVATE_PRE_PRIVATE + sir)
     assert bought_in('BuyCompany', K.DPHASE_BUY_PRIVATE_POST) == (K.DPHASE_BUY_PRIVATE_POST,
                                                                   K.BUY_PRIVATE_POST_PRIVATE + sir)
-    for step, phase in (('Track', K.DPHASE_TRACK), ('Token', K.DPHASE_TOKEN), ('Dividend', K.DPHASE_DIVIDEND),
-                        ('BuyTrain', K.DPHASE_BUY_TRAIN)):
+    for step, phase in (('Track', K.DPHASE_TRACK), ('Token', K.DPHASE_TOKEN), ('Route', -1),
+                        ('Dividend', K.DPHASE_DIVIDEND), ('BuyTrain', K.DPHASE_BUY_TRAIN)):
         assert bought_in(step, phase) == (PRIVATE_OVERRIDE, K.BUY_PRIVATE_PRE_PRIVATE + sir)
-    with pytest.raises(UnsupportedAction, match='Route'):
-        bought_in('Route', K.DPHASE_DIVIDEND)
     with pytest.raises(UnsupportedAction, match='DiscardTrain'):
         bought_in('DiscardTrain', K.DPHASE_DISCARD)
     # A bid on private 0 has no slot: the override, then BID. Another private's has.
@@ -386,12 +386,18 @@ def test_map_action_skips_and_rejects():
     with pytest.raises(UnsupportedAction, match='a lay on J7, which has no slot'):
         map_action({'type': 'lay_tile', 'entity': 'KO', 'entity_type': 'corporation'},
                    {'hex': 'J7', 'tile': '8', 'rotation': 0}, K.DPHASE_TRACK, scratch)
-    # DR and MF act only on their owner's turn (engine-design §12 item 4).
+    # DR's exchange out of its owner's turn is the driver's out-of-turn path, whichever step Ruby is at;
+    # MF's port tile there is not supported (engine-design §12 item 4).
     PRIVATES[D.PRIVATE_DR].set_owner(scratch, K.OWNER_PLAYER + 1)
     TURN.set_active_player(scratch, 0)
+    assert map_action({'type': 'buy_shares', 'entity_type': 'company', 'entity': 'DR'},
+                      {'round': 'SR', 'step': 'BuySellParShares'}, K.DPHASE_STOCK, scratch) == [
+        (OUT_OF_TURN, D.PRIVATE_DR)]
+    PRIVATES[D.PRIVATE_MF].set_owner(scratch, K.OWNER_PLAYER + 1)
     with pytest.raises(UnsupportedAction, match='out of its owner'):
-        map_action({'type': 'buy_shares', 'entity_type': 'company', 'entity': 'DR'},
-                   {'round': 'SR', 'step': 'BuySellParShares'}, K.DPHASE_STOCK, scratch)
+        map_action({'type': 'lay_tile', 'entity_type': 'company', 'entity': 'MF'},
+                   {'round': 'SR', 'step': 'BuySellParShares', 'hex': 'B11', 'tile': '437', 'rotation': 2},
+                   K.DPHASE_STOCK, scratch)
     # run_routes: nothing when Ruby pays the engine's revenue, else the override.
     TURN.set_route_revenue(scratch, 100)
     assert map_action({'type': 'run_routes'}, {'revenue': 100}, K.DPHASE_DIVIDEND, scratch) == []

@@ -133,6 +133,10 @@ OR_STEPS = {
     'BuyTrain': K.STEP_BUY_TRAIN, 'DiscardTrain': K.STEP_DISCARD, 'BuyCompany': K.STEP_BUY_PRIVATE_POST,
     'SpecialTrack': K.STEP_ER_BONUS,
 }
+# After ER's bonus Ruby may have no step left that blocks (``operating.er_bonus.resume``
+# None): the corp bought it at BuyCompany and can afford nothing more. The engine's
+# BUY_PRIVATE_POST has nothing to offer then, so its forced "done" ends the turn.
+NO_RESUME_STEP = K.STEP_BUY_PRIVATE_POST
 # Ruby applies the auction discount only to the cheapest private, A.
 DISCOUNTED_PRIVATE = 0
 
@@ -648,6 +652,8 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
     TURN.set_or_count(state, g['or_count'])
     TURN.set_priority_player(state, ids.index(g['priority']))
     TURN.set_end_reason(state, {name: code for code, name in END_REASONS.items()}[g['end_reason']])
+    # The auction's discount outlives it: Ruby keeps it on the sold private, and the engine in the global.
+    TURN.set_auction_discount(state, snap['privates'][D.PRIVATE_SYMS[DISCOUNTED_PRIVATE]]['discount'])
     if g['finished']:
         if g['round'] == 'OR':  # Ruby keeps the last OR's fields once the game is over
             _load_operating_fields(state, snap, ids)
@@ -658,7 +664,6 @@ def load_state(snap: Snapshot, num_players: int, max_players: int = 0) -> GameSt
         TURN.set_round(state, K.ROUND_AUCTION)
         TURN.set_step(state, K.STEP_BID if auction['auctioning'] else K.STEP_AUCTION)
         TURN.set_auction_private(state, PRIVATE[auction['auctioning']] if auction['auctioning'] else -1)
-        TURN.set_auction_discount(state, snap['privates'][D.PRIVATE_SYMS[DISCOUNTED_PRIVATE]]['discount'])
         TURN.set_auction_turn(state, ids.index(g['round_entities'][g['entity_index']]))
         TURN.set_active_player(state, ids.index(g['active_players'][0]))
     elif g['round'] == 'SR' and g['step'] == 'BuySellParShares':
@@ -701,14 +706,15 @@ def _load_operating(state: GameState, snap: Snapshot, ids: list) -> None:
     to BUY_TRAIN, the only step whose purchases change the phase, and Ruby's
     active player is the crowded corp's president. ER's SpecialTrack
     snapshot loads at ER_BONUS, for its seller, Ruby's active player, and
-    returns to the step Ruby resumes (``operating.er_bonus.resume``)."""
+    returns to the step Ruby resumes (``operating.er_bonus.resume``), or
+    ``NO_RESUME_STEP`` when no step of Ruby's has anything left to ask."""
     g, operating = snap['game'], snap['operating']
     TURN.set_round(state, K.ROUND_OPERATING)
     TURN.set_step(state, K.STEP_TOKEN if track_after_lay(snap) else OR_STEPS[g['step']])
     if g['step'] == 'DiscardTrain':
         TURN.set_return_step(state, K.STEP_BUY_TRAIN)
     if g['step'] == 'SpecialTrack':
-        TURN.set_return_step(state, OR_STEPS[operating['er_bonus']['resume']])
+        TURN.set_return_step(state, OR_STEPS.get(operating['er_bonus']['resume'], NO_RESUME_STEP))
         TURN.set_pending_seller(state, ids.index(g['active_players'][0]))
     _load_operating_fields(state, snap, ids)
     TURN.set_active_player(state, ids.index(g['active_players'][0]))

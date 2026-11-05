@@ -16,10 +16,12 @@ from __future__ import annotations
 import pytest
 
 import g1889.constants as K
+from g1889.entities.turn import TURN
 from g1889.state import GameState
 
 from tests.g1889.replay.action_map import TOPMOST_BID_OVERRIDE, map_action
 from tests.g1889.replay.extracts import load_game_extract
+from tests.g1889.replay.snapshot import compare, load_state
 from tests.g1889.replay.test_differential_replay import replay_extract
 
 PASS = None
@@ -109,6 +111,17 @@ def test_scripted_auction_matches_ruby(label):
     progress = replay_extract(label, extract)
     assert progress.stop is None and progress.matched == len(extract['records']) - 1, str(progress)
     assert extract['records'][-1]['state']['game']['round'] == 'SR', 'the script should finish the auction'
+
+
+def test_load_state_keeps_the_auction_discount_after_the_auction():
+    """Ruby keeps A's discount on the private once it is sold, and the engine
+    in its global, so every later snapshot loads it."""
+    num_players, moves = SCRIPTS['discount_to_free_a']
+    extract = load_game_extract('discount_to_free_a', _game('discount_to_free_a', num_players, moves))
+    snap = extract['records'][-1]['state']
+    assert snap['game']['round'] == 'SR' and snap['privates']['TR']['discount'] == 20
+    state = load_state(snap, num_players)
+    assert TURN.auction_discount(state) == 20 and compare(state, snap) == []
 
 
 @pytest.mark.parametrize('label, seat, price', [('above_price_on_private_0', 0, 25), ('off_grid_on_private_0', 1, 23)])

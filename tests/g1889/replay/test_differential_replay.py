@@ -4,12 +4,17 @@
 Replay walks a fixture's records, maps each Ruby action to engine decisions,
 and applies them through ``DRIVER`` with history. The driver auto-applies
 forced decisions, which Ruby may log as actions or skip silently. The sync
-rule: a Ruby action that matches a forced decision applied since the last sync,
-by the same player, is consumed instead of applied; one that matches none
-means Ruby skipped the pending forced decisions, so they are dropped. States
-are compared whenever no forced decision is pending. Every decision a Ruby
-action maps to, sub-phases such as PRIVATE_PRICE and PORT included, must be
-the engine's active player's, one of Ruby's active players before the action;
+rule: a snapshot equal to the engine's state means Ruby rests where the engine
+does, having skipped the pending forced decisions, so they are dropped. After
+that, a Ruby action that matches a forced decision applied since the last sync,
+by the same player and as taken at that decision's row, is consumed instead of
+applied; one that matches none means Ruby skipped the pending forced decisions,
+so they are dropped too. States are compared whenever no forced decision is
+pending. A chat, note, or programmed move's setting (``no_decision``) leaves
+the game and the sync alone, and its snapshot stands with the one before it.
+Every decision a Ruby action maps to, sub-phases such as PRIVATE_PRICE and PORT
+included, must be the engine's active player's, one of Ruby's active players
+before the action, but for DR's exchange out of turn, which is its owner's;
 ``compare`` checks the active player at every snapshot too.
 
 Six equivalences need the harness. Track after the lay (engine-design
@@ -22,11 +27,14 @@ and the sync rule takes them from there (Ruby logs a forced train purchase).
 Route (§8): Ruby waits at its Route step for the president's routes, and
 the engine's ROUTE step runs by itself, on to DIVIDEND. A Route snapshot is
 compared with the engine's row before its last ROUTE step, and
-``run_routes`` maps to no decision or to ``override_route_revenue``.
-Discards (§10.2): Ruby accepts a discard from any crowded corp, and the
-engine takes them in corp order, so the mapper holds a discard that comes
-early (``HELD_DISCARD``) until the engine reaches its corp; the records in
-between are not compared. SR turns Ruby skips (§10.2): the engine offers DR
+``run_routes`` maps to no decision or to ``override_route_revenue``. A
+private's move there backs up to that row and takes the override, and ROUTE
+runs again on what the move left. Discards (§10.2): Ruby accepts a discard
+from any crowded corp, and the engine takes them in corp order, so the mapper
+holds a discard that comes early (``HELD_DISCARD``) until the engine reaches
+its corp; the records in between are not compared. If the driver has already
+forced the earlier corp's discard, the harness backs up to it first
+(``_discard_behind_another``). SR turns Ruby skips (§10.2): the engine offers DR
 and MF on every SR turn of their owner, so it stops at a turn whose only
 other choice is the pass, which Ruby skips or ends without logging
 anything; after each Ruby action the harness applies that pass
@@ -36,7 +44,9 @@ with Ruby's Track, and where Ruby then does anything but PRE's own moves the
 harness applies PRE's "done" first (``_leave_pre``). A human's private move at
 another of Ruby's stops takes the override, which returns to the decision it
 interrupted; if the driver has already forced that decision for lack of a
-choice, the harness backs up to it first (``_forced_at_ruby_step``).
+choice, the harness backs up to it first (``_forced_at_ruby_step``). DR's
+exchange by an owner who is not acting takes ``DRIVER.apply_out_of_turn``, in
+the same way.
 
 Replay stops at the first unsupported action or mismatch; an engine error
 propagates. When it stops at an action while forced decisions are pending,
@@ -68,6 +78,7 @@ from g1889.actions import get_decision_phase_py, is_terminal_py
 from g1889.driver import DRIVER, STATUS_INVALID
 from g1889.entities.bank import BANK, BANK_ACCOUNT
 from g1889.entities.corp import CORPS
+from g1889.entities.phase import PHASE
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
 from g1889.entities.trains import TRAINS
@@ -76,8 +87,8 @@ from g1889.phases.operating import setup_operating_round_py
 from g1889.state import GameState, get_global_fields, get_layout
 
 from tests.g1889.replay.action_map import (
-    HELD_DISCARD, OVERRIDE_STEP_PHASE, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, TOPMOST_BID_OVERRIDE, Decision, ReplayEnd,
-    UnsupportedAction, map_action, skipped_sr_turn,
+    HELD_DISCARD, OUT_OF_TURN, OVERRIDE_STEP_PHASE, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, TOPMOST_BID_OVERRIDE, Decision,
+    ReplayEnd, UnsupportedAction, map_action, no_decision, skipped_sr_turn,
 )
 from tests.g1889.phases.conftest import end_auction, enter_stock_round, hold
 from tests.g1889.phases.conftest import new_game as fresh_game
@@ -137,17 +148,18 @@ def new_game(extract: Extract, max_players: int = 0) -> GameState:
     return state
 
 
-def consume(pending: list[Forced], decisions_in: Callable[[int], list[Decision]],
+def consume(pending: list[Forced], decisions_in: Callable[[Forced], list[Decision]],
             actors: set[int]) -> list[Decision] | None:
-    """The sync rule for one Ruby action by one of ``actors``. ``decisions_in(phase)``
-    maps the action as taken in ``phase``. If its decisions continue the pending
-    forced ones for that player from some entry on, drop the pending decisions
-    through the match and return the decisions still to apply; return None when
-    nothing matches."""
-    for j, (phase, *_) in enumerate(pending):
+    """The sync rule for one Ruby action by one of ``actors``. ``decisions_in(forced)``
+    maps the action as taken at that forced decision, in its phase and on its
+    row; an action that cannot be taken there does not match it. If its decisions
+    continue the pending forced ones for that player from some entry on, drop the
+    pending decisions through the match and return the decisions still to apply;
+    return None when nothing matches."""
+    for j, entry in enumerate(pending):
         try:
-            decisions = decisions_in(phase)
-        except UnsupportedAction:
+            decisions = decisions_in(entry)
+        except (UnsupportedAction, ValueError):
             continue
         m = min(len(decisions), len(pending) - j)
         if m and all(forced[:2] == decisions[k] and forced[2] in actors
@@ -164,15 +176,24 @@ def _apply(state: GameState, decisions: list[Decision], actors: set[int], pendin
     failure, or when the engine's active player is not one of ``actors``. A
     ``ROUTE_OVERRIDE`` pays a human's revenue (``override_route_revenue``) and
     a ``PRIVATE_OVERRIDE`` starts a human's private move
-    (``override_private_slot``), and a ``TOPMOST_BID_OVERRIDE`` a bid on private
-    0 (``override_topmost_bid``), none recording a decision of its own, and a
+    (``override_private_slot``), an ``OUT_OF_TURN`` makes DR's exchange
+    (``apply_out_of_turn``), and a ``TOPMOST_BID_OVERRIDE`` a bid on private 0
+    (``override_topmost_bid``), none recording a decision of its own, and a
     ``HELD_DISCARD`` waits in ``held`` for its corp's turn to discard
     (``_release``). Then the engine passes for each SR turn Ruby skips or ends
     (``_pass_skipped_sr_turns``)."""
+    history: list
     for phase, action_id in decisions:
         if phase == HELD_DISCARD:  # by its corp's president, whose discard Ruby takes out of its order
             corp, slot = divmod(action_id, D.NUM_TRAIN_TYPES)
             held.append((corp, slot, {CORPS[corp].president(state)}))
+            continue
+        if phase == OUT_OF_TURN:  # by the private's owner, not Ruby's active player, and the decision goes on
+            history = []
+            if DRIVER.apply_out_of_turn(state, action_id, history) == STATUS_INVALID:
+                return f'{D.PRIVATE_SYMS[action_id]} out of turn is illegal at {K.Step(TURN.step(state)).name}'
+            _queue(pending, history)
+            log += history
             continue
         if not pending and phase != K.DPHASE_BUY_PRIVATE_PRE:
             _leave_pre(state, pending, log)
@@ -184,7 +205,7 @@ def _apply(state: GameState, decisions: list[Decision], actors: set[int], pendin
                 return f'engine forced {pending[0][:2]} where Ruby chose {(phase, action_id)}'
             pending.pop(0)
             continue
-        history: list = []
+        history = []
         if phase == ROUTE_OVERRIDE:
             if DRIVER.override_route_revenue(state, action_id, history) == STATUS_INVALID:
                 return f'the route override to {action_id} is illegal at {K.Step(TURN.step(state)).name}'
@@ -288,22 +309,40 @@ def _is_private_move(action) -> bool:
         action['type'] in ('lay_tile', 'buy_shares') and action['entity_type'] == 'company')
 
 
-def _forced_at_ruby_step(pending: list[Forced], action, pre, track_open: bool) -> int | None:
-    """The pending forced decision a human's private move interrupts, or None:
-    the driver forced it for lack of a choice in the engine's action space, as
-    it can a must-buy's one source, where Ruby still waits and joins the
-    private's move to its step. With Track kept open after the lay it is the
-    first, as the engine has left TRACK."""
-    if not _is_private_move(action) or pre.get('round') != 'OR' or pre['step'] not in OVERRIDE_STEP_PHASE:
+def _forced_at_ruby_step(pending: list[Forced], action, pre, track_open: bool, route_row) -> Any:
+    """The row a human's private move backs up to, or None. The driver forced
+    the decision it interrupts for lack of a choice in the engine's action
+    space, as it can a must-buy's one source, where Ruby still waits and joins
+    the private's move to its step. With Track kept open after the lay it is
+    the first pending decision, as the engine has left TRACK. At Route it is
+    the ROUTE step itself: the move can change what the routes earn (ER's bonus
+    lay), so ROUTE runs again after it."""
+    if not _is_private_move(action) or pre.get('round') != 'OR':
+        return None
+    if pre['step'] == 'Route':
+        return route_row
+    if pre['step'] not in OVERRIDE_STEP_PHASE:
         return None
     if track_open:
-        return 0 if pending else None
+        return pending[0][3] if pending else None
     phase = OVERRIDE_STEP_PHASE[pre['step']]
-    return next((j for j, forced in enumerate(pending) if forced[0] == phase), None)
+    return next((forced[3] for forced in pending if forced[0] == phase), None)
+
+
+def _discard_behind_another(state: GameState, pending: list[Forced], action) -> Any:
+    """The row of the driver's forced discard, if ``action`` is another crowded
+    corp's: Ruby takes discards in any order, so it has yet to make the forced
+    one, and the harness backs up to it and holds ``action`` (``_discard_train``)."""
+    if action['type'] != 'discard_train':
+        return None
+    row = next((forced[3] for forced in pending if forced[0] == K.DPHASE_DISCARD), None)
+    return None if row is None or _discarding(state, row) == CORP[action['entity']] else row
 
 
 def _private_path(phase: int, pre) -> str:
-    """How a private's move replays: its slot's phase, or the override at Ruby's step."""
+    """How a private's move replays: its slot's phase, the override at Ruby's step, or out of turn."""
+    if phase == OUT_OF_TURN:
+        return 'out of turn'
     return f"override at {pre['step']}" if phase == PRIVATE_OVERRIDE else _phase_name(phase).removeprefix('DPHASE_')
 
 
@@ -323,14 +362,16 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
     deferred = None                # the record whose snapshot waits for them
     held: list[Held] = []          # discards Ruby took early
     track_open = False             # Ruby kept Track open after the lay; the engine is past it
-    route_row = None               # the engine's row at its last ROUTE step, not yet compared
+    route_row = None               # the engine's row at its last ROUTE step
+
+    def at_row(row) -> GameState:
+        return GameState.from_array(row, len(ids), state.max_players)
 
     def matches(record, at: GameState | None = None) -> bool:
-        nonlocal route_row
         if at is None:
             at = state
             if record['state']['game']['step'] == 'Route' and route_row is not None:  # EQUIVALENT: before ROUTE
-                at, route_row = GameState.from_array(route_row, len(ids), state.max_players), None
+                at = at_row(route_row)
         if diffs := compare(at, record['state']):
             progress.stop, progress.detail = 'mismatch', f"record {record['index']}: " + '; '.join(diffs)
             return False
@@ -342,6 +383,8 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
         Ruby action to tell whether Ruby took them: it matches if Ruby rests
         at the engine's state or before one of them (a Track step whose
         only choice is the pass, which Ruby asks)."""
+        if record['state']['game']['step'] == 'Route':
+            return matches(record)
         at = next((at for at in _ruby_rests(state, pending) if not compare(at, record['state'])), state)
         return matches(record, at)
 
@@ -355,27 +398,47 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
 
     if not matches(records[start]):
         return progress
+    if TURN.step(state) == K.STEP_ROUTE:  # load_state stops where Ruby waits; the engine runs on by itself
+        route_row = state._array.copy()
+        log: list = []
+        DRIVER.advance(state, log)
+        _queue(pending, log)
     for record in records[start + 1:None if end is None else end + 1]:
         host = record['action']
+        if (no_decision(host) and not host.get('auto_actions')
+                and record['state'] == records[record['index'] - 1]['state']):
+            # Ruby's state is the record before's, so its compare, done or deferred, stands for this one.
+            if deferred is not None:
+                deferred = record
+            elif not held:
+                progress.matched = record['index']
+            continue
         singles = [(host, record['pre']), *zip(host.get('auto_actions') or [], record.get('auto_pre') or [])]
         where = f"record {record['index']} ({host['type']})"
-        log: list = []
+        log = []
         if track_open and _closes_track(record):  # EQUIVALENT: Track after the lay; no decision of its own
             singles = []
         was_open, track_open = track_open, False
         try:
             for action, pre in singles:
+                if no_decision(action):
+                    continue
                 actors = {ids.index(player) for player in pre['active_players']}
-                decisions = consume(pending, lambda phase: map_action(action, pre, phase, state), actors)
+                # EQUIVALENT: Ruby takes this discard before the one the driver forced.
+                row = _discard_behind_another(state, pending, action)
+                decisions = None if row is not None else consume(
+                    pending, lambda forced: map_action(action, pre, forced[0], at_row(forced[3])), actors)
                 if decisions is None:
-                    forced = _forced_at_ruby_step(pending, action, pre, was_open)
-                    if forced is not None:  # EQUIVALENT: Ruby still waits there; back up to it
-                        state._array[:] = pending[forced][3]
+                    if row is None:
+                        row = _forced_at_ruby_step(pending, action, pre, was_open, route_row)
+                        if row is not None:
+                            progress.private_moves['backed up'] += 1
+                    if row is not None:  # EQUIVALENT: Ruby still waits there; back up to it
+                        state._array[:] = row
                         pending.clear()
                         if deferred is not None and not held and not matches(deferred, state):
                             return progress
                         deferred = None
-                        progress.private_moves['backed up'] += 1
                     decisions = map_action(action, pre, get_decision_phase_py(state), state)
                     if pending:  # Ruby skipped these forced decisions without logging them
                         pending.clear()
@@ -392,10 +455,10 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
         except ReplayEnd:
             progress.detail = f'{where}: Ruby ended the game by hand'
             return progress
-        route_row = next((row for row, phase, step in log if phase < 0 and step == K.STEP_ROUTE), route_row)
+        route_row = next((row for row, phase, step in reversed(log) if phase < 0 and step == K.STEP_ROUTE), route_row)
         if track_after_lay(record['state']):  # compare at TOKEN: the row before a forced TOKEN, or the rest
             at_token = next((row for row, phase, _ in log if phase == K.DPHASE_TOKEN), None)
-            at = state if at_token is None else GameState.from_array(at_token, len(ids), state.max_players)
+            at = state if at_token is None else at_row(at_token)
             if not matches(record, at):
                 return progress
             track_open, deferred = True, None
@@ -403,6 +466,8 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
         if held:  # Ruby's state between discards in its order, which the engine never reaches
             deferred = None
             continue
+        if pending and not compare(state, record['state']):  # Ruby rests where the engine does, past them all
+            pending.clear()
         deferred = record if pending else None
         if not pending and not matches(record):
             return progress
@@ -617,17 +682,17 @@ PASS_AUCTION, PASS_STOCK = (K.DPHASE_AUCTION, K.AUCTION_PASS, 0), (K.DPHASE_STOC
 
 def test_sync_consumes_logged_forced_decisions():
     pending = [PASS_AUCTION]
-    assert consume(pending, lambda phase: [(phase, 0)], {0}) == [] and pending == []
-    assert consume([], lambda phase: [(phase, 0)], {0}) is None
+    assert consume(pending, lambda forced: [(forced[0], 0)], {0}) == [] and pending == []
+    assert consume([], lambda forced: [(forced[0], 0)], {0}) is None
 
 
 def test_sync_drops_forced_decisions_ruby_skipped_before_a_logged_one():
     pending = [(K.DPHASE_TOKEN, K.TOKEN_PASS, 0), PASS_STOCK]
 
-    def stock_only(phase):
-        if phase != K.DPHASE_STOCK:
+    def stock_only(forced):
+        if forced[0] != K.DPHASE_STOCK:
             raise UnsupportedAction('not here')
-        return [(phase, 0)]
+        return [(forced[0], 0)]
 
     assert consume(pending, stock_only, {1}) == [] and pending == []
 
@@ -636,14 +701,27 @@ def test_sync_returns_the_rest_of_a_partly_forced_action():
     pending = [(K.DPHASE_BUY_PRIVATE_POST, K.BUY_PRIVATE_POST_PRIVATE + 2, 3)]
     decisions = [(K.DPHASE_BUY_PRIVATE_POST, K.BUY_PRIVATE_POST_PRIVATE + 2),
                  (K.DPHASE_PRIVATE_PRICE, K.PRIVATE_PRICE_EXACT + 80)]
-    assert consume(pending, lambda phase: decisions, {3}) == decisions[1:] and pending == []
+    assert consume(pending, lambda forced: decisions, {3}) == decisions[1:] and pending == []
 
 
 def test_sync_reports_no_match():
     pending = [PASS_AUCTION]
-    assert consume(pending, lambda phase: [(K.DPHASE_AUCTION, K.AUCTION_BUY)], {0}) is None
-    assert consume(pending, lambda phase: [], {0}) is None  # no decision, e.g. a message
+    assert consume(pending, lambda forced: [(K.DPHASE_AUCTION, K.AUCTION_BUY)], {0}) is None
+    assert consume(pending, lambda forced: [], {0}) is None  # no decision, e.g. a message
     assert pending == [PASS_AUCTION]
+
+
+def test_sync_does_not_match_a_decision_the_action_cannot_be_taken_at():
+    """A lay that is no candidate at the forced decision's row raises there,
+    for that decision only; the one after it can still match."""
+    pending = [PASS_AUCTION, PASS_STOCK]
+
+    def lay_at_stock(forced):
+        if forced[0] != K.DPHASE_STOCK:
+            raise ValueError('not an engine candidate here')
+        return [(forced[0], 0)]
+
+    assert consume(pending, lay_at_stock, {1}) == [] and pending == []
 
 
 def test_the_harness_passes_for_an_sr_turn_ruby_skips():
@@ -708,4 +786,67 @@ def test_sync_matches_only_the_forced_player():
     """After a purchase in the first SR, the driver ends the buyer's turn with a
     forced "done" that Ruby does not log; the next player's pass is their own."""
     pending = [(K.DPHASE_STOCK, K.STOCK_PASS, 0)]
-    assert consume(pending, lambda phase: [(phase, 0)], {1}) is None and pending == [(K.DPHASE_STOCK, 0, 0)]
+    assert consume(pending, lambda forced: [(forced[0], 0)], {1}) is None and pending == [(K.DPHASE_STOCK, 0, 0)]
+
+
+def _two_crowded_corps():
+    """UR's 5 has just made AR and TR crowded at the limit of 2, as in Ruby
+    both wait: AR holds three 4s, so the driver forces its discard, and TR a 3
+    and two 4s, so TR's is a choice. ``pending`` holds AR's forced discard."""
+    state = fresh_game(3)
+    end_auction(state, [2])
+    for corp, trains in ((CORP['AR'], {D.TRAIN_4: 3}), (CORP['TR'], {D.TRAIN_3: 1, D.TRAIN_4: 2})):
+        hold(state, corp, {0: 6})
+        for t, count in trains.items():
+            TRAINS.set_corp_trains(state, corp, t, count)
+    hold(state, CORP['UR'], {1: 6})
+    PHASE.set_current(state, D.GAME_PHASE_5)
+    TURN.set_round(state, K.ROUND_OPERATING)
+    TURN.set_operating_corp(state, CORP['UR'])
+    TURN.set_active_player(state, 0)
+    TURN.set_step(state, K.STEP_DISCARD)
+    TURN.set_return_step(state, K.STEP_BUY_TRAIN)
+    before = state._array.copy()
+    history: list = []
+    DRIVER.advance(state, history)
+    pending: list[Forced] = []
+    _queue(pending, history)
+    assert [forced[:2] for forced in pending] == [(K.DPHASE_DISCARD, D.TRAIN_DISCARD_SLOT[D.TRAIN_4])]
+    assert TRAINS.first_crowded(state) == CORP['TR'] and TURN.step(state) == K.STEP_DISCARD
+    return state, pending, before
+
+
+def test_ruby_may_discard_before_the_discard_the_driver_forced():
+    """TR's discard reaches the harness first: it backs up to AR's forced
+    discard and holds TR's, and AR's, when Ruby logs it, releases TR's. Both
+    corps end at the limit, whichever order they discard in."""
+    state, pending, before = _two_crowded_corps()
+    trs = {'type': 'discard_train', 'entity': 'TR'}
+    row = _discard_behind_another(state, pending, trs)
+    assert row is not None and (row == before).all()
+    state._array[:] = row
+    pending.clear()
+    assert _discarding(state) == CORP['AR']
+    log: list = []
+    held: list[Held] = []
+    trs_3 = map_action(trs, {'train_type': '3'}, K.DPHASE_DISCARD, state)
+    assert trs_3 == [(HELD_DISCARD, D.NUM_TRAIN_TYPES * CORP['TR'] + D.TRAIN_DISCARD_SLOT[D.TRAIN_3])]
+    assert _apply(state, trs_3, {0}, pending, log, held) is None and len(held) == 1 and not log
+    ars = {'type': 'discard_train', 'entity': 'AR'}
+    assert _discard_behind_another(state, pending, ars) is None
+    ars_4 = map_action(ars, {'train_type': '4'}, K.DPHASE_DISCARD, state)
+    assert ars_4 == [(K.DPHASE_DISCARD, D.TRAIN_DISCARD_SLOT[D.TRAIN_4])]
+    assert _apply(state, ars_4, {0}, pending, log, held) is None and not held
+    assert TRAINS.corp_trains(state, CORP['AR'], D.TRAIN_4) == 2
+    assert TRAINS.corp_trains(state, CORP['TR'], D.TRAIN_3) == 0
+    assert TRAINS.corp_trains(state, CORP['TR'], D.TRAIN_4) == 2
+
+
+def test_the_forced_discard_is_consumed_when_ruby_makes_it_first():
+    """Ruby's own order: AR's discard is the forced one, so no back-up, and TR's then applies."""
+    state, pending, _ = _two_crowded_corps()
+    action = {'type': 'discard_train', 'entity': 'AR'}
+    assert _discard_behind_another(state, pending, action) is None
+    decided = consume(pending, lambda forced: map_action(action, {'train_type': '4'}, forced[0], GameState.from_array(
+        forced[3], 3, state.max_players)), {0})
+    assert decided == [] and pending == []

@@ -243,7 +243,8 @@ Snapshot (``state``)
     (``spend``), so the consumer does. ``er_bonus`` (schema 7), None unless
     ``SpecialTrack`` blocks for ER just sold to a corporation
     (``TrackLayWhenCompanySold``), else ``resume``, the step Ruby returns to
-    after it (the first other blocking step), and ``lays``, ER's legal lays
+    after it (the first other blocking step, None when none blocks, so the
+    turn ends), and ``lays``, ER's legal lays
     as ``[hex, tile, rotation, cost]`` (``available_hex``,
     ``upgradeable_tiles`` with each legal rotation as Ruby numbers it, and
     ``upgrade_cost``, which the seller pays). ``emergency`` (schema 8),

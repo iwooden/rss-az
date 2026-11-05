@@ -100,6 +100,7 @@ cdef bint can_go_bankrupt(GameState state, int corp) noexcept nogil
 cdef bint can_buy_private(GameState state, int corp, int private) noexcept nogil
 cdef bint buy_private_pre_open(GameState state) except -1 nogil
 cdef bint override_slot_legal(GameState state, int action_id) except -1 nogil
+cdef bint out_of_turn_legal(GameState state, int private) noexcept nogil
 cdef bint override_bid_legal(GameState state) noexcept nogil
 cdef bint can_exchange_dr(GameState state, int player) noexcept nogil
 cdef int port_lays(GameState state, uint16_t* ids) except -1 nogil

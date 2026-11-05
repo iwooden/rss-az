@@ -23,7 +23,8 @@ BuyTrain. ``actions.pyx`` has the legality.
   TRACK still offers the corp's own (962 action 39).
 
 ``DRIVER.override_private_slot`` enters the same handlers for replay at the
-turn's other decisions.
+turn's other decisions, and ``DRIVER.apply_out_of_turn`` takes DR's exchange
+from an owner who is not acting.
 """
 
 from g1889.actions cimport (
@@ -31,15 +32,16 @@ from g1889.actions cimport (
     LayCandidate, er_candidates, price_amount,
 )
 from g1889.constants cimport (
-    OWNER_PLAYER, STEP_ER_BONUS, STEP_PORT, STEP_PRIVATE_PRICE, STEP_TRACK, STEP_TURN_END,
+    OWNER_PLAYER, STEP_DISCARD, STEP_ER_BONUS, STEP_PORT, STEP_PRIVATE_PRICE, STEP_TRACK, STEP_TURN_END,
 )
 from g1889.data.tables cimport (
-    ER_HEX, MAX_LAY_CANDIDATES, MF_PORT_HEX, NUM_PORTS, NUM_SUPPLY_TILES, PORT_TILE, PRIVATE_DR, PRIVATE_ER,
-    PRIVATE_MF, TILE_COST,
+    DR_EXCHANGE_CORP, ER_HEX, MAX_LAY_CANDIDATES, MF_PORT_HEX, NUM_PORTS, NUM_SUPPLY_TILES, PORT_TILE, PRIVATE_DR,
+    PRIVATE_ER, PRIVATE_MF, TILE_COST,
 )
 from g1889.entities.corp cimport corp_president
 from g1889.entities.hexmap cimport HexMap
 from g1889.entities.private cimport MF_PORT_USED, Private, private_owner
+from g1889.entities.trains cimport trains_first_crowded
 from g1889.entities.turn cimport (
     TurnState, turn_operating_corp, turn_pending_private, turn_step,
 )
@@ -66,6 +68,17 @@ cdef void apply_interjection(GameState state, const ActionInfo* info) except *:
         assert info.type == ACTION_MF_PORT, f"apply_interjection: action type {info.type}"
         TURN.set_return_step(state, turn_step(state))
         TURN.set_step(state, STEP_PORT)
+
+
+cdef void apply_dr_out_of_turn(GameState state) except *:
+    """DR's exchange at a decision of any player's, which goes on. Its share can
+    make DR's owner IR's president, who then answers for IR's decision: its turn's,
+    or a discard's; ER's seller still answers for ER_BONUS."""
+    cdef int step = turn_step(state)
+    cdef int corp = trains_first_crowded(state) if step == STEP_DISCARD else turn_operating_corp(state)
+    (<Private>PRIVATES[<int>PRIVATE_DR]).exchange(state)
+    if corp == <int>DR_EXCHANGE_CORP and step != STEP_ER_BONUS:
+        TURN.set_active_player(state, corp_president(state, corp))
 
 
 cdef void apply_buy_private_pre(GameState state, const ActionInfo* info) except *:

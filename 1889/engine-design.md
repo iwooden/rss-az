@@ -520,7 +520,7 @@ states, 29 µs at most (late 962, with many plain-track upgrades to walk).
 | `bid` | the topmost private at its price: AUCTION 1. Another private: AUCTION 2+(p−1), then BID. Private 0 above its price: `DRIVER.override_topmost_bid`, then BID. In a closed auction: BID. BID takes a grid point or an exact amount |
 | `pass` | slot 0 of the current phase; ER_BONUS 0 for entity ER |
 | `par` (`"70,4,3"`) | STOCK 15+c, then the PAR index for ¥70 |
-| `buy_shares` | STOCK 1+c or 8+c, chosen by the share's owner (extractor annotation). Entity DR is a private's move (below), on its owner's turn only |
+| `buy_shares` | STOCK 1+c or 8+c, chosen by the share's owner (extractor annotation). Entity DR is a private's move (below), or out of its owner's turn `DRIVER.apply_out_of_turn` |
 | `sell_shares` | of n = percent/10 shares of c: in an SR, STOCK 22+c, then SELL_AMOUNT n − 1; in an emergency, BUY_TRAIN 10+c, then EMERGENCY_SELL_AMOUNT n − 1. The engine performs any presidency swap |
 | `lay_tile` | by a corp: TRACK's slot for the hex, then TILE (tile, canonical rotation), ignoring the copy suffix in names like `57-1`. By MF: a private's move (below), then PORT, on its owner's turn only. By ER: ER_BONUS 1+k |
 | `place_token` | TOKEN's slot for the hex; the extractor supplies the hex, and `slot` is ignored |
@@ -535,14 +535,17 @@ slot in an SR. In an OR it is BUY_PRIVATE_PRE's slot while the engine is at
 PRE, BUY_PRIVATE_POST's at Ruby's blocking BuyCompany, and at Ruby's other
 stops (Track, Token, Dividend, BuyTrain) `DRIVER.override_private_slot(state,
 id)` with PRE's id. The override is replay-only and in no legal mask or policy
-block, like `override_route_revenue`: at TRACK, TOKEN, DIVIDEND, or BUY_TRAIN
+block, like `override_route_revenue`: at TRACK, TOKEN, ROUTE, DIVIDEND, or BUY_TRAIN
 it enters the same chain as PRE's slot (PRIVATE_PRICE at the human's price,
 ER_BONUS or PORT if due) and returns to the decision it interrupted, and
 elsewhere, or for a slot PRE would not offer, it returns `STATUS_INVALID`.
 Where the engine rests at PRE and Ruby does anything else, replay applies
-PRE's "done" first (Section 10.2). Ruby's Route step, which the engine runs by
-itself, and DiscardTrain, whose `return_step` the move would need, stay
-unsupported.
+PRE's "done" first (Section 10.2). At Ruby's Route step the override is taken
+from the row before the engine's automated ROUTE, which runs after it on what
+the move left (ER's bonus lay can change the revenue). DiscardTrain, whose
+`return_step` the move would need, stays unsupported. DR's exchange by an owner
+who is not acting takes `DRIVER.apply_out_of_turn(state, private)` at any of
+Ruby's stops (Section 12, item 4).
 
 A Ruby action that needs a slot Section 12, item 8 removed raises
 `UnsupportedAction`, as it overturns the argument for removing it.
@@ -565,8 +568,8 @@ dispatches, and auto-chains (`:297-338`); history records `(row copy, decision
 phase, id)` before each mutation and `(row, −1, step)` for automated steps
 (`:147`, `:197`); a guard stops at 1,000 iterations (`:90`); status codes are
 0/1/2 (`core/driver.pxd:35-41`), with no step mode. Replay's other entry
-points are `override_route_revenue` (Section 8), `override_private_slot`, and
-`override_topmost_bid` (Section 5.5).
+points are `override_route_revenue` (Section 8), `override_private_slot`,
+`apply_out_of_turn`, and `override_topmost_bid` (Section 5.5).
 
 **No development stop (6.9).** From 6.3 to 6.8b, a case a later sub-step
 owned raised NotImplementedError, and the auto-chain rested there. Every
@@ -1097,12 +1100,17 @@ equal its `result`.
      in an SR, or to BUY_TRAIN's corp and EMERGENCY_SELL_AMOUNT's block in an
      emergency, by the engine's phase; `buy_train` to BUY_TRAIN's source,
      SELECT_TRAIN's train, and for another corp's train TRAIN_PRICE.
-   - **Sync rule.** A Ruby action that matches a forced action in the driver
-     history since the last sync is consumed rather than applied. States are
-     compared whenever no auto-applied history is pending. Ruby waits at its
-     Route step for the president's routes, and the engine's ROUTE runs by
-     itself, so a Route snapshot is compared with the engine's row before
-     its ROUTE step (6.6). Ruby logs a forced train purchase (a must-buy
+   - **Sync rule.** A snapshot equal to the engine's state means Ruby rests
+     where the engine does, so the forced actions in the driver history since
+     the last sync are dropped: Ruby skipped them, and its next action is not
+     one of them, even by the same player (a purchase that returns to the buyer,
+     or an SR's pass after a BuyTrain pass Ruby skips). Otherwise a Ruby action
+     that matches one of them, as taken at that decision's row, is consumed
+     rather than applied. States are compared whenever no auto-applied history
+     is pending. Actions with no decision (`no_decision`) leave the sync alone.
+     Ruby waits at its Route step for the president's routes, and the engine's
+     ROUTE runs by itself, so a Route snapshot is compared with the engine's row
+     before its ROUTE step (6.6). Ruby logs a forced train purchase (a must-buy
      with one affordable train), which the sync rule consumes. A forced
      sub-decision inside one Ruby action (6.10: a block, a source's one
      train), or a forced parent with a choice left in its sub-phase (a corp
@@ -1121,7 +1129,10 @@ equal its `result`.
        other than the one the engine's DISCARD is for maps to a held
        discard, which the harness applies when the engine reaches that corp
        (consuming it if the driver forced it), comparing no snapshot in
-       between. 314 records 339-340 replay that way.
+       between. 314 records 339-340 replay that way. If the driver has already
+       forced the earlier corp's discard, the harness backs up to it, which
+       compares the snapshot where Ruby still has both corps crowded, and holds
+       the later corp's.
      - **Unchecked prices (6.7).** Ruby checks no depot, pool, or trade-in
        price (`check_spend` admits ¥1 to the cash for a depot train, and
        `must_pay_face_value?` binds only for other corps' trains), and its
@@ -1183,11 +1194,14 @@ equal its `result`.
        turn's rest), where Ruby still waits. The harness then backs up to the
        row before the forced decision (`_forced_at_ruby_step`), compares the
        deferred snapshot there, and applies the override, and the driver
-       forces the rest again. A live integration needs the same back-up.
-     - **Divergences (6.8a).** Replay stops as unsupported for DR or MF out
-       of their owner's turn (Section 12, item 4), and for a purchase at
-       Ruby's Route or DiscardTrain step, which the engine runs by itself or
-       has no slot at. No fixture does any of these. Ruby also ends an SR
+       forces the rest again. Ruby's Route step is the same, with the row before
+       the engine's ROUTE, as ROUTE runs by itself; it runs again after the move,
+       so ER's bonus lay counts toward the revenue, and later Route snapshots
+       compare with its new row. A live integration needs the same back-up.
+     - **Divergences (6.8a).** Replay stops as unsupported for MF out of its
+       owner's turn (Section 12, item 4), and for a private's move at Ruby's
+       DiscardTrain step, which has no slot. No scraped game does either.
+       Ruby also ends an SR
        turn without a pass when an exchange or port tile leaves BuySellParShares nothing
        to offer (`Round::Stock#after_process`), where the engine forces the
        pass, which sets the player's `passed` flag; no fixture reaches it.
@@ -1204,9 +1218,9 @@ equal its `result`.
        are queued as usual. The fixtures
        reach it 25 times: three skipped turns in SR 1 (314's DR owner with
        ¥25 and MF owner with ¥15, and 962's MF owner with ¥20) and 22 turns
-       that end after a purchase or sale. A use of DR or MF that Ruby logs
-       later, in another player's turn, is out of turn, and replay stops at
-       it as unsupported.
+       that end after a purchase or sale. A use of DR that Ruby logs later, in
+       another player's turn, is out of turn (Section 12, item 4), and MF's
+       stops the replay as unsupported.
      - **Programmed actions.** In the `hs_*` fixtures, programmed buys ride
        as `auto_actions` on another player's pass, alongside
        `program_disable` and `program_share_pass` entries that the mapper
@@ -1542,12 +1556,13 @@ The user accepted every recommendation below (2026-11-01).
    moment of an SR or OR, because the Exchange step is part of both rounds
    (`game/base.rb:3201`, `game/g_1889/game.rb:172-185`). MF's owner can lay
    the port tile at any moment of an SR, or at the start of any corp's turn
-   (`game/base.rb:3389`). No fixture does either. *Adopted:* support
-   in-turn use only, make replay fail loudly on out-of-turn use, and add
-   `DRIVER.apply_out_of_turn` along with live play. *Built:* DR and MF at
-   their owner's STOCK turn and at BUY_PRIVATE_PRE of a corp they are
-   president of, and DR at such a corp's BUY_PRIVATE_POST (item 6, Section
-   5.1).
+   (`game/base.rb:3389`). *Adopted:* the model has in-turn use only. *Built:*
+   DR and MF at their owner's STOCK turn and at BUY_PRIVATE_PRE of a corp they
+   are president of, and DR at such a corp's BUY_PRIVATE_POST (item 6, Section
+   5.1). Replay takes a human's DR out of turn through
+   `DRIVER.apply_out_of_turn`, which applies the exchange where the decision
+   stands, and hands the decision to its new president if the share makes one.
+   It fails loudly on MF out of turn, which no scraped game does.
    *Revised (2026-11-02):* the user decided that STOCK offers DR and MF
    whenever they are usable, whether or not the turn has anything else, so
    a turn passes by itself only when the pass is its one legal action.

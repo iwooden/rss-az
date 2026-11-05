@@ -7,6 +7,7 @@ from g1889.actions cimport ActionInfo
 from g1889.state cimport GameState
 
 cdef void apply_interjection(GameState state, const ActionInfo* info) except *
+cdef void apply_dr_out_of_turn(GameState state) except *
 cdef void apply_buy_private_pre(GameState state, const ActionInfo* info) except *
 cdef void apply_buy_private_post(GameState state, const ActionInfo* info) except *
 cdef void apply_private_price(GameState state, const ActionInfo* info) except *

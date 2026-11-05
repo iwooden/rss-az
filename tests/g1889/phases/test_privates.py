@@ -363,6 +363,37 @@ class TestOverride:
         state = at_track(PHASE_5)
         assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR) == STATUS_INVALID
 
+    def _at_route(self, **kwargs):
+        """KO where replay backs up to for Ruby's Route step: the row before the automated ROUTE."""
+        state = at_track(route=True, **kwargs)
+        history = []
+        assert DRIVER.apply_action(state, K.TRACK_PASS, history) == STATUS_OK
+        state._array[:] = next(row for row, phase, step in history if phase < 0 and step == K.STEP_ROUTE)
+        assert TURN.step(state) == K.STEP_ROUTE and TURN.route_revenue(state) == 0
+        return state
+
+    def test_a_purchase_at_route_runs_route_after_it(self):
+        state = self._at_route()
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_SIR) == STATUS_OK
+        assert TURN.step(state) == K.STEP_PRIVATE_PRICE and TURN.return_step(state) == K.STEP_ROUTE
+        history = []
+        assert DRIVER.apply_action(state, exact_id(state, 123), history) == STATUS_OK
+        assert (-1, K.STEP_ROUTE) in [(phase, action_id) for _, phase, action_id in history]
+        assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) == 50
+
+    def test_er_chains_through_its_bonus_at_route(self):
+        state = self._at_route()
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_PRIVATE + P_ER) == STATUS_OK
+        apply_and_verify(state, 0)
+        assert TURN.step(state) == K.STEP_ER_BONUS and TURN.return_step(state) == K.STEP_ROUTE
+        apply_and_verify(state, K.ER_BONUS_PASS)
+        assert TURN.step(state) == K.STEP_DIVIDEND and TURN.active_player(state) == 0
+
+    def test_dr_exchanges_at_route_and_route_runs(self):
+        state = self._at_route(owners=[0])
+        assert DRIVER.override_private_slot(state, K.BUY_PRIVATE_PRE_DR) == STATUS_OK
+        assert PRIVATES[P_DR].owner(state) == K.OWNER_CLOSED and TURN.step(state) == K.STEP_DIVIDEND
+
 
 # =============================================================================
 # PRIVATE_PRICE AND THE SALE
@@ -585,6 +616,76 @@ class TestDrExchange:
             hold(state, c, {0: n, 1: 2})
         assert PLAYERS[0].cert_count(state) == D.CERT_LIMIT[3]
         assert not PLAYERS[0].can_gain(state, IR) and A.can_exchange_dr_py(state, 0)
+
+    def test_out_of_turn_the_decision_goes_on(self):
+        """Seat 2 owns DR, and seat 0 acts, at KO's TRACK and in an SR."""
+        state = at_track(route=True)
+        before = legal_ids(state)
+        history = []
+        assert TURN.active_player(state) == 0 and DRIVER.apply_out_of_turn(state, P_DR, history) == STATUS_OK
+        assert PRIVATES[P_DR].owner(state) == K.OWNER_CLOSED and PLAYERS[2].shares(state, IR) == 1
+        assert TURN.step(state) == K.STEP_TRACK and TURN.active_player(state) == 0 and legal_ids(state) == before
+        assert history == []  # nothing forced
+        state = at_or(3, owners=[2])
+        enter_stock_round(state, 0)
+        assert DRIVER.apply_out_of_turn(state, P_DR) == STATUS_OK
+        assert TURN.step(state) == K.STEP_STOCK and TURN.active_player(state) == 0 and PLAYERS[2].shares(state, IR) == 1
+
+    def _ir_operating(self):
+        """IR operates, president seat 0 with seat 2 level, and seat 2 owns DR."""
+        state = at_or(3, owners=[2])
+        enter_phase(state, PHASE_3)
+        hold(state, IR, {0: 3, 2: 3})
+        enter_operating_round(state)
+        past_pre(state)
+        assert TURN.operating_corp(state) == IR and TURN.active_player(state) == CORPS[IR].president(state) == 0
+        return state
+
+    def test_out_of_turn_the_share_can_change_who_acts(self):
+        """Ruby's active player is the operating corp's owner, so the new president acts."""
+        state = self._ir_operating()
+        assert TURN.step(state) == K.STEP_TRACK and DRIVER.apply_out_of_turn(state, P_DR) == STATUS_OK
+        assert CORPS[IR].president(state) == 2 and TURN.active_player(state) == 2
+        assert TURN.step(state) == K.STEP_TRACK
+
+    def test_out_of_turn_er_seller_still_answers_for_the_bonus(self):
+        state = self._ir_operating()
+        TURN.set_pending_seller(state, 1)
+        TURN.set_active_player(state, 1)
+        TURN.set_return_step(state, K.STEP_TRACK)
+        TURN.set_step(state, K.STEP_ER_BONUS)
+        assert DRIVER.apply_out_of_turn(state, P_DR) == STATUS_OK
+        assert CORPS[IR].president(state) == 2 and TURN.active_player(state) == 1
+
+    def test_out_of_turn_a_crowded_corps_new_president_discards(self):
+        """KO operates, and IR is crowded: its discard is its president's."""
+        state = at_turn(route=True)
+        hold(state, IR, {0: 3, 2: 3})
+        TRAINS.set_corp_trains(state, IR, D.TRAIN_3, D.PHASE_TRAIN_LIMIT[PHASE_3] + 1)
+        TRAINS.set_corp_trains(state, IR, D.TRAIN_4, 1)
+        TURN.set_return_step(state, K.STEP_BUY_TRAIN)
+        TURN.set_step(state, K.STEP_DISCARD)
+        TURN.set_active_player(state, 0)
+        assert TRAINS.first_crowded(state) == IR and DRIVER.apply_out_of_turn(state, P_DR) == STATUS_OK
+        assert CORPS[IR].president(state) == 2 and TURN.active_player(state) == 2
+
+    def test_out_of_turn_is_invalid_where_it_does_not_apply(self):
+        state = at_track(route=True)
+        row = state._array.copy()
+        assert DRIVER.apply_out_of_turn(state, P_MF) == STATUS_INVALID  # only DR's
+        assert (state._array == row).all()
+        state = new_game(3)  # Ruby's auction has no Exchange step
+        end_auction(state, [2])
+        assert TURN.round(state) == K.ROUND_AUCTION and DRIVER.apply_out_of_turn(state, P_DR) == STATUS_INVALID
+        state = at_track(route=True)
+        hold(state, IR, {2: 6, 1: 2})  # 60% outside the orange zone
+        assert DRIVER.apply_out_of_turn(state, P_DR) == STATUS_INVALID
+        state = at_track(route=True)
+        PRIVATES[P_DR].set_owner(state, K.OWNER_CLOSED)
+        assert DRIVER.apply_out_of_turn(state, P_DR) == STATUS_INVALID
+        state = at_track(route=True)
+        PRIVATES[P_DR].sell_to_corp(state, KO, 30)  # a corp's DR exchanges for nobody
+        assert DRIVER.apply_out_of_turn(state, P_DR) == STATUS_INVALID
 
     def test_dr_joins_pre_and_post_of_its_owner(self):
         state = at_pre(route=True, owners=[0])

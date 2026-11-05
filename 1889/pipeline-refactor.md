@@ -708,10 +708,11 @@ block 1889 only at step 7, so the two tracks can alternate.
     `lib/engine/action/run_routes.rb`), because the site's "auto" button
     computes the route in the browser and submits it. The engine's
     `RouteSet` keeps each route's ordered hexes;
-  - DR's exchange and MF's port tile out of their owner's turn
-    (`DRIVER.apply_out_of_turn`, engine-design §12 item 4), and MF's port
-    tile at Track after the corp's lay (engine-design §10.2). Replay fails
-    loudly on all three today;
+  - to take a human's DR exchange out of its owner's turn
+    (`DRIVER.apply_out_of_turn`) and private move at Ruby's Route step (the
+    back-up to ROUTE's row) as replay does (engine-design §5.5, §12 item 4).
+    MF's port tile out of its owner's turn has no path yet, and replay fails
+    loudly on it;
   - the SR turns where the engine offers only the pass, DR, and MF, which
     Ruby skips or ends without waiting (engine-design §10.2, 2026-11-02).
     For a human, live play applies the engine's pass, as replay does. For

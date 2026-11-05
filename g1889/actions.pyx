@@ -18,10 +18,10 @@ from g1889.constants cimport (
     DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN, DPHASE_TRACK,
     DPHASE_TRAIN_PRICE, ER_BONUS_CANDIDATE, ER_BONUS_PASS, MAX_ACTION_SIZE, MAX_SALE_SHARES, NUM_DECISION_PHASES,
     NUM_STEPS, NUM_TRAIN_SOURCES, OWNER_CORP, OWNER_PLAYER, OWNER_UNSOLD, PHASE_ACTION_SIZE, PORT_LAY,
-    PRIVATE_PRICE_POINTS, ROUND_GAME_OVER, ROUND_OPERATING, SELECT_TRAIN_TRADE_IN, SELECT_TRAIN_TYPE, STEP_AUCTION,
-    STEP_BUY_TRAIN, STEP_DIVIDEND, STEP_TOKEN, STEP_TO_DECISION_PHASE, STEP_TRACK, STOCK_DR, STOCK_IPO, STOCK_MF,
-    STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_HEX, TOKEN_PASS, TRACK_HEX, TRACK_PASS, TRAIN_PRICE_POINTS,
-    TRAIN_SOURCE_CORP, TRAIN_SOURCE_POOL,
+    PRIVATE_PRICE_POINTS, ROUND_GAME_OVER, ROUND_OPERATING, ROUND_STOCK, SELECT_TRAIN_TRADE_IN, SELECT_TRAIN_TYPE,
+    STEP_AUCTION, STEP_BUY_TRAIN, STEP_DIVIDEND, STEP_ROUTE, STEP_TOKEN, STEP_TO_DECISION_PHASE, STEP_TRACK, STOCK_DR,
+    STOCK_IPO, STOCK_MF, STOCK_PAR, STOCK_PASS, STOCK_POOL, STOCK_SELL, TOKEN_HEX, TOKEN_PASS, TRACK_HEX, TRACK_PASS,
+    TRAIN_PRICE_POINTS, TRAIN_SOURCE_CORP, TRAIN_SOURCE_POOL,
 )
 from g1889.data.tables cimport (
     CERT_LIMIT, D_TRAIN, DISCARD_TYPES, DR_EXCHANGE_CORP, ENDPOINT_PAIRS, ER_HEX, ER_TILE, HEX_EXIT_MASK, HEX_NEIGHBOR,
@@ -1264,19 +1264,32 @@ cdef bint buy_private_pre_open(GameState state) except -1 nogil:
 cdef bint override_slot_legal(GameState state, int action_id) except -1 nogil:
     """Whether replay may take BUY_PRIVATE_PRE's slot ``action_id``, not "done",
     at this step: one of the operating corp's decisions that offers no such
-    slot, where the same slot would be legal at PRE. The sub-phases sit inside
-    one Ruby action, and PRE and POST have their own slots."""
+    slot, or the automated ROUTE, where Ruby waits for the president's routes,
+    where the same slot would be legal at PRE. The sub-phases sit inside one
+    Ruby action, and PRE and POST have their own slots."""
     cdef uint16_t ids[10]  # ACTION_SIZE_BUY_PRIVATE_PRE
     cdef int step = turn_step(state)
     cdef int count, i
     if turn_round(state) != ROUND_OPERATING or not (
-            step == STEP_TRACK or step == STEP_TOKEN or step == STEP_DIVIDEND or step == STEP_BUY_TRAIN):
+            step == STEP_TRACK or step == STEP_TOKEN or step == STEP_ROUTE or step == STEP_DIVIDEND
+            or step == STEP_BUY_TRAIN):
         return False
     count = _enumerate_buy_private_pre(state, ids)
     for i in range(1, count):
         if ids[i] == action_id:
             return True
     return False
+
+
+cdef bint out_of_turn_legal(GameState state, int private) noexcept nogil:
+    """Whether replay may use ``private``'s ability whoever's decision this is:
+    DR's exchange in an SR or OR, whose Exchange step takes it at any of Ruby's
+    stops, from a player owner. MF's port tile out of turn is not supported."""
+    cdef int owner = private_owner(state, <int>PRIVATE_DR)
+    cdef int round_ = turn_round(state)
+    if private != <int>PRIVATE_DR or not (round_ == ROUND_STOCK or round_ == ROUND_OPERATING):
+        return False
+    return <int>OWNER_PLAYER <= owner < <int>OWNER_CORP and can_exchange_dr(state, owner - <int>OWNER_PLAYER)
 
 
 cdef int _enumerate_buy_private_post(GameState state, uint16_t* ids) noexcept nogil:

@@ -1219,9 +1219,9 @@ Decided (2026-11-01; details in [`engine-design.md`](engine-design.md)):
    legality (engine-design §7).
 6. **An unstarted corporation's share** cannot be sold, as in 18xx.games.
 7. **Ability timing** (Section 12.8) follows 18xx.games (Section 13). The
-   engine supports private B and E only on the owner's own turn for now;
-   replay fails loudly on out-of-turn use, which no fixture contains. Live
-   play adds an out-of-turn entry point.
+   model uses private B and E only on the owner's own turn. Replay takes a
+   human's E out of turn through an entry point of its own, and fails loudly
+   on B out of turn, which no scraped game does.
 8. **The endless all-pass auction** (Section 12.9) stays legal. Self-play
    caps it: after one all-pass payout round, a player who can buy the
    topmost private may not pass.

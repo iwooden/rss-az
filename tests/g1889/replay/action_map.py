@@ -25,7 +25,8 @@ private 0, which has no slot, maps to ``(TOPMOST_BID_OVERRIDE, 0)``,
 is for maps to ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + slot)``: Ruby takes
 discards from any crowded corp, the engine in corp order, and the order
 cannot change the result, so the harness holds it until the engine reaches
-that corp (314 record 339, engine-design.md §10.2). ``end_game`` raises
+that corp (314 record 339, engine-design.md §10.2); the harness does the same
+for a discard that comes before one the driver forced. ``end_game`` raises
 ``ReplayEnd``. An action the mapper cannot express yet raises
 ``UnsupportedAction`` naming its type.
 
@@ -43,13 +44,14 @@ slot; MF's ``lay_tile`` to an MF slot and then PORT; and ER's ``lay_tile`` or
 ``pass`` to ER_BONUS. An SR's slot is STOCK's. An OR's is BUY_PRIVATE_PRE's
 while the engine is still there, and BUY_PRIVATE_POST's at Ruby's blocking
 BuyCompany; at Ruby's other stops it is ``(PRIVATE_OVERRIDE, PRE's slot)``,
-which the harness applies with ``DRIVER.override_private_slot``. Where the
-engine rests at PRE and Ruby does anything else, the harness applies PRE's
-"done" first. The engine takes DR and MF only on their owner's own turns
-(engine-design §12 item 4), and the privates' moves not at Ruby's Route step,
-which the engine runs by itself, nor at DiscardTrain, whose ``return_step``
-they would need: an exchange or port tile out of turn, or anything at those
-two, raises ``UnsupportedAction``.
+which the harness applies with ``DRIVER.override_private_slot``; at Ruby's
+Route step the harness backs up to the row before the engine's ROUTE for it.
+Where the engine rests at PRE and Ruby does anything else, the harness applies
+PRE's "done" first. DR's exchange by an owner the engine is not waiting on is
+``(OUT_OF_TURN, private)``, ``DRIVER.apply_out_of_turn``, at any stop. MF's port
+tile out of turn, and a private's other moves at DiscardTrain, whose
+``return_step`` they would need, raise ``UnsupportedAction`` (engine-design §12
+item 4).
 
 The engine offers DR and MF on every SR turn of their owner, so it stops at
 a turn whose only other choice is the pass (or done), which Ruby skips or
@@ -77,12 +79,14 @@ from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TILE, TRAIN, legal_a
 Decision = tuple[int, int]
 # Not decision phases: ``(ROUTE_OVERRIDE, revenue)`` is ``DRIVER.override_route_revenue``,
 # ``(HELD_DISCARD, NUM_TRAIN_TYPES * corp + slot)`` a discard the harness holds for its corp's turn,
-# ``(PRIVATE_OVERRIDE, BUY_PRIVATE_PRE's slot)`` is ``DRIVER.override_private_slot``, and
-# ``(TOPMOST_BID_OVERRIDE, 0)`` is ``DRIVER.override_topmost_bid``.
+# ``(PRIVATE_OVERRIDE, BUY_PRIVATE_PRE's slot)`` is ``DRIVER.override_private_slot``,
+# ``(TOPMOST_BID_OVERRIDE, 0)`` is ``DRIVER.override_topmost_bid``, and
+# ``(OUT_OF_TURN, private)`` is ``DRIVER.apply_out_of_turn``.
 ROUTE_OVERRIDE = -2
 HELD_DISCARD = -3
 PRIVATE_OVERRIDE = -4
 TOPMOST_BID_OVERRIDE = -5
+OUT_OF_TURN = -6
 
 
 class UnsupportedAction(Exception):
@@ -107,9 +111,10 @@ OR_PASS_PHASE = {
     'Track': K.DPHASE_TRACK, 'Token': K.DPHASE_TOKEN, 'BuyTrain': K.DPHASE_BUY_TRAIN,
     'BuyCompany': K.DPHASE_BUY_PRIVATE_POST,
 }
-# The Ruby OR steps whose private moves take the override, by their decision phases.
+# The Ruby OR steps whose private moves take the override, by their decision phases; ROUTE is automated.
 OVERRIDE_STEP_PHASE = {'Track': K.DPHASE_TRACK, 'Token': K.DPHASE_TOKEN, 'Dividend': K.DPHASE_DIVIDEND,
                        'BuyTrain': K.DPHASE_BUY_TRAIN}
+OVERRIDE_STEPS = (*OVERRIDE_STEP_PHASE, 'Route')
 
 
 def _phase_name(phase: int) -> str:
@@ -183,23 +188,16 @@ def _private_move(pre, phase: int, slots: dict[int, int], what: str) -> Decision
             return phase, slots[phase]
         if pre['step'] == 'BuyCompany' and K.DPHASE_BUY_PRIVATE_POST in slots:
             return K.DPHASE_BUY_PRIVATE_POST, slots[K.DPHASE_BUY_PRIVATE_POST]
-        if pre['step'] in OVERRIDE_STEP_PHASE:
+        if pre['step'] in OVERRIDE_STEPS:
             return PRIVATE_OVERRIDE, slots[K.DPHASE_BUY_PRIVATE_PRE]
     raise UnsupportedAction(f"{what} in Ruby's {pre['round']} {pre['step']} step")
 
 
-def _own_turn(state, private: int, what: str) -> None:
-    """DR and MF act only on their owner's own turn (engine-design §12 item
-    4); replay fails loudly on Ruby's out-of-turn use."""
-    if PRIVATES[private].owner(state) != K.OWNER_PLAYER + TURN.active_player(state):
-        raise UnsupportedAction(f"{what} out of its owner's turn (engine-design §12 item 4)")
-
-
 def _buy_shares(action, pre, phase, state) -> list[Decision]:
     if action['entity_type'] == 'company':  # DR's exchange
-        decision = _private_move(pre, phase, DR_SLOT, "DR's exchange")
-        _own_turn(state, D.PRIVATE_DR, "DR's exchange")
-        return [decision]
+        if PRIVATES[D.PRIVATE_DR].owner(state) != K.OWNER_PLAYER + TURN.active_player(state):
+            return [(OUT_OF_TURN, D.PRIVATE_DR)]
+        return [_private_move(pre, phase, DR_SLOT, "DR's exchange")]
     if pre['percent'] != 10 or pre['source'] not in ('ipo', 'pool'):
         raise UnsupportedAction(f"buy_shares of {pre['percent']}% from {pre['source']}")
     first = K.STOCK_IPO if pre['source'] == 'ipo' else K.STOCK_POOL
@@ -226,7 +224,8 @@ def _lay_tile(action, pre, phase, state) -> list[Decision]:
         return [(K.DPHASE_ER_BONUS, K.ER_BONUS_CANDIDATE + candidates.index(lay))]
     if action['entity'] == 'MF':
         decision = _private_move(pre, phase, MF_SLOT, "MF's port tile")
-        _own_turn(state, D.PRIVATE_MF, "MF's port tile")
+        if PRIVATES[D.PRIVATE_MF].owner(state) != K.OWNER_PLAYER + TURN.active_player(state):  # §12 item 4
+            raise UnsupportedAction("MF's port tile out of its owner's turn (engine-design §12 item 4)")
         if tile != D.PORT_TILE or (h, lay[1]) not in A.port_lays_py(state):
             raise UnsupportedAction(f"MF's lay of {pre['tile']} on {pre['hex']} in {_phase_name(phase)}")
         slots = D.PORT_LAY_SLOT[D.MF_PORT_HEX.index(h)]
@@ -350,10 +349,15 @@ def skipped_sr_turn(state: GameState) -> list[Decision]:
     return [(K.DPHASE_STOCK, K.STOCK_PASS)] if own == [K.STOCK_PASS] else []
 
 
+def no_decision(action: dict[str, Any]) -> bool:
+    """Whether a Ruby action never touches the game: chat, notes, and programmed moves' settings."""
+    return action['type'] in ('message', 'log') or action['type'].startswith('program_')
+
+
 def map_action(action: dict[str, Any], pre: dict[str, Any], phase: int, state: GameState) -> list[Decision]:
     """The engine decisions for one Ruby action taken in decision ``phase``."""
     kind = action['type']
-    if kind in ('message', 'log') or kind.startswith('program_'):
+    if no_decision(action):
         return []
     if kind not in MAPPERS:
         raise UnsupportedAction(f'18xx action {kind!r} is not supported')
