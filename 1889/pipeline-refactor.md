@@ -649,15 +649,17 @@ Engine track, independent of the pipeline track:
      2026-11-02 after three of five runs, with their fixes landed.
      Engine-design §13 lists what was reviewed, what was deferred, and what
      is left.
-   - **Parity on scraped games.** Scrape completed 1889 games from
-     18xx.games and replay each through the engine, comparing state at every
-     step, as the RSS engine was validated. This needs its own design,
-     review, and implementation. The scraper must not overload the site:
-     18xx.games shadow-blocks IPs that fetch game JSON too often. The replay
-     tooling in `tests/g1889/replay/` (Ruby's state extractor, the action
-     mapper, and `snapshot.compare`/`load_state`) is the starting point.
-     The extractor only checks parity. Ruby is never called from training
-     or live play.
+   - **Parity on scraped games.** 100 completed 1889 games scraped from
+     18xx.games replay through the engine with state equal to Ruby's at every
+     step, each whole and each OR turn and later SR alone, with equal final
+     results, and Ruby's route, network, train, private, and extraction
+     oracles agree on them. `tests/g1889/games/` holds the tests
+     (engine-design Section 10.2): five smoke games in the default suite, and
+     every game with `RSS_AZ_REPLAY_FULL=1`. The game files aren't in the
+     repo, so without them the tests skip. A scraper must not overload the
+     site: 18xx.games shadow-blocks IPs that fetch game JSON too often. The
+     extractor only checks parity. Ruby is never called from training or
+     live play.
 7. Feature extraction (milestone 4), the extraction half of
    `games/g1889.py`, and extraction conformance for 1889. The engine half and
    its conformance landed with step 6.

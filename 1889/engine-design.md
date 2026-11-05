@@ -1227,6 +1227,22 @@ equal its `result`.
        skips.
      - **Ids.** Corp TR and private TR share a symbol. Ruby keeps one D
        train in the depot and clones it per sale; the engine stores −1.
+   - **`harness.py`** is the replay itself (`replay_extract`), with the sync
+     rule and the equivalences above, and the fixtures' and scraped games'
+     tests both run it.
+   - **Scraped games** (`tests/g1889/games/`). Completed games scraped from
+     18xx.games live in `tests/g1889/games/data/`, gitignored and not in the
+     repo; with none on disk the tests skip. Per game, `checks.py` replays
+     from record 0 to Ruby's natural end (`bank` or `bankrupt`), every record
+     equal, with the same end reason and scores; replays each OR turn and
+     later SR alone from `load_state`, allowing no stop; and runs the route,
+     network, train, private, and extraction oracles, with no exact counts
+     but at least one snapshot seen. Extraction applies at 3 or more players.
+     No human's logged revenue may exceed the engine's maximum. The default
+     suite runs five smoke games in-process, chosen for the hard cases.
+     `RSS_AZ_REPLAY_FULL=1 .venv/bin/pytest tests/g1889/games -q` runs every
+     file in a spawned pool of `RSS_AZ_REPLAY_JOBS` workers (default: one per
+     CPU), and `RSS_AZ_REPLAY_DATA` overrides the directory.
 3. **Differential replay** (`test_differential_replay.py`): all four fixtures,
    compared after every action, including the final results. Later rounds
    replay from `load_state` of their first snapshot before the replay

@@ -34,7 +34,7 @@ An OR pass maps by Ruby's step (Track, Token, BuyTrain, BuyCompany), not by
 the engine's phase, so the sync rule never takes a pass in one step for a
 forced pass in another. Ruby's Track pass after a lay, where it keeps Track
 open for MF's port tile, maps to no decision; the replay harness handles it
-(``test_differential_replay.py``, engine-design.md §10.2).
+(``harness.py``, engine-design.md §10.2).
 
 The privates' actions join whatever step Ruby stops at, and the engine offers
 them in fewer places (engine-design §5.1): a ``buy_company`` maps to a

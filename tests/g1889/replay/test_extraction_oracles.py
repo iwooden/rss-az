@@ -80,8 +80,7 @@ def _tile(tokens: np.ndarray, row: int) -> tuple[str, int]:
     return D.TILE_NAMES[tile], min(r for r in range(D.NUM_SIDES) if D.TILE_MASK[tile][r] == mask)
 
 
-def _or_snapshots(fixture):
-    extract = load_fixture_extract(fixture)
+def _or_snapshots(extract):
     for record in extract['records']:
         snap = record['state']
         if snap['game']['round'] == 'OR' and not snap['game']['finished']:
@@ -118,30 +117,36 @@ def _check_track(fixture, index, state, snap, tokens) -> tuple[int, int]:
     return len(by_hex), forced
 
 
-@pytest.mark.parametrize('fixture', FIXTURES)
-def test_extraction_matches_ruby_at_every_or_snapshot(fixture):
+def check_extraction(label, extract) -> tuple[int, ...]:
+    """The counts of ``COVERAGE``. Extraction is for the model's 3-5 players."""
     snapshots = corps = tracks = lay_hexes = forced = token_steps = routes = 0
-    for index, snap, state in _or_snapshots(fixture):
+    for index, snap, state in _or_snapshots(extract):
         snapshots += 1
         step, operating = snap['game']['step'], snap['operating']
         tokens, records = _extract(state)
         for c, sym in enumerate(D.CORP_SYMS):
             hexes, centers = _reach(records, c)
             ruby = operating['graph'].get(sym, {'hexes': {}, 'nodes': []})
-            assert (hexes, centers) == (set(ruby['hexes']), set(ruby['nodes'])), (fixture, index, sym)
+            assert (hexes, centers) == (set(ruby['hexes']), set(ruby['nodes'])), (label, index, sym)
             corps += sym in operating['graph']
         phase = A.get_decision_phase_py(state)
         if phase == K.DPHASE_TRACK and operating['lays'] is not None:
             tracks += 1
-            n, f = _check_track(fixture, index, state, snap, tokens)
+            n, f = _check_track(label, index, state, snap, tokens)
             lay_hexes, forced = lay_hexes + n, forced + f
         elif phase == K.DPHASE_TOKEN:
             sym = D.CORP_SYMS[TURN.operating_corp(state)]
             ours = {D.HEX_IDS[h] for h in np.flatnonzero(tokens[R.ROW_HEX:R.ROW_CANDIDATE, TOKENABLE])}
-            assert ours == set(operating['tokens'][sym]), (fixture, index)
+            assert ours == set(operating['tokens'][sym]), (label, index)
             token_steps += 1
         elif step == 'Route':
             c = CORP[operating['operator']]
-            assert round(float(tokens[R.ROW_CORP + c, ROUTE_MAX]) * 100) == operating['auto_router']['revenue']
+            assert round(float(tokens[R.ROW_CORP + c, ROUTE_MAX]) * 100) == operating['auto_router']['revenue'], \
+                (label, index)
             routes += 1
-    assert (snapshots, corps, tracks, lay_hexes, forced, token_steps, routes) == COVERAGE[fixture]
+    return snapshots, corps, tracks, lay_hexes, forced, token_steps, routes
+
+
+@pytest.mark.parametrize('fixture', FIXTURES)
+def test_extraction_matches_ruby_at_every_or_snapshot(fixture):
+    assert check_extraction(fixture, load_fixture_extract(fixture)) == COVERAGE[fixture]

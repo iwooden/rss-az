@@ -59,66 +59,76 @@ def _ids(state) -> list[int]:
     return [int(i) for i in ids[:A.enumerate_legal_actions_py(state, ids)]]
 
 
-def _or_snapshots(fixture):
-    extract = load_fixture_extract(fixture)
+def _or_snapshots(extract):
     for record in extract['records']:
         snap = record['state']
         if snap['game']['round'] == 'OR' and not snap['game']['finished']:
             yield record['index'], snap, load_state(snap, len(extract['players']))
 
 
-@pytest.mark.parametrize('fixture', FIXTURES)
-def test_network_matches_ruby_at_every_or_snapshot(fixture):
+def check_network(label, extract) -> tuple[int, ...]:
+    """The counts of ``COVERAGE``."""
     snapshots = graphs = tracks = lay_sets = legal = rejected = tokens = token_sets = 0
-    for index, snap, state in _or_snapshots(fixture):
+    for index, snap, state in _or_snapshots(extract):
         snapshots += 1
         operating = snap['operating']
         for sym, ruby in operating['graph'].items():
-            assert _graph_differences(state, CORP[sym], ruby) == [], (fixture, index, sym)
+            assert _graph_differences(state, CORP[sym], ruby) == [], (label, index, sym)
             graphs += 1
         for sym, ruby in operating['tokens'].items():
             assert [D.HEX_IDS[h] for h in A.token_hexes_py(state, CORP[sym])] == \
-                sorted(ruby, key=HEX.__getitem__), (fixture, index, sym)
+                sorted(ruby, key=HEX.__getitem__), (label, index, sym)
             token_sets += 1
         if operating['lays'] is not None:
             tracks += 1
             for sym, lays in operating['lays'].items():
                 ours = engine_lays(state, CORP[sym])
-                assert ours == ruby_lays(lays, snap['corporations'][sym]['cash']), (fixture, index, sym)
+                assert ours == ruby_lays(lays, snap['corporations'][sym]['cash']), (label, index, sym)
                 lay_sets += 1
                 legal += len(ours)
                 rejected += sum(not ok for *_, ok in lays)
         tokens += snap['game']['step'] == 'Token'
-    assert (snapshots, graphs, tracks, lay_sets, legal, rejected, tokens, token_sets) == COVERAGE[fixture]
+    return snapshots, graphs, tracks, lay_sets, legal, rejected, tokens, token_sets
 
 
 @pytest.mark.parametrize('fixture', FIXTURES)
-def test_operating_corp_track_tile_and_token_ids_match_ruby(fixture):
+def test_network_matches_ruby_at_every_or_snapshot(fixture):
+    assert check_network(fixture, load_fixture_extract(fixture)) == COVERAGE[fixture]
+
+
+def check_operating_corp_ids(label, extract) -> int:
     """TRACK is pass and each hex with a Ruby lay; TILE at each indexes its
-    candidates; TOKEN is pass and each city Ruby's Token step accepts."""
+    candidates; TOKEN is pass and each city Ruby's Token step accepts. Returns
+    the Track and Token snapshots checked."""
     checked = 0
-    for index, snap, state in _or_snapshots(fixture):
+    for index, snap, state in _or_snapshots(extract):
         operating, step = snap['operating'], snap['game']['step']
         corp = TURN.operating_corp(state)
         sym = D.CORP_SYMS[corp]
         if step == 'Track' and operating['lays'] is not None:
             lays = ruby_lays(operating['lays'][sym], snap['corporations'][sym]['cash'])
             hexes = sorted({HEX[hex_id] for hex_id, _, _ in lays})
-            assert _ids(state) == [K.TRACK_PASS] + [K.TRACK_HEX + D.HEX_TRACK_SLOT[h] for h in hexes], (fixture, index)
+            assert _ids(state) == [K.TRACK_PASS] + [K.TRACK_HEX + D.HEX_TRACK_SLOT[h] for h in hexes], (label, index)
             TURN.set_step(state, K.STEP_TILE)
             for h in hexes:
                 TURN.set_pending_hex(state, h)
                 candidates = A.lay_candidates_py(state, h)
                 assert candidates == sorted(candidates)
                 assert {(D.HEX_IDS[h], D.TILE_NAMES[t], r) for t, r in candidates} == \
-                    {lay for lay in lays if lay[0] == D.HEX_IDS[h]}, (fixture, index, D.HEX_IDS[h])
+                    {lay for lay in lays if lay[0] == D.HEX_IDS[h]}, (label, index, D.HEX_IDS[h])
                 assert _ids(state) == list(range(len(candidates)))
             checked += 1
         elif step == 'Token':
             hexes = sorted(HEX[hex_id] for hex_id in operating['tokens'][sym])
-            assert hexes, (fixture, index)  # Ruby skips the Token step when nothing can be tokened
-            assert _ids(state) == [K.TOKEN_PASS] + [K.TOKEN_HEX + D.HEX_TOKEN_SLOT[h] for h in hexes], (fixture, index)
+            assert hexes, (label, index)  # Ruby skips the Token step when nothing can be tokened
+            assert _ids(state) == [K.TOKEN_PASS] + [K.TOKEN_HEX + D.HEX_TOKEN_SLOT[h] for h in hexes], (label, index)
             checked += 1
+    return checked
+
+
+@pytest.mark.parametrize('fixture', FIXTURES)
+def test_operating_corp_track_tile_and_token_ids_match_ruby(fixture):
+    checked = check_operating_corp_ids(fixture, load_fixture_extract(fixture))
     assert checked == {'314': 59, '962': 72}.get(fixture, 1)
 
 
@@ -126,20 +136,25 @@ def test_operating_corp_track_tile_and_token_ids_match_ruby(fixture):
 MUST_BUY_COVERAGE = {'314': (60, 15), '962': (52, 6), 'hs_jmmljkbw_17502': (1, 0), 'hs_lhglbbiz_17502': (1, 0)}
 
 
-@pytest.mark.parametrize('fixture', FIXTURES)
-def test_must_buy_matches_ruby_at_every_buy_train_snapshot(fixture):
+def check_must_buy(label, extract) -> tuple[int, int]:
     """``must_buy_train`` against ``must_buy_train?`` on a fresh graph. Ruby's
     own graph keeps ``route_train_purchase`` through ``Graph#clear``
     (engine-design §4), but here it had the operator's route cached at every
-    snapshot and never read a stale value."""
+    snapshot and never read a stale value. Returns the counts of
+    ``MUST_BUY_COVERAGE``."""
     snapshots = must_buys = 0
-    for index, snap, state in _or_snapshots(fixture):
+    for index, snap, state in _or_snapshots(extract):
         if (ruby := snap['operating']['must_buy']) is None:
             continue
-        assert A.must_buy_train_py(state) == ruby['fresh'] == ruby['game'], (fixture, index)
+        assert A.must_buy_train_py(state) == ruby['fresh'] == ruby['game'], (label, index)
         snapshots += 1
         must_buys += ruby['fresh']
-    assert (snapshots, must_buys) == MUST_BUY_COVERAGE[fixture]
+    return snapshots, must_buys
+
+
+@pytest.mark.parametrize('fixture', FIXTURES)
+def test_must_buy_matches_ruby_at_every_buy_train_snapshot(fixture):
+    assert check_must_buy(fixture, load_fixture_extract(fixture)) == MUST_BUY_COVERAGE[fixture]
 
 
 def random_map(rng: random.Random, num_lays: tuple[int, int] = (30, 120)) -> tuple[GameState, dict]:

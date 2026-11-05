@@ -9,6 +9,7 @@ _SUBMODULE = Path(__file__).parent / "submodules" / "18xx" / "lib"
 # Node id prefixes of the tests that read the 18xx.games submodule, through Ruby,
 # or the gitignored replay fixtures it makes: a cloud box has neither.
 _NEEDS_18XX = (
+    "tests/g1889/games/",
     "tests/g1889/replay/",
     "tests/g1889/test_data_vs_ruby.py",
     "tests/g1889/test_action_slots.py::test_ruby_keeps_private_0_first_while_it_is_unsold",

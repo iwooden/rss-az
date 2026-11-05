@@ -190,6 +190,15 @@ Run the phase test suite:
 .venv/bin/pytest tests/phases -q
 ```
 
+Replay every scraped game on disk, where the default suite replays a few smoke
+games. RSS and 1889 keep their game files in gitignored `data/` directories, so
+the games aren't in the repo, and the 1889 tests skip without them:
+
+```bash
+RSS_AZ_REPLAY_FULL=1 .venv/bin/pytest tests/games_18xx/test_replay.py -q
+RSS_AZ_REPLAY_FULL=1 .venv/bin/pytest tests/g1889/games -q
+```
+
 Start a transformer-v2 training run:
 
 ```bash

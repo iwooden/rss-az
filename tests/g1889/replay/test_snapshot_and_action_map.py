@@ -25,7 +25,7 @@ from tests.g1889.replay.action_map import (
 )
 from tests.g1889.replay.extracts import FIXTURES, load_fixture_extract, load_new_game_extract
 from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TRAIN, compare, load_state
-from tests.g1889.replay.test_differential_replay import new_game
+from tests.g1889.replay.harness import new_game
 
 FIELDS = get_global_fields()
 CACHE_SLOTS = [get_layout(D.MAX_PLAYERS).global_offset + f for f in (FIELDS.conn_dirty, FIELDS.route_dirty)]

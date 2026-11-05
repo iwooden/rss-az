@@ -22,7 +22,7 @@ from g1889.state import GameState
 from tests.g1889.replay.action_map import TOPMOST_BID_OVERRIDE, map_action
 from tests.g1889.replay.extracts import load_game_extract
 from tests.g1889.replay.snapshot import compare, load_state
-from tests.g1889.replay.test_differential_replay import replay_extract
+from tests.g1889.replay.harness import replay_extract
 
 PASS = None
 

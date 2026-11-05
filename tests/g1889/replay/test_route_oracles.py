@@ -20,6 +20,7 @@ identical trains come into play, which the fixtures never reach.
 
 from __future__ import annotations
 
+import json
 import random
 
 import pytest
@@ -64,9 +65,8 @@ def check_routes(state, corp: int, routes: list[dict]) -> None:
         trains.remove(r['train'])
 
 
-def _route_snapshots(fixture):
+def _route_snapshots(extract):
     """(Route snapshot, the run_routes record after it, state, operating corp)."""
-    extract = load_fixture_extract(fixture)
     records = extract['records']
     for before, record in zip(records, records[1:]):
         snap = before['state']
@@ -79,48 +79,75 @@ def _ruby_routes(router: dict) -> list:
                   for r in router['routes'])
 
 
-@pytest.mark.parametrize('fixture', FIXTURES)
-def test_the_solver_matches_auto_router_at_every_route_snapshot(fixture):
+def check_solver_matches_auto_router(label, extract) -> tuple[int, int]:
+    """Route snapshots, and those where the solver picks AutoRouter's routes."""
     snapshots = same = 0
-    for snap, _, state, corp in _route_snapshots(fixture):
+    for snap, _, state, corp in _route_snapshots(extract):
         router = snap['operating']['auto_router']
         routes = best_routes_py(state, corp)
-        assert max_route_revenue(state, corp) == router['revenue'] == sum(r['revenue'] for r in routes), snap['game']
+        assert max_route_revenue(state, corp) == router['revenue'] == sum(r['revenue'] for r in routes), \
+            (label, snap['game'])
         check_routes(state, corp, routes)
         same += sorted((D.TRAIN_NAMES[r['train']], r['revenue'], normal(r['hexes'])) for r in routes) == \
             _ruby_routes(router)
         DRIVER.advance(state)  # ROUTE, then DIVIDEND, the president's choice
         assert TURN.step(state) == K.STEP_DIVIDEND and TURN.route_revenue(state) == router['revenue']
         snapshots += 1
+    return snapshots, same
+
+
+@pytest.mark.parametrize('fixture', FIXTURES)
+def test_the_solver_matches_auto_router_at_every_route_snapshot(fixture):
+    snapshots, same = check_solver_matches_auto_router(fixture, load_fixture_extract(fixture))
     assert (snapshots, same) == ROUTE_COVERAGE[fixture]
+
+
+def check_human_revenues(extract) -> tuple[int, int, set[int]]:
+    """Routes run; logged revenues below the maximum; the action ids of those above it."""
+    runs = below = 0
+    above: set[int] = set()
+    for _, record, state, corp in _route_snapshots(extract):
+        if record['action']['type'] != 'run_routes':  # a private's move or a note, at Route
+            continue
+        logged, best = record['pre']['revenue'], max_route_revenue(state, corp)
+        runs += 1
+        below += logged < best
+        if logged > best:
+            above.add(record['action']['id'])
+    return runs, below, above
 
 
 @pytest.mark.parametrize('fixture', FIXTURES)
 def test_the_maximum_covers_every_human_revenue_but_one(fixture):
-    below, above = 0, set()
-    for _, record, state, corp in _route_snapshots(fixture):
-        if record['action']['type'] != 'run_routes':  # a private's move or a note, at Route
-            continue
-        logged, best = record['pre']['revenue'], max_route_revenue(state, corp)
-        below += logged < best
-        if logged > best:
-            above.add(record['action']['id'])
+    _, below, above = check_human_revenues(load_fixture_extract(fixture))
     assert (below, above) == HUMAN_COVERAGE[fixture]
 
 
-@pytest.mark.parametrize('fixture', FIXTURES)
-def test_brute_force_agrees_at_every_or_snapshot(fixture):
-    extract = load_fixture_extract(fixture)
+def check_brute_force(label, extract) -> int:
+    """Corps with trains and a token, over every OR snapshot. The solver runs
+    at each. The search, which reads only the map, the phase, and the corp's
+    trains, runs once for each set of them, as most snapshots repeat one."""
     checked = 0
+    searched: dict[tuple, int] = {}
     for record in extract['records']:
         snap = record['state']
         if snap['game']['round'] != 'OR' or snap['game']['finished']:
             continue
         state = load_state(snap, len(extract['players']))
+        network = json.dumps(snap['hexes'], sort_keys=True), snap['game']['phase']
         for c in range(D.NUM_CORPS):
             if TRAINS.corp_total(state, c) and any(MAP.tokens(state, h) >> c & 1 for h in range(D.NUM_HEXES)):
-                assert max_route_revenue(state, c) == best_revenue(state, c), (fixture, record['index'], c)
+                key = (c, tuple(trains_of(state, c)), *network)
+                if key not in searched:
+                    searched[key] = best_revenue(state, c)
+                assert max_route_revenue(state, c) == searched[key], (label, record['index'], c)
                 checked += 1
+    return checked
+
+
+@pytest.mark.parametrize('fixture', FIXTURES)
+def test_brute_force_agrees_at_every_or_snapshot(fixture):
+    checked = check_brute_force(fixture, load_fixture_extract(fixture))
     assert checked == BRUTE_COVERAGE[fixture]
 
 

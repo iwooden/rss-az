@@ -435,6 +435,16 @@ def load_game_extract(label: str, game: dict[str, Any]) -> Extract:
         os.unlink(tmp)
 
 
+def load_scraped_extract(path: Path) -> Extract:
+    """The extract of a game scraped from 18xx.games, cached as ``scraped-<id>``."""
+    return load_game_extract(f'scraped-{path.stem}', json.loads(path.read_text()))
+
+
+def forget_extracts() -> None:
+    """Drop the extracts held in memory; later loads read the cache again."""
+    _loaded.clear()
+
+
 def load_graph_extract(label: str, specs: list[dict[str, Any]]) -> Extract:
     """Ruby's ``Graph`` on hand-built maps (``extract_states.rb --graphs``).
     Each spec's ``ops`` run in order on a new 4-player game: ``['lay', hex,

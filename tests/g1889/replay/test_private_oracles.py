@@ -73,7 +73,7 @@ from tests.g1889.replay.snapshot import (
     CORP, engine_er_lays, engine_port_lays, engine_private_buys, load_state, ruby_private_buys, ruby_special_lays,
     track_after_lay,
 )
-from tests.g1889.replay.test_differential_replay import replay_extract
+from tests.g1889.replay.harness import replay_extract
 from tests.g1889.replay.test_stock_scripts import PASS, _game, route
 
 AUCTION = [(0, 'TR', 20), (1, 'MF', 30), (2, 'ER', 40), (0, 'SMR', 50), (1, 'DR', 60), (2, 'SIR', 80)]
@@ -195,9 +195,8 @@ def _override_accepts(state, slot: int) -> bool:
     return DRIVER.override_private_slot(copy, slot) != STATUS_INVALID
 
 
-@pytest.mark.parametrize('label', (*FIXTURES, *SCRIPTS))
-def test_privates_match_ruby(label):
-    extract = _extract(label)
+def check_privates(label, extract) -> tuple[int, ...]:
+    """The counts of ``COVERAGE``."""
     counts = [0] * 13
     for record in extract['records']:
         snap, index = record['state'], record['index']
@@ -260,7 +259,12 @@ def test_privates_match_ruby(label):
         exchange = bool(abilities['exchange']) and _owner(state, D.PRIVATE_DR) == actor
         assert (A.ACTION_DR_EXCHANGE in kinds) == exchange, where
         counts[9] += exchange
-    assert tuple(counts) == COVERAGE[label]
+    return tuple(counts)
+
+
+@pytest.mark.parametrize('label', (*FIXTURES, *SCRIPTS))
+def test_privates_match_ruby(label):
+    assert check_privates(label, _extract(label)) == COVERAGE[label]
 
 
 # The privates' moves each script makes, by the path they replay through.

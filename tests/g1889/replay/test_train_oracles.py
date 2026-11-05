@@ -83,9 +83,8 @@ def _ids(state) -> list[int]:
     return [int(i) for i in ids[:A.enumerate_legal_actions_py(state, ids)]]
 
 
-@pytest.mark.parametrize('fixture', FIXTURES)
-def test_buy_train_and_discard_match_ruby(fixture):
-    extract = load_fixture_extract(fixture)
+def check_buy_train_and_discard(label, extract) -> tuple[tuple[int, ...], tuple[int, ...], tuple[tuple[int, ...], ...]]:
+    """The counts of ``COVERAGE``, ``SUB_PHASES``, and ``EMERGENCIES``."""
     snapshots = emergencies = choices = corps = pool = trades = discards = 0
     funded = sales = bankruptcies = ruby_sales = ruby_bankruptcies = 0
     sub_phases = [0] * 4
@@ -94,7 +93,7 @@ def test_buy_train_and_discard_match_ruby(fixture):
         operating = snap['operating']
         if operating is None or snap['game']['finished']:
             continue
-        where = (fixture, record['index'])
+        where = (label, record['index'])
         state = None
         if operating['trains'] is not None:
             state = load_state(snap, len(extract['players']))
@@ -137,9 +136,16 @@ def test_buy_train_and_discard_match_ruby(fixture):
             assert _ids(state) == [D.TRAIN_DISCARD_SLOT[t] for t in range(D.NUM_TRAIN_TYPES)
                                    if TRAINS.corp_trains(state, first, t)]
             discards += 1
-    assert (snapshots, emergencies, choices, corps, pool, trades, discards) == COVERAGE[fixture]
-    assert tuple(sub_phases) == SUB_PHASES[fixture]
-    assert ((funded, sales, bankruptcies), (ruby_sales, ruby_bankruptcies)) == EMERGENCIES[fixture]
+    return ((snapshots, emergencies, choices, corps, pool, trades, discards), tuple(sub_phases),
+            ((funded, sales, bankruptcies), (ruby_sales, ruby_bankruptcies)))
+
+
+@pytest.mark.parametrize('fixture', FIXTURES)
+def test_buy_train_and_discard_match_ruby(fixture):
+    coverage, sub_phases, emergency_counts = check_buy_train_and_discard(fixture, load_fixture_extract(fixture))
+    assert coverage == COVERAGE[fixture]
+    assert sub_phases == SUB_PHASES[fixture]
+    assert emergency_counts == EMERGENCIES[fixture]
 
 
 # Ruby's state at 314's emergencies, changed in place: KO's (record 448: the

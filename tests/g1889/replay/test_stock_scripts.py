@@ -42,7 +42,7 @@ import pytest
 import g1889.data.tables as D
 
 from tests.g1889.replay.extracts import load_game_extract
-from tests.g1889.replay.test_differential_replay import replay_extract
+from tests.g1889.replay.harness import replay_extract
 
 PASS = None
 AUTO = 'auto'
