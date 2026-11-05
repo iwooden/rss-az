@@ -381,6 +381,7 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
                         pending.clear()
                         if deferred is not None and not held and not matches(deferred):
                             return progress
+                        deferred = None
                     if decisions and _is_private_move(action):
                         progress.private_moves[_private_path(decisions[0][0], pre)] += 1
                 if error := _apply(state, decisions, actors, pending, log, held):

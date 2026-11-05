@@ -14,7 +14,7 @@ SR, or BUY_TRAIN's and EMERGENCY_SELL_AMOUNT's in an emergency; a
 corp's train TRAIN_PRICE. Where the driver forces a sub-phase (one block,
 one train), the harness's sync rule takes it from the driver's history.
 
-Actions with no engine decision map to ``[]``: ``message``, ``program_*``,
+Actions with no engine decision map to ``[]``: ``message``, ``log``, ``program_*``,
 and ``run_routes`` whose revenue the engine's ROUTE step already matches.
 Any other ``run_routes`` maps to ``(ROUTE_OVERRIDE, revenue)``, which the
 harness applies with ``DRIVER.override_route_revenue``: humans' routes often
@@ -353,7 +353,7 @@ def skipped_sr_turn(state: GameState) -> list[Decision]:
 def map_action(action: dict[str, Any], pre: dict[str, Any], phase: int, state: GameState) -> list[Decision]:
     """The engine decisions for one Ruby action taken in decision ``phase``."""
     kind = action['type']
-    if kind == 'message' or kind.startswith('program_'):
+    if kind in ('message', 'log') or kind.startswith('program_'):
         return []
     if kind not in MAPPERS:
         raise UnsupportedAction(f'18xx action {kind!r} is not supported')
