@@ -36,6 +36,8 @@ for development guidance.
 - `train_configs/` - JSON training configs. `bigger-multi.json` is the current
   transformer-v2 mixed 3-5 player config; `1889-v0.json` is the first Shikoku 1889
   run, and `1889-v0-smoke.json` its local smoke test (run with `--no-compile`).
+  [`1889/model-design.md`](1889/model-design.md) Section 11 is the run's runbook,
+  with `cloud/profile_1889.py`, `cloud/rescale_1889.py`, and `train/capacity_probe.py`.
 - `utils_18xx/` - 18xx.games replay parsing, replay analysis, API client, and
   live-play server.
 - `tests/` - phase tests, engine invariants, model contract tests, MCTS tests,

@@ -50,6 +50,43 @@ def average_training_metrics(metrics: dict[str, list[float]]) -> dict[str, float
     return result
 
 
+def policy_row_losses(
+    policy_logits: torch.Tensor, policy_targets: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Each row's policy cross-entropy and target entropy over unified slots.
+
+    Their difference is the row's KL(target || policy). ``policy_targets`` is
+    zero on illegal slots, so only legal slots contribute; masked-to-``-1e9``
+    illegal log-probs multiplied by zero targets vanish cleanly.
+    """
+    log_probs = F.log_softmax(policy_logits, dim=-1)
+    cross_entropy = -(policy_targets * log_probs).sum(dim=-1)
+    min_policy_target = torch.finfo(policy_targets.dtype).tiny
+    target_log = torch.where(
+        policy_targets > 0.0,
+        torch.log(policy_targets.clamp_min(min_policy_target)),
+        torch.zeros_like(policy_targets),
+    )
+    return cross_entropy, -(policy_targets * target_log).sum(dim=-1)
+
+
+def value_row_sqerr(
+    values: torch.Tensor, value_targets: torch.Tensor, player_counts: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Each row's squared value error summed over its real players, and the
+    real-player mask.
+
+    Mixed-count transformer batches carry padded value slots up to max_players;
+    those slots are not game entities and should not contribute to gradients or
+    the loss denominator. Single-count batches get an all-true mask because
+    their sampled player_counts equal N.
+    """
+    player_ids = torch.arange(values.shape[1], device=values.device)
+    value_mask = player_ids.unsqueeze(0) < player_counts.unsqueeze(1)
+    value_sqerr = (values - value_targets).square()
+    return value_sqerr.masked_fill(~value_mask, 0.0).sum(dim=1), value_mask
+
+
 class Trainer:
     """Handles optimizer, LR schedule, and training steps."""
 
@@ -337,6 +374,19 @@ class Trainer:
             layout_version=self._layout_version,
         )
 
+    def _ship_inputs(self, n: int) -> int:
+        """Build the model inputs of the raw scratch's first ``n`` rows and
+        start their H→D copies (an aliased no-op on CPU). Returns the row count
+        of the relations the forward takes."""
+        self._fill_token_batch(n)
+        relation_rows = n
+        if self._flat_relations:
+            flat = flatten_relation_records(self._records_np[:n])
+            relation_rows = len(flat)
+            self._rel_h_np[:relation_rows] = flat
+        self._h2d(n, relation_rows)
+        return relation_rows
+
     def _pass_action_logit_abs(
         self,
         policy_logits: torch.Tensor,
@@ -427,16 +477,7 @@ class Trainer:
                     f"NaN in sampled '{name}' at step {self._global_step}"
                 )
 
-        self._fill_token_batch(B)
-
-        relation_rows = B
-        if self._flat_relations:
-            flat = flatten_relation_records(self._records_np[:B])
-            relation_rows = len(flat)
-            self._rel_h_np[:relation_rows] = flat
-
-        # Async H→D on CUDA; aliased no-op on CPU.
-        self._h2d(B, relation_rows)
+        relation_rows = self._ship_inputs(B)
 
         phase_ids = self._phase_d[:B]
         legal_masks = self._mask_d[:B].to(torch.bool)
@@ -471,19 +512,10 @@ class Trainer:
         raw_values = self._raw_values
 
         # Policy loss: dense cross-entropy over the unified slot space.
-        # ``policy_targets`` is zero on illegal slots, so only legal slots
-        # contribute; masked-to-``-1e9`` illegal log-probs multiplied by
-        # zero targets vanish cleanly.
-        log_probs = F.log_softmax(policy_logits, dim=-1)
-        per_example_policy_loss = -(policy_targets * log_probs).sum(dim=-1)
-        policy_loss = per_example_policy_loss.mean()
-        min_policy_target = torch.finfo(policy_targets.dtype).tiny
-        target_log = torch.where(
-            policy_targets > 0.0,
-            torch.log(policy_targets.clamp_min(min_policy_target)),
-            torch.zeros_like(policy_targets),
+        per_example_policy_loss, per_example_target_entropy = policy_row_losses(
+            policy_logits, policy_targets,
         )
-        per_example_target_entropy = -(policy_targets * target_log).sum(dim=-1)
+        policy_loss = per_example_policy_loss.mean()
         policy_kl_sampled = policy_loss - per_example_target_entropy.mean()
         # Reported policy losses are importance-weighted row averages, which
         # estimate uniform-sampling values (plain means without prioritization).
@@ -496,19 +528,13 @@ class Trainer:
         ).sum() / weight_sum
         policy_loss_residual = reported_policy_loss - policy_target_entropy
 
-        # Value loss: mean squared error over real players only. Mixed-count
-        # transformer batches carry padded value slots up to max_players; those
-        # slots are not game entities and should not contribute to gradients or
-        # the loss denominator. Single-count batches get an all-true mask
-        # because their sampled player_counts equal N. Rows are importance-
-        # weighted, so prioritized replay doesn't bias the value fit.
-        player_ids = torch.arange(self._num_players, device=self.device)
-        value_mask = player_ids.unsqueeze(0) < player_counts.unsqueeze(1)
-        value_sqerr = (values - value_targets).square()
-        per_example_value_sqerr_sums = (
-            value_sqerr.masked_fill(~value_mask, 0.0).sum(dim=1)
+        # Value loss: mean squared error over real players only. Rows are
+        # importance-weighted, so prioritized replay doesn't bias the value fit.
+        per_example_value_sqerr_sums, value_mask = value_row_sqerr(
+            values, value_targets, player_counts,
         )
-        weighted_players = is_weights * player_counts.to(value_sqerr.dtype)
+        value_dtype = per_example_value_sqerr_sums.dtype
+        weighted_players = is_weights * player_counts.to(value_dtype)
         value_loss = (
             (is_weights * per_example_value_sqerr_sums).sum()
             / weighted_players.sum()
@@ -516,7 +542,7 @@ class Trainer:
         raw_value_stats = (
             self._raw_value_stats(raw_values, value_mask, player_counts)
             if raw_values is not None
-            else value_sqerr.new_zeros(0)
+            else per_example_value_sqerr_sums.new_zeros(0)
         )
 
         # Combined loss
@@ -569,14 +595,14 @@ class Trainer:
         )
 
         per_count_value_sums = torch.zeros(
-            count_bucket_count, device=device, dtype=value_sqerr.dtype,
+            count_bucket_count, device=device, dtype=value_dtype,
         )
         per_count_value_sums.index_add_(
             0, count_bucket_ids,
             per_example_value_sqerr_sums.detach() * row_weights,
         )
         per_count_value_denoms = torch.zeros(
-            count_bucket_count, device=device, dtype=value_sqerr.dtype,
+            count_bucket_count, device=device, dtype=value_dtype,
         )
         per_count_value_denoms.index_add_(
             0, count_bucket_ids, weighted_players.detach(),
@@ -684,6 +710,49 @@ class Trainer:
             result["value_raw_saturated"] = scalars[raw_offset + 2]
 
         return result
+
+    @torch.no_grad()
+    def score_rows(
+        self,
+        states: np.ndarray,
+        legal_masks: np.ndarray,
+        policy_targets: np.ndarray,
+        value_targets: np.ndarray,
+        player_counts: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Each row's policy cross-entropy, target entropy, and squared value
+        error summed over real players, by ``train_step``'s input path and loss
+        functions, with no update. The caller sets the model's mode.
+
+        ``value_targets`` are padded to the buffer's max_players.
+        """
+        B = len(states)
+        self._ensure_scratch(B)
+        self._states_np[:B] = states
+        rows = [self._states_np[i] for i in range(B)]
+        if self._flat_relations:
+            self._game.fill_relations_sparse_batch(
+                rows, self._records_np[:B], max_players=self._num_players,
+            )
+        else:
+            self._game.fill_relations_dense_batch(
+                rows, self._rel_h_np[:B], max_players=self._num_players,
+            )
+        self._mask_h_np[:B] = legal_masks
+        self._pt_h_np[:B] = policy_targets
+        self._vt_h_np[:B] = value_targets
+        self._pc_h_np[:B] = player_counts
+        relation_rows = self._ship_inputs(B)
+        policy_logits, values = self.model(
+            self._tok_d[:B], self._mask_d[:B].to(torch.bool), self._rel_d[:relation_rows],
+        )
+        cross_entropy, target_entropy = policy_row_losses(policy_logits, self._pt_d[:B])
+        value_sqerr, _ = value_row_sqerr(values, self._vt_d[:B], self._pc_d[:B])
+        return (
+            cross_entropy.cpu().numpy(),
+            target_entropy.cpu().numpy(),
+            value_sqerr.cpu().numpy(),
+        )
 
     @property
     def global_step(self) -> int:

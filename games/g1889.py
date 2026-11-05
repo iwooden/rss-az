@@ -18,6 +18,7 @@ from g1889.actions import (
     get_decision_phase_py,
     is_terminal_py,
 )
+from g1889.data.tables import NUM_PRIVATES
 from g1889.driver import DRIVER
 from g1889.entities.turn import TURN
 from g1889.relations import (
@@ -32,6 +33,8 @@ from g1889.state import (
     GameState,
     get_global_fields,
     get_layout,
+    get_player_fields,
+    get_private_fields,
     get_storage_player_capacity,
 )
 from g1889.token_data import (
@@ -84,6 +87,32 @@ def _scratch_state(root: GameState, row: np.ndarray) -> GameState:
     return scratch
 
 
+def _game_start_rows(states: np.ndarray, max_players: int) -> np.ndarray:
+    """Positions of the rows that are their game's first decision.
+
+    A game opens in the auction's first normal turn: no private sold, no bid, no
+    pass, no discount, and no payout. Its first choice changes one of those or
+    moves to BID, so no later row looks like this. A 3-player game has a private
+    out of play.
+    """
+    layout = get_layout(max_players)
+    fields = get_global_fields()
+    private, player = get_private_fields(), get_player_fields()
+    global_row = states[:, layout.global_offset:]
+    privates = states[:, layout.privates_offset:layout.privates_offset + private.size * NUM_PRIVATES]
+    owners = privates[:, private.owner::private.size]
+    players = states[:, layout.players_offset:].reshape(len(states), max_players, player.size)
+    return np.flatnonzero(
+        (global_row[:, fields.round] == K.ROUND_AUCTION)
+        & (global_row[:, fields.step] == K.STEP_AUCTION)
+        & (global_row[:, fields.auction_discount] == 0)
+        & (global_row[:, fields.auction_pass_payouts] == 0)
+        & np.isin(owners, (K.OWNER_UNSOLD, K.OWNER_NOT_IN_PLAY)).all(axis=1)
+        & (players[:, :, player.bids:player.bids + NUM_PRIVATES] == 0).all(axis=(1, 2))
+        & (players[:, :, player.passed] == 0).all(axis=1)
+    )
+
+
 def make_game(config: TrainingConfig) -> Game:
     """Build the 1889 adapter for ``config``'s engine options."""
     private_sale_same_president = config.private_sale_same_president
@@ -127,4 +156,5 @@ def make_game(config: TrainingConfig) -> Game:
         fill_relations_sparse=get_relation_coord_data,
         fill_relations_sparse_batch=get_relation_coord_data_batch,
         new_selfplay_stats=G1889SelfPlayStats,
+        game_start_rows=_game_start_rows,
     )

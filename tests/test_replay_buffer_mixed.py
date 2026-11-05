@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from core.attention_relations import NUM_ATTENTION_RELATIONS
 from core.state import GameState, get_layout, get_turn_fields
@@ -152,3 +153,139 @@ def test_replay_buffer_load_skips_another_games_buffer(tmp_path: Path, capsys) -
     assert other.load(tmp_path) == 0
     assert len(other) == 0
     assert "replay buffer is from game '1889', not 'rss', skipping load" in capsys.readouterr().out
+
+
+def _tagged_rows(first: int, count: int) -> dict[str, np.ndarray]:
+    """``count`` rows, each carrying its tag ``first + i`` in every array."""
+    tags = np.arange(first, first + count)
+    state_size = get_layout(5).total_size
+    legal_masks = np.zeros((count, int(UNIFIED_LOGIT_DIM)), dtype=np.uint8)
+    legal_masks[:, 0] = 1
+    legal_masks[np.arange(count), tags % 7 + 1] = 1
+    policy_targets = np.zeros((count, int(UNIFIED_LOGIT_DIM)), dtype=np.float32)
+    policy_targets[:, 0] = tags / 1000.0
+    value_targets = np.zeros((count, 5), dtype=np.float32)
+    value_targets[:, 0] = tags
+    return {
+        "states": np.tile(tags[:, None].astype(np.int16), (1, state_size)),
+        "phase_ids": (tags % 11).astype(np.int8),
+        "legal_masks": legal_masks,
+        "policy_targets": policy_targets,
+        "value_targets": value_targets,
+        "player_counts": (3 + tags % 3).astype(np.uint8),
+        "priorities": (tags + 0.5).astype(np.float32),
+    }
+
+
+def _tagged_buffer(capacity: int, first: int = 0, count: int = 0) -> ReplayBuffer:
+    buffer = ReplayBuffer(
+        RSS_GAME, capacity, get_layout(5).total_size, 5, min_players=3, max_players=5,
+    )
+    if count:
+        _add_tagged(buffer, first, count)
+    return buffer
+
+
+def _add_tagged(buffer: ReplayBuffer, first: int, count: int) -> None:
+    rows = _tagged_rows(first, count)
+    buffer.add_stacked(
+        rows["states"], rows["phase_ids"], rows["legal_masks"], rows["policy_targets"], rows["value_targets"],
+        player_counts=rows["player_counts"], priorities=rows["priorities"],
+    )
+
+
+def _assert_rows(buffer: ReplayBuffer, tags: list[int]) -> None:
+    """The buffer holds exactly these tagged rows, oldest first, in every array."""
+    expected = _tagged_rows(tags[0], len(tags))
+    assert tags == list(range(tags[0], tags[0] + len(tags)))
+    assert len(buffer) == len(tags)
+    actual = buffer.rows_oldest_first()
+    assert actual.keys() == expected.keys()
+    for name, array in expected.items():
+        np.testing.assert_array_equal(actual[name], array, err_msg=name)
+
+
+@pytest.mark.parametrize(
+    ("saved_capacity", "written", "new_capacity", "kept"),
+    [
+        (8, 11, 20, list(range(3, 11))),  # wrapped, grown: the whole ring
+        (8, 11, 5, list(range(6, 11))),  # wrapped, shrunk: its newest
+        (8, 19, 20, list(range(11, 19))),  # wrapped, its index back past the start
+        (8, 16, 5, list(range(11, 16))),  # exactly full: its index is 0
+        (8, 5, 12, list(range(5))),  # partial, grown
+        (8, 5, 3, list(range(2, 5))),  # partial, shrunk
+        (8, 5, 5, list(range(5))),  # partial, shrunk to its rows
+        (8, 11, 8, list(range(3, 11))),  # unchanged
+    ],
+)
+def test_replay_buffer_load_keeps_newest_rows_across_capacities(
+    tmp_path: Path, saved_capacity: int, written: int, new_capacity: int, kept: list[int],
+) -> None:
+    saved = _tagged_buffer(saved_capacity)
+    # Written in two adds, so a wrapped ring wraps inside an add.
+    _add_tagged(saved, 0, written // 2)
+    _add_tagged(saved, written // 2, written - written // 2)
+    saved.save(tmp_path)
+
+    loaded = _tagged_buffer(new_capacity)
+    assert loaded.load(tmp_path) == len(kept)
+    _assert_rows(loaded, kept)
+
+    # New rows carry on from the newest, overwriting the oldest once full.
+    _add_tagged(loaded, written, 3)
+    tags = [*kept, written, written + 1, written + 2][-new_capacity:]
+    _assert_rows(loaded, tags)
+
+    # What it saves now loads back the same, at its capacity and at another.
+    loaded.save(tmp_path / "again")
+    again = _tagged_buffer(new_capacity)
+    assert again.load(tmp_path / "again") == len(tags)
+    _assert_rows(again, tags)
+    smaller = _tagged_buffer(2)
+    assert smaller.load(tmp_path / "again") == 2
+    _assert_rows(smaller, tags[-2:])
+
+
+def test_replay_buffer_load_at_new_capacity_samples_by_its_kept_priorities(tmp_path: Path) -> None:
+    _tagged_buffer(8, 0, 11).save(tmp_path)
+    loaded = ReplayBuffer(
+        RSS_GAME, 5, get_layout(5).total_size, 5, min_players=3, max_players=5,
+        priority_fraction=0.5,
+    )
+    assert loaded.load(tmp_path) == 5
+    indices, weights = loaded._sample_indices(4, np.random.default_rng(3))
+    assert indices.max() < 5
+    assert weights is not None
+    # The sampler's weights are the kept rows', not the rows of a stale cache.
+    assert loaded.priority_stats()["priority_kl_mean"] == pytest.approx(np.mean(np.arange(6, 11) + 0.5))
+
+
+def test_replay_buffer_load_at_new_capacity_without_saved_priorities(tmp_path: Path) -> None:
+    _tagged_buffer(8, 0, 11).save(tmp_path)
+    (tmp_path / "priorities.npy").unlink()
+    loaded = _tagged_buffer(5)
+    assert loaded.load(tmp_path) == 5
+    rows = loaded.rows_oldest_first()
+    assert np.isnan(rows["priorities"]).all()
+    np.testing.assert_array_equal(rows["states"][:, 0], np.arange(6, 11))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("state_size", 1), ("num_players", 3), ("min_players", 4), ("max_players", 4),
+        ("unified_dim", 1), ("size", 9), ("index", 8), ("capacity", 0),
+    ],
+)
+def test_replay_buffer_load_skips_any_other_mismatch_at_a_new_capacity(
+    tmp_path: Path, field: str, value: int, capsys,
+) -> None:
+    _tagged_buffer(8, 0, 11).save(tmp_path)
+    metadata_path = tmp_path / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata[field] = value
+    metadata_path.write_text(json.dumps(metadata))
+    loaded = _tagged_buffer(5)
+    assert loaded.load(tmp_path) == 0
+    assert len(loaded) == 0
+    assert "mismatch" in capsys.readouterr().out

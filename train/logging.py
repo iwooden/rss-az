@@ -408,27 +408,32 @@ class TrainingLogger:
         table.add_row("Batch size", str(config.batch_size))
         raw_d_ff = math.ceil(config.ff_mult * config.d_model)
         d_ff = ((raw_d_ff + 63) // 64) * 64
+        # The v2- and v3-only fields mean nothing to another game's model.
+        rss = config.game == "rss"
+        d_proj = f"d_proj={config.d_proj}, " if rss else ""
         table.add_row(
             "Transformer",
-            f"d_model={config.d_model}, d_proj={config.d_proj}, "
+            f"d_model={config.d_model}, {d_proj}"
             f"heads={config.num_heads}, layers={config.num_layers}, d_ff={d_ff}",
         )
+        if rss:
+            table.add_row(
+                "Phase conditioning (v2 only)",
+                "adaLN enabled" if config.phase_conditioning else "disabled",
+            )
+            table.add_row(
+                "Relation input mixing (v3 only)",
+                "enabled" if config.relation_input_mixing else "disabled",
+            )
         table.add_row(
-            "Phase conditioning (v2 only)",
-            "adaLN enabled" if config.phase_conditioning else "disabled",
-        )
-        table.add_row(
-            "Relation input mixing (v3 only)",
-            "enabled" if config.relation_input_mixing else "disabled",
-        )
-        table.add_row(
-            "Zero-sum values (v3 only)",
+            "Zero-sum values (v3 only)" if rss else "Zero-sum values",
             "enabled" if config.zero_sum_values else "disabled",
         )
-        table.add_row(
-            "Price slot keys",
-            f"Fourier bands={config.price_slot_fourier_bands}",
-        )
+        if rss:
+            table.add_row(
+                "Price slot keys",
+                f"Fourier bands={config.price_slot_fourier_bands}",
+            )
         decay_end = config.lr_decay_end_epoch or config.num_epochs
         lr_desc = (
             f"{config.learning_rate:.1e} \u2192 {config.lr_min:.1e} "

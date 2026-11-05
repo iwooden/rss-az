@@ -41,6 +41,16 @@ class TrainingExample(NamedTuple):
     player_count: int  # actual player count for this state
 
 
+def _write_order(size: int, index: int, capacity: int) -> np.ndarray:
+    """Positions of a ring's rows, oldest first.
+
+    A full ring's next write, ``index``, is its oldest row. Until it fills, its
+    rows run from position 0.
+    """
+    positions = np.arange(size)
+    return np.roll(positions, -index) if size == capacity else positions
+
+
 class ReplayBuffer:
     """Pre-allocated numpy ring buffer for dense training examples.
 
@@ -428,6 +438,20 @@ class ReplayBuffer:
                 max_players=self._max_players,
             )
 
+    def rows_oldest_first(self) -> dict[str, np.ndarray]:
+        """Copies of the occupied rows' arrays, in write order, keyed as
+        ``add_stacked`` takes them (``player_counts`` for the counts)."""
+        order = _write_order(self._size, self._index, self._capacity)
+        return {
+            "states": self._states[order],
+            "phase_ids": self._phase_ids[order],
+            "legal_masks": self._legal_masks[order],
+            "policy_targets": self._policy_targets[order],
+            "value_targets": self._value_targets[order],
+            "player_counts": self._player_counts[order],
+            "priorities": self._priorities[order],
+        }
+
     def __len__(self) -> int:
         return self._size
 
@@ -482,7 +506,8 @@ class ReplayBuffer:
         """Load buffer contents from directory.
 
         Returns the number of examples loaded (0 if directory missing, another
-        game's, or shape mismatch). Metadata without a game is RSS's.
+        game's, or shape mismatch). A buffer saved at another capacity gives
+        its newest rows that fit, in order. Metadata without a game is RSS's.
         """
         metadata_path = directory / "metadata.json"
         if not metadata_path.exists():
@@ -505,14 +530,13 @@ class ReplayBuffer:
         saved_index: int = meta.get("index", -1)
         player_counts_path = directory / "player_counts.npy"
         if (
-            saved_capacity != self._capacity
-            or saved_state_size != self._state_size
+            saved_state_size != self._state_size
             or saved_num_players != self._num_players
             or saved_min_players != self._min_players
             or saved_max_players != self._max_players
             or saved_unified_dim != self._unified_dim
-            or not 0 <= saved_size <= self._capacity
-            or not 0 <= saved_index < self._capacity
+            or not 0 <= saved_size <= saved_capacity
+            or not 0 <= saved_index < saved_capacity
             or not player_counts_path.exists()
         ):
             print(
@@ -570,14 +594,26 @@ class ReplayBuffer:
                     "skipping load"
                 )
                 return 0
-        self._states[:n] = states
-        self._phase_ids[:n] = phase_ids
-        self._player_counts[:n] = player_counts
-        self._legal_masks[:n] = legal_masks
-        self._policy_targets[:n] = policy_targets
-        self._value_targets[:n] = value_targets
-        self._priorities[:n] = priorities
+        rows = slice(None)
+        kept = n
+        if saved_capacity == self._capacity:
+            self._index = saved_index
+        else:
+            kept = min(n, self._capacity)
+            rows = _write_order(n, saved_index, saved_capacity)[n - kept:]
+            self._index = kept % self._capacity
+            print(
+                f"  Replay buffer capacity changed "
+                f"({saved_capacity:,} -> {self._capacity:,}): "
+                f"keeping the newest {kept:,} of {n:,} rows"
+            )
+        self._states[:kept] = states[rows]
+        self._phase_ids[:kept] = phase_ids[rows]
+        self._player_counts[:kept] = player_counts[rows]
+        self._legal_masks[:kept] = legal_masks[rows]
+        self._policy_targets[:kept] = policy_targets[rows]
+        self._value_targets[:kept] = value_targets[rows]
+        self._priorities[:kept] = priorities[rows]
         self._priority_version += 1
-        self._size = saved_size
-        self._index = saved_index
+        self._size = kept
         return self._size

@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # ============================================================================
-# Lambda Labs GH200 instance setup for rss-az
+# Cloud GPU instance setup for rss-az (the RTX 5090; first written for a GH200)
+#
+# The 1889 run's steps after this are in 1889/model-design.md, Section 11.
 #
 # Usage (from a fresh instance):
 #   export GH_TOKEN="ghp_..."   # GitHub personal access token (repo scope)
@@ -13,7 +15,7 @@ set -euo pipefail
 # What this does:
 #   1. Configures git HTTPS auth via GH_TOKEN (no SSH keys needed)
 #   2. Installs system deps (Python 3.12, Ruby, build tools)
-#   3. Clones the repo
+#   3. Clones the repo, on $REPO_BRANCH (default az-1889)
 #   4. Creates venv, installs Python packages + CUDA PyTorch
 #   5. Builds Cython extensions
 #   6. Runs the test suite
@@ -22,6 +24,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/iwooden/rss-az.git"
 REPO_DIR="$HOME/rss-az"
+REPO_BRANCH="${REPO_BRANCH:-az-1889}"
 PYTHON=python3.12
 
 # --- Colors for status output ---
@@ -84,7 +87,7 @@ fi
 ARCH=$(uname -m)
 info "Architecture: $ARCH"
 if [ "$ARCH" = "aarch64" ]; then
-    info "aarch64 detected — PyTorch cu124 wheels should have ARM support."
+    info "aarch64 detected — check that install.sh's CUDA wheels have ARM support."
     info "If pip install torch fails, fall back to Lambda Stack's system PyTorch:"
     info "  python3.12 -m venv --system-site-packages .venv"
 fi
@@ -92,12 +95,16 @@ fi
 # ============================================================================
 # 3. Clone repository
 # ============================================================================
+# The submodule is left out: only tests and 18xx.games tooling read it, and they
+# skip without it. g1889's tables are committed; Ruby only regenerates them.
 if [ -d "$REPO_DIR" ]; then
-    info "Repo already exists at $REPO_DIR — pulling latest"
-    git -C "$REPO_DIR" pull --ff-only
+    info "Repo already exists at $REPO_DIR — pulling $REPO_BRANCH"
+    git -C "$REPO_DIR" fetch origin "$REPO_BRANCH"
+    git -C "$REPO_DIR" checkout "$REPO_BRANCH"
+    git -C "$REPO_DIR" pull --ff-only origin "$REPO_BRANCH"
 else
-    info "Cloning $REPO_URL"
-    git clone "$REPO_URL" "$REPO_DIR"
+    info "Cloning $REPO_URL ($REPO_BRANCH)"
+    git clone --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
 fi
 
 cd "$REPO_DIR"
@@ -125,8 +132,10 @@ python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
 # ============================================================================
 # 6. Run tests
 # ============================================================================
+# Tests that need the submodule skip. A failure stops nothing here, so the GPU check
+# below still runs: read any failures before launching.
 info "Running test suite"
-pytest tests/ -x -q
+pytest tests/ -q || info "Tests failed: read the list above before launching."
 
 # ============================================================================
 # 7. Verify GPU is visible
@@ -140,14 +149,15 @@ if torch.cuda.is_available():
     print(f'Device: {torch.cuda.get_device_name()}')
     cap = torch.cuda.get_device_capability()
     print(f'Compute capability: {cap[0]}.{cap[1]}')
-    print(f'Memory: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB')
+    print(f'Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
 "
 
 # ============================================================================
 # Done
 # ============================================================================
-ok "Setup complete! Start training with:"
+ok "Setup complete! Next, per 1889/model-design.md Section 11:"
 echo ""
 echo "  cd $REPO_DIR && source .venv/bin/activate"
-echo "  python -m train --device cuda --num-workers 4 --search-batch-size 8"
+echo "  python cloud/profile_1889.py"
+echo "  python -m train --config train_configs/1889-v0.json"
 echo ""

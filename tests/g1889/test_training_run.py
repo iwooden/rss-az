@@ -14,6 +14,7 @@ The local smoke run covers the eval server and the GPU
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -196,3 +197,75 @@ def test_a_resumed_trainer_continues_exactly(tmp_path):
         assert resumed_losses == losses
     for name, weights in model.state_dict().items():
         assert torch.equal(weights, resumed_model.state_dict()[name]), name
+
+
+def test_a_resume_takes_a_rescales_changes_and_keeps_the_rows(tmp_path, monkeypatch, capsys):
+    """Section 7.1's epoch-20 rescale: every changed field reaches the resumed run,
+    and a changed capacity keeps the newest rows. The file wins over the
+    checkpoint's stored config, so a later resume keeps them only if it is edited."""
+    fields = _smoke_config(tmp_path)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(fields))
+    checkpoints = tmp_path / "checkpoints"
+    device = torch.device("cpu")
+    _train(monkeypatch, "--config", str(config_path))
+    first = load_checkpoint(checkpoints / "checkpoint_epoch_0001.pt", device)
+    saved_rows = first["buffer_stats"]["size"]
+    capacity = saved_rows // 2 + 100
+    assert capacity < saved_rows
+
+    new_windows = {
+        "temp_anneal_starts": [111, 122, 133],
+        "temp_anneal_ends": [222, 244, 266],
+        "policy_target_temp_anneal_starts": [111, 122, 133],
+        "policy_target_temp_anneal_ends": [222, 244, 266],
+    }
+    rescaled = {
+        **fields, **new_windows,
+        "buffer_capacity": capacity,
+        "training_steps_per_epoch": 13,
+        "num_epochs": 2,
+        "min_buffer_size": 64,
+    }
+    config_path.write_text(json.dumps(rescaled))
+    seen_windows = {}
+    real_play_game = main_module.play_game
+
+    def spy(evaluator, config, *args, **kwargs):
+        seen_windows["action"] = config.temp_anneal_window(3)
+        seen_windows["target"] = config.policy_target_temp_anneal_window(5)
+        return real_play_game(evaluator, config, *args, **kwargs)
+
+    monkeypatch.setattr(main_module, "play_game", spy)
+    capsys.readouterr()
+    _train(monkeypatch, "--config", str(config_path), "--resume", "latest")
+    output = capsys.readouterr().out
+
+    assert f"Config override: buffer_capacity = {capacity} (was {fields['buffer_capacity']})" in output
+    assert f"Config override: training_steps_per_epoch = 13 (was {fields['training_steps_per_epoch']})" in output
+    assert "Config override: temp_anneal_starts = [111, 122, 133]" in output
+    assert f"keeping the newest {capacity:,} of {saved_rows:,} rows" in output
+    assert f"Loaded {capacity:,} examples into replay buffer" in output
+    assert seen_windows == {"action": (111, 222), "target": (133, 266)}
+
+    second = load_checkpoint(checkpoints / "checkpoint_epoch_0002.pt", device)
+    stored = TrainingConfig.from_json(second["config_json"])
+    assert stored.buffer_capacity == capacity
+    assert stored.training_steps_per_epoch == 13
+    assert stored.temp_anneal_starts == [111, 122, 133]
+    # The buffer is full, so the epoch ran the new steps in full.
+    step, before = second["trainer_state"]["global_step"], first["trainer_state"]["global_step"]
+    assert isinstance(step, int) and isinstance(before, int)
+    assert step - before == 13
+    assert second["buffer_stats"] == {"size": capacity, "capacity": capacity}
+    # The LR schedule's span moved with the steps: the scheduler restored its step
+    # and kept this run's lambda, so the rate is the new span's at that step.
+    scheduler = second["trainer_state"]["scheduler"]
+    assert isinstance(scheduler, dict)
+    assert scheduler["last_epoch"] == step
+    trainer = Trainer(create_model(stored), stored, device)
+    span_rate = trainer.scheduler.lr_lambdas[0](step) * stored.learning_rate  # type: ignore[attr-defined]
+    assert scheduler["_last_lr"][0] == pytest.approx(span_rate)
+    old_span = dataclasses.replace(stored, training_steps_per_epoch=fields["training_steps_per_epoch"])
+    old_trainer = Trainer(create_model(old_span), old_span, device)
+    assert old_trainer.scheduler.lr_lambdas[0](step) * stored.learning_rate != pytest.approx(span_rate)  # type: ignore[attr-defined]

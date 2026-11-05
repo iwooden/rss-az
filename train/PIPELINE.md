@@ -183,9 +183,11 @@ Notes below name RSS's implementations where they matter
   CLI flags; RNG state is restored. An override that changes the game is an
   error. Replay loads from the single, overwritten
   `<checkpoint_dir>/replay_buffer/`, even when resuming an older checkpoint.
-  Another game's buffer, or a capacity, player-range, or shape mismatch,
+  A buffer saved at another capacity keeps its newest rows that fit, in order,
+  priorities included. Another game's buffer, or a player-range or shape mismatch,
   skips it with only a warning. Checkpoints and buffers without a game are
-  RSS's.
+  RSS's. A changed `training_steps_per_epoch` moves the LR schedule's span from
+  the restored step: the scheduler keeps its step, and this run's lambda.
 - **Model selection.** `model_path` selects the implementation; every config
   that builds a model names one (no default). A module that defines
   `build_model(config, spec)` builds its own model for any game; any other is

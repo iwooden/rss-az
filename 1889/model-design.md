@@ -3,8 +3,10 @@
 Status: design for step 8 of [`pipeline-refactor.md`](pipeline-refactor.md),
 dated 2026-11-03; the user reviewed it and settled Section 10 on 2026-11-04.
 Sub-steps 8.1-8.4 are built: the model, the transport, the stats hook, the
-configs, and a local smoke run with a resume (Section 7.2). The cloud run (8.5)
-and the capacity probe (8.6) are not. Step 8 builds the first 1889 model,
+configs, and a local smoke run with a resume (Section 7.2). The local half of 8.5
+and 8.6 is built too: the profile, the rescale helper, the capacity probe, and the
+runbook (Section 11). What remains is their run on the 5090, whose results these
+sections record. Step 8 builds the first 1889 model,
 `nn/transformer-1889.py` v0, on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
 in [`extraction-design.md`](extraction-design.md)), adds what the pipeline
 needs to train it, and runs it once.
@@ -596,6 +598,20 @@ saved replay buffer, offline, with the last two epochs' rows held out.
 - Measures on the held-out rows: value MSE and policy KL (cross-entropy minus
   target entropy), overall, by player count, and for TRACK, TILE, STOCK, and
   BUY_TRAIN.
+- **The held-out rows.** Replay records no epoch per row. Its ring index gives
+  write order, every game goes in whole, a row's state shows whether it is its
+  game's first decision, and an epoch is `games_per_epoch` games, so the rows are
+  the newest 1,000 games, cut between games. TensorBoard's
+  `self_play_aggregate/total_examples` for those epochs gives the same count, which
+  `train/capacity_probe.py` checks and reports. **Measured** on the smoke buffer's
+  newest epoch: 12 games, 12,210 rows, both ways. A graceful stop mid-epoch leaves a
+  partial epoch that TensorBoard does not count; those rows join the held-out
+  games, and the report says the two differ.
+- **Its training rows.** A buffer holds 3.3 epochs, so holding out two leaves about
+  1.3 epochs of rows to train on, about 390K at 300K an epoch. 40K steps at 256 make
+  about 26 passes over them, where a live row sees about 3.6. The probe prints the
+  passes and scores the held-out rows every 10K steps, so a model that overfits
+  before the end shows in its curve; `--holdout-epochs` and `--steps` change them.
 
 **Criterion:**
 
@@ -727,7 +743,7 @@ rounding N up in bucketed mode.
   Dynamo compiles batch 1 apart from the rest, so the most one compiled graph
   records is 32, under Inductor's warning at 50. **Measured**
   (`launch_distribution.py`; 188K launches of epoch-0 self-play, up to 32 workers,
-  on a stand-in model): 18 pairs, with K = 256 on 65-100% of a bucket's launches
+  on a stand-in model): 18 pairs, with K = 256 on 65-100% of launches at B ≥ 8
   and K = 1,024 only at B ≤ 32, and 143 real records a leaf.
 - **In all:** 128 workers × 8 leaves come to about 31 MB of shared memory
   (RSS 14 MB), the pinned buffers at batch 256, two deep, to about 22 MB, with
@@ -818,9 +834,13 @@ c_puct 1.7, the value blend from epoch 10 to 300 up to 0.7, terminal blend
 
 **Test**, at epoch 20, on resume: reset the windows to 17.5% and 35% of
 `self_play_<n>p/game_length_mean`, and the buffer and steps to the measured
-samples per epoch, by the same rules. A new `buffer_capacity` makes the resume
-skip the saved buffer with only a warning (`train/PIPELINE.md`), so that epoch
-starts its buffer empty unless the rows are carried over by hand.
+samples per epoch, by the same rules (`cloud/rescale_1889.py`; Section 11). A new
+`buffer_capacity` keeps the saved buffer's newest rows that fit, in order, with
+their priorities, whether it grows or shrinks. A grown buffer's steps scale with
+its fullness until it fills (`train/PIPELINE.md`). A new
+`training_steps_per_epoch` also moves the LR schedule's span under the restored
+step: about 7% through the cosine at epoch 20, a change of a third moves the rate
+by about 1%.
 
 ### 7.2 Where it runs
 
@@ -952,3 +972,118 @@ The user settled these on 2026-11-04. Each item gives the options and the decisi
     layer. (b) v3's padded records and three tensors. *Decided (a)* (3.4, 5.3):
     the same outputs at about a quarter of the bias's CPU time, for the 5090 to
     confirm.
+
+## 11. Runbook
+
+The first run on the cloud RTX 5090, in order. The box is reached only by the user,
+so each step that needs it writes a file to send back. Commands run from the repo
+root, in the venv, with the box's tmux keeping the run's TTY for `q`.
+
+**1. Code.** The user pushes `az-1889` from the dev box.
+
+**2. Setup and build.** A fresh box:
+
+```bash
+GH_TOKEN="ghp_..." bash cloud/setup.sh   # from a copy of the script; clones az-1889 to ~/rss-az
+cd ~/rss-az && source .venv/bin/activate
+```
+
+The script installs torch 2.14 on CUDA 13.2 (`install.sh`), builds every extension,
+`g1889` with them (`setup.py`'s `EXTENSION_DIRS`, from the committed `.pyx` files and
+tables), and runs the tests, which skip what needs the submodule or a replay fixture.
+Neither Ruby nor `submodules/18xx` is read at run time: Ruby only regenerates
+`g1889/data/tables.*`, and the tests and 18xx.games tooling are all that read the
+submodule. A box already set up:
+
+```bash
+cd ~/rss-az && source .venv/bin/activate
+git fetch origin az-1889 && git checkout az-1889 && git pull --ff-only origin az-1889
+python setup.py clean_build 2>&1 | grep -E "(warning|error)" || true
+```
+
+**3. Profile (8.5).** With nothing else on the GPU:
+
+```bash
+python cloud/profile_1889.py
+```
+
+It takes under half an hour and writes `1889-cloud-profile.json` as it goes. Send
+that file back; Sections 5.3 and 6.5 record it. A `FAIL` on graph breaks, recompiles,
+compiled against eager, or the weight sync stops the launch until it is understood. A
+ratio outside 1.7-2.0 or a different record pattern is a result to record, and
+changes the cost estimates, not the launch.
+
+**4. Launch.**
+
+```bash
+tmux new -s 1889
+source .venv/bin/activate
+TORCH_LOGS=recompiles python -m train --config train_configs/1889-v0.json
+```
+
+**5. Early.** `tensorboard --logdir runs/1889-v0`. In the first epochs:
+
+- The banner shows `nn/transformer-1889.py` and no v2- or v3-only line. The log has
+  one `Recompiling function forward` in the warmup, batch 1 to batch 2, and none after.
+- `nvidia-smi`: GPU memory stops growing once the shapes in use are recorded.
+- `profile/server_throughput` against v3's 38.7K evaluations a second, and
+  `profile/server_infer_ms` and `profile/server_batch_avg` against 9.2 ms and 180.
+- `self_play_<n>p/game_length_mean` against 440-800 (Section 5.4), and
+  `self_play_aggregate/total_examples` against 300K. At 205-250K samples an hour, an
+  epoch takes 1.2-1.5 hours.
+- `self_play_<n>p/end_bank`, `track_pass_share`, `ors_played`, and `corps_floated`
+  (Section 6.6), and `loss/*`, which a NaN stops with an error.
+
+**6. Epoch 20: the rescale (7.1).** Once `epoch/duration_secs` has reached step 20,
+press `q`, then Enter, in the run's terminal, and wait for "Shutdown complete". Then:
+
+```bash
+python cloud/rescale_1889.py    # reads runs/1889-v0, prints the fields, old and new, and writes nothing
+```
+
+Edit the printed fields into `train_configs/1889-v0.json`, then:
+
+```bash
+python -m train --config train_configs/1889-v0.json --resume latest
+```
+
+A resume takes the checkpoint's config, then the file over it, then CLI flags over
+both, so every later resume needs the edited file: flags alone would be undone by the
+next `--config`. Check for `Config override:` on each field and `Replay buffer
+capacity changed` with the rows it kept. Send the printed fields back, for 7.1 and
+the dev box's copy of the config; `git checkout` the box's edit before the pull that
+brings that copy.
+
+**7. Epochs 50 and 150: the probe (8.6).** Once the run has passed the epoch, press
+`q`, then Enter, and note the checkpoint "Shutdown complete" names. A stop saves its
+last finished epoch; that is the epoch to pass, at 50 or just past it:
+
+```bash
+python -m train.capacity_probe --checkpoint checkpoints/1889-v0/checkpoint_epoch_0050.pt
+python -m train --config train_configs/1889-v0.json --resume latest
+```
+
+It holds the GPU for hours and writes `checkpoints/1889-v0/probe_e0050/`. Rerun the
+same command after an interruption: a finished model is skipped, and an unfinished
+one continues from its last save. Send back `probe.json`, whose verdict is 5.7's;
+the printed table is recorded in 8.6. To act on it, when the verdict is `grow`,
+`shrink`, or `8 heads`, the role is `large`, `small`, or `heads8`:
+
+```bash
+mkdir -p checkpoints/1889-v0-large
+cp -r checkpoints/1889-v0/replay_buffer checkpoints/1889-v0-large/
+python -m train --resume checkpoints/1889-v0/probe_e0050/large/checkpoint_epoch_0050.pt \
+    --checkpoint-dir checkpoints/1889-v0-large --tensorboard-dir runs/1889-v0-large
+python -m train --resume latest --checkpoint-dir checkpoints/1889-v0-large   # later resumes
+```
+
+Without `--config`: `1889-v0.json`'s sizes would override the checkpoint's. It carries
+on at the run's epoch, step, LR, and RNG, with a fresh optimizer.
+
+**Checked before the box** (2026-11-04): a clone of the branch, its submodule empty,
+builds and passes its tests here beside Ruby. The profile runs whole on the CPU, compiled
+through the real kwargs and warmup with no graph breaks or recompiles and compiled
+outputs within 1e-7 of eager, and uncompiled on ROCm; the rescale, on
+`runs/1889-v0-smoke`; a resume with its fields, on the local GPU; the probe, on the smoke
+buffer at small sizes, interrupted and rerun. Inductor's CUDA graphs, bf16 under
+compilation, and every time above are the 5090's to report.

@@ -129,6 +129,11 @@ class Game:
     # Self-play diagnostics: num_players -> one game's collector
     new_selfplay_stats: Callable[[int], SelfPlayStats]
 
+    # --- 1889-only; None for other games ---
+    # (rows in write order, max_players) -> positions of the rows that are their
+    # game's first decision (train/capacity_probe.py)
+    game_start_rows: Callable[[np.ndarray, int], np.ndarray] | None = None
+
     # --- RSS-only; None for other games ---
     # num_players -> strategy-trace builder, for
     # play_game(collect_strategy_trace=True) (train/strategy_data.py)

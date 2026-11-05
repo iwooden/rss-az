@@ -71,7 +71,7 @@ def _parse_str_list(value: str) -> list[str]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="AlphaZero self-play training for Rolling Stock Stars"
+        description="AlphaZero self-play training"
     )
     parser.add_argument("--config", type=str, help="Load config from JSON file")
     parser.add_argument(
@@ -84,11 +84,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Number of players (default: 3)")
     parser.add_argument(
         "--v3-behavior", action=argparse.BooleanOptionalAction, default=None,
-        help="Enable v3 engine behavior (independent of model input layout)",
+        help="Enable v3 engine behavior, independent of model input layout (RSS only)",
     )
     parser.add_argument(
         "--acq-same-president", action=argparse.BooleanOptionalAction, default=None,
-        help="Restrict acquisition to companies controlled by the buyer's president",
+        help="Restrict acquisition to companies controlled by the buyer's president (RSS only)",
     )
     parser.add_argument(
         "--min-players",
@@ -133,7 +133,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-acq-price-actions",
         type=int,
-        help="Cap ACQ_SELECT_PRICE to equal low/high price edges (0 disables)",
+        help="Cap ACQ_SELECT_PRICE to equal low/high price edges, 0 disables (RSS only)",
     )
     nonfinite_group = parser.add_mutually_exclusive_group()
     nonfinite_group.add_argument(
@@ -306,11 +306,11 @@ def _build_parser() -> argparse.ArgumentParser:
     zero_sum_group = parser.add_mutually_exclusive_group()
     zero_sum_group.add_argument(
         "--zero-sum-values", action="store_true", default=None,
-        help="Subtract the mean over real players from value outputs (v3 only)",
+        help="Subtract the mean over real players from value outputs (v3 and 1889)",
     )
     zero_sum_group.add_argument(
         "--no-zero-sum-values", dest="zero_sum_values", action="store_false",
-        help="Use raw per-player tanh value outputs (v3 only)",
+        help="Use raw per-player tanh value outputs (v3 and 1889)",
     )
     parser.add_argument(
         "--price-slot-fourier-bands",

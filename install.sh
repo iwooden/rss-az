@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./install.sh              # defaults to CPU-only PyTorch
-#   ./install.sh cuda         # CUDA 12.4
+#   ./install.sh cuda         # torch 2.14 on CUDA 13.2, what the cloud 5090 runs
 #   ./install.sh rocm         # ROCm 6.2
 #
 # Assumes you've already created and activated a venv, or are running
@@ -13,13 +13,17 @@ set -euo pipefail
 # use: source .venv/bin/activate && ./install.sh)
 
 PLATFORM="${1:-cpu}"
+TORCH_SPEC="torch"
 
 case "$PLATFORM" in
     cpu)
         TORCH_INDEX="https://download.pytorch.org/whl/cpu"
         ;;
     cuda)
-        TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+        TORCH_INDEX="https://download.pytorch.org/whl/cu132"
+        # Blackwell needs a recent CUDA, and optim.Muon a recent torch. Pinned, as
+        # the index's newest is not what the run's compile path was profiled on.
+        TORCH_SPEC="torch==2.14.*"
         ;;
     rocm)
         TORCH_INDEX="https://download.pytorch.org/whl/rocm6.2"
@@ -32,10 +36,11 @@ case "$PLATFORM" in
 esac
 
 echo "==> Installing PyTorch for $PLATFORM"
-pip install torch --index-url "$TORCH_INDEX"
+pip install "$TORCH_SPEC" --index-url "$TORCH_INDEX"
 
 echo "==> Installing main dependencies"
 pip install \
+    setuptools \
     'numpy>=2.0' \
     'Cython>=3.0' \
     'tensorboard>=2.0' \
