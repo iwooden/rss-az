@@ -16,6 +16,11 @@ Conventions every game follows:
 - Scores and values are per player, in canonical order.
 - Sparse relation records are ``uint8`` rows of ``RELATION_RECORD_WIDTH``:
   ``(relation, query token, key token, value)``. Rows past the count are zero.
+- ``relation_format`` says how relations reach the model: ``"dense"`` games send
+  planes from replay, the trainer, and ``NNEvaluator`` and padded records from
+  the eval server; ``"flat"`` games send flat records
+  (``nn.model_contract.flatten_relation_records``) from all of them. It follows
+  from the game's sizes, so it is a constant, not a config field.
 - Self-play diagnostics are a game hook (``SelfPlayStats``); a game without
   any uses ``EmptySelfPlayStats``.
 """
@@ -123,11 +128,12 @@ class Game:
     enumerate_policy_actions: Callable[[Any, np.ndarray], int]
     final_scores: Callable[[Any], list[int]]  # one per player; feeds terminal values
 
-    # Model inputs: dense planes for trainer/NNEvaluator, sparse records for
-    # eval IPC. Batches take raw rows, which may mix player counts within one
-    # capacity.
+    # Model inputs: planes or records, by relation_format. Workers write
+    # records in either format. Batches take raw rows, which may mix player
+    # counts within one capacity.
     num_tokens: Callable[[int], int]  # max_players -> token rows
     token_dim: Callable[[int], int]  # token layout version -> token width
+    relation_format: str  # "dense" or "flat"
     num_relations: int
     max_relation_edges: int  # sparse record rows per state
     # (state | rows, float32 buf, *, max_players, layout_version)

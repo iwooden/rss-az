@@ -19,6 +19,7 @@ from torch._dynamo.decorators import mark_unbacked
 
 from games import get_game
 from nn import create_model, get_model_input_spec
+from nn.model_contract import FLAT_RELATION_RECORD_WIDTH
 from train.checkpoint import (
     Checkpoint,
     cleanup_checkpoints,
@@ -1111,9 +1112,19 @@ def main() -> None:
                 dummy_tokens = torch.randn(
                     warmup_n, num_tokens, token_dim, device=device,
                 )
-                dummy_relations = torch.zeros(
-                    warmup_n, game.num_relations, num_tokens, num_tokens,
-                    dtype=torch.uint8, device=device,
+                # The trainer and NNEvaluator send this one format. A flat
+                # game's N comes from its records: value-0 rows, with N past 1
+                # so that ``mark_unbacked`` leaves it unspecialized.
+                dummy_relations = (
+                    torch.zeros(
+                        2 * warmup_n, FLAT_RELATION_RECORD_WIDTH,
+                        dtype=torch.int16, device=device,
+                    )
+                    if game.relation_format == "flat"
+                    else torch.zeros(
+                        warmup_n, game.num_relations, num_tokens, num_tokens,
+                        dtype=torch.uint8, device=device,
+                    )
                 )
                 for _t in (dummy_tokens, dummy_mask, dummy_relations):
                     mark_unbacked(_t, 0)

@@ -2,7 +2,7 @@
 
 Status: design for step 8 of [`pipeline-refactor.md`](pipeline-refactor.md),
 dated 2026-11-03; the user reviewed it and settled Section 10 on 2026-11-04.
-Sub-step 8.1 is built; the rest is not. Step 8 builds the first 1889 model, `nn/transformer-1889.py` v0,
+Sub-steps 8.1 and 8.2 are built; the rest is not. Step 8 builds the first 1889 model, `nn/transformer-1889.py` v0,
 on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
 in [`extraction-design.md`](extraction-design.md)), adds what the pipeline
 needs to train it, and runs it once.
@@ -142,12 +142,13 @@ mask from slot 0.
   (`:899-906`, `:952-955`).
 - **Flat records** (every path but tests, Section 6.1): `(N, 5)` int16 rows
   `(batch, relation, query, key, value)`, the batch's real records with no
-  padding, with N from the input's shape. Workers still write `(E, 4)` uint8
-  records with a zero tail, and the caller flattens them before the forward,
-  since `nonzero` would break the compiled graph. v3 pads every state to E
-  and scatters all of it (`:984-1016`), which here would be about 90% padding
-  (Section 5.3). A record counts when its value is above 0 and its id below
-  25; any other gets weight 0 and id 0, as v2 filters
+  per-state padding, with N from the input's shape. A bucketed eval launch
+  rounds N up with value-0 rows (Section 6.5). Workers still write `(E, 4)`
+  uint8 records with a zero tail, and the caller flattens them before the
+  forward, since `nonzero` would break the compiled graph. v3 pads every state
+  to E and scatters all of it (`:984-1016`), which here would be about 90%
+  padding (Section 5.3). A record counts when its value is above 0 and its id
+  below 25; any other gets weight 0 and id 0, as v2 filters
   (`nn/transformer-v2.py:832`).
 - **One dense tensor per layer.** SDPA needs a dense `(B, H, T, T)` mask, which
   v3 builds in three tensors a layer: zeros, plus static, plus visibility
@@ -640,7 +641,8 @@ Extraction-design §13 item 11 chose records for 1889, per game. The change:
   model serves the trainer and `NNEvaluator` (`train/main.py:1087-1124`), so
   both must send one format, and the warmup builds its dummy relations in it.
 - **The eval server** follows the field too: it flattens on the CPU as it packs
-  a batch, so the GPU receives only real records.
+  a batch, so the GPU receives no padded records, only real ones, rounded up to
+  a launch shape in bucketed mode (6.5).
 
 RSS keeps its dense planes and padded records, so its code paths and numerics
 are as today. **Test:** for 1889, `sample_into`'s flat records equal the
@@ -695,21 +697,48 @@ leaves the outputs unchanged.
 ### 6.5 Eval server and IPC
 
 Sizes come from the spec and the `Game` (`train/eval_server.py:254-292`,
-`train/eval_server.py:646-684`); the one code change is flattening (6.1).
+`train/eval_server.py:646-684`); the code changes are flattening (6.1) and
+rounding N up in bucketed mode.
 
 - **Per slot:** tokens 20.5 KB as fp16, records 8 KB of capacity, the mask
   228 B, and priors 0.9 KB, about 30 KB against RSS's 14 KB.
+- **Launch shapes:** bucketed mode keeps CUDA graphs on, on the condition
+  `train/gpu/nvidia.py` states, a small repeated set of launch shapes, since
+  Inductor records a graph for each distinct set of shape inputs. So a bucketed
+  launch ships B × K flat rows, with B its bucket and K the smallest of 256, 512,
+  1,024, and 2,048 that holds its real records. This always fits: a state has at
+  most 2,048. Dynamic mode runs without CUDA graphs and ships the real N.
+- **Filler:** the rows past the real records have value 0, which the model gives
+  no weight (3.4), so outputs are bit for bit those without filler. They come
+  from a table built once, 2,048 rows a state, each on a cell of its own, and a
+  launch copies a prefix, whose batch ids stay below B. **Measured**
+  (`scratchpad/g1889_relation_transport/`): the copy takes 2.5-17 µs at batch 256,
+  and the design's forward at batch 128, uncompiled on ROCm, takes 106.8 ms on
+  real N, 107.0 ms at K = 256, and 108.4 ms at K = 1,024.
+- **N stays a dynamic dimension in both modes:** the warmup
+  (`train/eval_server.py:606-625`) marks it with `mark_unbacked`, as `dynamic`
+  mode marks the batch, so one compiled graph takes every K. Its records have a
+  launch's shape, (B, 256). Inductor needs nothing more from it: it runs a
+  shape's first launch without a graph, records its second, and replays from its
+  third, in the serve loop, as with RSS's buckets.
+- **Shapes a run can reach:** at the cap of 256, 9 buckets × 4 Ks, or 36 pairs.
+  Dynamo compiles batch 1 apart from the rest, so the most one compiled graph
+  records is 32, under Inductor's warning at 50. **Measured**
+  (`launch_distribution.py`; 188K launches of epoch-0 self-play, up to 32 workers,
+  on a stand-in model): 18 pairs, with K = 256 on 65-100% of a bucket's launches
+  and K = 1,024 only at B ≤ 32, and 143 real records a leaf.
 - **In all:** 128 workers × 8 leaves come to about 31 MB of shared memory
-  (RSS 14 MB), the pinned buffers at batch 256, two deep, to about 15 MB, and
-  a batch of 256 sends about 5.9 MB to the GPU, 0.6 MB of it flat records.
+  (RSS 14 MB), the pinned buffers at batch 256, two deep, to about 22 MB, with
+  room for a full batch's flat rows (20.5 KB a state), and a batch of 256 sends
+  5.97 MB to the GPU at K = 256, 0.66 MB of it flat rows, or 6.62 MB at K = 512.
 - **Workers:** extraction costs 4.9 µs median a state (extraction-design §9),
   small beside a GPU evaluation every ~45 µs.
-- **N is a dynamic dimension in both batch-shape modes:** the warmup
-  (`train/eval_server.py:606-625`) marks it with `mark_unbacked`, as `dynamic`
-  mode marks the batch. **Test:** the 1889 model compiles on the 5090 in
-  bucketed mode with no graph breaks, and N varies with no recompiles, as
-  `v3-cloud-profile.json` checks v3. If Inductor won't keep N dynamic, round N
-  up to B × 512 or B × 2,048 with value-0 records, each on a cell of its own.
+- **Test:** on the 5090 in bucketed mode under self-play, with no graph breaks
+  and no recompiles as N varies: launch latency by (B, K) settles once a shape
+  replays; GPU memory stops growing once the shapes in use are recorded; the
+  count of recorded graphs stays at the (B, K) pairs reached; and compiled
+  outputs match eager on the same launches, as `v3-cloud-profile.json` compares
+  v3's.
 
 ### 6.6 Tooling
 
@@ -878,7 +907,7 @@ The user settled these on 2026-11-04. Each item gives the options and the decisi
 15. **Tooling in step 8.** (a) The 1889 stats hook, with analysis and
     tournaments left to milestone 6. (b) Port `train/analyze_game.py` too.
     *Decided (a)* (6.6).
-16. **The bias path.** (a) Flat records with no padding, and one dense tensor a
+16. **The bias path.** (a) Flat records with no per-state padding, and one dense tensor a
     layer. (b) v3's padded records and three tensors. *Decided (a)* (3.4, 5.3):
     the same outputs at about a quarter of the bias's CPU time, for the 5090 to
     confirm.

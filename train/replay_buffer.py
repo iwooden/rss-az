@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 import torch
 
+from games import RELATION_RECORD_WIDTH
+
 if TYPE_CHECKING:
     from games import Game
 
@@ -94,9 +96,14 @@ class ReplayBuffer:
             )
         self._game_name = game.name
         self._unified_dim = game.policy.unified_dim
-        self._num_tokens = game.num_tokens(self._max_players)
-        self._num_relations = game.num_relations
-        self._fill_relations_dense_batch = game.fill_relations_dense_batch
+        # A sampled row's relations: planes, or records the caller flattens.
+        if game.relation_format == "flat":
+            self._relation_shape = (game.max_relation_edges, RELATION_RECORD_WIDTH)
+            self._fill_relations_batch = game.fill_relations_sparse_batch
+        else:
+            num_tokens = game.num_tokens(self._max_players)
+            self._relation_shape = (game.num_relations, num_tokens, num_tokens)
+            self._fill_relations_batch = game.fill_relations_dense_batch
         self._size = 0
         self._index = 0
 
@@ -337,8 +344,10 @@ class ReplayBuffer:
     ) -> dict[str, torch.Tensor]:
         """Sample a random batch. Returns dict of torch tensors (CPU).
 
-        Relation planes are generated from the sampled compact states rather
-        than stored in the ring buffer for transformer-oriented callers.
+        Relation inputs are generated from the sampled compact states rather
+        than stored in the ring buffer for transformer-oriented callers:
+        ``(B, R, T, T)`` planes, or for a flat game ``(B, E, 4)`` records, which
+        the caller flattens.
 
         ``is_weights`` are the rows' importance weights versus uniform
         sampling (all 1 without prioritization).
@@ -354,15 +363,9 @@ class ReplayBuffer:
             weights = np.ones(batch_size, dtype=np.float32)
         states = self._states[indices]
         relations = np.empty(
-            (
-                batch_size,
-                self._num_relations,
-                self._num_tokens,
-                self._num_tokens,
-            ),
-            dtype=np.uint8,
+            (batch_size, *self._relation_shape), dtype=np.uint8,
         )
-        self._fill_relations_dense_batch(
+        self._fill_relations_batch(
             [states[i] for i in range(batch_size)],
             relations,
             max_players=self._max_players,
@@ -398,9 +401,11 @@ class ReplayBuffer:
         subsequent H→D copy is genuinely async. Integer outputs may be
         wider than the stored dtype (e.g. int64); widening happens
         during the fancy-index copy. If ``relations_out`` is supplied,
-        relation planes are generated from the sampled states into that
-        caller-owned scratch buffer. ``is_weights_out`` receives importance
-        weights versus uniform sampling (all 1 without prioritization).
+        relation inputs are generated from the sampled states into that
+        caller-owned scratch buffer: planes, or for a flat game ``(B, E, 4)``
+        records, which the caller flattens. ``is_weights_out`` receives
+        importance weights versus uniform sampling (all 1 without
+        prioritization).
         """
         if batch_size > self._size:
             raise ValueError(
@@ -417,7 +422,7 @@ class ReplayBuffer:
         policy_targets_out[:] = self._policy_targets[indices]
         value_targets_out[:] = self._value_targets[indices]
         if relations_out is not None:
-            self._fill_relations_dense_batch(
+            self._fill_relations_batch(
                 [states_out[i] for i in range(batch_size)],
                 relations_out,
                 max_players=self._max_players,

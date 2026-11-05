@@ -67,8 +67,11 @@ affected producers, consumers, tests, and documentation together.
   action stays in every build. Setup-time validation of user input, such as an
   unsupported layout version, may still raise.
 - Transformer inputs come from `core/token_data.pyx` and `core/relations.pyx`.
-  Forward calls require relations: dense planes (trainer, `NNEvaluator`) or
-  the sparse relation records that eval-server IPC passes straight through.
+  Forward calls require relations, in the format `Game.relation_format` gives.
+  RSS (`"dense"`) sends dense planes from the trainer and `NNEvaluator` and the
+  sparse relation records that eval-server IPC passes straight through. 1889
+  (`"flat"`, from `g1889/relations.pyx`) sends flat `(N, 5)` records from all
+  three, flattened on the CPU by `flatten_relation_records`.
 - Transformer values and replay/self-play/evaluator values use canonical
   player order. Preserve player identity across the pipeline.
 - When changing model/input/output contracts, follow the active path through

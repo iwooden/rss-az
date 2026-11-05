@@ -16,7 +16,11 @@ Communication uses shared memory (torch tensors with share_memory_()):
                  : uint8   (W, B, max_relation_edges, 4)
                     — sparse (relation_id, query_token, key_token, value) records.
                     The model builds per-layer attention bias directly from
-                    these sparse coordinates.
+                    these sparse coordinates. For a flat game
+                    (``Game.relation_format``) the server flattens them on the
+                    CPU as it packs a batch, so the GPU receives no padded
+                    records: only real ones, rounded up to a launch shape with
+                    value-0 rows in bucketed mode.
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
       priors  : float32 (W, B, unified_dim)  — legal slots sum to 1
@@ -101,7 +105,12 @@ from torch._dynamo.decorators import mark_unbacked
 
 from games import RELATION_RECORD_WIDTH
 from mcts.evaluator import BaseEvaluator
-from nn.model_contract import ModelInputSpec, normalize_model_type
+from nn.model_contract import (
+    FLAT_RELATION_RECORD_WIDTH,
+    ModelInputSpec,
+    flatten_relation_records,
+    normalize_model_type,
+)
 from train.profile_stats import EvalClientStats, EvalServerStats
 
 if TYPE_CHECKING:
@@ -109,6 +118,9 @@ if TYPE_CHECKING:
 
 # Seconds between server liveness checks while the parent waits on a server.
 _LIVENESS_POLL_SECS = 1.0
+
+# The smallest K of a bucketed launch's B × K flat rows.
+_MIN_FLAT_ROWS_PER_STATE = 256
 
 
 @dataclass(frozen=True)
@@ -155,6 +167,39 @@ def _resolve_launch_batch_size(*, actual_n: int, batch_shape_mode: str) -> int:
     if batch_shape_mode == "bucketed":
         return _next_power_of_two(actual_n)
     return actual_n
+
+
+def _resolve_flat_launch_rows(
+    *, real_rows: int, launch_n: int, batch_shape_mode: str,
+) -> int:
+    """Flat rows a launch ships for its ``real_rows`` records.
+
+    Dynamic mode ships them as they are. Bucketed mode, where CUDA graphs need
+    the small repeated set of shapes ``train/gpu/nvidia.py`` assumes, ships
+    B × K rows, for the smallest power of two K from
+    ``_MIN_FLAT_ROWS_PER_STATE`` that holds them.
+    """
+    if batch_shape_mode != "bucketed":
+        return real_rows
+    rows_per_state = max(-(-real_rows // launch_n), _MIN_FLAT_ROWS_PER_STATE)
+    return launch_n * _next_power_of_two(rows_per_state)
+
+
+def _flat_filler_rows(rows: int, edges: int, num_tokens: int) -> np.ndarray:
+    """``rows`` value-0 flat records, which the model gives no weight.
+
+    A launch pads with a prefix of these. Each state takes ``edges`` rows in
+    turn, so a launch of B states, which pads with at most B × ``edges``, names
+    only its own states. Within a state each row has a cell of its own, so
+    padding piles nothing onto one cell of the scatter.
+    """
+    index = np.arange(rows)
+    in_state = index % edges
+    filler = np.zeros((rows, FLAT_RELATION_RECORD_WIDTH), dtype=np.int16)
+    filler[:, 0] = index // edges
+    filler[:, 2] = in_state % num_tokens
+    filler[:, 3] = in_state // num_tokens % num_tokens
+    return filler
 
 
 def _partition_request_groups(
@@ -268,6 +313,7 @@ class SharedEvalBuffers:
                 f"match layout {self.layout_version} width ({expected_dim})"
             )
 
+        self.relation_format = game.relation_format
         self.num_relations = game.num_relations
         self.max_relation_edges = game.max_relation_edges
         self.relation_coord_width = RELATION_RECORD_WIDTH
@@ -431,6 +477,95 @@ class SharedEvalBuffers:
         return self._done_flags.numpy()
 
 
+def _warmup_compiled_model(
+    model: torch.nn.Module,
+    shared_bufs: SharedEvalBuffers,
+    device: torch.device,
+    *,
+    batch_shape_mode: str,
+    max_launch_batch: int,
+    autocast_dtype: torch.dtype | None,
+    input_dtype: torch.dtype,
+) -> None:
+    """Trace a compiled model at the launch shapes the serve loop will use."""
+    num_tokens = shared_bufs.num_tokens
+    token_dim = shared_bufs.token_dim
+    u_dim = shared_bufs.unified_dim
+    policy = shared_bufs.policy
+    lut = policy.build_action_lut()
+    flat_relations = shared_bufs.relation_format == "flat"
+    if batch_shape_mode == "dynamic":
+        # Warm up with the EXACT call signature the hot path uses —
+        # (states, legal_mask, relations). Dynamic-shape strategy (see
+        # ``train/gpu/{amd,nvidia}.py`` for why we dropped global
+        # ``dynamic=True``): the batch dim gets ``mark_unbacked`` so the
+        # single compiled graph handles all batch sizes 1..max_batch, and
+        # in particular sizes 0 and 1 don't get framework-level specialized.
+        warmup_batches = [policy.num_phases]
+    else:
+        warmup_batches = []
+        warmup_n = 1
+        while warmup_n <= max_launch_batch:
+            warmup_batches.append(warmup_n)
+            warmup_n <<= 1
+    with torch.inference_mode(), torch.autocast(
+        device.type,
+        dtype=autocast_dtype,
+        enabled=autocast_dtype is not None,
+        # Match the hot-path persistent context (see ``cache_enabled``
+        # rationale below). Dynamo guards on the full autocast state,
+        # including ``cache_enabled``; a mismatch between warmup and
+        # hot path triggers a one-shot recompile on the first serve.
+        cache_enabled=False,
+    ):
+        for warmup_n in warmup_batches:
+            # The serve loop allocates its tensors outside inference mode, and
+            # Dynamo guards on the dispatch keys that mode sets, so a flat
+            # game's warmup does too: inference tensors would cost a recompile
+            # at the first launch.
+            with torch.inference_mode(not flat_relations):
+                dummy_s = torch.randn(
+                    warmup_n, num_tokens, token_dim, device=device,
+                    dtype=input_dtype,
+                )
+                # A flat game's N differs across launches in both batch-shape
+                # modes, so its records get ``mark_unbacked`` below: filler
+                # rows in a launch's shape, with N past 1 so that it stays
+                # unspecialized. Each mode's graph takes every N from here;
+                # Inductor records a shape's CUDA graph in the serve loop.
+                dummy_rel = (
+                    torch.from_numpy(_flat_filler_rows(
+                        _resolve_flat_launch_rows(
+                            real_rows=2 * warmup_n, launch_n=warmup_n,
+                            batch_shape_mode=batch_shape_mode,
+                        ),
+                        shared_bufs.max_relation_edges, num_tokens,
+                    )).to(device)
+                    if flat_relations
+                    else torch.zeros(
+                        warmup_n, shared_bufs.max_relation_edges,
+                        shared_bufs.relation_coord_width,
+                        dtype=torch.uint8, device=device,
+                    )
+                )
+                # Build one legal mask per phase so every phase's slots get
+                # exercised at least once during compilation.
+                dummy_mask = torch.zeros(
+                    warmup_n, u_dim, dtype=torch.bool, device=device,
+                )
+                for i in range(warmup_n):
+                    phase_id = i % policy.num_phases
+                    n = policy.phase_sizes[phase_id]
+                    dummy_mask[i, lut[phase_id, :n].to(device)] = True
+            if batch_shape_mode == "dynamic":
+                for _t in (dummy_s, dummy_mask, dummy_rel):
+                    mark_unbacked(_t, 0)
+            elif flat_relations:
+                mark_unbacked(dummy_rel, 0)
+            model(dummy_s, dummy_mask, dummy_rel)
+            del dummy_s, dummy_mask, dummy_rel
+
+
 def _eval_server_main(
     model: torch.nn.Module,
     device: torch.device,
@@ -580,56 +715,13 @@ def _eval_server_serve(
         ckw = compile_kwargs if compile_kwargs is not None else {}
         model = torch.compile(model, **ckw)  # type: ignore[assignment]
         model.eval()
-        policy = shared_bufs.policy
-        lut = policy.build_action_lut()
-        if batch_shape_mode == "dynamic":
-            # Warm up with the EXACT call signature the hot path uses —
-            # (states, legal_mask, relations). Dynamic-shape strategy (see
-            # ``train/gpu/{amd,nvidia}.py`` for why we dropped global
-            # ``dynamic=True``): the batch dim gets ``mark_unbacked`` so the
-            # single compiled graph handles all batch sizes 1..max_batch, and
-            # in particular sizes 0 and 1 don't get framework-level specialized.
-            warmup_batches = [policy.num_phases]
-        else:
-            warmup_batches = []
-            warmup_n = 1
-            while warmup_n <= max_launch_batch:
-                warmup_batches.append(warmup_n)
-                warmup_n <<= 1
-        with torch.inference_mode(), torch.autocast(
-            device.type,
-            dtype=eval_autocast_dtype,
-            enabled=eval_autocast_dtype is not None,
-            # Match the hot-path persistent context (see ``cache_enabled``
-            # rationale below). Dynamo guards on the full autocast state,
-            # including ``cache_enabled``; a mismatch between warmup and
-            # hot path triggers a one-shot recompile on the first serve.
-            cache_enabled=False,
-        ):
-            for warmup_n in warmup_batches:
-                dummy_s = torch.randn(
-                    warmup_n, num_tokens, token_dim, device=device,
-                    dtype=model_input_dtype,
-                )
-                dummy_rel = torch.zeros(
-                    warmup_n, shared_bufs.max_relation_edges,
-                    shared_bufs.relation_coord_width,
-                    dtype=torch.uint8, device=device,
-                )
-                # Build one legal mask per phase so every phase's slots get
-                # exercised at least once during compilation.
-                dummy_mask = torch.zeros(
-                    warmup_n, u_dim, dtype=torch.bool, device=device,
-                )
-                for i in range(warmup_n):
-                    phase_id = i % policy.num_phases
-                    n = policy.phase_sizes[phase_id]
-                    dummy_mask[i, lut[phase_id, :n].to(device)] = True
-                if batch_shape_mode == "dynamic":
-                    for _t in (dummy_s, dummy_mask, dummy_rel):
-                        mark_unbacked(_t, 0)
-                model(dummy_s, dummy_mask, dummy_rel)
-                del dummy_s, dummy_mask, dummy_rel
+        _warmup_compiled_model(
+            model, shared_bufs, device,
+            batch_shape_mode=batch_shape_mode,
+            max_launch_batch=max_launch_batch,
+            autocast_dtype=eval_autocast_dtype,
+            input_dtype=model_input_dtype,
+        )
         torch.cuda.synchronize()
 
     # Allocate pinned CPU buffers and GPU tensors in this process's CUDA context.
@@ -663,10 +755,12 @@ def _eval_server_serve(
     max_relation_edges = shared_bufs.max_relation_edges
     relation_coord_width = shared_bufs.relation_coord_width
     relation_coord_row_bytes = max_relation_edges * relation_coord_width
+    flat_relations = shared_bufs.relation_format == "flat"
     pin_rel_coord_list = [
         torch.empty(
             alloc_batch, max_relation_edges, relation_coord_width,
-            dtype=torch.uint8, pin_memory=use_cuda,
+            # A flat game's padded records stop on the CPU, at the flatten.
+            dtype=torch.uint8, pin_memory=use_cuda and not flat_relations,
         )
         for _ in range(buf_depth)
     ]
@@ -675,9 +769,26 @@ def _eval_server_serve(
         p.reshape(alloc_batch, relation_coord_row_bytes).view(np.int8)
         for p in pin_rel_coord_np_list
     ]
-    gpu_rel_coord = torch.empty(
-        alloc_batch, max_relation_edges, relation_coord_width,
-        dtype=torch.uint8, device=device,
+    # A flat game ships flat rows: room for a full batch's, of which a launch
+    # sends the first N. Any other game ships its padded records.
+    flat_rel_shape = (alloc_batch * max_relation_edges, FLAT_RELATION_RECORD_WIDTH)
+    pin_rel_flat_list = [
+        torch.empty(flat_rel_shape, dtype=torch.int16, pin_memory=use_cuda)
+        for _ in range(buf_depth if flat_relations else 0)
+    ]
+    pin_rel_flat_np_list = [p.numpy() for p in pin_rel_flat_list]
+    # What a bucketed launch rounds up with, memcpy'd in on the hot path.
+    flat_filler = _flat_filler_rows(
+        flat_rel_shape[0] if flat_relations and batch_shape_mode == "bucketed" else 0,
+        max_relation_edges, num_tokens,
+    )
+    gpu_rel = (
+        torch.empty(flat_rel_shape, dtype=torch.int16, device=device)
+        if flat_relations
+        else torch.empty(
+            alloc_batch, max_relation_edges, relation_coord_width,
+            dtype=torch.uint8, device=device,
+        )
     )
     # Shared-memory mask gather stays uint8, but bucketed launches use a
     # preallocated bool tensor at the model call site so the GPU-visible
@@ -874,14 +985,35 @@ def _eval_server_serve(
 
         gpu_s_batch = gpu_s[:launch_n]
         gpu_s_batch[:actual_n].copy_(pin_s_slot[:actual_n], non_blocking=True)
-        gpu_rel_coord[:actual_n].copy_(
-            pin_rel_coord_slot[:actual_n],
-            non_blocking=True,
-        )
+        if flat_relations:
+            # A launch's scratch rows have no records. Its flat rows ship from
+            # this slot's pinned buffer, which the next launch mustn't overwrite.
+            flat = flatten_relation_records(pin_rel_coord_np_list[slot][:actual_n])
+            real_rows = len(flat)
+            relation_rows = _resolve_flat_launch_rows(
+                real_rows=real_rows, launch_n=launch_n,
+                batch_shape_mode=batch_shape_mode,
+            )
+            pin_rel_flat_np = pin_rel_flat_np_list[slot]
+            pin_rel_flat_np[:real_rows] = flat
+            pin_rel_flat_np[real_rows:relation_rows] = (
+                flat_filler[:relation_rows - real_rows]
+            )
+            gpu_rel[:relation_rows].copy_(
+                pin_rel_flat_list[slot][:relation_rows],
+                non_blocking=True,
+            )
+        else:
+            relation_rows = launch_n
+            gpu_rel[:actual_n].copy_(
+                pin_rel_coord_slot[:actual_n],
+                non_blocking=True,
+            )
         gpu_mask[:actual_n].copy_(pin_mask_slot[:actual_n], non_blocking=True)
         if launch_n > actual_n:
             gpu_s_batch[actual_n:launch_n].zero_()
-            gpu_rel_coord[actual_n:launch_n].zero_()
+            if not flat_relations:
+                gpu_rel[actual_n:launch_n].zero_()
             gpu_mask[actual_n:launch_n].zero_()
             gpu_mask_bool[actual_n:launch_n].zero_()
 
@@ -897,7 +1029,7 @@ def _eval_server_serve(
             # ``actual_n`` rows contain real gathered work and only those rows
             # are copied back to shared memory.
             logits, values = model(
-                gpu_s_batch, mask_batch, gpu_rel_coord[:launch_n],
+                gpu_s_batch, mask_batch, gpu_rel[:relation_rows],
             )
             gpu_priors[:actual_n] = (
                 logits[:actual_n].softmax(dim=1).to(torch.float32)

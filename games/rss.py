@@ -133,6 +133,7 @@ def make_game(config: TrainingConfig) -> Game:
         final_scores=_final_scores,
         num_tokens=get_num_tokens,
         token_dim=get_token_dim,
+        relation_format="dense",
         num_relations=NUM_ATTENTION_RELATIONS,
         max_relation_edges=MAX_ATTENTION_RELATION_EDGES,
         fill_tokens=get_token_data,

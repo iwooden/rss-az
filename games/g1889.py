@@ -115,6 +115,8 @@ def make_game(config: TrainingConfig) -> Game:
         final_scores=final_scores_py,
         num_tokens=get_num_tokens,
         token_dim=get_token_dim,
+        # A sample's planes are 225 KB against 8 KB of records (model-design.md §6.1).
+        relation_format="flat",
         num_relations=int(RelationId.NUM_RELATIONS),
         max_relation_edges=int(RelationSize.MAX_RELATION_EDGES),
         fill_tokens=get_token_data,

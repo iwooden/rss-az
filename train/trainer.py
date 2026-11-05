@@ -4,8 +4,9 @@ Dense unified-slot contract: batches carry compact int16 game states,
 dense ``legal_mask`` + ``policy_target`` rows over the model's unified
 logit space, canonical per-player ``value_target``, and a pure-reporting
 ``phase_id`` that the model never sees. The trainer materializes transformer
-tokens and relation planes from those compact states at training time. Replay
-and model values both remain in canonical player order.
+tokens and relation inputs (planes, or a flat game's records) from those compact
+states at training time. Replay and model values both remain in canonical player
+order.
 """
 
 from __future__ import annotations
@@ -18,8 +19,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from games import get_game
+from games import RELATION_RECORD_WIDTH, get_game
 from nn import get_model_input_spec
+from nn.model_contract import FLAT_RELATION_RECORD_WIDTH, flatten_relation_records
 from train.config import TrainingConfig
 from train.replay_buffer import ReplayBuffer
 
@@ -73,6 +75,7 @@ class Trainer:
         self._num_players = config.effective_max_players
         self._num_tokens = game.num_tokens(self._num_players)
         self._state_size = game.state_size(self._num_players)
+        self._flat_relations = game.relation_format == "flat"
 
         # Lazy pinned host + device scratch (see _ensure_scratch).
         self._scratch_cap: int = 0
@@ -231,15 +234,29 @@ class Trainer:
 
         ``phase_ids`` widens to ``torch.long`` for ``index_add_`` on the
         TB bucketing path; it never enters the model graph.
+
+        ``_rel_h`` and ``_rel_d`` hold planes, or for a flat game up to
+        ``n * max_relation_edges`` flat rows, of which the forward gets the
+        first N.
         """
         if n <= self._scratch_cap:
             return
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
         nt, td = self._num_tokens, self._token_dim
-        nr = self._game.num_relations
         u_dim = self._policy.unified_dim
         N = self._num_players
+        if self._flat_relations:
+            edges = self._game.max_relation_edges
+            rel_shape = (cap * edges, FLAT_RELATION_RECORD_WIDTH)
+            rel_dtype = torch.int16
+            # Padded records: CPU-only (consumed by the flatten), never shipped.
+            self._records_np = np.empty(
+                (cap, edges, RELATION_RECORD_WIDTH), dtype=np.uint8,
+            )
+        else:
+            rel_shape = (cap, self._game.num_relations, nt, nt)
+            rel_dtype = torch.uint8
 
         # Raw states: CPU-only (consumed by fill_tokens), never shipped.
         self._states_np = np.empty((cap, self._state_size), dtype=np.int16)
@@ -249,9 +266,7 @@ class Trainer:
             (cap, nt, td), dtype=torch.float32, pin_memory=pm,
         )
         self._tok_h_np = self._tok_h.numpy()
-        self._rel_h = torch.empty(
-            (cap, nr, nt, nt), dtype=torch.uint8, pin_memory=pm,
-        )
+        self._rel_h = torch.empty(rel_shape, dtype=rel_dtype, pin_memory=pm)
         self._rel_h_np = self._rel_h.numpy()
         self._phase_h = torch.empty(cap, dtype=torch.long, pin_memory=pm)
         self._phase_h_np = self._phase_h.numpy()
@@ -270,9 +285,7 @@ class Trainer:
             self._tok_d = torch.empty(
                 (cap, nt, td), dtype=torch.float32, device=self.device,
             )
-            self._rel_d = torch.empty(
-                (cap, nr, nt, nt), dtype=torch.uint8, device=self.device,
-            )
+            self._rel_d = torch.empty(rel_shape, dtype=rel_dtype, device=self.device)
             self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
             self._pc_d = torch.empty(cap, dtype=torch.uint8, device=self.device)
             self._mask_d = torch.empty(
@@ -295,15 +308,16 @@ class Trainer:
 
         self._scratch_cap = cap
 
-    def _h2d(self, n: int) -> None:
-        """Async copy pinned host scratch [:n] into device scratch [:n].
+    def _h2d(self, n: int, relation_rows: int) -> None:
+        """Async copy pinned host scratch [:n] into device scratch [:n], and
+        ``relation_rows`` rows of relations.
 
         No-op on CPU (host and device scratch alias the same tensors).
         """
         if self.device.type != "cuda":
             return
         self._tok_d[:n].copy_(self._tok_h[:n], non_blocking=True)
-        self._rel_d[:n].copy_(self._rel_h[:n], non_blocking=True)
+        self._rel_d[:relation_rows].copy_(self._rel_h[:relation_rows], non_blocking=True)
         self._phase_d[:n].copy_(self._phase_h[:n], non_blocking=True)
         self._pc_d[:n].copy_(self._pc_h[:n], non_blocking=True)
         self._mask_d[:n].copy_(self._mask_h[:n], non_blocking=True)
@@ -397,7 +411,7 @@ class Trainer:
             self._mask_h_np[:B],
             self._pt_h_np[:B],
             self._vt_h_np[:B],
-            relations_out=self._rel_h_np[:B],
+            relations_out=(self._records_np if self._flat_relations else self._rel_h_np)[:B],
             player_counts_out=self._pc_h_np[:B],
             is_weights_out=self._w_h_np[:B],
         )
@@ -415,8 +429,14 @@ class Trainer:
 
         self._fill_token_batch(B)
 
+        relation_rows = B
+        if self._flat_relations:
+            flat = flatten_relation_records(self._records_np[:B])
+            relation_rows = len(flat)
+            self._rel_h_np[:relation_rows] = flat
+
         # Async H→D on CUDA; aliased no-op on CPU.
-        self._h2d(B)
+        self._h2d(B, relation_rows)
 
         phase_ids = self._phase_d[:B]
         legal_masks = self._mask_d[:B].to(torch.bool)
@@ -446,7 +466,7 @@ class Trainer:
         # legal set only (illegal log-probs are ~-∞ × 0 = 0 in the loss).
         self._raw_values = None
         policy_logits, values = self.model(
-            self._tok_d[:B], legal_masks, self._rel_d[:B],
+            self._tok_d[:B], legal_masks, self._rel_d[:relation_rows],
         )
         raw_values = self._raw_values
 

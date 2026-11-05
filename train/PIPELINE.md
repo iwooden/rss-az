@@ -112,7 +112,7 @@ Notes below name RSS's implementations where they matter
   evenly by count, giving the remainder to the lowest. Value MSE ignores padded
   player slots.
 - **Replay stores raw state.** Rows hold compact int16 state, dense masks and
-  targets, and padded values. Tokens and relation planes are rebuilt with the
+  targets, and padded values. Tokens and relation inputs are rebuilt with the
   current extractors when sampled, so extractor changes also affect old rows.
 - **Optional prioritized replay.** Each row stores KL(policy target ||
   unnoised prior) from self-play (`kl_to_prior`). With
@@ -153,11 +153,19 @@ Notes below name RSS's implementations where they matter
   `build_action_lut()` and run no torch ops on the hot path.
   `SharedEvalBuffers` carries the policy layout to the server, never the
   `Game`: each process builds its own.
-- **Two relation formats.** Model `forward` accepts dense planes (trainer,
-  `NNEvaluator`) or sparse records (eval server). It scatters sparse records
-  straight into the per-head attention bias; the server never builds dense
-  planes. V2 reads its original 10 binary relations, while v3 reads all
-  relations and scales edges by value. Keep both formats in parity.
+- **Two relation formats, per game.** `Game.relation_format` sets what replay,
+  the trainer, `NNEvaluator`, the eval server, and the compile warmups send. For
+  RSS (`"dense"`), model `forward` accepts dense planes (trainer, `NNEvaluator`)
+  or sparse records (eval server). It scatters sparse records straight into the
+  per-head attention bias; the server never builds dense planes. V2 reads its
+  original 10 binary relations, while v3 reads all relations and scales edges by
+  value. For 1889 (`"flat"`), all of them send flat `(N, 5)` int16 records: the
+  caller flattens the padded wire records on the CPU
+  (`flatten_relation_records`). N is a dynamic dimension in both batch-shape
+  modes. A dynamic launch ships its real records; a bucketed one rounds them up
+  with value-0 rows to B × K, K a power of two from 256 to 2,048, the small
+  set of shapes CUDA graphs need. 1889's model also accepts dense planes, for
+  tests. Keep each model's formats in parity.
 - **Precision and weights.** Eval servers keep autocast (`eval_dtype`) open
   with `cache_enabled=False`, because same-device servers share trainer
   parameters through CUDA IPC. Without autocast (no `eval_dtype`, or a CPU
