@@ -4,6 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import overload
+
+import numpy as np
+import torch
+
+from games import RELATION_RECORD_WIDTH
+
+# Flat relation records: (batch, relation, query, key, value), int16.
+FLAT_RELATION_RECORD_WIDTH = RELATION_RECORD_WIDTH + 1
 
 
 class ModelKind(str, Enum):
@@ -51,3 +60,22 @@ def normalize_model_type(model_type: str) -> ModelKind:
         raise ValueError(
             f"model_type must be one of {{{valid}}}, got {model_type!r}"
         ) from exc
+
+
+@overload
+def flatten_relation_records(records: np.ndarray) -> np.ndarray: ...
+@overload
+def flatten_relation_records(records: torch.Tensor) -> torch.Tensor: ...
+def flatten_relation_records(records: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+    """Turn a batch's padded sparse records into its flat ones.
+
+    Takes ``(B, E, RELATION_RECORD_WIDTH)`` uint8 records on the CPU, an array
+    or a tensor, and returns the same kind of ``(N, FLAT_RELATION_RECORD_WIDTH)``
+    int16 rows ``(batch, relation, query, key, value)``, in batch order: every
+    record with a value above 0, whatever its relation id, which the model
+    filters. N depends on the data, so this runs outside the compiled forward.
+    """
+    rows = torch.as_tensor(records)
+    batch, edge = rows[:, :, RELATION_RECORD_WIDTH - 1].nonzero(as_tuple=True)
+    flat = torch.cat([batch[:, None], rows[batch, edge]], dim=1).to(torch.int16)
+    return flat.numpy() if isinstance(records, np.ndarray) else flat

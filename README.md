@@ -53,6 +53,7 @@ layout rather than differences from another version.
 | --- | --- | --- |
 | `nn/transformer-v2.py` | 2 | [V2 token data](token-data.md) |
 | `nn/transformer-v3.py` | 3 | [V3 token data](token-data-v3.md) |
+| `nn/transformer-1889.py` | 1 (game `1889`) | [1889 token data](token-data-1889.md) |
 
 Set `model_path` in the training config to select the model; there is no
 default. Every model module declares its input version as

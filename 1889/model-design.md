@@ -2,7 +2,7 @@
 
 Status: design for step 8 of [`pipeline-refactor.md`](pipeline-refactor.md),
 dated 2026-11-03; the user reviewed it and settled Section 10 on 2026-11-04.
-Nothing is implemented. Step 8 builds the first 1889 model, `nn/transformer-1889.py` v0,
+Sub-step 8.1 is built; the rest is not. Step 8 builds the first 1889 model, `nn/transformer-1889.py` v0,
 on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
 in [`extraction-design.md`](extraction-design.md)), adds what the pipeline
 needs to train it, and runs it once.
@@ -340,9 +340,8 @@ against `PHASE_ACTION_SIZES` and the total against the layout's
 row widths against `get_token_widths(max_players, 1)`, as `_validate_layout`
 does (`:226-256`). Logits become fp32 before the −1e9 mask (`:1727-1735`).
 
-The heads hold about 5.2M parameters at d = 256 against v3's 3.17M: 19
-phases, and the context in every input. They cost 4.5% of a forward
-(Section 5.2).
+The heads hold 5.26M parameters at d = 256 against v3's 3.17M: 19
+phases, and the context in every input. They cost 2.7% of a forward's FLOPs.
 
 ## 5. Model size
 
@@ -387,7 +386,9 @@ extends the formula, which matches the counts within 0.5%):
 | 1889, 512 × 20, 8 heads | 68.2M | 90.3M | 13.78 | 0.37 | 8.53 |
 
 The proxy fed `c` to every head, so its counts run 3d² high (0.2M at d = 256,
-which makes v0 18.2M) and its FLOPs under 0.1% high. At v3's shape, 1889's
+which makes v0 18.2M), and its pointers ran over every hex, so its FLOPs run
+1.4% high: v0 as built has 18,218,872 parameters and 2.65 GFLOP per state, 1.64
+times v3. At v3's shape, 1889's
 model has 2.1M more parameters, all in the heads, and does 1.66 times the work per evaluation. The input projections are 0.15% of
 it. Across widths and depths (`size_grid.py`; FLOPs per state against v3's,
 with the trunk's parameters):
