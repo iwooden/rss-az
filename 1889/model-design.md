@@ -2,8 +2,10 @@
 
 Status: design for step 8 of [`pipeline-refactor.md`](pipeline-refactor.md),
 dated 2026-11-03; the user reviewed it and settled Section 10 on 2026-11-04.
-Sub-steps 8.1 and 8.2 are built; the rest is not. Step 8 builds the first 1889 model, `nn/transformer-1889.py` v0,
-on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
+Sub-steps 8.1-8.4 are built: the model, the transport, the stats hook, the
+configs, and a local smoke run with a resume (Section 7.2). The cloud run (8.5)
+and the capacity probe (8.6) are not. Step 8 builds the first 1889 model,
+`nn/transformer-1889.py` v0, on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
 in [`extraction-design.md`](extraction-design.md)), adds what the pipeline
 needs to train it, and runs it once.
 
@@ -742,11 +744,18 @@ rounding N up in bucketed mode.
 
 ### 6.6 Tooling
 
-- **A 1889 `SelfPlayStats`** (`games/__init__.py:46-91`; 1889 now has
-  `EmptySelfPlayStats`): per game, the end reason (bank or bankruptcy), the
-  last game phase, ORs played, the share of TRACK decisions that pass, corps
-  floated, and trains bought by type. It is small, and a first run is hard to
-  read without it.
+- **A 1889 `SelfPlayStats`** (`games/g1889_selfplay.py`), logged for each
+  reporting group as `self_play_<group>/<name>`: the end reason (`end_bank`,
+  `end_bankruptcy`), the last game phase (`last_phase_<phase>`), ORs started
+  (`ors_played`), the share of TRACK decisions that pass (`track_pass_share`),
+  corps floated (`corps_floated`), and new trains bought by type
+  (`trains_bought_<type>`). It is small, and a first run is hard to read without it.
+  - The driver plays forced decisions without a search, so `observe` never sees
+    them. ORs and trains therefore come from the state: ORs from each set's
+    `or_count` and the last `or_num`, and trains from the depot, or for the
+    unlimited D from the Ds in play. `track_pass_share` is over the TRACK
+    decisions with a choice.
+  - Trains bought from the pool or another corp move a train already counted.
 - **Deferred,** as pipeline-refactor §1 plans: `train/analyze_game.py`,
   `train/tournament.py`, `train/debug_trace.py`, and `train/strategy_data.py`
   import the RSS engine directly (`train/analyze_game.py:31-36`,
@@ -804,23 +813,55 @@ c_puct 1.7, the value blend from epoch 10 to 300 up to 0.7, terminal blend
   keeps v3's count of game outcomes.
 - **Simulations** stay: branching is alike (Section 5.4), and the price is
   wall clock.
-- **Memory:** a replay row is about 3.3 KB (an 850-slot int16 state, the
-  mask, and the target), 3.3 GB at a million.
+- **Memory:** a replay row is about 2.9 KB (an 850-slot int16 state, the
+  mask, and the target), 2.9 GB at a million.
 
 **Test**, at epoch 20, on resume: reset the windows to 17.5% and 35% of
 `self_play_<n>p/game_length_mean`, and the buffer and steps to the measured
-samples per epoch, by the same rules.
+samples per epoch, by the same rules. A new `buffer_capacity` makes the resume
+skip the saved buffer with only a warning (`train/PIPELINE.md`), so that epoch
+starts its buffer empty unless the rows are carried over by hand.
 
 ### 7.2 Where it runs
 
 - **The run:** the cloud RTX 5090, compiled, evaluating in bf16, as v3's.
 - **Smoke tests:** the local AMD ROCm GPU, with
-  `train_configs/1889-v0-smoke.json`: `eval_dtype` null (fp32), `batch_size`
-  and `eval_max_batch_size` 128, 4-8 workers, a few games an epoch, about 64
-  simulations without the ramp, a small buffer, and 2 epochs, run with
-  `--no-compile`. It uses the GPU only while the user has paused the live
-  bot, and `--device cpu` otherwise. The local box's trouble with fp32 dense
-  relation batches above ~150 does not arise: 1889 trains on records.
+  `train_configs/1889-v0-smoke.json`: `eval_dtype` null (fp32), 8 workers,
+  `batch_size` and `eval_max_batch_size` 64, 12 games an epoch, 64 simulations
+  without the ramp, a buffer of 20,000 with `min_buffer_size` 512, and 2 epochs,
+  run with `--no-compile`.
+  - The validator holds `eval_max_batch_size` to workers × leaves, 8 × 8 here.
+  - The GPU may be in use by the live bot, which runs from another worktree and
+    leaves 3-5 GB of its 17 GB free. A fp32 training step holds 4.7 GB at batch 128.
+  - The local box's trouble with fp32 dense relation batches above ~150 does
+    not arise: 1889 trains on records.
+- **Measured** (`scratchpad/g1889_smoke/`, 2026-11-04): 2 epochs and a resume into
+  a third, 36 games beside the live bot, near-uniform priors throughout. It tests
+  the pipeline; 64 simulations and 3 epochs say nothing of learning.
+
+  | | 3 players | 4 players | 5 players |
+  |---|---|---|---|
+  | Decisions a game, by epoch | 616, 938, 847 | 795, 1,022, 966 | 925, 969, 1,240 |
+  | Decisions an SR (last 20 games) | 36 | 58 | 73 |
+  | Ended at the bank (12 games each) | 8 | 7 | 5 |
+  | ORs started, by epoch | 23, 30, 26 | 19, 19, 20 | 18, 16, 18 |
+
+  - **Length:** games run past Section 5.4's 440-800, and STOCK is 56-71% of
+    decisions. An SR ends only when every player passes in a row, and these
+    priors pass 38% of the time, so SRs run long; a random player who passes over
+    half the time takes 12, 22, and 34 decisions an SR. The epoch-20 rescale (7.1)
+    reads trained play instead.
+  - **Endings:** the last phase was 4 in 5 games, 5 in 17, 6 in 4, and D in 10.
+    Track passes are 18-34% by group and epoch, and 4.3-7 corps float.
+  - **Rare phases:** EMERGENCY_SELL_AMOUNT was searched twice in 36 games, as
+    random play's 0.04-0.10 a game predicts.
+  - **Cost:** the server ran 707-872 evaluations a second at a mean batch of 23-25
+    and 27-35 ms a launch, against the 1,198 a second of a full batch of 128 (6.5).
+    A search made 40-42 evaluations and 22-23 virtual backups. Workers waited on
+    the server 99.5% of the time. Whole epochs made 59-71K samples and 58-88 games
+    an hour.
+  - **Memory:** free VRAM fell from 5.3 GB to 4.6 GB with the eval server up and
+    to 1.7 GB while training.
 
 ## 8. Sub-steps
 

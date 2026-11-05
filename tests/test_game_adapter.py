@@ -733,8 +733,10 @@ def test_g1889_policy_actions_are_engine_legal(g1889_case: Case):
             assert set(actions.tolist()) <= set(buf[:n].tolist())
 
 
-def test_g1889_has_no_selfplay_stats_or_strategy_trace(g1889_case: Case):
-    assert all(playout.game_stats == {} for playout in g1889_case.playouts)
+def test_g1889_has_selfplay_stats_but_no_strategy_trace(g1889_case: Case):
+    """tests/g1889/test_selfplay_stats.py checks the stats' values."""
+    for playout in g1889_case.playouts:
+        assert playout.game_stats["end_bank"][0] + playout.game_stats["end_bankruptcy"][0] == 1
     assert g1889_case.game.new_strategy_trace is None
     with pytest.raises(ValueError, match="'1889' has no strategy trace"):
         play_game(None, g1889_case.config, 0, np.random.default_rng(0), collect_strategy_trace=True)

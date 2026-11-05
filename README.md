@@ -34,7 +34,8 @@ for development guidance.
 - `train/` - self-play workers, replay buffer, trainer, checkpointing,
   TensorBoard logging, analysis-game rendering, and tournament tools.
 - `train_configs/` - JSON training configs. `bigger-multi.json` is the current
-  transformer-v2 mixed 3-5 player config.
+  transformer-v2 mixed 3-5 player config; `1889-v0.json` is the first Shikoku 1889
+  run, and `1889-v0-smoke.json` its local smoke test (run with `--no-compile`).
 - `utils_18xx/` - 18xx.games replay parsing, replay analysis, API client, and
   live-play server.
 - `tests/` - phase tests, engine invariants, model contract tests, MCTS tests,

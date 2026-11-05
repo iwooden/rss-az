@@ -114,8 +114,8 @@ class Game:
 ```
 
 As built (step 3): the self-play hook is `new_selfplay_stats`, whose
-collectors follow the `games.SelfPlayStats` protocol; a game with nothing to
-report uses `games.EmptySelfPlayStats` (1889). The RSS-only block holds one
+collectors follow the `games.SelfPlayStats` protocol
+(`games/g1889_selfplay.py` is 1889's, since step 8.3). The RSS-only block holds one
 field, `new_strategy_trace`, which defaults to `None`, so other games leave it
 out (Section 4.3).
 
@@ -254,7 +254,7 @@ game hooks.
   - `games/rss_selfplay.py` holds RSS's collector (`RSSSelfPlayStats`:
     `AcquisitionStats` plus the end-of-game share, company, and corp stats,
     reported per game or by finishing rank), `StrategyTrace`, and its builder.
-    1889 uses `games.EmptySelfPlayStats`, whose `finish` returns `{}`.
+    `games/g1889_selfplay.py` holds 1889's (`model-design.md` Section 6.6).
   - The trace builder is the RSS-only `Game.new_strategy_trace`, `None` for
     1889; `play_game` raises `ValueError` when asked to trace a game without
     one. The builder now decodes the chosen action and keeps the decision's

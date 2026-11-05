@@ -192,5 +192,5 @@ Notes below name RSS's implementations where they matter
   an RSS transformer. Every module declares `INPUT_LAYOUT_VERSION`, which sets
   token width for every consumer (`get_model_input_spec`).
   `phase_conditioning`, `d_proj`, and `price_slot_fourier_bands` are v2-only,
-  and `relation_input_mixing` and `zero_sum_values` are v3-only. Engine flags `v3_behavior` and
-  `acq_same_president` are independent of the model (see `README.md`).
+  `relation_input_mixing` is v3-only, and `zero_sum_values` is v3's and 1889's.
+  Engine flags `v3_behavior` and `acq_same_president` are independent of the model (see `README.md`).

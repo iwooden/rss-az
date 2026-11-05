@@ -40,7 +40,8 @@ from g1889.token_data import (
     get_token_data_batch,
     get_token_dim,
 )
-from games import EmptySelfPlayStats, Game
+from games import Game
+from games.g1889_selfplay import G1889SelfPlayStats
 from nn.policy_layout import PolicyLayout
 
 if TYPE_CHECKING:
@@ -125,5 +126,5 @@ def make_game(config: TrainingConfig) -> Game:
         fill_relations_dense_batch=get_relation_data_batch,
         fill_relations_sparse=get_relation_coord_data,
         fill_relations_sparse_batch=get_relation_coord_data_batch,
-        new_selfplay_stats=EmptySelfPlayStats,
+        new_selfplay_stats=G1889SelfPlayStats,
     )

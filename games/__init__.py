@@ -21,8 +21,7 @@ Conventions every game follows:
   the eval server; ``"flat"`` games send flat records
   (``nn.model_contract.flatten_relation_records``) from all of them. It follows
   from the game's sizes, so it is a constant, not a config field.
-- Self-play diagnostics are a game hook (``SelfPlayStats``); a game without
-  any uses ``EmptySelfPlayStats``.
+- Self-play diagnostics are a game hook (``SelfPlayStats``).
 """
 
 from __future__ import annotations
@@ -74,26 +73,6 @@ class SelfPlayStats(Protocol):
     def finish(self, state: Any) -> dict[str, tuple[float, float]]:
         """This game's totals, from its terminal state."""
         ...
-
-
-class EmptySelfPlayStats:
-    """A collector with nothing to report."""
-
-    def __init__(self, num_players: int) -> None:
-        pass
-
-    def observe(
-        self,
-        state: Any,
-        legal_actions: np.ndarray,
-        chosen_idx: int,
-        priors: np.ndarray,
-        visit_counts: np.ndarray,
-    ) -> None:
-        pass
-
-    def finish(self, state: Any) -> dict[str, tuple[float, float]]:
-        return {}
 
 
 @dataclass(frozen=True)
