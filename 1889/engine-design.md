@@ -1219,8 +1219,10 @@ equal its `result`.
        reach it 25 times: three skipped turns in SR 1 (314's DR owner with
        ¥25 and MF owner with ¥15, and 962's MF owner with ¥20) and 22 turns
        that end after a purchase or sale. A use of DR that Ruby logs later, in
-       another player's turn, is out of turn (Section 12, item 4), and MF's
-       stops the replay as unsupported.
+       another player's turn, is out of turn (Section 12, item 4). MF's backs
+       up to the turn the harness passed (`_port_on_skipped_turn`), as a
+       self-play log has it (`utils_18xx/g1889_selfplay_log.py`); at any other
+       turn it stops the replay as unsupported.
      - **Programmed actions.** In the `hs_*` fixtures, programmed buys ride
        as `auto_actions` on another player's pass, alongside
        `program_disable` and `program_share_pass` entries that the mapper
@@ -1591,6 +1593,19 @@ The user accepted every recommendation below (2026-11-01).
    grew. The OR loses nothing that way, as a president with a use for either
    gets PRE. Replay supplies the pass for the turns Ruby skips (Section
    10.2).
+   *Measured (2026-11-06)*, writing self-play games as Ruby logs
+   (`utils_18xx/g1889_selfplay_log.py`). Ruby does not stop on those turns, so
+   the log puts the exchange just before the action after which Ruby skipped
+   the owner, in the same SR with the same private revenue, which gives the
+   owner a real turn: 155 of 840 random games and 7 of 10 low-sim model games.
+   Ruby refuses one case: with no action of that SR to go before, the owner
+   sells the new share on the engine's turn (3 players, seed 157: 1 of 840
+   random games, and none of 11 model games). The tool stops there with Ruby's
+   context. In Ruby the sale waits for the owner's next turn, which it no longer
+   skips: later in that SR if another player acts, or in the next SR if the rest
+   all pass, since a skipped player counts as passed (`Round::Stock#finished?`).
+   *Accepted (2026-11-06):* the engine stays as it is, and live play takes the
+   sale at that next turn.
 5. **Decided:** a forced-decision rule based on the policy set (Section 6).
    *Adopted:* adopt it.
 6. **Decided (2026-11-04):** the privates' OR slots sit at the turn's start

@@ -50,6 +50,11 @@ choice, the harness backs up to it first (``_forced_at_ruby_step``). DR's
 exchange by an owner who is not acting takes ``DRIVER.apply_out_of_turn``, in
 the same way.
 
+MF's port tile on an SR turn Ruby skips takes the same back-up: the harness has
+already passed for its owner (``skipped_sr_turn``), so it returns to that turn
+and takes the tile there (``_port_on_skipped_turn``), as a self-play log has it
+(``check_export``).
+
 Replay stops at the first unsupported action or mismatch; an engine error
 propagates. When it stops at an action while forced decisions are pending,
 Ruby may be waiting at one of them (a Track step whose only choice is the
@@ -72,6 +77,7 @@ import g1889.data.tables as D
 from g1889.actions import get_decision_phase_py
 from g1889.driver import DRIVER, STATUS_INVALID
 from g1889.entities.corp import CORPS
+from g1889.entities.private import PRIVATES
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState, get_global_fields, get_layout
@@ -80,7 +86,7 @@ from tests.g1889.replay.action_map import (
     HELD_DISCARD, OUT_OF_TURN, OVERRIDE_STEP_PHASE, PRIVATE_OVERRIDE, ROUTE_OVERRIDE, TOPMOST_BID_OVERRIDE, Decision,
     ReplayEnd, UnsupportedAction, map_action, no_decision, skipped_sr_turn,
 )
-from tests.g1889.replay.extracts import Extract, load_fixture_extract
+from tests.g1889.replay.extracts import Extract, load_fixture_extract, load_game_extract
 from tests.g1889.replay.snapshot import CORP, compare, load_state, track_after_lay
 
 # A forced decision the driver applied: (decision phase, id, the player it was
@@ -314,6 +320,23 @@ def _discard_behind_another(state: GameState, pending: list[Forced], action) -> 
     return None if row is None or _discarding(state, row) == CORP[action['entity']] else row
 
 
+def _port_on_skipped_turn(action, state: GameState, passes: list) -> Any:
+    """The row of the SR turn the harness passed for MF's owner, if ``action`` is
+    their port tile and the engine has gone on from it. ``passes`` is the driver
+    history of the last Ruby action that applied anything. Ruby takes the tile at
+    any moment of an SR, so it waits for no turn; the engine offers it only on its
+    owner's."""
+    if action['type'] != 'lay_tile' or action['entity'] != 'MF':
+        return None
+    owner = PRIVATES[D.PRIVATE_MF].owner(state) - K.OWNER_PLAYER
+    if TURN.active_player(state) == owner:
+        return None
+    n = TURN.num_players(state)
+    return next((row for row, phase, action_id in reversed(passes)
+                 if (phase, action_id) == (K.DPHASE_STOCK, K.STOCK_PASS) and int(row[ACTIVE_PLAYER_SLOT]) == owner
+                 and skipped_sr_turn(GameState.from_array(row, n, state.max_players))), None)
+
+
 def _private_path(phase: int, pre) -> str:
     """How a private's move replays: its slot's phase, the override at Ruby's step, or out of turn."""
     if phase == OUT_OF_TURN:
@@ -338,6 +361,8 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
     held: list[Held] = []          # discards Ruby took early
     track_open = False             # Ruby kept Track open after the lay; the engine is past it
     route_row = None               # the engine's row at its last ROUTE step
+    log: list = []                 # the driver's history of the last Ruby action
+    previous_log: list = []        # the same, of the last one before that that applied anything
 
     def at_row(row) -> GameState:
         return GameState.from_array(row, len(ids), state.max_players)
@@ -376,7 +401,6 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
         return progress
     if TURN.step(state) == K.STEP_ROUTE:  # load_state stops where Ruby waits; the engine runs on by itself
         route_row = state._array.copy()
-        log: list = []
         DRIVER.advance(state, log)
         _queue(pending, log)
     for record in records[start + 1:None if end is None else end + 1]:
@@ -391,7 +415,7 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
             continue
         singles = [(host, record['pre']), *zip(host.get('auto_actions') or [], record.get('auto_pre') or [])]
         where = f"record {record['index']} ({host['type']})"
-        log = []
+        previous_log, log = log or previous_log, []
         if track_open and _closes_track(record):  # EQUIVALENT: Track after the lay; no decision of its own
             singles = []
         was_open, track_open = track_open, False
@@ -400,6 +424,20 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
                 if no_decision(action):
                     continue
                 actors = {ids.index(player) for player in pre['active_players']}
+                # EQUIVALENT: Ruby takes MF's tile while the engine is past a turn the harness passed.
+                if (skipped := _port_on_skipped_turn(action, state, previous_log)) is not None:
+                    if deferred is not None and not held and not rests(deferred):
+                        return progress
+                    deferred = None
+                    state._array[:] = skipped
+                    pending.clear()
+                    owner = {PRIVATES[D.PRIVATE_MF].owner(state) - K.OWNER_PLAYER}
+                    decisions = map_action(action, {**pre, 'round': 'SR'}, K.DPHASE_STOCK, state)
+                    progress.private_moves['backed up to a skipped turn'] += 1
+                    if error := _apply(state, decisions, owner, pending, log, held):
+                        progress.stop, progress.detail = 'mismatch', f'{where}: {error}'
+                        return progress
+                    continue
                 # EQUIVALENT: Ruby takes this discard before the one the driver forced.
                 row = _discard_behind_another(state, pending, action)
                 rested: list[Forced] = []
@@ -462,10 +500,45 @@ def replay_extract(name: str, extract: Extract, start: int = 0, end: int | None 
 def unverified_records(extract: Extract, progress: Progress) -> list[int]:
     """The records a replay left uncompared, but for those it cannot compare: a
     discard Ruby takes out of the engine's order, and a snapshot equal to the
-    record's before, whose compare stands for it."""
+    record's before or after, whose compare stands for it (a chat line takes over
+    the compare of the record it follows)."""
     records = extract['records']
-    return [r['index'] for r in records[1:] if r['index'] not in progress.verified
+    verified = set(progress.verified)
+    for r in reversed(records[1:]):
+        if r['index'] in verified and r['state'] == records[r['index'] - 1]['state']:
+            verified.add(r['index'] - 1)
+    return [r['index'] for r in records[1:] if r['index'] not in verified
             and r['action']['type'] != 'discard_train' and r['state'] != records[r['index'] - 1]['state']]
+
+
+def check_export(label: str, game: dict[str, Any], scores: list[int], terminal: GameState) -> list[str]:
+    """What is wrong with ``utils_18xx/g1889_selfplay_log.py``'s log of a game that
+    ended on ``terminal`` with ``scores``, by seat (player id = seat + 1). Ruby's
+    state must equal the engine's at every record: with seats as the log lists them
+    (the first seat first, as every other replay runs), and in the engine's own seat
+    order, from its first player. The game must finish on the terminal state and
+    scores, and Ruby's own computation of every route must be what the log pays."""
+    extract = load_game_extract(label, game)
+    by_seat = {**extract, 'players': sorted(extract['players'], key=lambda p: p['id']), 'records': [
+        {**r, 'state': {**r['state'], 'players': sorted(r['state']['players'], key=lambda p: p['id'])}}
+        for r in extract['records']]}
+    problems = []
+    for name, seats in (('seats as logged', extract), ("the engine's seats", by_seat)):
+        progress = replay_extract(f'{label} ({name})', seats)
+        if progress.stop:
+            problems.append(str(progress))
+        elif unverified := unverified_records(seats, progress):
+            problems.append(f'{name}: records {unverified} were not compared')
+    last = extract['records'][-1]['state']['game']
+    if not last['finished']:
+        problems.append('the game does not finish')
+    elif {int(k): v for k, v in last['result'].items()} != {seat + 1: v for seat, v in enumerate(scores)}:
+        problems.append(f"Ruby's result {last['result']} is not the engine's scores {scores}")
+    problems += compare(terminal, by_seat['records'][-1]['state'])
+    problems += [f"record {r['index']} pays {r['pre']['revenue']}, Ruby computes {r['pre']['recomputed_revenue']}"
+                 for r in extract['records'][1:] if r['action']['type'] == 'run_routes'
+                 and r['pre']['revenue'] != r['pre']['recomputed_revenue']]
+    return problems
 
 
 def _later_srs(extract: Extract) -> list[tuple[int, int]]:

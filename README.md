@@ -258,6 +258,25 @@ Continue an unfinished 18xx.games game from its exported JSON with AI players:
 The player count and display names come from the game JSON. The
 `--18xx-game-json` and `--18xx-seed` starting modes are mutually exclusive.
 
+Write a 1889 self-play game from a checkpoint as an 18xx.games hotseat log, to
+step through its map and tile lays with "Import hotseat game" on 18xx.games or a
+local instance. `--verify` checks it against `submodules/18xx`, which the site may
+have moved past:
+
+```bash
+.venv/bin/python -m utils_18xx.g1889_selfplay_log latest \
+  --checkpoint-dir checkpoints/1889-v0 \
+  --num-players 4 --seed 1 \
+  --output game.json --verify
+```
+
+It plays with `train.self_play.play_game` at the self-play settings of the
+checkpoint's epoch, in fp32 uncompiled, and each searched decision adds a chat line
+with the root value and the top choices' priors and visit shares (`--no-eval`
+omits them). Playing saves `game.played.json` first; `--played game.played.json
+--output game.json` converts it again without replaying. Ruby and
+`submodules/18xx` are needed here, not in training.
+
 Compare checkpoints in a small tournament:
 
 ```bash
