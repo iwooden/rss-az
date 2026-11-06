@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -27,10 +28,11 @@ from games import get_game
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from nn import create_model, get_model_input_spec
+from train import self_play
 from train.config import TrainingConfig
 from train.self_play import play_game
 from utils_18xx import g1889_selfplay_log as selfplay_log
-from utils_18xx.g1889_selfplay_log import PlayedGame, _view, compose, game_intents, play, redrive
+from utils_18xx.g1889_selfplay_log import PlayedGame, _view, compose, game_intents, play, redrive, strict_config
 
 from tests.g1889.phases.test_random_playouts import _choose
 from tests.g1889.replay.extracts import load_game_extract
@@ -149,8 +151,9 @@ def test_the_composer_checks_what_a_load_does_not():
 
 
 def test_recording_a_game_leaves_it_as_play_game_plays_it(tmp_path, monkeypatch):
-    """The tool's game with a real model is ``play_game``'s, decision for decision;
-    it round-trips with its real chat lines, and converts again from its saved file."""
+    """The tool's game with a real model is ``play_game``'s at ``strict_config``, decision
+    for decision; it round-trips with its real chat lines, and converts again from its
+    saved file."""
     torch.manual_seed(0)
     model = create_model(CONFIG)
     device = torch.device("cpu")
@@ -158,7 +161,7 @@ def test_recording_a_game_leaves_it_as_play_game_plays_it(tmp_path, monkeypatch)
 
     evaluator = NNEvaluator(GAME, model, device, num_players=MAX_PLAYERS, terminal_rank_weight=CONFIG.terminal_blend,
                             input_spec=get_model_input_spec(CONFIG))
-    record = play_game(evaluator, CONFIG, game_seed=11, rng=np.random.default_rng(11),
+    record = play_game(evaluator, strict_config(CONFIG), game_seed=11, rng=np.random.default_rng(11),
                        state_pool=StatePool(GAME, 2 * (CONFIG.max_simulations + 1), GAME.state_size(MAX_PLAYERS)),
                        epoch_config=CONFIG.compute_epoch_config(0), num_players=3)
     events, terminal = redrive(played)
@@ -171,5 +174,30 @@ def test_recording_a_game_leaves_it_as_play_game_plays_it(tmp_path, monkeypatch)
     monkeypatch.setattr(sys, "argv", ["g1889_selfplay_log", "--played", str(saved), "--output", str(output)])
     selfplay_log.main()
     log = json.loads(output.read_text())
-    assert sum(a["type"] == "message" for a in log["actions"]) == len(played.actions)
+    lines = [a["message"] for a in log["actions"] if a["type"] == "message"]
+    assert len(lines) == len(played.actions)
+    assert all(line.split(" | ")[1].startswith("*") for line in lines)
     assert check_export("export-real-3p-11", log, played.net_worths, terminal) == []
+
+
+def test_a_game_takes_the_most_visited_move_under_the_checkpoints_noise(monkeypatch):
+    """At training's settings, every move is the root's most visited, and every search
+    has the checkpoint's root noise and no forced playouts."""
+    config = replace(CONFIG, dirichlet_epsilon=0.15, dirichlet_dynamic=True, dirichlet_alpha_numerator=5.0,
+                     forced_playouts_k=2.0, policy_target_pruning="raw_prior", temp_initial=1.0, temp_final=1.0)
+    searches = []
+    run_search = self_play.run_search
+
+    def recording_run_search(game, state, evaluator, mcts_config, *args, **kwargs):
+        searches.append(mcts_config)
+        return run_search(game, state, evaluator, mcts_config, *args, **kwargs)
+
+    monkeypatch.setattr(self_play, "run_search", recording_run_search)
+    torch.manual_seed(0)
+    played = play(create_model(config), config, num_players=3, seed=11, epoch=0, simulations=8,
+                  device=torch.device("cpu"))
+    assert len(searches) == len(played.actions)
+    assert {(s.dirichlet_epsilon, s.dirichlet_dynamic, s.dirichlet_alpha_numerator, s.forced_playouts_k)
+            for s in searches} == {(0.15, True, 5.0, 0.0)}
+    for action, evaluation in zip(played.actions, played.evals, strict=True):
+        assert action == evaluation["legal"][int(np.argmax(evaluation["visits"]))]

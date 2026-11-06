@@ -14,8 +14,10 @@ Usage:
 
 The game is the real loop, ``train.self_play.play_game``, at the self-play settings
 of the epoch the checkpoint's weights play (``compute_epoch_config(cp["epoch"] + 1)``,
-as training resumes): noise, temperature, flags, and simulations. It evaluates in
-fp32 uncompiled. Playing saves ``<output>.played.json`` before conversion starts.
+as training resumes): root noise, flags, and simulations. Its moves are strict, as
+in ``train/analyze_game.py``: each is the search's most visited (``strict_config``).
+It evaluates in fp32 uncompiled. Playing saves ``<output>.played.json`` before
+conversion starts.
 
 Conversion: the saved decisions re-drive a fresh game with driver history, which
 gives every decision's row, forced ones included. Each decision that completes a
@@ -38,8 +40,8 @@ before its move, unless ``--no-eval``:
 value (``value_sum / visit_count``) in the value head's [-1, 1], at this decision,
 after the search. ``p`` is the raw (unnoised) network prior over the searched
 actions, ``n`` the share of the root's visits. The top choices come by visits, and
-``*`` marks the one played, shown even when outside the top, since self-play
-samples by temperature. The UI prints the sender, so the line does not.
+``*`` marks the one played, which is the first of them. The UI prints the sender, so
+the line does not.
 """
 
 from __future__ import annotations
@@ -120,6 +122,15 @@ class PlayedGame:
 # =============================================================================
 
 
+def strict_config(config: TrainingConfig) -> TrainingConfig:
+    """``config`` for a game of the search's best moves, as ``train/analyze_game.py``
+    plays one. Temperature 0 makes ``play_game`` take the most visited move. Root noise
+    stays. Forced playouts go, as in every search outside training: they exist for
+    pruned targets, and here they would spend simulations on the moves being compared.
+    """
+    return replace(config, temp_initial=0.0, temp_final=0.0, forced_playouts_k=0.0, policy_target_pruning="none")
+
+
 def play(
     model: torch.nn.Module,
     config: TrainingConfig,
@@ -132,9 +143,10 @@ def play(
     source: dict[str, Any] | None = None,
     on_decision: Callable[[int], None] | None = None,
 ) -> PlayedGame:
-    """One ``play_game``, recording what it decides. Its collector hook gives each
-    decision and the terminal state, and a pass-through ``run_search`` the root;
-    neither touches the search, the generator, or ``play_game`` itself."""
+    """One ``play_game`` at ``strict_config``, recording what it decides. Its collector
+    hook gives each decision and the terminal state, and a pass-through ``run_search``
+    the root; neither touches the search, the generator, or ``play_game`` itself."""
+    config = strict_config(config)
     game = get_game(config)
     max_players = config.effective_max_players
     epoch_config = config.compute_epoch_config(epoch)

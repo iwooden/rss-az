@@ -271,9 +271,10 @@ have moved past:
 ```
 
 It plays with `train.self_play.play_game` at the self-play settings of the
-checkpoint's epoch, in fp32 uncompiled, and each searched decision adds a chat line
-with the root value and the top choices' priors and visit shares (`--no-eval`
-omits them). Playing saves `game.played.json` first; `--played game.played.json
+checkpoint's epoch, in fp32 uncompiled, keeping the root noise but always taking the
+most visited move, with no forced playouts, as `train/analyze_game.py` does. Each
+searched decision adds a chat line with the root value and the top choices' priors
+and visit shares (`--no-eval` omits them). Playing saves `game.played.json` first; `--played game.played.json
 --output game.json` converts it again without replaying. Ruby and
 `submodules/18xx` are needed here, not in training.
 
