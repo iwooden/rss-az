@@ -104,8 +104,8 @@ def test_a_run_checkpoints_and_resumes_with_its_scalars(tmp_path, monkeypatch, c
 
     for epoch_tags in (
         *(f"self_play_{group}/{name}" for group in ("aggregate", "3p", "4p", "5p") for name in (
-            "end_bank", "end_bankruptcy", "ors_played", "track_pass_share", "corps_floated",
-            "last_phase_D", "trains_bought_2", "trains_bought_D",
+            "end_bank", "end_bankruptcy", "ors_played", "track_pass_share", "withhold_share", "corps_floated",
+            "corp_cash_end", "last_phase_D", "trains_bought_2", "trains_bought_D",
         )),
         "self_play_aggregate/policy/phase/track/decision_count",
         "self_play_aggregate/policy/phase/stock/target_kl_to_prior_mean",

@@ -8,8 +8,10 @@ what the driver's history and the terminal state say by other routes:
 - the ORs are the history's OR_START steps;
 - the trains bought are the history's depot purchases, forced ones included;
   each rank's in play, and the game's last phase, follow from them;
-- the floated corps are those that ever appear in an OR's order;
-- the track passes are the returned TRACK decisions that pass.
+- the floated corps are those that ever appear in an OR's order, and the final
+  cash is their treasuries';
+- the track passes are the returned TRACK decisions that pass, and the withholds
+  the returned DIVIDEND decisions that withhold, by the game phase they came in.
 
 Through ``play_game`` with a real model, the stats reach the record and
 ``train/main.py``'s TensorBoard scalars for each reporting group.
@@ -82,6 +84,8 @@ class Playout(NamedTuple):
     corps_in_an_order: set[int]
     track_decisions: int
     track_passes: int
+    dividends: Counter[int]
+    withholds: Counter[int]
 
 
 def _play(num_players: int, seed: int) -> Playout:
@@ -93,6 +97,8 @@ def _play(num_players: int, seed: int) -> Playout:
     or_starts = track_decisions = track_passes = 0
     bought: Counter[int] = Counter()
     corps_in_an_order: set[int] = set()
+    dividends: Counter[int] = Counter()
+    withholds: Counter[int] = Counter()
 
     for _ in range(MAX_DECISIONS):
         phase = GAME.decision_phase(state)
@@ -101,6 +107,9 @@ def _play(num_players: int, seed: int) -> Playout:
         action = _choose(state, rng, True)
         track_decisions += phase == K.DPHASE_TRACK
         track_passes += phase == K.DPHASE_TRACK and action == K.TRACK_PASS
+        if phase == K.DPHASE_DIVIDEND:
+            dividends[PHASE.current(state)] += 1
+            withholds[PHASE.current(state)] += action == K.DIVIDEND_WITHHOLD
         # Priors and visits only pass through: the collector's report ignores them.
         collector.observe(state, legal, int(np.flatnonzero(legal == action)[0]), np.ones(n_legal) / n_legal,
                           np.ones(n_legal))
@@ -118,7 +127,7 @@ def _play(num_players: int, seed: int) -> Playout:
                 bought[D.TRAIN_D if info.type == A.ACTION_TRADE_IN else info.train_type] += 1
         if status == STATUS_GAME_OVER:
             return Playout(state, collector.finish(state), or_starts, bought, corps_in_an_order,
-                           track_decisions, track_passes)
+                           track_decisions, track_passes, dividends, withholds)
     pytest.fail(f"{num_players}p seed {seed}: no game end within {MAX_DECISIONS} decisions")
 
 
@@ -200,6 +209,32 @@ def test_track_pass_share_counts_the_returned_decisions(playouts):
     assert sum(p.track_decisions for p in playouts.values()) > 0
 
 
+def _withhold_shares_by_phase(stats: dict[str, tuple[float, float]]) -> dict[str, tuple[float, float]]:
+    return {name: stats[f"withhold_share_{name}"] for name in PHASE_NAMES if f"withhold_share_{name}" in stats}
+
+
+def test_withhold_shares_count_the_returned_decisions_by_game_phase(playouts):
+    for (n, seed), p in playouts.items():
+        msg = f"{n}p seed {seed}"
+        assert p.stats["withhold_share"] == (sum(p.withholds.values()), sum(p.dividends.values())), msg
+        assert _withhold_shares_by_phase(p.stats) == {
+            PHASE_NAMES[phase]: (p.withholds[phase], count) for phase, count in p.dividends.items()
+        }, msg
+    # Both choices, in more than one phase, and a phase some game never reached is absent.
+    withheld = sum(sum(p.withholds.values()) for p in playouts.values())
+    assert 0 < withheld < sum(sum(p.dividends.values()) for p in playouts.values())
+    assert len({phase for p in playouts.values() for phase in p.dividends}) > 1
+    assert any(len(_withhold_shares_by_phase(p.stats)) < len(PHASE_NAMES) for p in playouts.values())
+
+
+def test_corp_cash_end_is_the_floated_corps_treasuries(playouts):
+    for (n, seed), p in playouts.items():
+        floated = [c for c in range(D.NUM_CORPS) if CORPS[c].floated(p.state)]
+        assert p.stats["corp_cash_end"] == (sum(CORPS[c].cash(p.state) for c in floated), len(floated)), (
+            f"{n}p seed {seed}"
+        )
+
+
 # =============================================================================
 # THROUGH PLAY_GAME AND TENSORBOARD'S SCALARS
 # =============================================================================
@@ -259,6 +294,16 @@ def test_a_self_play_record_reports_its_games_stats(games, num_players):
     assert stats["track_pass_share"][1] == np.count_nonzero(record.phase_ids == K.DPHASE_TRACK)
     assert 0 <= stats["track_pass_share"][0] <= stats["track_pass_share"][1]
     views = [_row_view(row, num_players) for row in record.states]
+    dividend_rows = Counter(
+        PHASE.current(view)
+        for view, phase in zip(views, record.phase_ids, strict=True)
+        if phase == K.DPHASE_DIVIDEND
+    )
+    assert stats["withhold_share"][1] == sum(dividend_rows.values())
+    assert {name: share[1] for name, share in _withhold_shares_by_phase(stats).items()} == {
+        PHASE_NAMES[phase]: count for phase, count in dividend_rows.items()
+    }
+    assert stats["corp_cash_end"][1] == stats["corps_floated"][0]
     ors_seen = {(TURN.turn(v), TURN.or_num(v)) for v in views if TURN.round(v) == K.ROUND_OPERATING}
     assert stats["ors_played"][0] >= len(ors_seen)
     last_row = views[-1]
@@ -273,16 +318,24 @@ def test_tensorboard_scalars_carry_the_stats_for_each_group(games):
     for record in records:
         metrics.add_record(record)
     scalars = _build_epoch_self_play_scalars(metrics)
-    names = set(records[0].game_stats)
-    assert names == {
-        "end_bank", "end_bankruptcy", "ors_played", "track_pass_share", "corps_floated",
+    always = {
+        "end_bank", "end_bankruptcy", "ors_played", "track_pass_share", "withhold_share", "corps_floated",
+        "corp_cash_end",
         *(f"last_phase_{name}" for name in PHASE_NAMES),
         *(f"trains_bought_{name}" for name in TRAIN_NAMES),
     }
+    by_phase = {f"withhold_share_{name}" for name in PHASE_NAMES}
+    for record in records:
+        assert always <= set(record.game_stats) <= always | by_phase
+    names = {name for record in records for name in record.game_stats}
     for name in names:
-        numerator = sum(record.game_stats[name][0] for record in records)
-        denominator = sum(record.game_stats[name][1] for record in records)
+        numerator = sum(record.game_stats[name][0] for record in records if name in record.game_stats)
+        denominator = sum(record.game_stats[name][1] for record in records if name in record.game_stats)
         assert scalars[f"self_play_aggregate/{name}"] == pytest.approx(numerator / max(denominator, 1))
         for record in records:
-            own = record.game_stats[name]
-            assert scalars[f"self_play_{record.num_players}p/{name}"] == pytest.approx(own[0] / max(own[1], 1))
+            tag = f"self_play_{record.num_players}p/{name}"
+            if name in record.game_stats:
+                own = record.game_stats[name]
+                assert scalars[tag] == pytest.approx(own[0] / max(own[1], 1))
+            else:
+                assert tag not in scalars

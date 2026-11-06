@@ -825,14 +825,21 @@ rounding N up in bucketed mode.
   reporting group as `self_play_<group>/<name>`: the end reason (`end_bank`,
   `end_bankruptcy`), the last game phase (`last_phase_<phase>`), ORs started
   (`ors_played`), the share of TRACK decisions that pass (`track_pass_share`),
-  corps floated (`corps_floated`), and new trains bought by type
-  (`trains_bought_<type>`). It is small, and a first run is hard to read without it.
+  the share of DIVIDEND decisions that withhold (`withhold_share`, and
+  `withhold_share_<phase>` by game phase, added at epoch 20), corps floated
+  (`corps_floated`), floated corps' mean treasury at the game's end (`corp_cash_end`,
+  added with them), and new trains bought by type (`trains_bought_<type>`). It is
+  small, and a first run is hard to read without it.
   - The driver plays forced decisions without a search, so `observe` never sees
     them. ORs and trains therefore come from the state: ORs from each set's
     `or_count` and the last `or_num`, and trains from the depot, or for the
-    unlimited D from the Ds in play. `track_pass_share` is over the TRACK
-    decisions with a choice.
+    unlimited D from the Ds in play. `track_pass_share` and `withhold_share` are
+    over the decisions with a choice; a corp with no revenue withholds unseen.
+  - `withhold_share_<phase>` is absent, not 0, where a phase had no such decision.
   - Trains bought from the pool or another corp move a train already counted.
+  - **Human baselines**, over the 87 scraped 3-5 player games: `withhold_share` 12%
+    (14%, 11%, and 9% at 3, 4, and 5 players), and by phase 2 to D 1%, 10%, 17%, 19%,
+    20%, and 4%; `corp_cash_end` ¥147 (¥169, ¥129, and ¥94).
 - **Deferred,** as pipeline-refactor §1 plans: `train/analyze_game.py`,
   `train/tournament.py`, `train/debug_trace.py`, and `train/strategy_data.py`
   import the RSS engine directly (`train/analyze_game.py:31-36`,
