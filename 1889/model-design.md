@@ -5,8 +5,9 @@ dated 2026-11-03; the user reviewed it and settled Section 10 on 2026-11-04.
 Sub-steps 8.1-8.4 are built: the model, the transport, the stats hook, the
 configs, and a local smoke run with a resume (Section 7.2). The local half of 8.5
 and 8.6 is built too: the profile, the rescale helper, the capacity probe, and the
-runbook (Section 11). What remains is their run on the 5090, whose results these
-sections record. Step 8 builds the first 1889 model,
+runbook (Section 11). The 8.5 profile ran on the 5090 on 2026-11-05 (Sections 5.3,
+5.7, and 6.5). What remains is the run and the probe, whose results these sections
+record. Step 8 builds the first 1889 model,
 `nn/transformer-1889.py` v0, on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
 in [`extraction-design.md`](extraction-design.md)), adds what the pipeline
 needs to train it, and runs it once.
@@ -461,6 +462,25 @@ and layer in bf16 at 4 heads on v0's path. **Test:** model-only time on the
 too, to confirm the gain: every padded record in a state and head lands on one
 cell, which may contend on a GPU.
 
+**Measured** (`1889-cloud-profile.json`, 2026-11-05, at 1a761f0; torch 2.13.0+cu132;
+that method, with random weights on 2,048 random-play states; model-only ms a batch,
+and the ratio named):
+
+| | B = 64 | B = 256 |
+|---|---|---|
+| v3 | 1.60 | 4.12 |
+| v0 (ratio to v3) | 2.29 (1.43) | 7.02 (1.71) |
+| v0 on padded records, three tensors (ratio to v0) | 2.39 (1.05) | 7.50 (1.07) |
+| v0 on padded records, one tensor (ratio to v0) | 2.39 (1.04) | 7.47 (1.06) |
+| v0, 8 heads (ratio to v0) | 2.59 (1.13) | 8.51 (1.21) |
+
+- **v0 against v3:** 1.71 at a full batch, the bottom of the expected range and
+  about the FLOP ratio, and 1.43 at B = 64, below it. Section 5.4 takes the new cost.
+- **v3 itself** came in under `v3-cloud-profile.json`'s 1.84 and 4.35 ms, which ran on
+  torch 2.14.0. These ratios come from one process, so that does not touch them.
+- **The padded path** costs 4-7% on this GPU, far from the CPU's gap, and one tensor
+  against three makes no difference here. Flat records still win, by less.
+
 ### 5.4 Game length and self-play cost
 
 **Measured** (`game_length.py`, `fixture_length.py`, `tb_tags.py`), searched
@@ -511,6 +531,9 @@ RSS's:
   about twice v3's model-only time, so part of each evaluation is outside the
   model, at a ratio no CPU run measures. **Test:** the server's evaluations
   a second in the first 1889 epochs, against v3's 38.7K.
+- **Measured:** model-only, 1.43-1.71 (5.3), under the table's 1.66-2.0. If the server
+  follows the model, that is 23-27K evaluations a second and 240-290K samples an
+  hour, not 205-250K. The Test above still decides it.
 - **Wall clock:** RSS's 300 epochs take 8-9 days on the 5090 with the ramp
   to 3,200 simulations (epochs of 1,950-2,860 s across the two muon v3 runs).
   At 256 × 15, 1889's take 2-4 weeks; at 384 × 18, 5-9 weeks.
@@ -624,11 +647,21 @@ saved replay buffer, offline, with the last two epochs' rows held out.
   256 × 15 on both: v0 is larger than its data needs, and the smaller net
   self-plays 2.2 times faster.
 - **8 heads** if they beat 4 by the same margin; they cost about 10% on the
-  CPU on v0's bias path, and 13-24% on padded records (**Test:** on the GPU).
+  CPU on v0's bias path, and 13-24% on padded records. **Measured** on the 5090: 13%
+  at B = 64 and 21% at B = 256 on v0's path (5.3).
 - Otherwise keep v0.
 
-The probe costs only training, hours of GPU time against weeks of self-play
-(**Test:** the probe's steps a second on the 5090).
+The probe costs only training, hours of GPU time against weeks of self-play.
+**Measured** on the 5090, at batch 256 over 60 steps (`1889-cloud-profile.json`):
+
+| Model | Steps a second | 40K steps | Peak allocated |
+|---|---|---|---|
+| 256 × 15 (two seeds) | 13.2 | 0.84 h | 8.3 GB |
+| 192 × 12 | 19.2 | 0.58 h | 5.1 GB |
+| 384 × 18, 6 heads | 7.0 | 1.59 h | 14.9 GB |
+| 256 × 15, 8 heads | 11.1 | 1.00 h | 8.9 GB |
+
+So the five models train in about 4.9 hours, before their held-out scoring.
 
 ## 6. Pipeline changes
 
@@ -757,6 +790,34 @@ rounding N up in bucketed mode.
   count of recorded graphs stays at the (B, K) pairs reached; and compiled
   outputs match eager on the same launches, as `v3-cloud-profile.json` compares
   v3's.
+- **Measured** (`1889-cloud-profile.json`; compiled, bf16, every launch shape, on
+  random weights and random-play states, not self-play's traffic, which the run's
+  first epochs test):
+  - **Compile:** no graph breaks and two compiled graphs, batch 1 and the rest, in
+    244 s of warmup. Its one guard failure is `x`'s batch going from 1 to 2.
+  - **Recording:** 36 graphs for the 36 pairs, one each. K = 256 records on its first
+    launch in the serve loop, since the warmup ran that shape, and the other Ks on
+    their second. No launch took over 46 ms.
+  - **Settled latency** at every pair; K = 2,048 costs at most 9% over K = 256:
+
+    | ms a launch | B = 1 | B = 8 | B = 64 | B = 128 | B = 256 |
+    |---|---|---|---|---|---|
+    | K = 256 | 1.11 | 1.46 | 3.26 | 5.30 | 10.16 |
+    | K = 2,048 | 1.11 | 1.49 | 3.37 | 5.75 | 11.12 |
+
+  - **Memory:** over 7,200 launches, reserved stays at 992 MB and device free at
+    30.2 GB of 32.1, with no new graphs or compiles.
+  - **Against eager**, by the most on any launch, with the limits in brackets: logits
+    0.0066 at launches 1-3, 0.0061 at replay, and 0.012 after a weight sync (0.05);
+    values 0.0036 (0.01); policy TV 0.0027 (0.01). Filler changes nothing, exactly,
+    across K.
+  - **The profile's `FAIL` on recompiles, 36, was the counter's.** It counted Dynamo's
+    `on_compile_end` callbacks, which Inductor also runs for each graph it records
+    (`CallbackTrigger.CUDAGRAPH_RECORDING`, in `cudagraph_trees.py` in torch 2.13 and
+    2.14). So the 36 are the 36 recordings: the whole section took 3.7 s where a
+    compile takes minutes, and the count stayed flat over the 7,200 launches after it.
+    The profile now counts `DYNAMO` alone. `TORCH_LOGS=recompiles` at launch (Section
+    11) is the direct check.
 
 ### 6.6 Tooling
 
@@ -970,8 +1031,8 @@ The user settled these on 2026-11-04. Each item gives the options and the decisi
     *Decided (a)* (6.6).
 16. **The bias path.** (a) Flat records with no per-state padding, and one dense tensor a
     layer. (b) v3's padded records and three tensors. *Decided (a)* (3.4, 5.3):
-    the same outputs at about a quarter of the bias's CPU time, for the 5090 to
-    confirm.
+    the same outputs at about a quarter of the bias's CPU time. On the 5090 it is
+    4-7% of the forward (5.3).
 
 ## 11. Runbook
 
@@ -1001,6 +1062,27 @@ git fetch origin az-1889 && git checkout az-1889 && git pull --ff-only origin az
 python setup.py clean_build 2>&1 | grep -E "(warning|error)" || true
 ```
 
+The build can look hung. `cythonize`'s dependency scan prints nothing until it ends,
+and it tries each cimported name as a module in each search directory: 115K filesystem
+calls on this branch, against 33K before `g1889`, or 0.6 s on the dev box. On
+2026-11-05's box, in `/workspace/rss-az`, a first build was interrupted during that
+silence, and a second ran to completion in place, in at least 5 minutes by the user's
+estimate; the time per call there was not measured. Wait for it. If that is ever too
+slow, build on another disk and copy the extensions back, from the checkout (checked on
+the dev box; the 5090 did not need it):
+
+```bash
+REPO=$PWD; rm -rf /tmp/rss-build && mkdir /tmp/rss-build && git archive HEAD | tar -x -C /tmp/rss-build
+cd /tmp/rss-build && python setup.py build_ext --inplace 2>&1 | grep -E "(warning|error)" || true
+find core entities phases mcts g1889 -name '*.so' -exec cp --parents -t "$REPO" {} +
+```
+
+That box is a Runpod container on `runpod/pytorch:1.5.0-cu1320-torch2130-ubuntu2404`,
+in `/workspace/rss-az`, on the image's system Python: torch 2.13.0+cu132 from the image,
+not `install.sh`'s 2.14, and Cython 3.3.1. This branch built and passed its tests here
+under Cython 3.3.1. The profile measured that torch, so a replacement box takes the same
+image, or profiles again.
+
 **3. Profile (8.5).** With nothing else on the GPU:
 
 ```bash
@@ -1011,7 +1093,9 @@ It takes under half an hour and writes `1889-cloud-profile.json` as it goes. Sen
 that file back; Sections 5.3 and 6.5 record it. A `FAIL` on graph breaks, recompiles,
 compiled against eager, or the weight sync stops the launch until it is understood. A
 ratio outside 1.7-2.0 or a different record pattern is a result to record, and
-changes the cost estimates, not the launch.
+changes the cost estimates, not the launch. **Ran** 2026-11-05, in 25 minutes, with no
+real `FAIL`: the one on recompiles was a counting bug, since fixed (6.5), and the one on
+the ratio, 1.43 at B = 64, is below the range and is recorded (5.3).
 
 **4. Launch.**
 
@@ -1026,11 +1110,12 @@ TORCH_LOGS=recompiles python -m train --config train_configs/1889-v0.json
 - The banner shows `nn/transformer-1889.py` and no v2- or v3-only line. The log has
   one `Recompiling function forward` in the warmup, batch 1 to batch 2, and none after.
 - `nvidia-smi`: GPU memory stops growing once the shapes in use are recorded.
-- `profile/server_throughput` against v3's 38.7K evaluations a second, and
-  `profile/server_infer_ms` and `profile/server_batch_avg` against 9.2 ms and 180.
+- `profile/server_throughput` against v3's 38.7K evaluations a second, with 23-27K
+  expected (5.4), and `profile/server_infer_ms` and `profile/server_batch_avg` against
+  9.2 ms and 180.
 - `self_play_<n>p/game_length_mean` against 440-800 (Section 5.4), and
-  `self_play_aggregate/total_examples` against 300K. At 205-250K samples an hour, an
-  epoch takes 1.2-1.5 hours.
+  `self_play_aggregate/total_examples` against 300K. At 240-290K samples an hour, an
+  epoch takes 1.0-1.25 hours.
 - `self_play_<n>p/end_bank`, `track_pass_share`, `ors_played`, and `corps_floated`
   (Section 6.6), and `loss/*`, which a NaN stops with an error.
 

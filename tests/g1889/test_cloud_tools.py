@@ -232,6 +232,23 @@ def test_a_pair_records_and_settles_by_launch_number() -> None:
 # The profile's runs
 # ---------------------------------------------------------------------------
 
+def test_a_cuda_graph_recording_is_not_a_compile() -> None:
+    """Inductor runs Dynamo's compile callbacks for each graph it records: on the
+    5090, 36 recordings read as 36 recompiles."""
+    from torch._dynamo.callback import CallbackTrigger, callback_handler
+
+    events = profile.CompileEvents()
+    try:
+        with callback_handler.install_callbacks(CallbackTrigger.CUDAGRAPH_RECORDING, "0"):
+            pass
+        assert events.compiles == 0
+        with callback_handler.install_callbacks(CallbackTrigger.DYNAMO, "0"):
+            pass
+        assert events.compiles == 1
+    finally:
+        callback_handler.end_callbacks.remove(events._on_compile_end)
+
+
 def test_a_cpu_smoke_run_writes_its_json_and_skips_cuda_parts_with_notes(tmp_path, capsys) -> None:
     output = tmp_path / "profile.json"
     assert profile.main(["--cpu", "--smoke", "--output", str(output)]) == 0

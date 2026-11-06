@@ -548,7 +548,9 @@ def model_time_ratios(rows: list[dict[str, Any]], sizes: tuple[int, ...]) -> dic
 # ---------------------------------------------------------------------------
 
 class CompileEvents:
-    """Dynamo's compiles and their guard failures, by counting and by its log."""
+    """Dynamo's compiles and their guard failures, by counting and by its log.
+    Inductor runs the same callbacks for each CUDA graph it records, under another
+    trigger; ``CaptureCounter`` counts those."""
 
     def __init__(self) -> None:
         self.compiles = 0
@@ -572,8 +574,9 @@ class CompileEvents:
         except Exception as exc:
             self.notes.append(f"no recompile log: {type(exc).__name__}: {exc}")
 
-    def _on_compile_end(self, *_: Any) -> None:
-        self.compiles += 1
+    def _on_compile_end(self, args: Any) -> None:
+        if args.callback_trigger == torch._dynamo.callback.CallbackTrigger.DYNAMO:  # type: ignore[attr-defined]
+            self.compiles += 1
 
 
 class CaptureCounter:
@@ -848,6 +851,7 @@ def section_launches(ctx: Context) -> dict[str, Any]:
         pairs: dict[str, dict[str, Any]] = {}
         comparisons: dict[str, list[dict[str, float]]] = {}
         compiles_before = events.compiles if events else 0
+        reasons_before = len(events.recompile_reasons) if events else 0
         for launch_n in mode.buckets:
             for k in mode.ks:
                 key = f"B={launch_n},K={k}"
@@ -880,6 +884,7 @@ def section_launches(ctx: Context) -> dict[str, Any]:
         }
         if events:
             result["compiles_after_warmup"] = events.compiles - compiles_before
+            result["recompile_log_after_warmup"] = events.recompile_reasons[reasons_before:]
         if captures and captures.available:
             once, histogram = launches_recorded_once(pairs)
             result["captures"] = captures.count
