@@ -951,6 +951,93 @@ by about 1%.
   - **Memory:** free VRAM fell from 5.3 GB to 4.6 GB with the eval server up and
     to 1.7 GB while training.
 
+### 7.3 The train roster and the deviation test
+
+**The stall.** Through epoch 58, self-play buys about half the 5-trains and almost no
+6s or Ds, and its corps rarely withhold:
+
+| Epochs 54-58 | 5s | 6s | Ds | Games ending in 6 or D | Phase-5 withhold share |
+|---|---|---|---|---|---|
+| Self-play | 1.28-1.57 | 0.004-0.034 | 0-0.014 | 0.4-2.2% | 1.4-2.3% |
+| Humans (87 games, 3-5 players) | 3 | 1.7-1.9 | 1.1-2.5 | 57-91% end in D | 19% |
+
+6s go on sale only when the last 5 is bought, so the run ends in phase 5, at the
+bank, in about 90% of games. Game length does not show it: self-play plays one or two
+more ORs than humans, with fewer decisions in each, and lands within 35 decisions of
+them.
+
+**Where it happens** (the replay buffer saved with epoch 35's checkpoint, 1,692
+games). With room and the cash for a 5, the cheapest train on sale, a corp buys it
+73% of the time, and 68% for the last 5. The positions where withholding this OR's
+revenue pays for the next depot 5 or 6 and paying out does not, with the bank intact
+and able to pay the withhold, come up 0.96 times a game, in 632 of the games, and the
+model withholds at 4.0% of them. A payout pays the corp for its shares in the Open
+Market, so those count toward what paying out leaves it. In the scraped human games,
+the buyer had withheld its last dividend before 31% of the 5-trains. Little time is
+left at these positions: a median 134 decisions in phase 4, 80 in phase 5.
+
+**What could cause it.** Train purchases are the main flow back to the bank: a
+payout pays nothing for IPO shares, and a withhold moves the whole revenue to the
+corp. So each purchase moves the bank break later for everyone, and the buyer pays
+for it alone. Either financing pays and the model does not see it (the payback lies
+about 3 ORs, 100 decisions, past the decision), or it does not pay against players who
+never finance, and every seat is right to pay out.
+
+**The test** (`train/deviation_1889.py`). At each such DIVIDEND position, it plays two
+branches to the end, every seat the checkpoint at its self-play settings: `model`, the
+model's own choice, and `finance`, a withhold and the depot purchase, then the model.
+The president's terminal value (`compute_terminal_values`, the value head's target),
+paired by position, measures whether financing pays. A readout of each position records
+what the model expects: the president's value at the position and after the forced
+purchase, by search at the epoch's simulations and at 4 times them without root noise,
+and by the raw value head. The other seats' net worth and the ORs left show whom a
+purchase helps.
+
+| Played out | The model's prediction | Reading | Direction |
+|---|---|---|---|
+| Financing is better | Worse | A value blind spot | More late-game signal: starts from human mid-game positions, more late search, more outcome weight in value targets |
+| Financing is no better | Agrees | An equilibrium | Varied opponents, such as past checkpoints, or starts from human positions |
+
+- **Positions:** drawn from a saved buffer, one a game at most, the same number for
+  each player count and phase.
+- **Continuations:** `train.self_play.play_game` from the position, with the run's
+  config at the checkpoint's epoch (simulations, c_puct, root noise, forced playouts)
+  at `temp_final` from the first move. Two a branch, the branches sharing each seed.
+- **Readout:** if 4 times the search moves toward withholding, the simulation ramp
+  may close the gap on its own.
+- **Analysis:** differences per position, averaged over continuations, with bootstrap
+  intervals over positions, overall, by player count and by phase; the predicted
+  difference against the played-out one; and the spread, which sizes a full run.
+- **Cost:** the local GPU plays 1.18 decisions a second at the training simulations
+  (1,172 at epoch 56), fp32, uncompiled.
+- **Pilot** (2026-11-08): checkpoint 55 (1,172 simulations) on the epoch-35 buffer's
+  positions, 5 per player count and phase, 30 in all, 2 continuations a branch: 110
+  minutes on 3 local workers, 1.9 decisions a second together. Results in
+  `scratchpad/deviation/`. Intervals are 95% bootstrap intervals over positions.
+  - **Financing does not pay on average:** the president's terminal value moves
+    −0.025 [−0.094, +0.037]. By players, +0.037, −0.129 [−0.285, −0.003], and +0.019;
+    by phase, −0.088 in 4 and +0.039 in 5.
+  - **Every seat gains:** the president's net worth +¥195 [−61, +490], each other
+    seat's +¥244 [+35, +487], and the game +0.27 ORs [−0.02, +0.58]. The president gains
+    more than the others in 12 of 30 positions.
+  - **The model expects that, on average:** −0.034 [−0.058, −0.013] by search, −0.044
+    at 4 times it, and −0.013 by the value head. Position by position it does not
+    see it: the signs agree 37-43%, the correlation is near 0, and its predictions spread
+    0.07 against 0.19 measured. 4 times the search moves withhold's visit share from
+    9.0% to 9.7%.
+  - **One purchase does not open the late game:** 3% of games end in phase 6 or D
+    without it and 5% with it, all at 3 players.
+  - **Spread:** 0.19 between positions, 0.08 between a branch's continuations; about
+    150 positions would resolve ±0.03.
+  - **Reading:** so far an equilibrium more than a blind spot. Against this population
+    one financed purchase lengthens the game for everyone and buys its president
+    nothing, and the model expects as much, though not where.
+- **Later, if the result calls for it:** sustained financing, a corp withholding until
+  it can buy, for the positions that need more than one withhold (about 20 a game);
+  and starts from the human games around their first 6, which tell whether the model
+  carries a game into phase D, and how its value head reads late-game states that
+  self-play never reaches.
+
 ## 8. Sub-steps
 
 Each sub-step is a commit or a short series, leaves pytest and pyright green,

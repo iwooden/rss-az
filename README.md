@@ -278,6 +278,20 @@ and visit shares (`--no-eval` omits them). Playing saves `game.played.json` firs
 --output game.json` converts it again without replaying. Ruby and
 `submodules/18xx` are needed here, not in training.
 
+Test whether financing a 1889 train pays (`1889/model-design.md` §7.3): draw
+DIVIDEND positions where only withholding buys the next 5 or 6 from a saved
+replay buffer (copied off any slow mount first), play each out with and without
+the withhold-and-buy, and report the paired difference. `play` resumes from its
+results file:
+
+```bash
+.venv/bin/python -m train.deviation_1889 positions --buffer checkpoints/1889-v0/replay_buffer \
+  --out positions.json --per-cell 5
+.venv/bin/python -m train.deviation_1889 play --checkpoint checkpoints/1889-v0/checkpoint_epoch_0055.pt \
+  --positions positions.json --results results.jsonl --workers 3
+.venv/bin/python -m train.deviation_1889 report --positions positions.json --results results.jsonl
+```
+
 Compare checkpoints in a small tournament:
 
 ```bash
