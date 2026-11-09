@@ -1086,6 +1086,39 @@ and leaves `tests/test_v2_parity.py` passing on its fixture.
 | 8.5 | the cloud run: compile and profile on the 5090, then launch | Section 5.3's and 6.5's GPU Tests recorded here; no graph breaks or recompiles; the epoch-20 rescale (7.1) done |
 | 8.6 | the capacity probe (5.7): a training-only script on the saved buffer | its table recorded here at epochs 50 and 150, and the size decided by the criterion |
 
+**8.6 at epoch 58** (2026-11-08, `checkpoints/1889-v0/probe_e0058/probe.json`, on the
+5090).
+
+**Verdict: keep v0.** No candidate meets its margin.
+
+**Setup:**
+- 40K steps at 256 on the 437K rows before the newest 1,000 games, which makes 23
+  passes over them.
+- Scored on those games' 563K rows. TensorBoard counts 139 more rows in epochs 57-58
+  (0.02%).
+
+| Model | Parameters | Steps a second | Value MSE | Policy KL | Against 256 × 15 |
+|---|---|---|---|---|---|
+| 256 × 15, seeds 0 and 1 | 18.2M | 13.2-13.3 | 0.1785, 0.1793 | 0.1299, 0.1301 | gaps 0.0009 and 0.0002 |
+| 192 × 12 | 8.8M | 19.0 | 0.1790 | 0.1344 | value +0.0%, policy +3.4% |
+| 384 × 18, 6 heads | 46.6M | 7.1 | 0.1802 | 0.1272 | value +0.7%, policy −2.1% |
+| 256 × 15, 8 heads | 18.2M | 11.1 | 0.1804 | 0.1299 | value +0.9%, policy −0.0% |
+
+- **Policy follows size,** in every player count and decision phase:
+  - 192 × 12 is 3.1-5.6% worse.
+  - 384 × 18 is 1.4-3.1% better.
+  - Both are many times the seed gap, but under 3% overall.
+  - Every model passes its best policy at 30K steps (256 × 15: 0.1282 at 30K, 0.1299 at
+    40K).
+- **Value does not follow size.**
+  - All models are within 1.1% of each other overall, while a model's score moves
+    by up to 0.009 between 10K-step scores (8 heads: 0.1737 at 10K, 0.1828 at 20K).
+    That is 10 times the seed gap at 40K.
+  - Most score best at 10K steps, about 6 passes.
+  - The training value loss reaches 0.0035, against 0.18 held out. The value head
+    memorizes its rows: it is bound by data, not capacity.
+- **8 heads:** no gain, and 16% slower to train.
+
 ## 9. Hooks for build distance and the comparison
 
 Milestone 6 compares v0 with v1, which adds build distance (7b), under
