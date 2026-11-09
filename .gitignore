@@ -29,3 +29,6 @@ tests/g1889/replay/.extract_cache/
 runtime/*
 !runtime/
 !runtime/*.template.json
+
+# Ignore local gamelogs/profiles/etc.
+*.json
