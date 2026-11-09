@@ -280,8 +280,9 @@ and visit shares (`--no-eval` omits them). Playing saves `game.played.json` firs
 
 Test whether financing a 1889 train pays (`1889/model-design.md` §7.3): draw
 DIVIDEND positions where only withholding buys the next 5 or 6 from a saved
-replay buffer (copied off any slow mount first), play each out with and without
-the withhold-and-buy, and report the paired difference. `play` resumes from its
+replay buffer (copied off any slow mount first), or with `--human` instead of
+`--buffer` from the scraped human games, play each out with and without the
+withhold-and-buy, and report the paired difference. `play` resumes from its
 results file:
 
 ```bash

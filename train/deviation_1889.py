@@ -21,15 +21,19 @@ other seats' results and the ORs left show whom a purchase helps.
 
 Stages, each from the repo root:
 
-    python -m train.deviation_1889 positions --buffer DIR --out positions.json [--per-cell 5]
+    python -m train.deviation_1889 positions (--buffer DIR | --human [DIR]) --out positions.json \\
+        [--per-cell 5]
     python -m train.deviation_1889 play --checkpoint CKPT --positions positions.json \\
         --results results.jsonl [--continuations 2] [--deep 4] [--workers 1] [--device D]
     python -m train.deviation_1889 report --positions positions.json --results results.jsonl
 
 ``positions`` reads a saved replay buffer (``metadata.json``, ``states.npy``, and
-``player_counts.npy``; copy them off a slow mount first) in write order, splits it into
-games at their first rows (``Game.game_start_rows``), keeps at most one position a game,
-and draws ``--per-cell`` games for each player count and phase. ``play`` runs the
+``player_counts.npy``; copy them off a slow mount first) in write order and splits it into
+games at their first rows (``Game.game_start_rows``); or, with ``--human``, the scraped
+3-5 player games of the replay tests, on the network humans built: the state before each
+of their dividends, loaded from Ruby's snapshot, with its revenue set to the engine's
+best, as the model runs its routes. Either way it keeps at most one position a game, and
+draws ``--per-cell`` games for each player count and phase. ``play`` runs the
 readouts and continuations, a JSON line each, and skips those already in ``--results``,
 so rerunning it resumes. A continuation is ``train.self_play.play_game`` from the
 position, its start state patched in as ``utils_18xx/g1889_selfplay_log.py`` patches its
@@ -67,6 +71,7 @@ from g1889.entities.corp import CORPS
 from g1889.entities.phase import PHASE
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
+from g1889.routes.solver import max_route_revenue
 from g1889.state import GameState, get_global_fields, get_layout
 from games import Game, get_game
 from games.g1889_selfplay import G1889SelfPlayStats, _trains_bought
@@ -104,9 +109,10 @@ class Position:
     revenue: int
     train: int  # the train type withholding pays for
     price: int
-    decisions_left: int  # in its buffer game, this decision included
-    buffer_row: int  # in write order
+    decisions_left: int  # in its buffer game, this decision included; Ruby actions left in a human game
+    buffer_row: int  # in write order; for a human game, game index x 100,000 + record
     row: list[int]
+    source: str = ""  # a human position's game and record
 
 
 def finance_target(state: GameState) -> tuple[int, int, int] | None:
@@ -142,30 +148,22 @@ def load_buffer(directory: Path) -> tuple[np.ndarray, np.ndarray, int]:
     return states, counts, int(meta["max_players"])
 
 
-def find_positions(game: Game, states: np.ndarray, player_counts: np.ndarray, max_players: int,
-                   per_cell: int, rng: np.random.Generator) -> list[Position]:
-    """``per_cell`` positions for each player count and phase, from as many games, drawn at
-    random. ``states`` are a buffer's rows in write order; rows before its first game start
-    are the end of a game the ring overwrote, and are skipped."""
-    assert game.game_start_rows is not None
-    starts = np.asarray(game.game_start_rows(states, max_players))
-    ends = np.r_[starts[1:], len(states)]
+def _position(state: GameState, decisions_left: int, buffer_row: int, source: str = "") -> Position | None:
+    """``state`` as a position, if it is one (``finance_target``)."""
+    target = finance_target(state)
+    if target is None:
+        return None
+    corp, train, price = target
+    return Position(-1, TURN.num_players(state), D.PHASE_NAMES[PHASE.current(state)], corp,
+                    CORPS[corp].president(state), CORPS[corp].cash(state), TURN.route_revenue(state), train, price,
+                    decisions_left, buffer_row, [int(v) for v in state._array], source)
+
+
+def _select(by_game: Iterable[list[Position]], per_cell: int, rng: np.random.Generator) -> list[Position]:
+    """One position from each game that has any, then ``per_cell`` of those games for each
+    player count and phase, drawn at random; numbered in source order."""
     by_cell: dict[tuple[int, str], list[Position]] = defaultdict(list)
-    for start, end in zip(starts.tolist(), ends.tolist()):
-        rows = states[start:end]
-        maybe = (rows[:, ROUND] == K.ROUND_OPERATING) & np.isin(rows[:, GAME_PHASE], PHASES)
-        found = []
-        for i in (np.flatnonzero(maybe) + start).tolist():
-            row = np.array(states[i])
-            state = GameState.from_array(row, int(player_counts[i]), max_players=max_players)
-            target = finance_target(state)
-            if target is not None:
-                corp, train, price = target
-                found.append(Position(
-                    -1, int(player_counts[i]), D.PHASE_NAMES[PHASE.current(state)], corp,
-                    CORPS[corp].president(state), CORPS[corp].cash(state), TURN.route_revenue(state),
-                    train, price, end - i, i, [int(v) for v in row],
-                ))
+    for found in by_game:
         if found:
             pick = found[int(rng.integers(len(found)))]
             by_cell[(pick.num_players, pick.phase)].append(pick)
@@ -175,6 +173,57 @@ def find_positions(game: Game, states: np.ndarray, player_counts: np.ndarray, ma
         chosen += [games[i] for i in sorted(rng.choice(len(games), min(per_cell, len(games)), replace=False))]
     chosen.sort(key=lambda p: p.buffer_row)
     return [replace(p, id=i) for i, p in enumerate(chosen)]
+
+
+def find_positions(game: Game, states: np.ndarray, player_counts: np.ndarray, max_players: int,
+                   per_cell: int, rng: np.random.Generator) -> list[Position]:
+    """Positions from a buffer (``_select``). ``states`` are its rows in write order; rows
+    before its first game start are the end of a game the ring overwrote, and are skipped."""
+    assert game.game_start_rows is not None
+    starts = np.asarray(game.game_start_rows(states, max_players))
+    ends = np.r_[starts[1:], len(states)]
+
+    def game_positions(start: int, end: int) -> list[Position]:
+        rows = states[start:end]
+        maybe = (rows[:, ROUND] == K.ROUND_OPERATING) & np.isin(rows[:, GAME_PHASE], PHASES)
+        found = (_position(GameState.from_array(np.array(states[i]), int(player_counts[i]), max_players=max_players),
+                           end - i, i) for i in (np.flatnonzero(maybe) + start).tolist())
+        return [p for p in found if p is not None]
+
+    return _select((game_positions(s, e) for s, e in zip(starts.tolist(), ends.tolist())), per_cell, rng)
+
+
+HUMAN_GAMES = Path("tests/g1889/games/data")
+
+
+def human_positions(directory: Path, max_players: int, per_cell: int, rng: np.random.Generator) -> list[Position]:
+    """Positions from the scraped human games in ``directory`` (``_select``), at 3-5 players:
+    the state before each dividend in phases 4 and 5, from Ruby's snapshot, its revenue the
+    engine's best, as the model runs its routes, where humans may have run less."""
+    # The scraped games' loader and Ruby's snapshots live with the replay tests.
+    from tests.g1889.replay.extracts import load_scraped_extract
+    from tests.g1889.replay.snapshot import load_state
+
+    phases = {D.PHASE_NAMES[p] for p in PHASES}
+
+    def game_positions(index: int, path: Path) -> list[Position]:
+        num_players = len(json.loads(path.read_text())["players"])
+        if not 3 <= num_players <= 5:
+            return []
+        records = load_scraped_extract(path)["records"]
+        found = []
+        for i in range(1, len(records)):
+            snapshot = records[i - 1]["state"]
+            if (records[i]["action"] or {}).get("type") != "dividend" or snapshot["game"]["phase"] not in phases:
+                continue
+            state = load_state(snapshot, num_players, max_players)
+            TURN.set_route_revenue(state, max_route_revenue(state, TURN.operating_corp(state)))
+            position = _position(state, len(records) - i, index * 100_000 + i, f"{path.stem} record {i}")
+            if position is not None:
+                found.append(position)
+        return found
+
+    return _select((game_positions(i, path) for i, path in enumerate(sorted(directory.glob("*.json")))), per_cell, rng)
 
 
 def save_positions(path: Path, positions: list[Position], source: dict[str, Any]) -> None:
@@ -606,10 +655,15 @@ def report(args: argparse.Namespace) -> None:
 def positions_command(args: argparse.Namespace) -> None:
     config = TrainingConfig(game="1889", model_path="nn/transformer-1889.py", min_players=3, max_players=5,
                             num_players=0)
-    states, counts, max_players = load_buffer(args.buffer)
-    positions = find_positions(get_game(config), states, counts, max_players, args.per_cell,
-                               np.random.default_rng(args.seed))
-    save_positions(args.out, positions, {"buffer": str(args.buffer), "per_cell": args.per_cell, "seed": args.seed})
+    rng = np.random.default_rng(args.seed)
+    if args.human is not None:
+        positions = human_positions(args.human, config.effective_max_players, args.per_cell, rng)
+        source: dict[str, Any] = {"human": str(args.human)}
+    else:
+        states, counts, max_players = load_buffer(args.buffer)
+        positions = find_positions(get_game(config), states, counts, max_players, args.per_cell, rng)
+        source = {"buffer": str(args.buffer)}
+    save_positions(args.out, positions, {**source, "per_cell": args.per_cell, "seed": args.seed})
     cells: dict[tuple[int, str], int] = defaultdict(int)
     for p in positions:
         cells[(p.num_players, p.phase)] += 1
@@ -620,8 +674,11 @@ def positions_command(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("positions", help="draw positions from a saved replay buffer")
-    p.add_argument("--buffer", type=Path, required=True)
+    p = sub.add_parser("positions", help="draw positions from a saved replay buffer or the human games")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--buffer", type=Path, help="a saved replay buffer's directory")
+    source.add_argument("--human", type=Path, nargs="?", const=HUMAN_GAMES,
+                        help=f"the scraped human games (default {HUMAN_GAMES})")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--per-cell", type=int, default=5, help="positions per player count and phase")
     p.add_argument("--seed", type=int, default=0)

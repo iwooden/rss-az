@@ -5,6 +5,7 @@ and ``play`` resumes, with ``report`` pairing the branches by position."""
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import replace
 
 import numpy as np
@@ -18,6 +19,7 @@ from g1889.driver import DRIVER, STATUS_GAME_OVER
 from g1889.entities.bank import BANK
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
+from g1889.routes.solver import max_route_revenue
 from g1889.state import GameState
 from games import get_game
 from mcts.evaluator import NNEvaluator
@@ -27,6 +29,7 @@ from train.checkpoint import save_checkpoint
 from train.config import TrainingConfig
 from train.deviation_1889 import (
     BRANCHES,
+    HUMAN_GAMES,
     _apply_choice,
     branch_state,
     continuation_config,
@@ -34,6 +37,7 @@ from train.deviation_1889 import (
     find_positions,
     finance,
     finance_target,
+    human_positions,
     main,
     paired,
     position_state,
@@ -54,6 +58,8 @@ CONFIG = TrainingConfig(
 GAME = get_game(CONFIG)
 # Random playouts with a finance position each, and one without.
 GAMES = [(3, 23), (4, 8), (5, 1), (5, 6), (3, 0)]
+# Scraped human games with a finance position each (sorted), and one without.
+HUMAN_SAMPLE = ["261815", "261856", "262813", "263277"]
 
 
 def random_rows(num_players: int, seed: int) -> list[np.ndarray]:
@@ -91,6 +97,23 @@ def positions(buffer):
 ROOT = GAME.new_game(MAX_PLAYERS, MAX_PLAYERS, 0)
 
 
+def assert_only_withholding_buys_the_train(p):
+    """Paying out leaves the corp no depot purchase; ``finance`` buys the train from the
+    depot, and its withhold leaves the bank whole."""
+    paid = position_state(GAME, ROOT, p)
+    _apply_choice(GAME, paid, K.DPHASE_DIVIDEND, lambda info: info.type == A.ACTION_PAYOUT)
+    if GAME.decision_phase(paid) == K.DPHASE_BUY_TRAIN and TURN.operating_corp(paid) == p.corp:
+        actions = np.empty(GAME.policy.max_action_size, dtype=np.uint16)
+        kinds = {A.decode_action_py(K.DPHASE_BUY_TRAIN, int(a)).type
+                 for a in actions[:GAME.enumerate_policy_actions(paid, actions)]}
+        assert A.ACTION_BUY_DEPOT_TRAIN not in kinds
+    financed = position_state(GAME, ROOT, p)
+    depot = TRAINS.depot(financed, p.train)
+    finance(GAME, financed, p)  # asserts the corp holds one more of the train
+    assert TRAINS.depot(financed, p.train) == depot - 1
+    assert not BANK.broken(financed)  # the withhold left the game's end open
+
+
 def test_positions_are_dividends_where_only_withholding_buys_the_train(buffer, positions):
     _, _, spans = buffer
     assert min(p.buffer_row for p in positions) >= spans[0][0]  # none from the overwritten tail
@@ -98,18 +121,26 @@ def test_positions_are_dividends_where_only_withholding_buys_the_train(buffer, p
     assert len(positions) == len(set(games)) == 4  # one a game; none in the game without
     for p, g in zip(positions, games):
         assert p.decisions_left == spans[g][1] - p.buffer_row
-        paid = position_state(GAME, ROOT, p)
-        _apply_choice(GAME, paid, K.DPHASE_DIVIDEND, lambda info: info.type == A.ACTION_PAYOUT)
-        if GAME.decision_phase(paid) == K.DPHASE_BUY_TRAIN and TURN.operating_corp(paid) == p.corp:
-            actions = np.empty(GAME.policy.max_action_size, dtype=np.uint16)
-            kinds = {A.decode_action_py(K.DPHASE_BUY_TRAIN, int(a)).type
-                     for a in actions[:GAME.enumerate_policy_actions(paid, actions)]}
-            assert A.ACTION_BUY_DEPOT_TRAIN not in kinds
-        financed = position_state(GAME, ROOT, p)
-        depot = TRAINS.depot(financed, p.train)
-        finance(GAME, financed, p)  # asserts the corp holds one more of the train
-        assert TRAINS.depot(financed, p.train) == depot - 1
-        assert not BANK.broken(financed)  # the withhold left the game's end open
+        assert_only_withholding_buys_the_train(p)
+
+
+def test_human_positions_are_the_same_and_play_out(tmp_path):
+    """From Ruby's snapshots: one a game, at the engine's best revenue, and playable to the end."""
+    for stem in HUMAN_SAMPLE:
+        shutil.copy(HUMAN_GAMES / f"{stem}.json", tmp_path)
+    human = human_positions(tmp_path, MAX_PLAYERS, per_cell=10, rng=np.random.default_rng(0))
+    assert sorted(p.source.split()[0] for p in human) == HUMAN_SAMPLE[:3]  # the last game has none
+    for p in human:
+        state = position_state(GAME, ROOT, p)
+        assert p.revenue == TURN.route_revenue(state) == max_route_revenue(state, p.corp)
+        assert_only_withholding_buys_the_train(p)
+    torch.manual_seed(0)
+    evaluator = NNEvaluator(GAME, create_model(CONFIG), torch.device("cpu"), num_players=MAX_PLAYERS,
+                            terminal_rank_weight=CONFIG.terminal_blend, input_spec=get_model_input_spec(CONFIG))
+    config = continuation_config(CONFIG)
+    result = continue_game(GAME, evaluator, config, config.compute_epoch_config(0), position_state(GAME, ROOT, human[0]),
+                           3, StatePool(GAME, 2 * (CONFIG.max_simulations + 1), GAME.state_size(MAX_PLAYERS)))
+    assert result["started_at_start"] and len(result["net_worths"]) == human[0].num_players
 
 
 def test_a_branch_plays_to_the_end_and_leaves_its_start_alone(positions):

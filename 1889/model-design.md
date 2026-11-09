@@ -999,7 +999,9 @@ purchase helps.
 | Financing is no better | Agrees | An equilibrium | Varied opponents, such as past checkpoints, or starts from human positions |
 
 - **Positions:** drawn from a saved buffer, one a game at most, the same number for
-  each player count and phase.
+  each player count and phase. With `--human`, from the scraped human games instead,
+  on the networks humans built: the state before a dividend, loaded from Ruby's
+  snapshot, its revenue set to the engine's best.
 - **Continuations:** `train.self_play.play_game` from the position, with the run's
   config at the checkpoint's epoch (simulations, c_puct, root noise, forced playouts)
   at `temp_final` from the first move. Two a branch, the branches sharing each seed.
@@ -1032,6 +1034,38 @@ purchase helps.
   - **Reading:** so far an equilibrium more than a blind spot. Against this population
     one financed purchase lengthens the game for everyone and buys its president
     nothing, and the model expects as much, though not where.
+- **Human positions** (2026-11-08, `--human`): checkpoint 55, the same settings, on
+  every scraped game with a position, 44 of the 87: 12 in phase 4, all the first 5;
+  18 in phase 5 for a 5, and 14 for the first 6. 218 minutes on 4 local workers, 2.7
+  decisions a second together. Results in `scratchpad/deviation/human_*`.
+  - **The humans financed:** they withheld at 34 of the 44, and at 27 of the 32 in
+    phase 5, against withhold's 3.7% visit share there.
+  - **Overall it does not pay for the model:** −0.014 [−0.123, +0.096], and +0.27 ORs,
+    as in the pilot. The phases part: −0.250 [−0.434, −0.075] in phase 4 (the
+    president's net worth −¥615) and +0.075 [−0.042, +0.199] in phase 5, a 5 and a 6
+    alike. Pooled with the pilot: −0.160 [−0.267, −0.056] in phase 4, 27 positions,
+    and +0.064 [−0.017, +0.153] in phase 5, 47.
+  - **The model is right about phase 4 but too pessimistic in phase 5:** in phase 4
+    it predicts −0.276 by deep search, close to what is measured. In phase 5 it
+    predicts −0.071, 0.146 [0.019, 0.282] below the measured difference. Pooled with
+    the pilot's phase 5, it is 0.126 [0.036, 0.222] too low. The pilot alone already
+    had it 0.064 [0.001, 0.142] too low. Position by position it still does not
+    follow: the signs agree 50-55%, the correlation is +0.2.
+  - **The model's own play reaches the late game more on human boards:** without the
+    forced purchase, 26% of games end in phase 6 or D, against 3% in the pilot, and
+    with it 55%. Where the 6 is the next train and the president's corp could finance
+    it, anyone buys one in only 32% of the model branch's continuations. The humans
+    withheld for it at 13 of those 14.
+  - **Spread:** 0.38 between positions, 0.18 between continuations; about 600
+    positions would resolve ±0.03.
+  - **Reading:** two answers, one for each phase.
+    - **Phase 4:** an equilibrium that the model reads correctly. Withholding for the
+      first 5 costs the president.
+    - **Phase 5:** a mild blind spot. Financing is neutral to positive for the
+      president, but the model expects it to cost about 0.06-0.07, which is enough
+      to keep withhold near 4% of the visits. The phase-5 cuts and the pooling were
+      chosen after the pilot. The error interval only just clears zero, and the
+      measured gain's interval does not.
 - **Later, if the result calls for it:** sustained financing, a corp withholding until
   it can buy, for the positions that need more than one withhold (about 20 a game);
   and starts from the human games around their first 6, which tell whether the model
