@@ -536,6 +536,10 @@ layout the tokens are filled in.
 - A model may ignore trailing ids: ids only append. v0
   (`nn/transformer-1889.py`) consumes 0-24 and gives the same outputs with
   or without the later records (`tests/g1889/test_model.py`).
+- v1 (`nn/transformer-1889-v1.py`) consumes 0-20 and 25-28. Its trunk does
+  not hold the CANDIDATE rows, so it gives no weight to a record that names
+  one, which is every record of 21-24 (`tests/g1889/test_model_v1.py`).
+  Extraction emits them whatever model reads the records: v0 needs them.
 
 ### Static relations (model buffers)
 
@@ -599,8 +603,8 @@ them, as TILE's candidate rows show TRACK's.
 ### Layout 2
 
 The rows are layout 1's. The slots that move, and what layout 2 adds for
-each decision's choices (v1-design §7 lists which of these v1's heads read
-raw):
+each decision's choices ([`1889/model-design.md`](1889/model-design.md)
+§12.2 lists which of these v1's heads read raw):
 
 | Decision | Row | Slots, layout 2 |
 |---|---|---|

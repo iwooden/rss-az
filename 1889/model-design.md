@@ -7,7 +7,8 @@ configs, and a local smoke run with a resume (Section 7.2). The local half of 8.
 and 8.6 is built too: the profile, the rescale helper, the capacity probe, and the
 runbook (Section 11). The 8.5 profile ran on the 5090 on 2026-11-05 (Sections 5.3,
 5.7, and 6.5). What remains is the run and the probe, whose results these sections
-record. Step 8 builds the first 1889 model,
+record. Section 12 describes v1, `nn/transformer-1889-v1.py`, by its differences
+from v0 (2026-11-10). Step 8 builds the first 1889 model,
 `nn/transformer-1889.py` v0, on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
 in [`extraction-design.md`](extraction-design.md)), adds what the pipeline
 needs to train it, and runs it once.
@@ -1383,3 +1384,180 @@ outputs within 1e-7 of eager, and uncompiled on ROCm; the rescale, on
 `runs/1889-v0-smoke`; a resume with its fields, on the local GPU; the probe, on the smoke
 buffer at small sizes, interrupted and rerun. Inductor's CUDA graphs, bf16 under
 compilation, and every time above are the 5090's to report.
+
+## 12. v1
+
+`nn/transformer-1889-v1.py` is v0 on token layout 2
+([`token-data-1889.md`](../token-data-1889.md), "Layout 2"), built for
+[`v1-design.md`](v1-design.md) Section 7. Sections 3-6 describe it wherever this
+section does not say otherwise: the projections' form, the embeddings, the trunk's
+blocks, the selections, the value head, the pass and `private` heads, the
+initialization, and the module contract. `INPUT_LAYOUT_VERSION` is 2, and
+`build_model` asserts layout 2, `token_dim` 109, and the rest as 6.2.
+
+The file stands alone, as v0's does beside v3's (3.5). v0's stays, unchanged, as
+the tournament's opponent, and can be deleted once v1 has beaten it.
+`tests/g1889/test_model_v1.py` holds the two together: v0's weights, copied to the
+slots both layouts hold with zeros on what v1 adds, give v0's outputs on every
+state without a visible candidate.
+
+### 12.1 What differs from v0
+
+| | v0 | v1 | Why |
+|---|---|---|---|
+| Input | layout 1, 95 rows of 108 | layout 2, 95 rows of 109 | v1-design Section 5 |
+| Projections | GLOBAL 43, PRICE 23, DIVIDEND 7, CORP 50, TRAIN 12, CANDIDATE 31 beside the tile block, PLAYER 37 slots | 89, 29, 12, 76, 14, 32, 39; PRIVATE, HEX, and the tile block as v0 | layout 2's widths |
+| Trunk rows | all 95 | 80: every row but the 15 CANDIDATE rows | 12.3 |
+| TILE and ER_BONUS | `candidate`, a pointer over candidate rows the trunk has processed | `candidate`, a head over rows the trunk ran without them | 12.3 |
+| Dynamic relations | ids 0-24, 25 channels | ids 0-20 and 25-28, 25 channels | 12.4 |
+| Raw head slots | 4.2 | 12.2: layout 2's numbers, and the new per-choice slots | v1-design Section 7 |
+| Parameters at 256 × 15 | 18,218,872 | 18,497,016 | the candidate head, +247K; wider projections and head inputs, +31K |
+
+`hex_mix` and `bias_init` (v1-design Section 10) are not in it.
+
+### 12.2 Readouts by phase
+
+4.2's table in layout 2's slot numbers. **Bold** marks a slot v1 adds to a head's
+raw inputs; the rest are v0's slots where layout 2 put them.
+
+| Phase | Head | Reads, beyond the context | Raw slots |
+|---|---|---|---|
+| AUCTION | `auction_private` | PRIVATE p | PRIVATE 7-13 |
+| BID | `bid` | PRICE; the private | PRICE 5-23 |
+| STOCK | `stock_corp` | CORP c | CORP 7-25 and 50-54 (v0's 44-48); **58-60**, the price after a payout, a withhold, and a sold-out SR; **68-71**, the float: shares still to sell, their cost, the president can pay, the actor can pay; **72**, the president sold it this SR; the actor's PLAYER 11+c and 18+c (v0's 12+c and 19+c) |
+| PAR | `par` | PRICE | PRICE 5-23; **24-29**, the shares of the float out at each par |
+| SELL_AMOUNT, EMERGENCY_SELL_AMOUNT | `sale` | the sold corp | its CORP 15-19, 54, 55 (v0's 48, 49) |
+| BUY_PRIVATE_PRE, BUY_PRIVATE_POST, STOCK's DR and MF | `private` | PRIVATE p | PRIVATE 16, 17 |
+| TRACK | `track_hex` | HEX `TRACK_HEXES[i]` | HEX 92-102 |
+| TILE, ER_BONUS | `candidate` (12.3) | the hex; the hexes across the candidate's exits; CANDIDATE k as projected | CANDIDATE 1, 99-107; **108**, the route max gained with the next train; the path mask 43-63, for the exits |
+| TOKEN | `token_hex` | HEX `TOKEN_HEXES[i]` | HEX 103, 104 |
+| DIVIDEND | `dividend` | DIVIDEND | DIVIDEND 1-6 (v0's 1 and 3-7); **7-12**, the next train's price, the shortfall to it after a withhold and after a payout, room, and the route max with the next train and after the next rust |
+| DISCARD | `discard` | TRAIN `DISCARD_TYPES[i]` | TRAIN 12 |
+| BUY_TRAIN | `buy_train` | the six TRAIN rows | TRAIN 2-9 of each; **10**, the route max a purchase adds; **14**, its next depot purchase starts a phase |
+| | `buy_train_corp` | CORP c | CORP 15-19, 52, 55 (v0's 46, 49) |
+| SELECT_TRAIN | `select_train` | TRAIN t; the seller | TRAIN 10, 11; **13**, what the seller loses |
+| TRAIN_PRICE | `train_price` | PRICE; the train type; the seller | PRICE 5-23; **the selected TRAIN row's 13**, what the seller loses |
+| PRIVATE_PRICE | `private_price` | PRICE; the private | PRICE 5-23 |
+| PORT | `port` | HEX `PORT_LAY_HEX[i]` | the port tile's path mask at `PORT_LAY_ROT[i]` |
+
+- **Slot numbers are literals in the model file,** under named constants, as v0's
+  are: extraction exports the row widths and the tile block, not the slots.
+  `tests/g1889/test_model_v1.py` checks every slot of every row against this table
+  with the trunk's output held fixed, and the copied-weights test above checks
+  the slots v0 already read.
+- **Left as v1-design Section 7 lists them:** `train_price` does not read TRAIN 10
+  raw (the buyer's gain, which layout 2 also fills at TRAIN_PRICE), `select_train`
+  does not read TRAIN 14, and `stock_corp` does not read the operating rank (CORP
+  38-44). Each still reaches its head through the row's final embedding.
+- **CANDIDATE 108** is the one raw slot here that v1-design Section 7 does not
+  list: the candidate head was ported with v0's raw slots, and 108 is the delta
+  layout 2 added for the case where v0's (104) is zero.
+
+### 12.3 The candidate head
+
+Tier C's `cand_head` (v1-design Sections 7 and 10), adopted for its speed: with 80
+rows a forward takes 0.76 of v0's time on the CPU and 0.85-0.97 on the local GPU,
+by batch (12.5). On v0's replay buffer it scored TILE 2.5% and ER_BONUS 1% worse
+in policy KL than v0's arrangement, and everything else the same.
+
+- **The trunk** runs on the 80 rows that are not candidates. The input keeps all
+  95 rows, since the head needs the candidates' slots, so the eval server, replay,
+  and the trainer see the shapes they would with v0's arrangement.
+- **States without a visible candidate,** all but TILE and ER_BONUS, lose nothing:
+  v0 hides those rows as keys, and no legal slot reads them.
+- **A candidate's vector** c_k is its row as projected (`tile_proj` +
+  `candidate_proj` + the selected hex's identity + the type embedding), through
+  `candidate_norm`, an RMSNorm that gives it the final rows' scale.
+- **Exits.** A side is an exit of candidate k if a path in its tile block's mask
+  (CANDIDATE 43-63) touches it. Each side's hex across from the selected hex goes
+  through that side's `exit_side_proj`, Linear(d, d/4); the exits' are summed, and
+  `exit_proj`, Linear(d/4, d), brings the sum to the trunk's width. A side at the
+  map's edge contributes its projection's bias.
+- **The head** is an MLP with two hidden layers of width d on `[g, a, c]`, the
+  selected hex's final row, the pooled exits, c_k, and the raw slots of 12.2. It
+  scores every candidate row alike, so permuting the candidates permutes their
+  logits, and a candidate's logit depends on no other candidate.
+- **Optimizers.** The head's last Linear is on AdamW with the other output layers;
+  its hidden layers and the exit projections are Muon's.
+- **Against the Tier C variant:** the head reads CANDIDATE 108 raw as well, and
+  v0's unused candidate head is not kept.
+
+### 12.4 Relations and rows
+
+- **Channels.** `relation_bias_mult` is (L, H, 35), zero at initialization, as
+  v0's: 25 dynamic channels, for ids 0-20 and 25-28 in order, then the 10 static
+  ones. Relations 21-24 join candidate rows and have none. The shape is v0's by
+  coincidence; channels 21-24 mean the SR's sales and the route hexes here.
+- **Rows.** Records and planes name the input's 95 rows. The model maps each to
+  its trunk row: a player's row is 15 earlier there, and a candidate's has none.
+  The static planes are cut to the trunk's rows at construction.
+- **What gets no weight:** a record of value 0, of an id without a channel, or
+  naming a candidate row. On the flat path such a record keeps its place with
+  weight 0, as v0's padding does, since removing it would make N depend on the
+  data inside the compiled forward.
+- **Where a record without weight is scattered:** to its own rows' cell, with the
+  candidates' rows folded onto the first 15 trunk rows, so a launch's filler stays
+  a few rows to a cell at most, as 6.5 builds it for v0. The Tier C variant sent
+  all of them to one cell, which a launch's thousands of filler rows turn into one
+  contended address. **Measured** on the local GPU at K = 1,024: that forward takes
+  1.29 of v0's time at batch 16 and 1.05 at batch 32, against 0.97 and 0.90 with
+  the cells spread.
+- **The eval server's K** still counts the candidates' records: the server flattens
+  every record above value 0 and buckets by their number (6.5). Extraction emits
+  them whatever model reads the records, since v0 needs them in a game the two
+  share. A TILE or ER_BONUS state carries at most 210 of them (token-data-1889.md,
+  "The edge bound"); on the human start positions they are 0.5% of all records,
+  with a median of 24 at TILE.
+
+### 12.5 Cost
+
+**Measured** (2026-11-10, `scratchpad/v1_97/forward_time.py`): forward time at
+256 × 15 × 4 and capacity 5, fp32 and uncompiled, on batches of human positions
+with about 500 records a state. Each figure is the median of 60 paired rounds
+against v0 on a GPU with no other job (8 rounds on the CPU). The last column is a
+scratch model, v1's inputs and channels on v0's 95-row trunk and head.
+
+| Device, batch | v0 | v1 | v1 / v0 | v1's inputs on 95 rows / v0 |
+|---|---|---|---|---|
+| Local GPU (RX 9070 XT, ROCm), 16 | 18.0 ms | 17.4 ms | 0.97 | 1.03 |
+| Local GPU, 64 | 55.4 ms | 48.5 ms | 0.88 | 1.01 |
+| Local GPU, 128 | 107.4 ms | 91.5 ms | 0.85 | 1.01 |
+| CPU, 8 threads, 64 | 506 ms | 385 ms | 0.76 | 0.99 |
+
+- **The wider inputs and the four new channels cost nothing** that these runs can
+  see: within 1-3% of v0 on 95 rows.
+- **Dropping the candidate rows** takes the cost of a state from 0.81 ms to 0.67 ms
+  on this GPU (the slope from batch 64 to 128), a ratio of 0.83, where 80 rows
+  against 95 predict 0.71-0.84 for a trunk between quadratic and linear in rows.
+- **A launch's fixed cost** is about 17 ms here, uncompiled, and v1's is no lower:
+  it runs about 30 more small operations than v0 (the row and channel lookups, and
+  the candidate head). So the ratio is 0.97 at batch 16. Compiled on the 5090 is
+  the 5090's to report.
+- **Padded as an eval launch** (K = 1,024 at batches 16-64, 512 at 128), the ratios
+  are the same: 0.97, 0.90 at batch 32, 0.88, and 0.85.
+
+**Smoke runs** (`scratchpad/v1_97/`): 2 epochs of 12 games at 16 simulations, 6
+workers and one eval server on the local GPU, fp32, `--no-compile`, bucketed
+launches of up to 32 (a mean of 15-17 states), with the replay ratio, the
+temperature shares, started games, and the held-out loss on; no other job on the
+GPU. Evaluations a second and the mean time of a launch, by epoch:
+
+| Size | v0 | v1 |
+|---|---|---|
+| 256 × 15 | 641, 671 a second; 23.2, 24.4 ms | 712, 700 a second; 23.0, 22.1 ms |
+| 64 × 3 | 2,578, 2,913 a second; 5.0, 5.0 ms | 2,368, 2,438 a second; 5.9, 5.8 ms |
+
+At the tiny size a launch is all fixed cost, and v1's extra operations show: its
+launches take 0.8 ms longer.
+
+### 12.6 Tests
+
+- `tests/g1889/test_model_v1.py`: 8.1's properties on layout-2 states (v0's own
+  tests of them, run on v1), on random playouts and on human positions; the
+  copied-weights test; the relation channels and the row map; every raw slot;
+  the candidate head's dependencies, against extraction's CANDIDATE_EXIT records;
+  what each layout's model refuses; the parameters against v0's.
+- `tests/g1889/test_pipeline_v1.py`: `test_relation_transport.py`'s trainer,
+  evaluator, eval-server, and warmup tests with v1 as their model; and a run
+  through `train.main` with started games, `replay_ratio`, the held-out loss, a
+  resume, and `load_model_from_checkpoint`.

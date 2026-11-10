@@ -36,6 +36,8 @@ for development guidance.
 - `train_configs/` - JSON training configs. `bigger-multi.json` is the current
   transformer-v2 mixed 3-5 player config; `1889-v0.json` is the first Shikoku 1889
   run, and `1889-v0-smoke.json` its local smoke test (run with `--no-compile`).
+  `1889-v1.json` and `1889-v1-smoke.json` are the second run's, on
+  `nn/transformer-1889-v1.py` ([`1889/v1-design.md`](1889/v1-design.md)).
   [`1889/model-design.md`](1889/model-design.md) Section 11 is the run's runbook,
   with `cloud/profile_1889.py`, `cloud/rescale_1889.py`, and `train/capacity_probe.py`.
 - `utils_18xx/` - 18xx.games replay parsing, replay analysis, API client, and
@@ -57,6 +59,7 @@ layout rather than differences from another version.
 | `nn/transformer-v2.py` | 2 | [V2 token data](token-data.md) |
 | `nn/transformer-v3.py` | 3 | [V3 token data](token-data-v3.md) |
 | `nn/transformer-1889.py` | 1 (game `1889`) | [1889 token data](token-data-1889.md) |
+| `nn/transformer-1889-v1.py` | 2 (game `1889`) | [1889 token data](token-data-1889.md), "Layout 2" |
 
 Set `model_path` in the training config to select the model; there is no
 default. Every model module declares its input version as
