@@ -840,6 +840,50 @@ rounding N up in bucketed mode.
   - **Human baselines**, over the 87 scraped 3-5 player games: `withhold_share` 12%
     (14%, 11%, and 9% at 3, 4, and 5 players), and by phase 2 to D 1%, 10%, 17%, 19%,
     20%, and 4%; `corp_cash_end` ¥147 (¥169, ¥129, and ¥94).
+- **Added for v1** (v1-design.md §4), per game unless a rate:
+  - the auction: the premium paid over face for the privates (`auction_premium`),
+    and the players' mean cash as SR1 opens (`auction_sr1_cash`, over players);
+  - pars: the mean (`par_price`) and the share at ¥65 (`par_65_share`), over the
+    pars made; and the share of SRs that end with a corp parred but not floated
+    (`par_stranded_share`, over SRs ended);
+  - treasuries: a corp's as it floats (`corp_cash_float`, over floats: 10 x par),
+    and the richest floated corp's once the last 4 has sold and the 5s are next
+    (`corp_cash_max_5s`);
+  - the shares, in 10% units, players sell in SR2 (`sr2_shares_sold`), and the
+    station tokens placed besides home tokens (`tokens_placed`);
+  - the game OR in which each later phase starts, counted as `ors_played`
+    counts (`phase_start_or_<phase>`, phases 3 to D), absent for a phase not
+    reached;
+  - MF's port tile: whether it is laid (`mf_port_laid`), and, where it is, the
+    SR number of the round it goes down in, SR k or the ORs after it
+    (`mf_port_sr`), and whether that is an OR (`mf_port_in_or`).
+  - These too come from the state, between consecutive observations or at the
+    end. Two are as of the next searched decision: the treasury at float, which
+    is still 10 x par there, and `corp_cash_max_5s`, which forced and automated
+    steps can move first, as an OR's start pays privates' revenue to corps (by
+    ¥5-40 in 11 of 289 random playouts, ¥25 in 1 of 40 v0 games, and in none of
+    the scraped games). A sale's price comes from the buyer's bid or the
+    private's price, not from cash: forced passes can pay the privates out
+    between two sales the collector sees together. Checked against every row of
+    the driver's history on random playouts, 41 v0 games, and the 100 scraped
+    games, the rest match exactly.
+  - Each is absent where the game had none of what it counts, and in a game
+    started from a mid-game position (v1-design.md §2.1) where what it counts
+    began before the first observation: the auction stats unless no private had
+    sold, `sr2_shares_sold` and `phase_start_or_<phase>` unless it starts before
+    SR2, `tokens_placed` if a token besides a home one is down, `corp_cash_max_5s`
+    if the 4s are gone, and the MF stats if the tile is down or MF is a corp's or
+    closed. The pars, floats, and SRs counted are those after the first
+    observation. `ors_played` makes no such allowance: a set before the first
+    observation counts 1 OR.
+  - **Human baselines**, the same 87 games: `auction_premium` ¥33,
+    `auction_sr1_cash` ¥311, `par_price` ¥81, `par_65_share` 27%,
+    `par_stranded_share` 12%, `corp_cash_float` ¥813, `corp_cash_max_5s` ¥639,
+    `sr2_shares_sold` 0.29, `tokens_placed` 7.4, `phase_start_or_<phase>` for 3
+    to D 3.4, 5.7, 8.0, 9.9, and 11.7, `mf_port_laid` 87%, `mf_port_sr` 2.3, and
+    `mf_port_in_or` 84%. 41 of v1-review.md Section 2's checkpoint-58 games, in
+    the same order: ¥62, ¥299, ¥69, 83%, 52%, ¥684, ¥358, 6.3, 4.0, 4.2, 6.4,
+    and 10.3 (no 6 or D), 100%, 1.0, and 0%.
 - **Deferred,** as pipeline-refactor §1 plans: `train/analyze_game.py`,
   `train/tournament.py`, `train/debug_trace.py`, and `train/strategy_data.py`
   import the RSS engine directly (`train/analyze_game.py:31-36`,

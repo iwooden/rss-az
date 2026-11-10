@@ -13,6 +13,26 @@ what the driver's history and the terminal state say by other routes:
 - the track passes are the returned TRACK decisions that pass, and the withholds
   the returned DIVIDEND decisions that withhold, by the game phase they came in.
 
+The stats added for v1 (1889/v1-design.md §4) equal what every step of the
+driver's history says, forced and automated ones included (``_Truth``):
+
+- the auction premium is the cash the players paid in steps that paid no pass
+  payout, less the privates' face; SR1's cash is the players' as the auction ends;
+- the pars and the tokens off a home are the terminal state's, the tokens counted
+  on the map; the treasuries at float are the corps' as they float;
+- a stranded SR is one whose SR_END leaves a corp parred but not floated, and
+  SR2's sales are its SELL_AMOUNT decisions' shares;
+- a phase starts in the OR the history's OR_START steps have reached when it
+  starts, and MF's tile goes down in the round of the step that sets its flag.
+
+The richest treasury when the 5s go on sale is the collector's one stat taken
+at the next returned decision rather than at the event, and it matches that
+definition. The two part when automated steps between them move cash: on the
+v1 review's games, in 11 of 289 random playouts by ¥5-40 and 1 of 40 model
+games by ¥25 (an OR's start paying privates' revenue to corps), and never in
+100 human games. A game observed from a later decision reports only what
+followed it.
+
 Through ``play_game`` with a real model, the stats reach the record and
 ``train/main.py``'s TensorBoard scalars for each reporting group.
 """
@@ -33,8 +53,10 @@ import g1889.data.tables as D
 from g1889.driver import DRIVER
 from g1889.entities.bank import BANK
 from g1889.entities.corp import CORPS
+from g1889.entities.hexmap import MAP
 from g1889.entities.phase import PHASE
 from g1889.entities.player import PLAYERS
+from g1889.entities.private import PRIVATES, PrivateFlag
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
 from g1889.state import GameState
@@ -74,6 +96,130 @@ PHASE_NAMES = D.PHASE_NAMES
 TRAIN_NAMES = D.TRAIN_NAMES
 
 
+def _players_cash(state: GameState) -> int:
+    return sum(PLAYERS[i].cash(state) for i in range(TURN.num_players(state)))
+
+
+def _tokens_off_home(state: GameState) -> int:
+    """Station tokens on the map other than each corp's on its home hex."""
+    on_map = sum(MAP.tokens(state, h).bit_count() for h in range(D.NUM_HEXES))
+    return on_map - sum(MAP.tokens(state, D.CORP_HOME[c]) >> c & 1 for c in range(D.NUM_CORPS))
+
+
+def _mf_laid(state: GameState) -> bool:
+    return bool(PRIVATES[D.PRIVATE_MF].flags(state) & PrivateFlag.MF_PORT_USED)
+
+
+def _richest(state: GameState) -> int:
+    return max(CORPS[c].cash(state) for c in range(D.NUM_CORPS) if CORPS[c].floated(state))
+
+
+class _Truth:
+    """The v1 stats from every driver step after the first observed decision,
+    forced and automated ones included. What a stat counts must all come after
+    that decision, or the stat is absent."""
+
+    def __init__(self, start: GameState, or_starts: int) -> None:
+        owners = [PRIVATES[p].owner(start) for p in range(D.NUM_PRIVATES)]
+        self.auction = TURN.round(start) == K.ROUND_AUCTION and set(owners) <= {K.OWNER_UNSOLD, K.OWNER_NOT_IN_PLAY}
+        self.premium = -sum(D.PRIVATE_VALUE[p] for p in range(D.NUM_PRIVATES) if owners[p] == K.OWNER_UNSOLD)
+        self.sr1_cash: int | None = None
+        self.window: tuple[int, int] | None = None
+        self.payouts_amid_sales = False
+        self.parred = {c for c in range(D.NUM_CORPS) if CORPS[c].par_index(start) >= 0}
+        self.floated = {c for c in range(D.NUM_CORPS) if CORPS[c].floated(start)}
+        self.float_cash: list[int] = []
+        self.srs_ended = self.srs_stranded = 0
+        self.from_sr1 = TURN.turn(start) == 1
+        self.sr2_sold = 0
+        self.sr2_over = False
+        self.tokens_from_start = _tokens_off_home(start) == 0
+        self.watch_5s = TRAINS.depot(start, D.TRAIN_4) > 0
+        self.richest_at_5s: int | None = None       # as the last 4 leaves the depot
+        self.richest_at_5s_seen: int | None = None  # at the next returned decision
+        self.or_starts = or_starts
+        self.phase_ors: dict[int, int] = {}
+        mf_owner = PRIVATES[D.PRIVATE_MF].owner(start)
+        self.watch_mf = not _mf_laid(start) and (
+            mf_owner == K.OWNER_UNSOLD or K.OWNER_PLAYER <= mf_owner < K.OWNER_CORP
+        )
+        self.mf: tuple[int, bool] | None = None
+
+    def decision(self, state: GameState) -> None:
+        if self.richest_at_5s is not None and self.richest_at_5s_seen is None:
+            self.richest_at_5s_seen = _richest(state)
+        # Whether pass payouts and sales came between the same two decisions, where cash cannot price the sales.
+        payouts = TURN.auction_pass_payouts(state)
+        unsold = sum(PRIVATES[p].owner(state) == K.OWNER_UNSOLD for p in range(D.NUM_PRIVATES))
+        if self.window is not None:
+            self.payouts_amid_sales |= payouts > self.window[0] and unsold < self.window[1]
+        self.window = (payouts, unsold) if TURN.round(state) == K.ROUND_AUCTION else None
+
+    def step(self, before: GameState, after: GameState, phase: int, action: int) -> None:
+        if self.auction and TURN.round(before) == K.ROUND_AUCTION:
+            if TURN.auction_pass_payouts(after) == TURN.auction_pass_payouts(before):  # a payout sells nothing
+                self.premium += _players_cash(before) - _players_cash(after)
+            if TURN.round(after) == K.ROUND_STOCK:
+                self.sr1_cash = _players_cash(after)
+        for c in range(D.NUM_CORPS):
+            if c not in self.floated and CORPS[c].floated(after):
+                self.floated.add(c)
+                self.float_cash.append(CORPS[c].cash(after))
+        if TURN.round(before) == K.ROUND_STOCK != TURN.round(after):
+            self.srs_ended += 1
+            self.srs_stranded += any(
+                CORPS[c].par_index(after) >= 0 and not CORPS[c].floated(after) for c in range(D.NUM_CORPS)
+            )
+            self.sr2_over |= TURN.turn(before) == 2
+        if phase == K.DPHASE_SELL_AMOUNT and TURN.turn(before) == 2:
+            self.sr2_sold += action + 1  # SELL_AMOUNT's id is the shares less one
+        if self.watch_5s and TRAINS.depot(after, D.TRAIN_4) == 0:
+            self.watch_5s = False
+            self.richest_at_5s = _richest(after)
+        self.or_starts += phase < 0 and action == K.STEP_OR_START
+        for p in range(PHASE.current(before) + 1, PHASE.current(after) + 1):
+            self.phase_ors[p] = self.or_starts
+        if self.watch_mf and not _mf_laid(before) and _mf_laid(after):
+            self.mf = (TURN.turn(before), TURN.round(before) == K.ROUND_OPERATING)
+
+    def stats(self, end: GameState) -> dict[str, tuple[float, float]]:
+        out: dict[str, tuple[float, float]] = {}
+        if self.auction:
+            assert self.sr1_cash is not None
+            out["auction_premium"] = (self.premium, 1)
+            out["auction_sr1_cash"] = (self.sr1_cash, TURN.num_players(end))
+        pars = [CORPS[c].par_price(end) for c in range(D.NUM_CORPS)
+                if c not in self.parred and CORPS[c].par_index(end) >= 0]
+        if pars:
+            out["par_price"] = (sum(pars), len(pars))
+            out["par_65_share"] = (pars.count(65), len(pars))
+        if self.srs_ended:
+            out["par_stranded_share"] = (self.srs_stranded, self.srs_ended)
+        if self.float_cash:
+            out["corp_cash_float"] = (sum(self.float_cash), len(self.float_cash))
+        if self.richest_at_5s_seen is not None:
+            out["corp_cash_max_5s"] = (self.richest_at_5s_seen, 1)
+        if self.from_sr1 and self.sr2_over:
+            out["sr2_shares_sold"] = (self.sr2_sold, 1)
+        if self.tokens_from_start:
+            out["tokens_placed"] = (_tokens_off_home(end), 1)
+        if self.from_sr1:
+            out.update({f"phase_start_or_{PHASE_NAMES[p]}": (ors, 1) for p, ors in self.phase_ors.items()})
+        if self.watch_mf:
+            out["mf_port_laid"] = (self.mf is not None, 1)
+        if self.mf is not None:
+            out["mf_port_sr"] = (self.mf[0], 1)
+            out["mf_port_in_or"] = (self.mf[1], 1)
+        return out
+
+
+V1_STATS = (
+    "auction_premium", "auction_sr1_cash", "par_price", "par_65_share", "par_stranded_share", "corp_cash_float",
+    "corp_cash_max_5s", "sr2_shares_sold", "tokens_placed", *(f"phase_start_or_{p}" for p in PHASE_NAMES[1:]),
+    "mf_port_laid", "mf_port_sr", "mf_port_in_or",
+)
+
+
 class Playout(NamedTuple):
     """A random game's terminal state, its collector's report, and what the history says."""
 
@@ -86,12 +232,16 @@ class Playout(NamedTuple):
     track_passes: int
     dividends: Counter[int]
     withholds: Counter[int]
+    decisions: int
+    truth: _Truth
 
 
-def _play(num_players: int, seed: int) -> Playout:
+def _play(num_players: int, seed: int, first: int = 0) -> Playout:
+    """A random playout, its collector observing from returned decision ``first`` on."""
     rng = np.random.default_rng(seed)
     state = GAME.new_game(num_players, MAX_PLAYERS, seed)
     view = GameState(num_players, max_players=MAX_PLAYERS)
+    after = GameState(num_players, max_players=MAX_PLAYERS)
     collector = GAME.new_selfplay_stats(num_players)
     scratch = np.empty(GAME.policy.max_action_size, dtype=np.uint16)
     or_starts = track_decisions = track_passes = 0
@@ -99,8 +249,9 @@ def _play(num_players: int, seed: int) -> Playout:
     corps_in_an_order: set[int] = set()
     dividends: Counter[int] = Counter()
     withholds: Counter[int] = Counter()
+    truth: _Truth | None = None
 
-    for _ in range(MAX_DECISIONS):
+    for decision in range(MAX_DECISIONS):
         phase = GAME.decision_phase(state)
         n_legal = GAME.enumerate_policy_actions(state, scratch)
         legal = scratch[:n_legal].copy()
@@ -110,13 +261,17 @@ def _play(num_players: int, seed: int) -> Playout:
         if phase == K.DPHASE_DIVIDEND:
             dividends[PHASE.current(state)] += 1
             withholds[PHASE.current(state)] += action == K.DIVIDEND_WITHHOLD
-        # Priors and visits only pass through: the collector's report ignores them.
-        collector.observe(state, legal, int(np.flatnonzero(legal == action)[0]), np.ones(n_legal) / n_legal,
-                          np.ones(n_legal))
+        if decision == first:
+            truth = _Truth(state, or_starts)
+        if truth is not None:
+            truth.decision(state)
+            # Priors and visits only pass through: the collector's report ignores them.
+            collector.observe(state, legal, int(np.flatnonzero(legal == action)[0]), np.ones(n_legal) / n_legal,
+                              np.ones(n_legal))
         history: list[tuple[np.ndarray, int, int]] = []
         status = DRIVER.apply_action(state, action, history)
         assert status in (STATUS_OK, STATUS_GAME_OVER)
-        for row, row_phase, row_action in history:
+        for k, (row, row_phase, row_action) in enumerate(history):
             view.rebind(row, num_players, MAX_PLAYERS)
             if TURN.round(view) == K.ROUND_OPERATING:
                 corps_in_an_order |= {TURN.or_order(view, i) for i in range(D.NUM_CORPS)} - {-1}
@@ -125,9 +280,13 @@ def _play(num_players: int, seed: int) -> Playout:
             elif row_phase == K.DPHASE_SELECT_TRAIN and TURN.pending_train_source(view) == K.TRAIN_SOURCE_DEPOT:
                 info = A.decode_action_py(row_phase, row_action)
                 bought[D.TRAIN_D if info.type == A.ACTION_TRADE_IN else info.train_type] += 1
+            if truth is not None:
+                after.rebind(history[k + 1][0] if k + 1 < len(history) else state._array, num_players, MAX_PLAYERS)
+                truth.step(view, after, row_phase, row_action)
         if status == STATUS_GAME_OVER:
+            assert truth is not None, f"{num_players}p seed {seed}: the game ends before decision {first}"
             return Playout(state, collector.finish(state), or_starts, bought, corps_in_an_order,
-                           track_decisions, track_passes, dividends, withholds)
+                           track_decisions, track_passes, dividends, withholds, decision + 1, truth)
     pytest.fail(f"{num_players}p seed {seed}: no game end within {MAX_DECISIONS} decisions")
 
 
@@ -235,6 +394,51 @@ def test_corp_cash_end_is_the_floated_corps_treasuries(playouts):
         )
 
 
+def _v1_stats(stats: dict[str, tuple[float, float]]) -> dict[str, tuple[float, float]]:
+    return {name: stats[name] for name in V1_STATS if name in stats}
+
+
+def test_the_playouts_reach_what_the_v1_stats_report(playouts):
+    """Auctions whose pass payouts fall among sales between two decisions, SRs
+    with and without a stranded par, SR2 sales, every phase, the 5s on sale, and
+    MF's tile laid in an SR and in an OR, so the checks below are not vacuous."""
+    truths = [p.truth for p in playouts.values()]
+    assert any(t.payouts_amid_sales for t in truths)
+    assert any(t.srs_stranded for t in truths) and any(t.srs_stranded < t.srs_ended for t in truths)
+    assert sum(t.sr2_sold for t in truths) > 0
+    assert set().union(*(t.phase_ors for t in truths)) == set(range(1, len(PHASE_NAMES)))
+    assert any(t.richest_at_5s is not None for t in truths)
+    assert {t.mf[1] for t in truths if t.mf is not None} == {False, True}
+
+
+def test_v1_stats_are_the_historys(playouts):
+    for (n, seed), p in playouts.items():
+        assert _v1_stats(p.stats) == p.truth.stats(p.state), f"{n}p seed {seed}"
+
+
+def test_the_richest_treasury_at_the_5s_is_mostly_as_the_last_4_sells(playouts):
+    """It is read at the next returned decision; automated steps between can move it."""
+    pairs = [(p.truth.richest_at_5s, p.stats["corp_cash_max_5s"][0])
+             for p in playouts.values() if "corp_cash_max_5s" in p.stats]
+    assert len(pairs) > len(playouts) // 2
+    assert sum(at == seen for at, seen in pairs) >= 0.9 * len(pairs)
+
+
+@pytest.mark.parametrize("num_players", PLAYER_COUNTS)
+def test_a_game_observed_from_a_later_decision_reports_only_what_followed(playouts, num_players):
+    """As a game started from a mid-game position is: what the first observed
+    decision could not see is absent, not 0, and the rest counts from there."""
+    for seed in range(5):
+        full = playouts[(num_players, seed)]
+        for share in (0.05, 0.3, 0.6, 0.9):
+            p = _play(num_players, seed, int(share * full.decisions))
+            msg = f"{num_players}p seed {seed} from decision {int(share * full.decisions)}"
+            assert np.array_equal(p.state._array, full.state._array), msg  # the same game
+            assert _v1_stats(p.stats) == p.truth.stats(p.state), msg
+            if share >= 0.6:
+                assert not {"auction_premium", "sr2_shares_sold", "phase_start_or_3"} & set(p.stats), msg
+
+
 # =============================================================================
 # THROUGH PLAY_GAME AND TENSORBOARD'S SCALARS
 # =============================================================================
@@ -326,7 +530,9 @@ def test_tensorboard_scalars_carry_the_stats_for_each_group(games):
     }
     by_phase = {f"withhold_share_{name}" for name in PHASE_NAMES}
     for record in records:
-        assert always <= set(record.game_stats) <= always | by_phase
+        assert always <= set(record.game_stats) <= always | by_phase | set(V1_STATS)
+        # A game from the start reports these whatever it does.
+        assert {"auction_premium", "par_stranded_share", "tokens_placed", "mf_port_laid"} <= set(record.game_stats)
     names = {name for record in records for name in record.game_stats}
     for name in names:
         numerator = sum(record.game_stats[name][0] for record in records if name in record.game_stats)
