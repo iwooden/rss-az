@@ -210,6 +210,18 @@ class ReplayBuffer:
         start = self._epochs[-1][1]
         return int(np.count_nonzero(self._game_ids[: self._size] >= start))
 
+    def epoch_row_positions(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The newest epoch's rows (``epoch_rows``): their indices, oldest
+        first, each one's position among its game's rows, and its game's rows.
+
+        They are the ring's newest rows, and a game's rows run together under
+        its id. A game the ring has begun to overwrite counts the rows held.
+        """
+        rows = self.epoch_rows
+        indices = np.arange(self._index - rows, self._index) % self._capacity
+        _, first, counts = np.unique(self._game_ids[indices], return_index=True, return_counts=True)
+        return indices, np.arange(rows) - np.repeat(first, counts), np.repeat(counts, counts)
+
     def add_stacked(
         self,
         states: np.ndarray,
@@ -585,8 +597,15 @@ class ReplayBuffer:
     def rows_oldest_first(self) -> dict[str, np.ndarray]:
         """Copies of the occupied rows' arrays, in write order, keyed as
         ``add_stacked`` takes them (``player_counts`` for the counts)."""
-        order = _write_order(self._size, self._index, self._capacity)
-        return {name: column[order] for name, column in self._columns().items()}
+        return self.rows_at(_write_order(self._size, self._index, self._capacity))
+
+    def rows_at(
+        self, indices: np.ndarray, names: Sequence[str] | None = None,
+    ) -> dict[str, np.ndarray]:
+        """Copies of the rows at ``indices``, keyed as ``add_stacked`` takes
+        them: every column, or those ``names``."""
+        columns = self._columns()
+        return {name: columns[name][indices] for name in names or columns}
 
     def __len__(self) -> int:
         return self._size

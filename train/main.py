@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,7 +35,7 @@ from train.eval_server import (
     get_worker_result,
 )
 from train.logging import TrainingLogger
-from train.profile_stats import EvalServerStats, GameProfileData, format_epoch_profile
+from train.profile_stats import STAGES, EvalServerStats, GameProfileData, format_epoch_profile
 from train.policy_metrics import PolicyMetrics
 from train.replay_buffer import FLAG_FROM_POSITION, ReplayBuffer
 from mcts.evaluator import NNEvaluator
@@ -45,7 +46,7 @@ from train.self_play import (
     play_game,
     self_play_worker,
 )
-from train.trainer import Trainer, average_training_metrics
+from train.trainer import Trainer, average_training_metrics, summarize_scores
 
 
 def _parse_int_list(value: str) -> list[int]:
@@ -410,6 +411,29 @@ def _build_profile_scalars(
             if sp_duration > 0 else 0
         )
 
+    return scalars
+
+
+def _build_eval_server_scalars(stats: EvalServerStats) -> dict[str, float]:
+    """The eval servers' epoch: real against launched rows, launches by
+    launched size, and the serve loop's wall time by stage, as shares and as
+    milliseconds a launch. Merged servers sum their rows and times."""
+    scalars = {
+        "eval_server/launches": float(stats.batch_count),
+        "eval_server/real_rows": float(stats.total_states),
+        "eval_server/launched_rows": float(stats.launched_rows),
+        "eval_server/wall_secs": stats.wall_secs,
+    }
+    if stats.launched_rows:
+        scalars["eval_server/padding_share"] = 1.0 - stats.total_states / stats.launched_rows
+    for size, count in sorted(stats.launch_counts.items()):
+        scalars[f"eval_server/launches_at_{size}"] = float(count)
+        scalars[f"eval_server/real_rows_mean_at_{size}"] = stats.launch_real_rows[size] / count
+    for stage, secs in zip(STAGES, stats.stage_secs, strict=True):
+        if stats.wall_secs > 0:
+            scalars[f"eval_server/{stage}_share"] = secs / stats.wall_secs
+        if stats.batch_count:
+            scalars[f"eval_server/{stage}_ms_per_launch"] = secs / stats.batch_count * 1000
     return scalars
 
 
@@ -841,6 +865,63 @@ def _epoch_training_steps(config: TrainingConfig, buffer: ReplayBuffer) -> int:
     return max(1, round(draws / config.batch_size))
 
 
+_HELDOUT_STREAM = 0x4E1D  # keeps the held-out draw apart from other uses of the seed
+
+
+def _heldout_scalars(
+    trainer: Trainer,
+    buffer: ReplayBuffer,
+    config: TrainingConfig,
+    epoch: int,
+    phase_names: Sequence[str],
+) -> dict[str, float]:
+    """The held-out loss: up to ``heldout_rows`` of the epoch's new rows,
+    scored by the weights that have yet to train on them.
+
+    The rows are drawn uniformly without replacement from the epoch's
+    (``epoch_row_positions``), by a generator of ``(seed, epoch)`` alone, so
+    the run's other random streams are as they are without it. The trainer
+    scores them by its own input path and loss functions, in eval mode, with
+    no update and no importance weights. Value MSE and policy KL cover every
+    row; then games from the opening alone, together, by quarter of their
+    game's rows, and by decision phase; then games started from a position.
+    Empty without ``heldout_rows``.
+    """
+    if config.heldout_rows <= 0:
+        return {}
+    indices, positions, lengths = buffer.epoch_row_positions()
+    count = min(config.heldout_rows, len(indices))
+    if count == 0:
+        return {}
+    rng = np.random.default_rng((config.seed, epoch, _HELDOUT_STREAM))
+    sample = np.sort(rng.choice(len(indices), size=count, replace=False))
+    rows = indices[sample]
+    scores = trainer.score_batches(
+        buffer.rows_at(rows[start:start + config.batch_size])
+        for start in range(0, count, config.batch_size)
+    )
+    labels = buffer.rows_at(rows, ("phase_ids", "player_counts", "flags"))
+    started = (labels["flags"] & FLAG_FROM_POSITION) != 0
+    opening = ~started
+    quarters = 4 * positions[sample] // lengths[sample]
+    groups = {"all": np.ones(count, dtype=bool), "opening": opening, "started": started}
+    groups.update({f"q{q + 1}": opening & (quarters == q) for q in range(4)})
+    groups.update({name: opening & (labels["phase_ids"] == i) for i, name in enumerate(phase_names)})
+    scalars = {"heldout/rows": float(count), "heldout/rows_started": float(started.sum())}
+    for group, measures in summarize_scores(*scores, labels["player_counts"], groups).items():
+        suffix = "" if group == "all" else f"_{group}"
+        scalars[f"heldout/value_mse{suffix}"] = measures["value_mse"]
+        scalars[f"heldout/policy_kl{suffix}"] = measures["policy_kl"]
+    return scalars
+
+
+def _heldout_over_train(heldout: dict[str, float], avg_losses: dict[str, float]) -> dict[str, float]:
+    """The held-out value MSE over the epoch's mean training value loss."""
+    if "heldout/value_mse" not in heldout or not avg_losses.get("value_loss"):
+        return {}
+    return {"heldout/value_mse_over_training": heldout["heldout/value_mse"] / avg_losses["value_loss"]}
+
+
 def _capture_rng_state(master_rng: np.random.Generator) -> dict[str, object]:
     """Capture all RNG states for checkpoint reproducibility."""
     state: dict[str, object] = {
@@ -1117,7 +1198,8 @@ def main() -> None:
                 server_id=i,
                 worker_start=ws,
                 worker_end=we,
-                profile=config.profile,
+                # Its stats feed the eval_server/ tags every epoch.
+                profile=True,
                 mp_context=ctx,
                 no_compile=args.no_compile,
                 compile_kwargs=eval_compile_kwargs,
@@ -1361,10 +1443,9 @@ def main() -> None:
                     },
                 )
 
-            # Reset eval server profile stats
-            if config.profile and eval_servers:
-                for es in eval_servers:
-                    es.reset_profile_stats()
+            # Eval-server stats cover this epoch's self-play alone.
+            for es in eval_servers:
+                es.reset_profile_stats()
 
             # Compute per-epoch annealing parameters
             epoch_cfg = config.compute_epoch_config(epoch, game_lengths)
@@ -1459,6 +1540,8 @@ def main() -> None:
                 ):
                     # Met quota — run scaled training phase before exiting
                     print("Game quota met — running training before shutdown...")
+                    heldout = _heldout_scalars(trainer, buffer, config, epoch, game.policy.phase_names)
+                    logger.log_scalars(epoch_num, heldout)
                     model.train()
                     shutdown_losses: dict[str, list[float]] = defaultdict(list)
                     training_steps = _epoch_training_steps(config, buffer)
@@ -1476,6 +1559,7 @@ def main() -> None:
                         logger.update_training(step + 1, losses, trainer.lr)
                     logger.end_training()
                     avg_losses = average_training_metrics(shutdown_losses)
+                    logger.log_scalars(epoch_num, _heldout_over_train(heldout, avg_losses))
                     did_train = True
                     game_lengths.update(opening_lengths.means())
 
@@ -1553,17 +1637,17 @@ def main() -> None:
                 },
             )
 
-            # --- Profile summary ---
+            # --- Eval-server stats, and the profile summary ---
+            sp_duration = time.perf_counter() - epoch_start
+            server_stats: EvalServerStats | None = None
+            all_stats = [
+                s for s in (es.get_profile_stats() for es in eval_servers)
+                if s is not None
+            ]
+            if all_stats:
+                server_stats = EvalServerStats.merge(all_stats)
+                logger.log_scalars(epoch_num, _build_eval_server_scalars(server_stats))
             if config.profile and game_profiles:
-                sp_duration = time.perf_counter() - epoch_start
-                server_stats: EvalServerStats | None = None
-                if eval_servers:
-                    all_stats = [
-                        s for s in (es.get_profile_stats() for es in eval_servers)
-                        if s is not None
-                    ]
-                    if all_stats:
-                        server_stats = EvalServerStats.merge(all_stats)
                 print(format_epoch_profile(game_profiles, server_stats, sp_duration))
 
                 # Tensorboard: profile scalars
@@ -1572,6 +1656,10 @@ def main() -> None:
                     num_eval_servers=config.num_eval_servers,
                 )
                 logger.log_scalars(epoch_num, profile_scalars)
+
+            # --- Held-out loss: the epoch's new rows, before it trains on them ---
+            heldout = _heldout_scalars(trainer, buffer, config, epoch, game.policy.phase_names)
+            logger.log_scalars(epoch_num, heldout)
 
             # --- Phase 2: Training ---
             training_steps_done = 0
@@ -1636,7 +1724,12 @@ def main() -> None:
                     ],
                     "epoch/policy_kl_avg": avg_losses["policy_kl"],
                     "epoch/training_steps": float(training_steps_done),
+                    **_heldout_over_train(heldout, avg_losses),
                 }
+                if "grad_norm" in avg_losses:
+                    epoch_scalars["epoch/grad_norm_avg"] = avg_losses["grad_norm"]
+                    epoch_scalars["epoch/grad_norm_max"] = avg_losses["grad_norm_max"]
+                    epoch_scalars["epoch/grad_clipped_share"] = avg_losses["grad_clipped"]
                 for k, v in avg_losses.items():
                     if k.startswith((
                         "policy_loss_",

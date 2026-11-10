@@ -1,13 +1,16 @@
 """Profiling statistics for self-play performance analysis.
 
-Gated behind --profile flag; zero overhead when disabled.
+Search and eval-client stats are gated behind --profile, with zero overhead
+when disabled; the eval server's are always kept, for its TensorBoard tags.
 All timing uses time.perf_counter() for sub-millisecond accuracy.
 """
 
 from __future__ import annotations
 
+import copy
 from collections import defaultdict
 from dataclasses import dataclass
+from time import perf_counter
 
 
 @dataclass
@@ -43,16 +46,84 @@ class GameProfileData:
     game_duration: float = 0.0
 
 
+# The serve loop's stages, in ``EvalServerStats.stage_secs`` order:
+# - gather: draining requests, waiting for more while a min batch fills, and
+#   copying the requests' rows out of the workers' shared memory;
+# - build: flattening relation records, padding, and issuing the device copies;
+# - forward: issuing the forward, softmax and copies back, then any wait on the
+#   GPU for a free ping-pong slot (until the GPU finished that slot's launch);
+#   on the CPU, the forward itself;
+# - scatter: the rest of that wait, on the scatter thread; on the CPU, the
+#   scatter itself;
+# - idle: no request pending.
+# GPU work that overlaps the next launch's gather and build costs the loop no
+# time and is not counted.
+STAGES = ("gather", "build", "forward", "scatter", "idle")
+GATHER, BUILD, FORWARD, SCATTER, IDLE = range(len(STAGES))
+
+
 class EvalServerStats:
-    """Accumulated stats from eval server, reset per epoch."""
+    """Accumulated stats from eval server, reset per epoch.
+
+    ``batch_size`` counts a launch's real rows; ``launched_rows`` and the
+    ``launch_*`` counts, keyed by launched size, count the rows it launched,
+    which bucketed mode pads. ``stage_secs`` splits the serve loop's
+    ``wall_secs`` since the last reset between ``STAGES`` (``charge``).
+    """
 
     __slots__ = (
         "batch_count", "batch_size_sum", "batch_size_min", "batch_size_max",
         "batch_size_hist", "inference_secs_sum", "inference_secs_min",
         "inference_secs_max", "idle_polls", "idle_secs", "total_states",
+        "launched_rows", "launch_counts", "launch_real_rows",
+        "stage_secs", "wall_secs", "_mark", "_window_start",
     )
 
     def __init__(self) -> None:
+        self.reset()
+
+    def record_batch(self, batch_size: int, launch_size: int, inference_secs: float) -> None:
+        self.batch_count += 1
+        self.batch_size_sum += batch_size
+        self.total_states += batch_size
+        if batch_size < self.batch_size_min:
+            self.batch_size_min = batch_size
+        if batch_size > self.batch_size_max:
+            self.batch_size_max = batch_size
+        self.batch_size_hist[batch_size] += 1
+        self.launched_rows += launch_size
+        self.launch_counts[launch_size] += 1
+        self.launch_real_rows[launch_size] += batch_size
+        self.inference_secs_sum += inference_secs
+        if inference_secs < self.inference_secs_min:
+            self.inference_secs_min = inference_secs
+        if inference_secs > self.inference_secs_max:
+            self.inference_secs_max = inference_secs
+
+    def record_idle(self, idle_secs: float) -> None:
+        self.idle_polls += 1
+        self.idle_secs += idle_secs
+
+    def charge(self, stage: int, until: float | None = None) -> float:
+        """Charge the serve loop's time since the last charge to ``stage``, up
+        to ``until`` if it falls between them, and return where it stopped.
+        Only the serve loop's thread charges, so the stages partition its time."""
+        now = perf_counter()
+        if until is not None:
+            now = min(max(until, self._mark), now)
+        self.stage_secs[stage] += now - self._mark
+        self._mark = now
+        return now
+
+    def report(self) -> EvalServerStats:
+        """A copy of the stats since the last reset, with their wall time,
+        and a reset."""
+        snapshot = copy.copy(self)
+        snapshot.wall_secs = perf_counter() - self._window_start
+        self.reset()
+        return snapshot
+
+    def reset(self) -> None:
         self.batch_count: int = 0
         self.batch_size_sum: int = 0
         self.batch_size_min: int = 999999
@@ -64,38 +135,12 @@ class EvalServerStats:
         self.idle_polls: int = 0
         self.idle_secs: float = 0.0
         self.total_states: int = 0
-
-    def record_batch(self, batch_size: int, inference_secs: float) -> None:
-        self.batch_count += 1
-        self.batch_size_sum += batch_size
-        self.total_states += batch_size
-        if batch_size < self.batch_size_min:
-            self.batch_size_min = batch_size
-        if batch_size > self.batch_size_max:
-            self.batch_size_max = batch_size
-        self.batch_size_hist[batch_size] += 1
-        self.inference_secs_sum += inference_secs
-        if inference_secs < self.inference_secs_min:
-            self.inference_secs_min = inference_secs
-        if inference_secs > self.inference_secs_max:
-            self.inference_secs_max = inference_secs
-
-    def record_idle(self, idle_secs: float) -> None:
-        self.idle_polls += 1
-        self.idle_secs += idle_secs
-
-    def reset(self) -> None:
-        self.batch_count = 0
-        self.batch_size_sum = 0
-        self.batch_size_min = 999999
-        self.batch_size_max = 0
-        self.batch_size_hist = defaultdict(int)
-        self.inference_secs_sum = 0.0
-        self.inference_secs_min = float("inf")
-        self.inference_secs_max = 0.0
-        self.idle_polls = 0
-        self.idle_secs = 0.0
-        self.total_states = 0
+        self.launched_rows: int = 0
+        self.launch_counts: dict[int, int] = defaultdict(int)
+        self.launch_real_rows: dict[int, int] = defaultdict(int)
+        self.stage_secs: list[float] = [0.0] * len(STAGES)
+        self.wall_secs: float = 0.0
+        self._mark = self._window_start = perf_counter()
 
     @classmethod
     def merge(cls, stats_list: list[EvalServerStats]) -> EvalServerStats:
@@ -118,6 +163,12 @@ class EvalServerStats:
             merged.idle_polls += s.idle_polls
             merged.idle_secs += s.idle_secs
             merged.total_states += s.total_states
+            merged.launched_rows += s.launched_rows
+            for size, count in s.launch_counts.items():
+                merged.launch_counts[size] += count
+                merged.launch_real_rows[size] += s.launch_real_rows[size]
+            merged.stage_secs = [a + b for a, b in zip(merged.stage_secs, s.stage_secs, strict=True)]
+            merged.wall_secs += s.wall_secs
         return merged
 
 

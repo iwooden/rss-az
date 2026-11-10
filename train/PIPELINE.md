@@ -212,6 +212,26 @@ Notes below name RSS's implementations where they matter
   `relation_gains`; and `phase_mod.weight`. Policy cross-entropy uses masked
   logits and sharpened targets, and value loss is masked MSE. The
   multi-process trainer runs fp32 without compilation.
+- **Gradient norm.** `epoch/grad_norm_avg` and `_max` are the total norm
+  before `grad_clip`, and `epoch/grad_clipped_share` the share of steps clipped.
+- **Optional held-out loss.** With `heldout_rows` n > 0 (default 0; 1889-v1's
+  design sets 32,768), each epoch, once self-play has added its games and
+  before it trains, n of its rows (all, if fewer) are drawn uniformly without
+  replacement: rows no step has trained on. The graceful shutdown's training
+  draws them too; an epoch it leaves untrained draws them when replayed. The
+  draw is seeded by `seed` and the epoch, apart from the run's generator, so
+  training and games are the same with it or without. `Trainer.score_batches`
+  scores the rows with the current weights by the training loss's own input
+  path and functions, in eval mode under `no_grad`, with no update and no
+  importance weights; the capacity probe scores its held-out rows the same
+  way. `heldout/value_mse` and `heldout/policy_kl` (cross-entropy minus target
+  entropy) cover the sample. The `_opening` suffix covers games played from
+  the opening, `_q1` to `_q4` their rows by quarter of the game (a row's place
+  among its game's rows in the buffer), and `_<phase>` by decision phase, also
+  opening games only; `_started` covers games started from a position.
+  `heldout/rows` and `heldout/rows_started` count rows, and
+  `heldout/value_mse_over_training` divides by the epoch's mean training value
+  loss.
 
 ## Inference IPC (`train/eval_server.py`)
 
@@ -243,6 +263,9 @@ Notes below name RSS's implementations where they matter
   server) the server upcasts the fp16 wire tokens to fp32 on the device. After
   training, every server reloads a CPU snapshot (`_sync_eval_servers`).
   `bucketed` mode pads launches to powers of 2.
+- **Launch and stage tags.** `eval_server/` gives each epoch's real and
+  launched (padded) rows, launches by launched size, and the serve loop's time
+  by stage (`profile_stats.STAGES`); GPU work it doesn't wait on is uncounted.
 
 ## Operations (`train/main.py`)
 

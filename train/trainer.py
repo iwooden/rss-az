@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
@@ -33,9 +34,12 @@ def average_training_metrics(metrics: dict[str, list[float]]) -> dict[str, float
 
     Empty phase buckets are absent from train_step, so the per-phase lists
     and their sample-count lists align even when a phase is rare. Phases come
-    from the ``policy_samples_<phase>`` keys.
+    from the ``policy_samples_<phase>`` keys. ``grad_clipped`` averages to the
+    share of steps clipped, and ``grad_norm_max`` is the steps' largest norm.
     """
     result = {key: sum(values) / len(values) for key, values in metrics.items()}
+    if "grad_norm" in metrics:
+        result["grad_norm_max"] = max(metrics["grad_norm"])
     for count_key, counts in metrics.items():
         if not count_key.startswith(_PHASE_SAMPLES):
             continue
@@ -85,6 +89,32 @@ def value_row_sqerr(
     value_mask = player_ids.unsqueeze(0) < player_counts.unsqueeze(1)
     value_sqerr = (values - value_targets).square()
     return value_sqerr.masked_fill(~value_mask, 0.0).sum(dim=1), value_mask
+
+
+def summarize_scores(
+    cross_entropy: np.ndarray,
+    target_entropy: np.ndarray,
+    value_sqerr: np.ndarray,
+    player_counts: np.ndarray,
+    groups: dict[str, np.ndarray],
+) -> dict[str, dict[str, float]]:
+    """Value MSE over real player slots and mean policy KL, for each group of
+    rows (boolean masks) that has any.
+
+    A value's denominator is its group's real players, as ``train_step``'s; rows
+    count uniformly, since a held-out row was never prioritized.
+    """
+    result: dict[str, dict[str, float]] = {}
+    for name, rows in groups.items():
+        count = int(rows.sum())
+        if count == 0:
+            continue
+        result[name] = {
+            "rows": count,
+            "value_mse": float(value_sqerr[rows].sum() / player_counts[rows].astype(np.float64).sum()),
+            "policy_kl": float((cross_entropy[rows].astype(np.float64) - target_entropy[rows]).mean()),
+        }
+    return result
 
 
 class Trainer:
@@ -468,7 +498,9 @@ class Trainer:
             phase bucket, ``policy_loss_<Np>`` / ``value_loss_<Np>`` per
             player-count bucket present in the batch, and ``value_raw_mean``,
             ``value_raw_mean_abs``, ``value_raw_saturated`` for models with a
-            ``value_head`` (see ``_raw_value_stats``).
+            ``value_head`` (see ``_raw_value_stats``). With ``grad_clip``,
+            ``grad_norm`` is the gradients' total norm before clipping and
+            ``grad_clipped`` 1.0 when it exceeded the limit, else 0.0.
 
             With prioritized replay, the policy gradient uses the batch as
             sampled, while the value loss and every reported loss average
@@ -683,9 +715,11 @@ class Trainer:
         total_loss.backward()
 
         if self.config.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(
+            # The total norm before clipping, read back with the losses.
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.config.grad_clip,
             )
+            all_scalars = torch.cat([all_scalars, grad_norm.reshape(1).to(all_scalars.dtype)])
 
         self.optimizer.step()
         self._epoch_step += 1
@@ -699,6 +733,7 @@ class Trainer:
 
         # Single H←D sync for all scalars.
         scalars = all_scalars.tolist()
+        grad_norm_value = scalars.pop() if self.config.grad_clip > 0 else None
         result: dict[str, float] = {
             "policy_loss": scalars[0],
             "value_loss": scalars[1],
@@ -742,6 +777,9 @@ class Trainer:
             result["value_raw_mean_abs"] = scalars[raw_offset + 1]
             result["value_raw_saturated"] = scalars[raw_offset + 2]
 
+        if grad_norm_value is not None:
+            result["grad_norm"] = grad_norm_value
+            result["grad_clipped"] = float(grad_norm_value > self.config.grad_clip)
         return result
 
     @torch.no_grad()
@@ -786,6 +824,28 @@ class Trainer:
             target_entropy.cpu().numpy(),
             value_sqerr.cpu().numpy(),
         )
+
+    def score_batches(
+        self, batches: Iterable[dict[str, np.ndarray]],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``score_rows`` over ``batches`` of rows, keyed as the replay
+        buffer's columns, in eval mode; the model's mode is restored after.
+        Returns every row's policy cross-entropy, target entropy, and squared
+        value error summed over real players, in order."""
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            scores = [
+                self.score_rows(
+                    rows["states"], rows["legal_masks"], rows["policy_targets"],
+                    rows["value_targets"], rows["player_counts"],
+                )
+                for rows in batches
+            ]
+        finally:
+            self.model.train(was_training)
+        cross_entropy, target_entropy, value_sqerr = (np.concatenate(part) for part in zip(*scores))
+        return cross_entropy, target_entropy, value_sqerr
 
     @property
     def global_step(self) -> int:

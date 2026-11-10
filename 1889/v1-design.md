@@ -267,6 +267,17 @@ two schedules agree at every step.
   - the richest corp's treasury when a 5 is first the next depot train;
   - the OR at which each phase starts;
   - the round in which MF's port tile is laid.
+- **As built** (sub-step 9.4): `heldout/*` tags, from `heldout_rows` sampled
+  rows of the epoch's own games, with `_opening`, `_q1`-`_q4`, per-phase, and
+  `_started` splits and `heldout/value_mse_over_training`;
+  `epoch/grad_norm_avg`, `_max`, and `epoch/grad_clipped_share`; and
+  `eval_server/*`: real and launched rows, `padding_share`, launches and mean
+  real rows at each launched size, and the serve loop's time split between
+  gather, build, forward, scatter, and idle. The flatten is inside build.
+  **A local 6-worker run padded 28% of launched rows** (launches at 32 carried
+  21 real rows on average). If the cloud's `padding_share` is similar, padding
+  explains most of the gap below, and finer launch sizes are the fix to test
+  in step 9.9's profile.
 - **Eval server.** A histogram of real against launched rows per launch, and
   time by stage: gather, flatten, forward, scatter. `EvalServerStats` already
   holds a size histogram that only its mean and maximum reach TensorBoard from
@@ -502,6 +513,7 @@ plays better. The measure of strength is games between v1 and v0 at epoch 58.
 | `temp_anneal_start_pcts`, `_end_pcts` | | [0.3, 0.3, 0.3], [0.6, 0.6, 0.6] | 2.4 |
 | `temp_anneal_starts`, `_ends` and the policy-target ones | move numbers | removed | 2.4 |
 | `value_blend_final` | 0.7 | 0.3 | 2.5 |
+| `heldout_rows` | (0) | 32,768 | 4 |
 | `value_loss_weight` | (1.0) | **Tier C** | 7 |
 | `checkpoint_dir`, `tensorboard_dir` | `*/1889-v0` | `*/1889-v1` | |
 

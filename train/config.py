@@ -345,6 +345,9 @@ class TrainingConfig:
     # --- Logging ---
     tensorboard_dir: str = "runs"
     log_interval: int = 100
+    # Each epoch, before it trains, score up to this many of its new rows for
+    # the heldout/ tags (PIPELINE.md); 0 disables.
+    heldout_rows: int = 0
 
     # --- Overall ---
     num_epochs: int = 500
@@ -690,6 +693,8 @@ class TrainingConfig:
             raise ValueError(f"start_explore_moves must be an integer >= 0, got {moves!r}")
         if self.buffer_epochs < 0:
             raise ValueError(f"buffer_epochs must be >= 0, got {self.buffer_epochs}")
+        if self.heldout_rows < 0:
+            raise ValueError(f"heldout_rows must be >= 0, got {self.heldout_rows}")
         if self.replay_ratio < 0:
             raise ValueError(f"replay_ratio must be >= 0, got {self.replay_ratio}")
         if self.replay_ratio > 0 and self.buffer_epochs == 0:

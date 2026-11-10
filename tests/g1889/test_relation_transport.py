@@ -52,6 +52,7 @@ from train.eval_server import (
     _warmup_compiled_model,
 )
 from train.gpu import detect_gpu
+from train.profile_stats import FORWARD, GATHER, IDLE
 from train.replay_buffer import ReplayBuffer
 from train.self_play import play_game, self_play_worker
 from train.trainer import Trainer
@@ -344,11 +345,12 @@ class _LaunchRecorder(nn.Module):
 
 
 def _round_trip(
-    samples: list[Sample], device: str, mode: str, leaves: int,
+    samples: list[Sample], device: str, mode: str, leaves: int, stats_out: list[Any] | None = None,
 ) -> tuple[dict[int, tuple[list[list[Sample]], list[Sample]]], dict[int, Any], list[tuple[int, np.ndarray]]]:
     """Three real workers, each of one player count, as search sends its states,
     through a real server. Returns each worker's requests and single states, its
-    outputs, and each launch's batch size and flat rows."""
+    outputs, and each launch's batch size and flat rows; ``stats_out`` gets the
+    server's stats."""
     ctx = mp.get_context("spawn")
     launch_queue = ctx.Queue()
     spec = get_model_input_spec(CONFIG)
@@ -398,6 +400,8 @@ def _round_trip(
         stats = server.get_profile_stats()
         assert stats is not None
         launches = [launch_queue.get(timeout=30.0) for _ in range(stats.batch_count)]
+        if stats_out is not None:
+            stats_out.append(stats)
     finally:
         for process in workers:
             if process.is_alive():
@@ -480,6 +484,24 @@ def test_eval_server_round_trip_gives_nn_evaluator_s_outputs(samples, device, mo
             np.testing.assert_allclose(remote[1], local[1], atol=TOLERANCE, rtol=TOLERANCE)
             np.testing.assert_array_equal(remote[2], local[2])
             assert remote[3:] == local[3:]
+
+
+def test_eval_server_stats_count_real_and_launched_rows_and_split_the_loop_s_time(samples):
+    """Each launch's real rows are the states workers sent, its launched rows
+    what the model saw; the stages and idle time make up the server's time."""
+    stats_out: list[Any] = []
+    requests, _, launches = _round_trip(samples, "cpu", "bucketed", 8, stats_out)
+    stats, = stats_out
+    sent = sum(len(part) for parts, _ in requests.values() for part in parts)
+    sent += sum(len(singles) for _, singles in requests.values())
+    launched = [launch_n for launch_n, _rows in launches]
+    assert stats.total_states == sum(stats.launch_real_rows.values()) == sent
+    assert stats.launched_rows == sum(launched) >= sent
+    assert stats.launch_counts == {n: launched.count(n) for n in set(launched)}
+    assert all(stats.launch_real_rows[n] <= n * count for n, count in stats.launch_counts.items())
+    assert all(secs >= 0 for secs in stats.stage_secs)
+    assert sum(stats.stage_secs) == pytest.approx(stats.wall_secs, rel=0.01)
+    assert stats.stage_secs[FORWARD] > 0 and stats.stage_secs[GATHER] > 0 and stats.stage_secs[IDLE] > 0
 
 
 def _get_result(results: Any, server: EvaluationServer, workers: list[Any]) -> Any:

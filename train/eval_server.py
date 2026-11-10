@@ -91,7 +91,6 @@ NNEvaluator, writing to shared memory instead of serializing over pipes.
 
 from __future__ import annotations
 
-import copy
 import queue as _queue
 import signal
 import threading
@@ -111,7 +110,15 @@ from nn.model_contract import (
     flatten_relation_records,
     normalize_model_type,
 )
-from train.profile_stats import EvalClientStats, EvalServerStats
+from train.profile_stats import (
+    BUILD,
+    FORWARD,
+    GATHER,
+    IDLE,
+    SCATTER,
+    EvalClientStats,
+    EvalServerStats,
+)
 
 if TYPE_CHECKING:
     from games import Game
@@ -581,7 +588,6 @@ def _eval_server_main(
     server_id: int,
     worker_start: int,
     worker_end: int,
-    profile: bool,
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
     gpu_vendor: str = "cpu",
@@ -609,7 +615,7 @@ def _eval_server_main(
             weight_sync_event, weight_sync_done_event, weight_sync_queue,
             server_id=server_id,
             worker_start=worker_start, worker_end=worker_end,
-            profile=profile, no_compile=no_compile,
+            no_compile=no_compile,
             compile_kwargs=compile_kwargs,
             gpu_vendor=gpu_vendor,
             min_batch_size=min_batch_size,
@@ -640,7 +646,6 @@ def _eval_server_serve(
     server_id: int,
     worker_start: int,
     worker_end: int,
-    profile: bool,
     no_compile: bool,
     compile_kwargs: dict[str, Any] | None = None,
     gpu_vendor: str = "cpu",
@@ -820,8 +825,8 @@ def _eval_server_serve(
     pin_val_np_list = [p.numpy() for p in pin_val_list]
     gpu_val = torch.empty(alloc_batch, npl, dtype=torch.float32, device=device)
 
-    stats: EvalServerStats | None = EvalServerStats() if profile else None
-    _tp = 0.0
+    # Always kept; sent when the parent asks (``get_profile_stats``).
+    stats = EvalServerStats()
 
     # Cython gather/scatter helpers (nogil memcpy, no per-worker Python loop).
     from mcts.mcts_core import (
@@ -890,16 +895,19 @@ def _eval_server_serve(
     # Serializes stats access between main (record_idle, copy+reset) and
     # scatter thread (record_batch).
     _stats_lock = threading.Lock()
+    # When the GPU finished each slot's last launch, as its scatter saw it.
+    _gpu_done = [0.0] * buf_depth
 
     def _scatter_worker() -> None:
         while True:
             job = _scatter_jobs.get()
             if job is None:
                 return
-            (event, slot, widx_copy, cnts_copy, n_req, actual_n,
+            (event, slot, widx_copy, cnts_copy, n_req, actual_n, launch_n,
              start_ti) = job
             if event is not None:
                 event.synchronize()
+                _gpu_done[slot] = perf_counter()
             _scatter_results(
                 pin_priors_np_list[slot].view(np.int8), pin_val_np_list[slot],
                 all_priors_np.view(np.int8), all_values_np,
@@ -912,9 +920,8 @@ def _eval_server_serve(
                 for i in range(n_req):
                     done_flags_np[widx_copy[i]] = 1
                 done_cond.notify_all()
-            if stats is not None:
-                with _stats_lock:
-                    stats.record_batch(actual_n, perf_counter() - start_ti)
+            with _stats_lock:
+                stats.record_batch(actual_n, launch_n, perf_counter() - start_ti)
             _free_slots.put(slot)
 
     _scatter_thread = threading.Thread(
@@ -945,6 +952,10 @@ def _eval_server_serve(
         # finishes processing an in-flight slot (the GPU sync happens
         # there, not here).
         slot = _free_slots.get()
+        # The wait for a slot is on the GPU until it finished the slot's last
+        # launch, then on that launch's scatter.
+        stats.charge(FORWARD, until=_gpu_done[slot])
+        stats.charge(SCATTER)
 
         pin_s_slot = pin_s_list[slot]
         pin_s_flat_bytes = pin_s_flat_bytes_list[slot]
@@ -971,12 +982,11 @@ def _eval_server_serve(
                 f"!= state gather count {actual_n}"
             )
         _gather_masks(pin_mask_np, all_masks_np, widx, cnts, n_req)
+        start_ti = stats.charge(GATHER)
         launch_n = _resolve_launch_batch_size(
             actual_n=actual_n,
             batch_shape_mode=batch_shape_mode,
         )
-
-        start_ti = perf_counter() if stats is not None else 0.0
 
         # Snapshot widx/cnts — the caller reuses these arrays for the next
         # drain, so the scatter thread must work from its own copy.
@@ -1022,6 +1032,7 @@ def _eval_server_serve(
             mask_batch = gpu_mask_bool[:launch_n]
         else:
             mask_batch = gpu_mask[:launch_n].to(torch.bool)
+        stats.charge(BUILD)
 
         with torch.inference_mode():
             # Autocast region is already active (entered once for the whole
@@ -1043,10 +1054,13 @@ def _eval_server_serve(
             event = torch.cuda.Event()
             event.record()
             _scatter_jobs.put((
-                event, slot, widx_copy, cnts_copy, n_req, actual_n, start_ti,
+                event, slot, widx_copy, cnts_copy, n_req, actual_n, launch_n,
+                start_ti,
             ))
+            stats.charge(FORWARD)
         else:
             # CPU path: no event, scatter inline to keep semantics simple.
+            stats.charge(FORWARD)
             _scatter_results(
                 pin_priors_np_list[slot].view(np.int8), pin_val_np_list[slot],
                 all_priors_np.view(np.int8), all_values_np,
@@ -1056,9 +1070,9 @@ def _eval_server_serve(
                 for i in range(n_req):
                     done_flags_np[widx_copy[i]] = 1
                 done_cond.notify_all()
-            if stats is not None:
-                stats.record_batch(actual_n, perf_counter() - start_ti)
+            stats.record_batch(actual_n, launch_n, perf_counter() - start_ti)
             _free_slots.put(slot)
+            stats.charge(SCATTER)
         return actual_n
 
     def _check_stats_report() -> None:
@@ -1070,9 +1084,7 @@ def _eval_server_serve(
         """
         if stats_report_event is not None and stats_report_event.is_set():
             with _stats_lock:
-                snap = copy.copy(stats)
-                if stats is not None:
-                    stats.reset()
+                snap = stats.report()
             stats_queue.put(snap)
             stats_report_event.clear()
 
@@ -1154,8 +1166,7 @@ def _eval_server_serve(
         _timeout_s = max(min_batch_timeout_ms, 0.0) / 1000.0
 
         while not stop_event.is_set():
-            if stats is not None:
-                _tp = perf_counter()
+            _tp = perf_counter()
 
             # Drain bitmap into accumulation buffer.
             num_drained = _drain(
@@ -1173,6 +1184,7 @@ def _eval_server_serve(
             # of it in one forward pass (bounded by the partition's
             # natural max_batch).
             if _accum_states >= min_batch_size:
+                stats.charge(GATHER)
                 for group in _partition_request_groups(
                     _accum_cnts,
                     n_req=_accum_n,
@@ -1188,12 +1200,13 @@ def _eval_server_serve(
 
             # Idle / doorbell handling.
             if _accum_n == 0:
-                if num_drained == 0 and stats is not None:
+                if num_drained == 0:
                     with _stats_lock:
                         stats.record_idle(perf_counter() - _tp)
                 _check_stats_report()
                 _check_weight_sync()
                 _idle_wait()
+                stats.charge(IDLE)
             else:
                 # Have partial work — brief wait for more arrivals, then
                 # flush whatever's accumulated on timeout (anti-starvation
@@ -1203,6 +1216,7 @@ def _eval_server_serve(
                 server_event.clear()
                 if not _peek(submitted_masks, server_id, num_words):
                     if not server_event.wait(timeout=_timeout_s):
+                        stats.charge(GATHER)
                         for group in _partition_request_groups(
                             _accum_cnts,
                             n_req=_accum_n,
@@ -1218,8 +1232,7 @@ def _eval_server_serve(
     else:
         # --- Greedy loop (no min batch, no accumulation, no timeout) ---
         while not stop_event.is_set():
-            if stats is not None:
-                _tp = perf_counter()
+            _tp = perf_counter()
 
             num_requests = _drain(
                 submitted_masks, sig_counts,
@@ -1227,14 +1240,15 @@ def _eval_server_serve(
             )
 
             if num_requests == 0:
-                if stats is not None:
-                    with _stats_lock:
-                        stats.record_idle(perf_counter() - _tp)
+                with _stats_lock:
+                    stats.record_idle(perf_counter() - _tp)
                 _check_stats_report()
                 _check_weight_sync()
                 _idle_wait()
+                stats.charge(IDLE)
                 continue
 
+            stats.charge(GATHER)
             for group in _partition_request_groups(
                 _cnt_buf,
                 n_req=num_requests,
@@ -1271,6 +1285,9 @@ class EvaluationServer:
     eliminating GIL contention between servers. Servers on the trainer's
     device can observe shared CUDA IPC parameter storage; servers on other
     devices keep replicas that the trainer synchronizes between epochs.
+
+    ``profile`` lets the parent fetch the server's stats
+    (``get_profile_stats``), which the server keeps either way.
     """
 
     def __init__(
@@ -1316,7 +1333,6 @@ class EvaluationServer:
             "server_id": server_id,
             "worker_start": worker_start,
             "worker_end": worker_end,
-            "profile": profile,
             "no_compile": no_compile,
             "compile_kwargs": compile_kwargs,
             "gpu_vendor": gpu_vendor,
@@ -1413,12 +1429,15 @@ class EvaluationServer:
     def get_profile_stats(self) -> EvalServerStats | None:
         """Request stats from the server process and return them.
 
-        Signals the server to report, then reads from the shared queue.
-        Returns None if profiling is disabled or the server doesn't respond.
+        Signals the server to report, and rings its doorbell so an idle
+        server answers at once, then reads from the shared queue. Returns
+        None if profiling is disabled or the server doesn't respond.
         """
         if self._stats_report_event is None:
             return None
         self._stats_report_event.set()
+        if self._shared_bufs.server_events is not None:
+            self._shared_bufs.server_events[self._server_id].set()
         try:
             return self._stats_queue.get(timeout=2.0)
         except _queue.Empty:
@@ -1427,8 +1446,9 @@ class EvaluationServer:
     def reset_profile_stats(self) -> None:
         """Reset profile stats for a new epoch.
 
-        Stats are reset inside the server after reporting.
-        Drain any leftover stats from previous collection.
+        Drains any leftover stats from a previous collection, then takes and
+        discards a report, which resets the server's stats: the next report
+        covers only what follows, idle time and wall time included.
         """
         if self._stats_queue is not None:
             while not self._stats_queue.empty():
@@ -1436,6 +1456,7 @@ class EvaluationServer:
                     self._stats_queue.get_nowait()
                 except _queue.Empty:
                     break
+            self.get_profile_stats()
 
 
 def get_worker_result(

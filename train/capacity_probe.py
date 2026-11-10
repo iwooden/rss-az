@@ -54,7 +54,7 @@ from train.checkpoint import load_checkpoint, save_checkpoint
 from train.config import TrainingConfig
 from train.gpu import detect_gpu
 from train.replay_buffer import ReplayBuffer
-from train.trainer import Trainer
+from train.trainer import Trainer, summarize_scores
 
 # The criterion's constants (§5.7).
 GROW_MARGIN_GAPS = 2.0
@@ -198,50 +198,16 @@ def group_rows(
     return groups
 
 
-def summarize_scores(
-    cross_entropy: np.ndarray,
-    target_entropy: np.ndarray,
-    value_sqerr: np.ndarray,
-    player_counts: np.ndarray,
-    groups: dict[str, np.ndarray],
-) -> dict[str, dict[str, float]]:
-    """Value MSE over real player slots and mean policy KL, for each group.
-
-    A value's denominator is its group's real players, as ``train_step``'s; rows
-    count uniformly, since a held-out row was never prioritized.
-    """
-    result: dict[str, dict[str, float]] = {}
-    for name, rows in groups.items():
-        count = int(rows.sum())
-        if count == 0:
-            continue
-        result[name] = {
-            "rows": count,
-            "value_mse": float(value_sqerr[rows].sum() / player_counts[rows].astype(np.float64).sum()),
-            "policy_kl": float((cross_entropy[rows].astype(np.float64) - target_entropy[rows]).mean()),
-        }
-    return result
-
-
 def evaluate_holdout(
     trainer: Trainer, rows: dict[str, np.ndarray], batch_size: int, phase_names: tuple[str, ...],
 ) -> dict[str, dict[str, float]]:
     """Score every held-out row by the trainer's input path and loss functions."""
-    was_training = trainer.model.training
-    trainer.model.eval()
-    total = len(rows["states"])
-    scores: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-    for start in range(0, total, batch_size):
-        stop = start + batch_size
-        scores.append(trainer.score_rows(
-            rows["states"][start:stop], rows["legal_masks"][start:stop],
-            rows["policy_targets"][start:stop], rows["value_targets"][start:stop],
-            rows["player_counts"][start:stop],
-        ))
-    trainer.model.train(was_training)
-    cross_entropy, target_entropy, value_sqerr = (np.concatenate(part) for part in zip(*scores))
+    scores = trainer.score_batches(
+        {name: column[start:start + batch_size] for name, column in rows.items()}
+        for start in range(0, len(rows["states"]), batch_size)
+    )
     groups = group_rows(rows["player_counts"], rows["phase_ids"], phase_names)
-    return summarize_scores(cross_entropy, target_entropy, value_sqerr, rows["player_counts"], groups)
+    return summarize_scores(*scores, rows["player_counts"], groups)
 
 
 # ---------------------------------------------------------------------------
