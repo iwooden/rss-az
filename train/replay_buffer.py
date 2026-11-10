@@ -5,7 +5,12 @@ compact int16 game states, per-row ``phase_id`` kept purely for per-phase
 TB reporting, dense ``legal_mask`` + ``policy_target`` rows over the game's
 ``policy.unified_dim`` unified logit slots, and canonical-order per-player
 ``value_target``. Each row also carries a sampling priority,
-KL(policy target || unnoised prior), used when prioritized replay is on.
+KL(policy target || unnoised prior), used when prioritized replay is on, and
+its game: the game's id, flags, and final net worths.
+
+Games are written whole and in id order, and the buffer records the first game
+id of each epoch, so the newest ``buffer_epochs`` epochs are the ring's newest
+run of rows: the window that sampling draws from.
 
 The trainer materializes token and relation inputs per sampled state at
 training time. Keeping replay in compact state form avoids storing derived NN
@@ -15,6 +20,7 @@ inputs twice.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -25,6 +31,12 @@ from games import RELATION_RECORD_WIDTH
 
 if TYPE_CHECKING:
     from games import Game
+
+# Bit 0 of a row's flags: its game started from a supplied position.
+FLAG_FROM_POSITION = 1
+
+# What ``load`` gives a buffer saved without these arrays: unknown.
+_UNKNOWN = {"priorities": np.nan, "game_ids": -1, "flags": 0, "net_worths": -1}
 
 
 class TrainingExample(NamedTuple):
@@ -69,7 +81,10 @@ class ReplayBuffer:
         max_players: int = 0,
         priority_fraction: float = 0.0,
         priority_exponent: float = 0.5,
+        buffer_epochs: int = 0,
     ) -> None:
+        if buffer_epochs < 0:
+            raise ValueError(f"buffer_epochs must be >= 0, got {buffer_epochs}")
         if not 0.0 <= priority_fraction < 1.0:
             raise ValueError(
                 f"priority_fraction must be in [0, 1), got {priority_fraction}"
@@ -80,6 +95,7 @@ class ReplayBuffer:
             )
         self._priority_fraction = priority_fraction
         self._priority_exponent = priority_exponent
+        self._buffer_epochs = buffer_epochs
         self._capacity = capacity
         self._state_size = state_size_int16
         self._max_players = max_players or num_players
@@ -129,11 +145,61 @@ class ReplayBuffer:
         )
         # Raw KL priorities; NaN marks rows saved before priorities existed.
         self._priorities = np.full(capacity, np.nan, dtype=np.float32)
-        # Sampling weights derived from priorities, rebuilt after writes.
+        # Each row's game: its serial number in the run, never decreasing in
+        # write order, its flags (FLAG_*), and its final net worths in
+        # canonical player order, -1 past the game's players. Rows saved
+        # before these existed have id -1 and net worths -1.
+        self._game_ids = np.full(capacity, -1, dtype=np.int32)
+        self._flags = np.zeros(capacity, dtype=np.uint8)
+        self._net_worths = np.full((capacity, self._max_players), -1, dtype=np.int32)
+        self._next_game_id = 0
+        # (epoch, its first game id) for each epoch begun, oldest first.
+        self._epochs: list[tuple[int, int]] = []
+        self._window_warned = False
+        # The window and the sampling weights derived from its priorities,
+        # rebuilt after writes.
         self._priority_version = 0
+        self._window_version = -1
+        self._window_rows = 0
+        self._window_epochs = 0
         self._sampler_version = -1
         self._sampler_rel = np.empty(0, dtype=np.float32)
         self._sampler_cdf = np.empty(0, dtype=np.float64)
+
+    def _columns(self) -> dict[str, np.ndarray]:
+        """Every per-row array, keyed as ``add_stacked`` takes it and as
+        ``save`` names its file. Whatever moves rows moves all of these."""
+        return {
+            "states": self._states,
+            "phase_ids": self._phase_ids,
+            "legal_masks": self._legal_masks,
+            "policy_targets": self._policy_targets,
+            "value_targets": self._value_targets,
+            "player_counts": self._player_counts,
+            "priorities": self._priorities,
+            "game_ids": self._game_ids,
+            "flags": self._flags,
+            "net_worths": self._net_worths,
+        }
+
+    def begin_epoch(self, epoch: int) -> None:
+        """Record that ``epoch``'s games come next.
+
+        A resume that replays a partly played epoch finds it already begun and
+        keeps its start, so the games it played before stay with it. An epoch
+        that got no game gives up its entry.
+        """
+        self._window_warned = False
+        if self._epochs and self._epochs[-1][0] == epoch:
+            return
+        if self._epochs and self._epochs[-1][1] == self._next_game_id:
+            self._epochs.pop()
+        self._epochs.append((epoch, self._next_game_id))
+
+    @property
+    def epochs(self) -> list[tuple[int, int]]:
+        """``(epoch, its first game id)`` for each epoch begun, oldest first."""
+        return list(self._epochs)
 
     def add_stacked(
         self,
@@ -145,6 +211,9 @@ class ReplayBuffer:
         player_counts: np.ndarray | None = None,
         num_players: int | None = None,
         priorities: np.ndarray | None = None,
+        game_ids: np.ndarray | None = None,
+        flags: np.ndarray | int = 0,
+        net_worths: np.ndarray | Sequence[int] | None = None,
     ) -> None:
         """Add pre-stacked arrays directly into the ring buffer.
 
@@ -155,10 +224,25 @@ class ReplayBuffer:
         max-width ``(n, max_players)``. Padded player slots are zeroed.
         ``priorities`` are per-row KL(policy target || unnoised prior); rows
         added without them sample at the average priority.
+
+        Without ``game_ids`` the rows are one game, which takes the buffer's
+        next id; ``flags`` and ``net_worths`` (canonical player order, at the
+        game's width or the buffer's) are then the game's. A copy of saved
+        rows passes all three per row, in the order they were written.
         """
         n = states.shape[0]
         if n == 0:
             return
+        game_ids_arr = (
+            np.full(n, self._next_game_id, dtype=np.int32) if game_ids is None
+            else np.asarray(game_ids, dtype=np.int32)
+        )
+        if game_ids_arr.shape != (n,):
+            raise ValueError(f"game_ids shape {game_ids_arr.shape} != ({n},)")
+        net_worths_arr = np.full((n, self._max_players), -1, dtype=np.int32)
+        if net_worths is not None:
+            given = np.atleast_2d(np.asarray(net_worths, dtype=np.int32))
+            net_worths_arr[:, : given.shape[1]] = given
         priorities_arr = (
             np.full(n, np.nan, dtype=np.float32) if priorities is None
             else np.asarray(priorities, dtype=np.float32)
@@ -173,52 +257,50 @@ class ReplayBuffer:
             value_targets, player_counts_arr,
         )
 
+        self._next_game_id = max(self._next_game_id, int(game_ids_arr[-1]) + 1)
+        self._warn_if_window_loses_rows(n)
+
+        # Only the newest ``capacity`` rows of a larger add are kept.
+        kept = min(n, self._capacity)
         if n >= self._capacity:
-            # More examples than capacity — just keep the last `capacity` examples
-            tail = n - self._capacity
-            self._states[:] = states[tail:]
-            self._phase_ids[:] = phase_ids[tail:]
-            self._player_counts[:] = player_counts_arr[tail:]
-            self._legal_masks[:] = legal_masks[tail:]
-            self._policy_targets[:] = policy_targets[tail:]
-            self._value_targets[:] = padded_value_targets[tail:]
-            self._priorities[:] = priorities_arr[tail:]
-            self._size = self._capacity
             self._index = 0
-            return
-
-        end = self._index + n
-        if end <= self._capacity:
-            # No wrap-around
-            self._states[self._index : end] = states
-            self._phase_ids[self._index : end] = phase_ids
-            self._player_counts[self._index : end] = player_counts_arr
-            self._legal_masks[self._index : end] = legal_masks
-            self._policy_targets[self._index : end] = policy_targets
-            self._value_targets[self._index : end] = padded_value_targets
-            self._priorities[self._index : end] = priorities_arr
-        else:
-            # Wrap around
-            first = self._capacity - self._index
-            self._states[self._index :] = states[:first]
-            self._phase_ids[self._index :] = phase_ids[:first]
-            self._player_counts[self._index :] = player_counts_arr[:first]
-            self._legal_masks[self._index :] = legal_masks[:first]
-            self._policy_targets[self._index :] = policy_targets[:first]
-            self._value_targets[self._index :] = padded_value_targets[:first]
-            self._priorities[self._index :] = priorities_arr[:first]
-
-            remainder = n - first
-            self._states[:remainder] = states[first:]
-            self._phase_ids[:remainder] = phase_ids[first:]
-            self._player_counts[:remainder] = player_counts_arr[first:]
-            self._legal_masks[:remainder] = legal_masks[first:]
-            self._policy_targets[:remainder] = policy_targets[first:]
-            self._value_targets[:remainder] = padded_value_targets[first:]
-            self._priorities[:remainder] = priorities_arr[first:]
-
-        self._index = end % self._capacity
+        first = min(kept, self._capacity - self._index)
+        incoming = {
+            "states": states,
+            "phase_ids": phase_ids,
+            "legal_masks": legal_masks,
+            "policy_targets": policy_targets,
+            "value_targets": padded_value_targets,
+            "player_counts": player_counts_arr,
+            "priorities": priorities_arr,
+            "game_ids": game_ids_arr,
+            "flags": np.broadcast_to(np.asarray(flags, dtype=np.uint8), (n,)),
+            "net_worths": net_worths_arr,
+        }
+        for name, column in self._columns().items():
+            rows = incoming[name][n - kept :]
+            column[self._index : self._index + first] = rows[:first]
+            column[: kept - first] = rows[first:]  # the wrap-around
+        self._index = (self._index + kept) % self._capacity
         self._size = min(self._size + n, self._capacity)
+
+    def _warn_if_window_loses_rows(self, incoming: int) -> None:
+        """Warn, once an epoch, when ``incoming`` rows will overwrite rows of
+        the newest ``buffer_epochs`` epochs: the window outgrew the capacity."""
+        evicted = min(self._size + incoming - self._capacity, self._size)
+        if evicted <= 0 or not self._buffer_epochs or self._window_warned:
+            return
+        # With fewer epochs begun, rows from before the record count as one.
+        if len(self._epochs) >= self._buffer_epochs:
+            newest_evicted = (self._index - self._size + evicted - 1) % self._capacity
+            window_start = self._epochs[-self._buffer_epochs][1]
+            if self._game_ids[newest_evicted] < window_start:
+                return
+        self._window_warned = True
+        print(
+            f"  Warning: the newest {self._buffer_epochs} epochs' rows exceed "
+            f"buffer_capacity ({self._capacity:,}); dropping their oldest"
+        )
 
     def _resolve_player_counts(
         self,
@@ -277,16 +359,64 @@ class ReplayBuffer:
             padded[i, :actual_int] = value_targets[i, :actual_int]
         return padded
 
+    def _window(self) -> tuple[int, int]:
+        """The sampling window: its rows, the buffer's newest, and its epochs.
+
+        The window is the newest ``buffer_epochs`` epochs that still hold rows,
+        or every row when ``buffer_epochs`` is 0. Rows from before the first
+        recorded epoch, as in a buffer saved without the record, are one epoch.
+        """
+        if self._window_version != self._priority_version:
+            n = self._size
+            held: list[int] = []  # the first game id of each epoch with rows
+            if n:
+                oldest = int(self._game_ids[(self._index - n) % self._capacity])
+                newest = int(self._game_ids[self._index - 1])
+                starts = [start for _, start in self._epochs if start <= newest]
+                held = [
+                    start for i, start in enumerate(starts)
+                    if i + 1 == len(starts) or starts[i + 1] > oldest
+                ]
+                if not held or oldest < held[0]:
+                    held.insert(0, oldest)
+            window = held[-self._buffer_epochs :]  # all of them when it is 0
+            self._window_rows = n if len(window) == len(held) else int(
+                np.count_nonzero(self._game_ids[:n] >= window[0])
+            )
+            self._window_epochs = len(window)
+            self._window_version = self._priority_version
+        return self._window_rows, self._window_epochs
+
+    @property
+    def window_size(self) -> int:
+        """Rows sampling draws from; ``len(self)`` unless ``buffer_epochs`` is set."""
+        return self._window()[0]
+
+    @property
+    def window_epochs(self) -> int:
+        """Epochs with rows in the sampling window."""
+        return self._window()[1]
+
+    def _in_window(self, column: np.ndarray) -> np.ndarray:
+        """``column``'s rows in the sampling window, oldest first when the
+        window is a part of the buffer and in ring order when it is all of it."""
+        rows = self.window_size
+        if rows == self._size:
+            return column[:rows]
+        return column.take(
+            np.arange(self._index - rows, self._index), axis=0, mode="wrap",
+        )
+
     def _sampling_weights(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return ``(rel, cdf)`` over occupied rows for priority sampling.
+        """Return ``(rel, cdf)`` over the window's rows for priority sampling.
 
         Row weight is ``priority ** exponent``; rows without a priority take
         the mean weight. ``rel`` is each weight relative to the mean (its
         prioritized sampling rate versus uniform), ``cdf`` the running sum.
         """
         if self._sampler_version != self._priority_version:
-            n = self._size
-            kl = self._priorities[:n].astype(np.float64)
+            kl = self._in_window(self._priorities).astype(np.float64)
+            n = len(kl)
             known = np.isfinite(kl)
             weights = np.empty(n, dtype=np.float64)
             weights[known] = np.power(kl[known], self._priority_exponent)
@@ -305,38 +435,51 @@ class ReplayBuffer:
     ) -> tuple[np.ndarray, np.ndarray | None]:
         """Draw batch indices and their importance weights versus uniform.
 
-        Without prioritization this is one uniform draw without replacement
+        Rows come from the sampling window (``_window``). Without
+        prioritization this is one uniform draw without replacement
         and the weights are ``None``. Otherwise ``round(fraction * B)`` rows
         come from the priority distribution (with replacement) and the rest
         uniformly. Each row's weight, uniform probability over its mixture
         probability, makes weighted batch averages estimate uniform ones.
         """
+        rows = self.window_size
+        if batch_size > rows:
+            raise ValueError(
+                f"batch_size ({batch_size}) exceeds buffer size ({rows})"
+            )
+        weights = None
         if self._priority_fraction == 0.0:
-            return rng.choice(self._size, size=batch_size, replace=False), None
-        k = round(self._priority_fraction * batch_size)
-        fraction = k / batch_size
-        rel, cdf = self._sampling_weights()
-        uniform = rng.choice(self._size, size=batch_size - k, replace=False)
-        prioritized = np.minimum(
-            np.searchsorted(cdf, rng.random(k) * cdf[-1], side="right"),
-            self._size - 1,
-        )
-        indices = np.concatenate((uniform, prioritized))
-        weights = 1.0 / ((1.0 - fraction) + fraction * rel[indices])
-        return indices, weights.astype(np.float32)
+            indices = rng.choice(rows, size=batch_size, replace=False)
+        else:
+            k = round(self._priority_fraction * batch_size)
+            fraction = k / batch_size
+            rel, cdf = self._sampling_weights()
+            uniform = rng.choice(rows, size=batch_size - k, replace=False)
+            prioritized = np.minimum(
+                np.searchsorted(cdf, rng.random(k) * cdf[-1], side="right"),
+                rows - 1,
+            )
+            indices = np.concatenate((uniform, prioritized))
+            weights = (
+                1.0 / ((1.0 - fraction) + fraction * rel[indices])
+            ).astype(np.float32)
+        # A window short of the buffer is the rows up to the write head.
+        if rows < self._size:
+            indices = (indices + self._index - rows) % self._capacity
+        return indices, weights
 
     def priority_stats(self) -> dict[str, float]:
-        """Priority diagnostics for Tensorboard (empty while the buffer is).
+        """Priority diagnostics for Tensorboard (empty while the buffer is),
+        over the rows sampling draws from.
 
         ``priority_kl_mean`` averages known priorities. With prioritization
         on, ``priority_max_rate`` is the most-sampled row's rate versus
         uniform and ``priority_ess_fraction`` the effective sample size of
-        the sampling distribution as a share of the buffer.
+        the sampling distribution as a share of those rows.
         """
-        n = self._size
-        if n == 0:
+        if self._size == 0:
             return {}
-        kl = self._priorities[:n]
+        kl = self._in_window(self._priorities)
         known = np.isfinite(kl)
         stats = {"priority_unknown_fraction": float(1.0 - known.mean())}
         if known.any():
@@ -364,10 +507,6 @@ class ReplayBuffer:
 
         Raises ValueError if batch_size > current buffer size.
         """
-        if batch_size > self._size:
-            raise ValueError(
-                f"batch_size ({batch_size}) exceeds buffer size ({self._size})"
-            )
         indices, weights = self._sample_indices(batch_size, rng)
         if weights is None:
             weights = np.ones(batch_size, dtype=np.float32)
@@ -417,10 +556,6 @@ class ReplayBuffer:
         importance weights versus uniform sampling (all 1 without
         prioritization).
         """
-        if batch_size > self._size:
-            raise ValueError(
-                f"batch_size ({batch_size}) exceeds buffer size ({self._size})"
-            )
         indices, weights = self._sample_indices(batch_size, rng)
         if is_weights_out is not None:
             is_weights_out[:] = 1.0 if weights is None else weights
@@ -442,15 +577,7 @@ class ReplayBuffer:
         """Copies of the occupied rows' arrays, in write order, keyed as
         ``add_stacked`` takes them (``player_counts`` for the counts)."""
         order = _write_order(self._size, self._index, self._capacity)
-        return {
-            "states": self._states[order],
-            "phase_ids": self._phase_ids[order],
-            "legal_masks": self._legal_masks[order],
-            "policy_targets": self._policy_targets[order],
-            "value_targets": self._value_targets[order],
-            "player_counts": self._player_counts[order],
-            "priorities": self._priorities[order],
-        }
+        return {name: column[order] for name, column in self._columns().items()}
 
     def __len__(self) -> int:
         return self._size
@@ -463,31 +590,14 @@ class ReplayBuffer:
         """Save buffer contents to directory for later resume.
 
         Writes individual .npy files for each array (only the occupied portion)
-        plus metadata with the game and size/index/capacity/player range/shape
-        details.
+        plus metadata with the game, size/index/capacity/player range/shape
+        details, the next game id, and the epoch record.
         """
         if self._size == 0:
             return
         directory.mkdir(parents=True, exist_ok=True)
-        n = self._size
-        if n < self._capacity:
-            # Partial buffer: data is contiguous in [0, n)
-            np.save(directory / "states.npy", self._states[:n])
-            np.save(directory / "phase_ids.npy", self._phase_ids[:n])
-            np.save(directory / "player_counts.npy", self._player_counts[:n])
-            np.save(directory / "legal_masks.npy", self._legal_masks[:n])
-            np.save(directory / "policy_targets.npy", self._policy_targets[:n])
-            np.save(directory / "value_targets.npy", self._value_targets[:n])
-            np.save(directory / "priorities.npy", self._priorities[:n])
-        else:
-            # Full buffer: save entire arrays
-            np.save(directory / "states.npy", self._states)
-            np.save(directory / "phase_ids.npy", self._phase_ids)
-            np.save(directory / "player_counts.npy", self._player_counts)
-            np.save(directory / "legal_masks.npy", self._legal_masks)
-            np.save(directory / "policy_targets.npy", self._policy_targets)
-            np.save(directory / "value_targets.npy", self._value_targets)
-            np.save(directory / "priorities.npy", self._priorities)
+        for name, column in self._columns().items():
+            np.save(directory / f"{name}.npy", column[: self._size])
         (directory / "metadata.json").write_text(
             json.dumps({
                 "game": self._game_name,
@@ -499,6 +609,8 @@ class ReplayBuffer:
                 "min_players": self._min_players,
                 "max_players": self._max_players,
                 "unified_dim": self._unified_dim,
+                "next_game_id": self._next_game_id,
+                "epochs": self._epochs,
             })
         )
 
@@ -508,6 +620,9 @@ class ReplayBuffer:
         Returns the number of examples loaded (0 if directory missing, another
         game's, or shape mismatch). A buffer saved at another capacity gives
         its newest rows that fit, in order. Metadata without a game is RSS's.
+        A buffer saved before priorities, game ids, flags, or net worths
+        existed loads them as unknown; one saved without the epoch record
+        loads as rows from before any epoch.
         """
         metadata_path = directory / "metadata.json"
         if not metadata_path.exists():
@@ -549,48 +664,28 @@ class ReplayBuffer:
                 f"{self._unified_dim}), skipping load"
             )
             return 0
-        states = np.load(directory / "states.npy")
-        n = states.shape[0]
+        saved: dict[str, np.ndarray] = {}
+        for name, column in self._columns().items():
+            path = directory / f"{name}.npy"
+            saved[name] = (
+                np.load(path) if name not in _UNKNOWN or path.exists()
+                else np.full(
+                    (saved_size, *column.shape[1:]), _UNKNOWN[name], dtype=column.dtype,
+                )
+            )
+        n = saved["states"].shape[0]
         if n != saved_size:
             print(
                 f"  Warning: replay buffer size mismatch "
                 f"(metadata size={saved_size}, states rows={n}), skipping load"
             )
             return 0
-        phase_ids = np.load(directory / "phase_ids.npy")
-        player_counts = np.load(player_counts_path)
-        legal_masks = np.load(directory / "legal_masks.npy")
-        policy_targets = np.load(directory / "policy_targets.npy")
-        value_targets = np.load(directory / "value_targets.npy")
-        # Buffers saved before priorities existed load as unknown (NaN).
-        priorities_path = directory / "priorities.npy"
-        priorities = (
-            np.load(priorities_path) if priorities_path.exists()
-            else np.full(n, np.nan, dtype=np.float32)
-        )
-        expected_shapes = {
-            "states.npy": (n, self._state_size),
-            "phase_ids.npy": (n,),
-            "player_counts.npy": (n,),
-            "legal_masks.npy": (n, self._unified_dim),
-            "policy_targets.npy": (n, self._unified_dim),
-            "value_targets.npy": (n, self._max_players),
-            "priorities.npy": (n,),
-        }
-        actual_shapes = {
-            "states.npy": states.shape,
-            "phase_ids.npy": phase_ids.shape,
-            "player_counts.npy": player_counts.shape,
-            "legal_masks.npy": legal_masks.shape,
-            "policy_targets.npy": policy_targets.shape,
-            "value_targets.npy": value_targets.shape,
-            "priorities.npy": priorities.shape,
-        }
-        for name, expected in expected_shapes.items():
-            if actual_shapes[name] != expected:
+        for name, column in self._columns().items():
+            expected = (n, *column.shape[1:])
+            if saved[name].shape != expected:
                 print(
                     f"  Warning: replay buffer array shape mismatch "
-                    f"({name} saved={actual_shapes[name]}, current={expected}), "
+                    f"({name}.npy saved={saved[name].shape}, current={expected}), "
                     "skipping load"
                 )
                 return 0
@@ -607,13 +702,15 @@ class ReplayBuffer:
                 f"({saved_capacity:,} -> {self._capacity:,}): "
                 f"keeping the newest {kept:,} of {n:,} rows"
             )
-        self._states[:kept] = states[rows]
-        self._phase_ids[:kept] = phase_ids[rows]
-        self._player_counts[:kept] = player_counts[rows]
-        self._legal_masks[:kept] = legal_masks[rows]
-        self._policy_targets[:kept] = policy_targets[rows]
-        self._value_targets[:kept] = value_targets[rows]
-        self._priorities[:kept] = priorities[rows]
+        for name, column in self._columns().items():
+            column[:kept] = saved[name][rows]
+        self._next_game_id = meta.get("next_game_id", 0)
+        self._epochs = [(epoch, start) for epoch, start in meta.get("epochs", [])]
+        if self._buffer_epochs and "epochs" not in meta:
+            print(
+                f"  Replay buffer has no epoch record: its {kept:,} rows count "
+                "as one epoch toward buffer_epochs"
+            )
         self._priority_version += 1
         self._size = kept
         return self._size

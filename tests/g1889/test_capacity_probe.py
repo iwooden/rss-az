@@ -159,6 +159,67 @@ def test_the_split_reports_whether_tensorboard_agrees() -> None:
         probe.choose_split(starts, 60, games_per_epoch=3, holdout_epochs=2, logged_rows=None)
 
 
+def _recorded_buffer(capacity: int, epochs: dict[int, list[dict[str, np.ndarray]]]) -> ReplayBuffer:
+    """A buffer as a run fills it: each epoch begun, then its games added whole."""
+    buffer = ReplayBuffer(
+        GAME, capacity, GAME.state_size(MAX_PLAYERS), MAX_PLAYERS, min_players=3, max_players=MAX_PLAYERS,
+    )
+    for epoch, games in epochs.items():
+        buffer.begin_epoch(epoch)
+        for game in games:
+            buffer.add_stacked(
+                game["states"], game["phase_ids"], game["legal_masks"], game["policy_targets"],
+                game["value_targets"], player_counts=game["player_counts"], priorities=game["priorities"],
+            )
+    return buffer
+
+
+def test_the_epoch_record_gives_the_split_that_the_rows_states_give(tmp_path: Path) -> None:
+    """On a run's saved buffer, 3 games an epoch in a ring that has wrapped, the
+    cut read from the record is the cut reconstructed from the rows."""
+    games = [_play(seed, 3 + seed % 3, 18 + 5 * (seed % 4)) for seed in range(15)]
+    total = sum(len(game["states"]) for game in games)
+    capacity = total - len(games[0]["states"]) - len(games[1]["states"]) // 2
+    ring = _recorded_buffer(capacity, {epoch: games[3 * epoch:3 * epoch + 3] for epoch in range(5)})
+    assert ring._index != 0
+    ring.save(tmp_path)
+
+    rows, epochs = probe._load_rows(CONFIG, tmp_path, capacity=capacity)
+    assert epochs == [(epoch, 3 * epoch) for epoch in range(5)]
+    starts = GAME_STARTS(rows["states"], MAX_PLAYERS)
+    for holdout_epochs in (1, 2, 3, 4):
+        recorded = probe.record_split(
+            rows["game_ids"], epochs, last_epoch=5, holdout_epochs=holdout_epochs, logged_rows=None,
+        )
+        assert recorded == probe.choose_split(
+            starts, capacity, games_per_epoch=3, holdout_epochs=holdout_epochs, logged_rows=None,
+        )
+        assert recorded is not None and recorded.games == 3 * holdout_epochs
+        held_out = set(rows["value_targets"][recorded.train_rows:, 0].tolist())
+        assert held_out == set(range(15 - 3 * holdout_epochs, 15))
+    # A record without the epoch, or no record, leaves the cut to the rows.
+    for record, last_epoch in ((epochs, 9), ([], 5)):
+        assert probe.record_split(
+            rows["game_ids"], record, last_epoch=last_epoch, holdout_epochs=2, logged_rows=None,
+        ) is None
+
+
+def test_the_record_split_cuts_between_epochs_of_any_size() -> None:
+    game_ids = np.repeat(np.arange(4, 12), [5, 3, 4, 6, 2, 7, 3, 4])
+    # Epochs 0-indexed, as the run counts them; 4 is the partial epoch a
+    # graceful shutdown left after the checkpoint at epoch 4 (1-indexed).
+    epochs = [(1, 3), (2, 6), (3, 9), (4, 11)]
+    split = probe.record_split(game_ids, epochs, last_epoch=4, holdout_epochs=2, logged_rows=22)
+    assert split is not None
+    assert (split.train_rows, split.holdout_rows, split.games) == (8, 26, 6)
+    assert split.agrees_with_tensorboard is False
+    one = probe.record_split(game_ids, epochs, last_epoch=4, holdout_epochs=1, logged_rows=None)
+    assert one is not None and (one.train_rows, one.games, one.agrees_with_tensorboard) == (20, 3, None)
+    # Its oldest epoch's first games have left the ring: no rows are older.
+    three = probe.record_split(game_ids, epochs, last_epoch=4, holdout_epochs=3, logged_rows=None)
+    assert three is not None and three.train_rows == 0
+
+
 def test_tensorboard_rows_need_every_epoch() -> None:
     examples = [(1, 100.0), (2, 110.0), (3, 120.0), (5, 130.0)]
     assert probe.tensorboard_rows(examples, 3, 2) == 230
@@ -413,6 +474,22 @@ def test_a_probe_runs_skips_finished_models_and_warm_starts_training(tmp_path, m
     assert isinstance(step, int) and step > 5_000
     assert TrainingConfig.from_json(resumed["config_json"]).d_model == probe.SMOKE_MODELS[3].d_model
     assert "Restored RNG state from checkpoint" in capsys.readouterr().out
+
+
+def test_a_probe_cuts_at_the_epoch_record_of_a_buffer_that_has_one(tmp_path, capsys):
+    checkpoint = _saved_run(tmp_path)  # epoch 50 (1-indexed), 3 games an epoch
+    # Its buffer, as a run that records epochs leaves it: the newest two hold 7
+    # games, where the rows alone would give 2 x 3.
+    sizes = {44: 3, 45: 3, 46: 2, 47: 4, 48: 3, 49: 4}
+    seeds = iter(range(100))
+    epochs = {epoch: [_play(next(seeds), 3 + epoch % 3, 25) for _ in range(count)] for epoch, count in sizes.items()}
+    _recorded_buffer(19 * 25 - 9, epochs).save(checkpoint.parent / "replay_buffer")
+
+    out = tmp_path / "probe"
+    probe.main(_probe_args(checkpoint, out, "--models", "base_seed0"))
+    assert "Verdict: INCOMPLETE" in capsys.readouterr().out
+    split = json.loads((out / "probe.json").read_text())["split"]
+    assert (split["games"], split["holdout_rows"], split["train_rows"]) == (7, 7 * 25, 12 * 25 - 9)
 
 
 def test_an_interrupted_model_continues_to_the_same_weights(tmp_path, monkeypatch):

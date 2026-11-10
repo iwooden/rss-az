@@ -174,6 +174,9 @@ def _tagged_rows(first: int, count: int) -> dict[str, np.ndarray]:
         "value_targets": value_targets,
         "player_counts": (3 + tags % 3).astype(np.uint8),
         "priorities": (tags + 0.5).astype(np.float32),
+        "game_ids": (tags // 3).astype(np.int32),
+        "flags": (tags % 2).astype(np.uint8),
+        "net_worths": (tags[:, None] * np.arange(1, 6)).astype(np.int32),
     }
 
 
@@ -191,6 +194,7 @@ def _add_tagged(buffer: ReplayBuffer, first: int, count: int) -> None:
     buffer.add_stacked(
         rows["states"], rows["phase_ids"], rows["legal_masks"], rows["policy_targets"], rows["value_targets"],
         player_counts=rows["player_counts"], priorities=rows["priorities"],
+        game_ids=rows["game_ids"], flags=rows["flags"], net_worths=rows["net_worths"],
     )
 
 

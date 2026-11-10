@@ -37,6 +37,22 @@ def test_scaled_training_steps_keep_at_least_one_step_when_trainable() -> None:
     )
 
 
+def test_scaled_training_steps_follow_the_share_of_buffer_epochs_held() -> None:
+    """With ``buffer_epochs``, fullness is the window's epochs over
+    ``buffer_epochs``, whatever share of the capacity its rows are."""
+    config = _config()
+    config.buffer_epochs = 4
+    assert _scaled_training_steps(config, 9_999, window_epochs=4) == 0
+    assert _scaled_training_steps(config, 20_000, window_epochs=1) == 250
+    assert _scaled_training_steps(config, 20_000, window_epochs=3) == 750
+    assert _scaled_training_steps(config, 20_000, window_epochs=4) == 1000
+    assert _scaled_training_steps(config, 499_999, window_epochs=1) == 250
+    # Off, the epochs held change nothing.
+    assert _scaled_training_steps(_config(), 100_000, window_epochs=4) == 200
+    with pytest.raises(ValueError, match="buffer_epochs must be >= 0"):
+        TrainingConfig(buffer_epochs=-1).validate()
+
+
 def test_cli_overrides_training_steps_per_epoch() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--training-steps-per-epoch", "2000"])

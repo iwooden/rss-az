@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import sys
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -122,6 +123,66 @@ def test_a_run_checkpoints_and_resumes_with_its_scalars(tmp_path, monkeypatch, c
             assert bank + bankrupt == pytest.approx(1.0)
     for name in ("total_loss_avg", "policy_loss_avg", "value_loss_avg"):
         assert all(np.isfinite(value) for _, value in scalars[f"epoch/{name}"])
+
+
+def test_a_run_with_buffer_epochs_trains_on_its_newest_epochs_across_resumes(tmp_path, monkeypatch, capsys):
+    """Two games an epoch and a window of two epochs, through a graceful shutdown
+    mid-epoch: the buffer records each epoch's first game, the epoch replayed on
+    resume keeps the game it had, each row carries its game and final net
+    worths, and steps follow the share of the window held, not of the capacity."""
+    fields = {
+        **_smoke_config(tmp_path), "games_per_epoch": 2, "training_steps_per_epoch": 8,
+        "buffer_epochs": 2, "buffer_capacity": 65_536,
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(fields))
+    buffer_dir = tmp_path / "checkpoints" / "replay_buffer"
+
+    def record() -> tuple[list[list[int]], int]:
+        metadata = json.loads((buffer_dir / "metadata.json").read_text())
+        return metadata["epochs"], metadata["next_game_id"]
+
+    _train(monkeypatch, "--config", str(config_path))
+    assert record() == ([[0, 0]], 2)
+    # q + Enter during the second epoch's first game: it is saved, untrained.
+    stop = threading.Event()
+    stop.set()
+    with monkeypatch.context() as patch:
+        patch.setattr(main_module, "_start_shutdown_listener", lambda: stop)
+        _train(patch, "--config", str(config_path), "--resume", "latest", "--num-epochs", "3")
+    assert "Trained: no" in capsys.readouterr().out
+    assert record() == ([[0, 0], [1, 2]], 3)
+    _train(monkeypatch, "--config", str(config_path), "--resume", "latest", "--num-epochs", "3")
+    assert "Resumed from epoch 0" in capsys.readouterr().out
+    assert record() == ([[0, 0], [1, 2], [2, 5]], 7)
+
+    scalars = read_tb_scalars(str(tmp_path / "runs"))
+    played = [int(value) for _, value in scalars["self_play_aggregate/total_examples"]]
+    sizes = [int(value) for _, value in scalars["buffer/size"]]
+    partial = sizes[1] - sum(played[:2])  # the game played before the shutdown
+    assert partial > 0
+    assert sizes == [played[0], played[0] + partial + played[1], partial + sum(played)]
+    # The second epoch holds that game too; the third leaves the first behind.
+    assert [value for _, value in scalars["buffer/window_size"]] == [sizes[0], sizes[1], sizes[2] - played[0]]
+    assert [value for _, value in scalars["buffer/window_epochs"]] == [1, 2, 2]
+    # By its share of the capacity, each epoch would earn one step.
+    assert 8 * sizes[2] < 2 * 65_536
+    assert [value for _, value in scalars["epoch/training_steps"]] == [4, 8, 8]
+
+    buffer = _buffer(TrainingConfig.from_json(json.dumps(fields)))
+    assert buffer.load(buffer_dir) == sizes[2]
+    rows = buffer.rows_oldest_first()
+    assert rows["game_ids"].tolist() == sorted(rows["game_ids"].tolist())
+    assert set(rows["game_ids"].tolist()) == set(range(7))
+    assert int((rows["game_ids"] < 2).sum()) == played[0] and int((rows["game_ids"] == 2).sum()) == partial
+    assert (rows["flags"] == 0).all()
+    for game in range(7):
+        of_game = rows["game_ids"] == game
+        players = int(rows["player_counts"][of_game][0])
+        net_worths = rows["net_worths"][of_game]
+        assert (net_worths == net_worths[0]).all()
+        assert (net_worths[0, :players] >= 0).all() and net_worths[0, :players].max() > 0
+        assert (net_worths[0, players:] == -1).all()
 
 
 def _buffer(config: TrainingConfig) -> ReplayBuffer:

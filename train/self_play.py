@@ -88,6 +88,7 @@ class GameRecord:
     sample_top1_action_fraction: float = 0.0  # Mean action-sampling top-1 mass
     profile: GameProfileData | None = None
     game_id: int = -1
+    flags: int = 0  # replay's per-game flags (train.replay_buffer.FLAG_*)
     game_seed: int = -1
     rng_seed: int = -1
     final_state: np.ndarray | None = None

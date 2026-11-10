@@ -280,6 +280,10 @@ class TrainingConfig:
     # --- Replay Buffer ---
     buffer_capacity: int = 500_000
     min_buffer_size: int = 10_000
+    # Sample from the rows of the newest this many epochs only; 0 samples the
+    # whole buffer. buffer_capacity stays the memory cap: a window that
+    # outgrows it loses its oldest rows.
+    buffer_epochs: int = 0
     # Prioritized replay: this share of each training batch is drawn in
     # proportion to KL(policy target || unnoised prior) ** exponent, the rest
     # uniformly. 0 disables. The policy loss trains on the mixed batch; the
@@ -641,6 +645,8 @@ class TrainingConfig:
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "
                 f"min_buffer_size ({self.min_buffer_size})"
             )
+        if self.buffer_epochs < 0:
+            raise ValueError(f"buffer_epochs must be >= 0, got {self.buffer_epochs}")
         if self.min_buffer_size < self.batch_size:
             raise ValueError(
                 f"min_buffer_size ({self.min_buffer_size}) must be >= "

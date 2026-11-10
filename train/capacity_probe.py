@@ -6,10 +6,13 @@ MSE and policy KL (cross-entropy minus target entropy), overall, by player
 count, and for TRACK, TILE, STOCK, and BUY_TRAIN. It prints a table and writes
 ``probe.json``, with the verdict by the section's criterion.
 
-**The held-out rows** are the newest ``2 × games_per_epoch`` games. Replay records
-no epoch per row, but its ring index gives write order, a row's state shows
-whether it is its game's first decision (``Game.game_start_rows``), and every game
-goes in whole, so an epoch is its games' rows and the cut falls between games.
+**The held-out rows** are the newest 2 epochs' games. The buffer's epoch record
+gives the first game id of the checkpoint's second-newest epoch, and each row
+its game id, so the cut is that game's first row. A buffer saved without the
+record (1889-v0's) holds out the newest ``2 × games_per_epoch`` games instead:
+its ring index gives write order, a row's state shows whether it is its game's
+first decision (``Game.game_start_rows``), and every game goes in whole, so an
+epoch is its games' rows and the cut falls between games.
 TensorBoard's ``self_play_aggregate/total_examples`` for the checkpoint's last
 two epochs must give the same row count; the probe reports whether it does. They
 differ by a partial epoch at the buffer's tail when a graceful shutdown
@@ -144,6 +147,36 @@ def choose_split(
         train_rows=first,
         holdout_rows=holdout,
         games=games,
+        tensorboard_rows=logged_rows,
+        agrees_with_tensorboard=None if logged_rows is None else logged_rows == holdout,
+    )
+
+
+def record_split(
+    game_ids: np.ndarray,
+    epochs: list[tuple[int, int]],
+    *,
+    last_epoch: int,
+    holdout_epochs: int,
+    logged_rows: int | None,
+) -> HoldoutSplit | None:
+    """The cut from the buffer's epoch record: the first game of the epoch
+    ``holdout_epochs`` back from ``last_epoch`` (1-indexed, the checkpoint's).
+
+    ``game_ids`` are the rows', oldest first, and ``epochs`` the record's
+    ``(epoch, first game id)``, epochs 0-indexed. None when the record lacks
+    that epoch, as for a buffer saved without it.
+    """
+    first_epoch = last_epoch - holdout_epochs
+    first_game = next((start for epoch, start in reversed(epochs) if epoch == first_epoch), None)
+    if first_game is None:
+        return None
+    first = int(np.count_nonzero(game_ids < first_game))
+    holdout = len(game_ids) - first
+    return HoldoutSplit(
+        train_rows=first,
+        holdout_rows=holdout,
+        games=len(np.unique(game_ids[first:])),
         tensorboard_rows=logged_rows,
         agrees_with_tensorboard=None if logged_rows is None else logged_rows == holdout,
     )
@@ -541,8 +574,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _load_rows(
     run_config: TrainingConfig, buffer_dir: Path, *, capacity: int,
-) -> dict[str, np.ndarray]:
-    """The saved buffer's rows, oldest first."""
+) -> tuple[dict[str, np.ndarray], list[tuple[int, int]]]:
+    """The saved buffer's rows, oldest first, and its epoch record."""
     game = get_game(run_config)
     max_players = run_config.effective_max_players
     saved = ReplayBuffer(
@@ -551,12 +584,12 @@ def _load_rows(
     )
     if saved.load(buffer_dir) == 0:
         raise ProbeError(f"no replay buffer loaded from {buffer_dir}; see the warning above, or pass --buffer")
-    return saved.rows_oldest_first()
+    return saved.rows_oldest_first(), saved.epochs
 
 
 def _train_buffer(run_config: TrainingConfig, rows: dict[str, np.ndarray], count: int) -> ReplayBuffer:
-    """A buffer of the oldest ``count`` rows only, with their priorities, under
-    the run's prioritized replay."""
+    """A buffer of the oldest ``count`` rows only, with their priorities and
+    games, under the run's prioritized replay. It samples all of them."""
     game = get_game(run_config)
     max_players = run_config.effective_max_players
     buffer = ReplayBuffer(
@@ -569,6 +602,7 @@ def _train_buffer(run_config: TrainingConfig, rows: dict[str, np.ndarray], count
         rows["states"][:count], rows["phase_ids"][:count], rows["legal_masks"][:count],
         rows["policy_targets"][:count], rows["value_targets"][:count],
         player_counts=rows["player_counts"][:count], priorities=rows["priorities"][:count],
+        game_ids=rows["game_ids"][:count], flags=rows["flags"][:count], net_worths=rows["net_worths"][:count],
     )
     return buffer
 
@@ -604,7 +638,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         raise ProbeError(f"no replay buffer at {buffer_dir}; pass --buffer")
     print(f"Loading {buffer_dir}...", flush=True)
     capacity = json.loads(metadata_path.read_text())["capacity"]
-    rows = _load_rows(run_config, buffer_dir, capacity=capacity)
+    rows, epochs = _load_rows(run_config, buffer_dir, capacity=capacity)
     total = len(rows["states"])
 
     try:
@@ -613,14 +647,20 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     except ImportError:
         examples = []
     logged_rows = tensorboard_rows(examples, run_epoch, args.holdout_epochs)
-    find_game_starts = get_game(run_config).game_start_rows
-    assert find_game_starts is not None
-    split = choose_split(
-        find_game_starts(rows["states"], run_config.effective_max_players), total,
-        games_per_epoch=run_config.games_per_epoch,
-        holdout_epochs=args.holdout_epochs,
-        logged_rows=logged_rows,
+    split = record_split(
+        rows["game_ids"], epochs,
+        last_epoch=run_epoch, holdout_epochs=args.holdout_epochs, logged_rows=logged_rows,
     )
+    if split is None:
+        # No epoch record: game boundaries from the rows' states.
+        find_game_starts = get_game(run_config).game_start_rows
+        assert find_game_starts is not None
+        split = choose_split(
+            find_game_starts(rows["states"], run_config.effective_max_players), total,
+            games_per_epoch=run_config.games_per_epoch,
+            holdout_epochs=args.holdout_epochs,
+            logged_rows=logged_rows,
+        )
     if split.train_rows < args.batch_size:
         raise ProbeError(
             f"{split.train_rows} rows are left to train on, under a batch of {args.batch_size}"

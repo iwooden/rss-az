@@ -710,18 +710,25 @@ def _sync_eval_servers(
         server.sync_weights(state_dict, timeout=timeout)
 
 
-def _scaled_training_steps(config: TrainingConfig, buffer_size: int) -> int:
+def _scaled_training_steps(
+    config: TrainingConfig, buffer_size: int, window_epochs: int = 0,
+) -> int:
     """Scale per-epoch training updates by replay-buffer fullness.
 
     Early epochs have less data diversity in replay. Scale the configured
     update budget by the occupied fraction of the buffer so, for example,
-    100k rows in a 500k buffer runs 20% of the configured steps.
+    100k rows in a 500k buffer runs 20% of the configured steps. With
+    ``buffer_epochs`` set, ``buffer_size`` is the sampling window's rows and
+    fullness is the share of ``buffer_epochs`` the window holds
+    (``window_epochs``): the capacity is then only a cap.
     """
     if buffer_size < config.min_buffer_size or config.training_steps_per_epoch < 1:
         return 0
-    capped_size = min(max(buffer_size, 0), config.buffer_capacity)
-    scaled = config.training_steps_per_epoch * capped_size // config.buffer_capacity
-    return max(1, scaled)
+    if config.buffer_epochs > 0:
+        held, full = min(window_epochs, config.buffer_epochs), config.buffer_epochs
+    else:
+        held, full = min(max(buffer_size, 0), config.buffer_capacity), config.buffer_capacity
+    return max(1, config.training_steps_per_epoch * held // full)
 
 
 def _capture_rng_state(master_rng: np.random.Generator) -> dict[str, object]:
@@ -922,6 +929,7 @@ def main() -> None:
         max_players=max_players,
         priority_fraction=config.replay_priority_fraction,
         priority_exponent=config.replay_priority_exponent,
+        buffer_epochs=config.buffer_epochs,
     )
     logger = TrainingLogger(config.tensorboard_dir)
 
@@ -1183,6 +1191,8 @@ def main() -> None:
                     record.value_targets,  # type: ignore[union-attr]
                     num_players=record.num_players,  # type: ignore[union-attr]
                     priorities=record.policy_priorities,  # type: ignore[union-attr]
+                    flags=record.flags,  # type: ignore[union-attr]
+                    net_worths=record.net_worths,  # type: ignore[union-attr]
                 )
                 self_play_metrics.add_record(record)
                 if record.profile is not None:  # type: ignore[union-attr]
@@ -1240,6 +1250,7 @@ def main() -> None:
 
             games_collected = 0
             player_count_schedule = build_epoch_player_count_schedule(config)
+            buffer.begin_epoch(epoch)
 
             if config.num_workers > 0:
                 assert task_queue is not None and result_queue is not None
@@ -1303,13 +1314,15 @@ def main() -> None:
                 did_train = False
                 if (
                     games_collected >= config.games_per_epoch
-                    and len(buffer) >= config.min_buffer_size
+                    and buffer.window_size >= config.min_buffer_size
                 ):
                     # Met quota — run scaled training phase before exiting
                     print("Game quota met — running training before shutdown...")
                     model.train()
                     shutdown_losses: dict[str, list[float]] = defaultdict(list)
-                    training_steps = _scaled_training_steps(config, len(buffer))
+                    training_steps = _scaled_training_steps(
+                        config, buffer.window_size, buffer.window_epochs,
+                    )
                     logger.begin_training(
                         epoch_num, config.num_epochs,
                         training_steps,
@@ -1370,6 +1383,13 @@ def main() -> None:
                 {
                     "buffer/size": float(len(buffer)),
                     "buffer/utilization": len(buffer) / config.buffer_capacity,
+                    **(
+                        {
+                            "buffer/window_size": float(buffer.window_size),
+                            "buffer/window_epochs": float(buffer.window_epochs),
+                        }
+                        if config.buffer_epochs > 0 else {}
+                    ),
                     **{
                         f"buffer/{key}": value
                         for key, value in buffer.priority_stats().items()
@@ -1403,10 +1423,12 @@ def main() -> None:
 
             # --- Phase 2: Training ---
             training_steps_done = 0
-            if len(buffer) >= config.min_buffer_size:
+            if buffer.window_size >= config.min_buffer_size:
                 model.train()
                 epoch_losses: dict[str, list[float]] = defaultdict(list)
-                training_steps = _scaled_training_steps(config, len(buffer))
+                training_steps = _scaled_training_steps(
+                    config, buffer.window_size, buffer.window_epochs,
+                )
                 training_steps_done = training_steps
 
                 logger.begin_training(
@@ -1481,7 +1503,7 @@ def main() -> None:
             else:
                 avg_losses = {}
                 print(
-                    f"  Skipping training: buffer has {len(buffer)} examples "
+                    f"  Skipping training: buffer has {buffer.window_size} examples "
                     f"(need {config.min_buffer_size})"
                 )
 

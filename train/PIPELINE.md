@@ -121,6 +121,20 @@ Notes below name RSS's implementations where they matter
 - **Replay stores raw state.** Rows hold compact int16 state, dense masks and
   targets, and padded values. Tokens and relation inputs are rebuilt with the
   current extractors when sampled, so extractor changes also affect old rows.
+- **Rows know their game.** Each row carries its game's serial id, flags, and
+  final net worths in canonical order (-1 past the game's players). One
+  `add_stacked` call is one game and takes the buffer's next id, so ids never
+  decrease in write order. Flag bit 0 marks a game started from a supplied
+  position; nothing sets it yet. Rows saved before these columns load as
+  unknown: id -1, flags 0, net worths -1.
+- **Optional epoch window.** The main loop calls `begin_epoch` and the buffer
+  records each epoch's first game id. With `buffer_epochs` N > 0, sampling
+  draws only from the rows of the newest N epochs that still hold rows: the
+  ring's newest run of rows. The `min_buffer_size` check and
+  `buffer/priority_*` see that window too. `buffer_capacity` is then only the
+  memory cap; a window that outgrows it loses its oldest rows, with a warning
+  once an epoch. Rows older than the record, as in a buffer saved without it,
+  count as one epoch. With N = 0 (default), sampling is over the whole buffer.
 - **Optional prioritized replay.** Each row stores KL(policy target ||
   unnoised prior) from self-play (`kl_to_prior`). With
   `replay_priority_fraction` f > 0, `round(f * batch_size)` rows per batch
@@ -135,7 +149,8 @@ Notes below name RSS's implementations where they matter
   frozen weights, trains, then syncs eval servers. Training waits for
   `min_buffer_size`, then runs `training_steps_per_epoch * len(buffer) /
   buffer_capacity` steps (`_scaled_training_steps`). Early epochs therefore
-  train only briefly.
+  train only briefly. With `buffer_epochs`, the fraction is instead the
+  window's epochs over `buffer_epochs`.
 - **Step-based LR schedule.** Warmup plus cosine decay to `lr_min` spans
   `lr_decay_end_epoch * training_steps_per_epoch` optimizer steps. Because of
   step scaling, `lr_min` arrives after that epoch.
@@ -191,7 +206,9 @@ Notes below name RSS's implementations where they matter
   error. Replay loads from the single, overwritten
   `<checkpoint_dir>/replay_buffer/`, even when resuming an older checkpoint.
   A buffer saved at another capacity keeps its newest rows that fit, in order,
-  priorities included. Another game's buffer, or a player-range or shape mismatch,
+  priorities and game columns included. The epoch record is saved with the
+  buffer: resuming into a partly played epoch adds its new games to that
+  epoch, and any other resume begins a new one. Another game's buffer, or a player-range or shape mismatch,
   skips it with only a warning. Checkpoints and buffers without a game are
   RSS's. A changed `training_steps_per_epoch` moves the LR schedule's span from
   the restored step: the scheduler keeps its step, and this run's lambda.
