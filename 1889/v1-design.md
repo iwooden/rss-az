@@ -408,6 +408,23 @@ token. v1 marks only corps whose walks touch the hex, the argument
 - **Cost:** on human phase-D states, a leaf's extraction averages under
   100 µs and its 99th percentile is under 1 ms. Today's are 72 µs and 547 µs.
 
+**As built** (sub-step 9.6), layout 2 misses that budget on phase-D states:
+102-105 µs mean and 1.5 ms at the 99th percentile, against 46-51 µs and
+0.6 ms for layout 1 on the same states. Over all phases it averages 33 µs.
+It is kept as built:
+
+- A worker evaluates about 200 leaves a second (25,000 across 128 workers)
+  and uses 1% of its CPU (v1-review Section 1). At 105 µs a leaf that is 2%
+  of a core, in the worst phase, so the GPU still sets the pace.
+- The budget was a guard against extraction becoming the bottleneck, and
+  this does not make it one.
+- **The cut, if wanted:** filling CORP's two hypothetical route maxes (after
+  the next rust, with the next train) for the operating corp only brings
+  phase D to 78-80 µs and 0.9 ms. It would hide other corps' train prospects
+  from share decisions, which is what the review asked the inputs to show.
+- The row is 893 slots at capacity 5, not 865: the solver now stores each
+  corp's route hexes (28 slots), so ROUTE costs no second solve.
+
 ## 6. Relations
 
 | Id | Relation | Query → key | Value |
@@ -458,7 +475,9 @@ values; the value head; initialization.
     president-sold flag;
   - `select_train` and `train_price`: the seller's Δ.
 
-**Tier C decides four more:**
+**Tier C decided four more** (results in Section 10): `value_loss_weight` is
+0.25, and `cand_head`, `hex_mix`, and `bias_init` are not adopted, so the
+trunk, the candidate rows, and relations 21-24 stay as v0's.
 
 | Test | If it holds | If not |
 |---|---|---|
@@ -514,7 +533,7 @@ plays better. The measure of strength is games between v1 and v0 at epoch 58.
 | `temp_anneal_starts`, `_ends` and the policy-target ones | move numbers | removed | 2.4 |
 | `value_blend_final` | 0.7 | 0.3 | 2.5 |
 | `heldout_rows` | (0) | 32,768 | 4 |
-| `value_loss_weight` | (1.0) | **Tier C** | 7 |
+| `value_loss_weight` | (1.0) | 0.25 | 10 |
 | `checkpoint_dir`, `tensorboard_dir` | `*/1889-v0` | `*/1889-v1` | |
 
 The rest stays: 500 games an epoch, 128 workers, bf16 bucketed evaluation,
@@ -561,6 +580,27 @@ volume, where a 60-step run of five variants passed. One command, from
 | `value_w025` | Value MSE and policy KL over steps | `value_loss_weight` (Section 9) |
 | `frontier_rel` | TRACK, TILE, TOKEN policy KL | Whether build distance follows v1 (Section 6) |
 | Target quality by simulations (optional; needs search, not training) | KL of a search's visits at 400, 800, and 1,600 simulations from a 6,400 reference | The ramp (2.3) |
+
+**Results** (2026-11-10: 30,000 steps at batch 256 on the 5090, no failures;
+`scratchpad/v1_tier_c/runs/summary.json` on the pod). Held-out figures on all
+563,005 held-out rows at step 30,000, as a change from the mean of the two
+base seeds. The bar is twice the gap between those seeds, given in brackets.
+
+| Test | Result | Decision |
+|---|---|---|
+| `value_w025` | Value MSE 0.146 against 0.178, 18% lower [1.5%], and lower at every check from step 2,500 (0.137 against 0.162 and 0.169). Policy KL unchanged (0.1312 against 0.1304 and 0.1311) | **Adopted:** `value_loss_weight` 0.25 |
+| `cand_head` | TILE policy KL 0.1814 against 0.1774 and 0.1764, 2.5% worse [0.6%], at steps 20,000 and 30,000 alike; ER_BONUS 1% worse [0.8%]. Forward time 0.80 of base | **Not adopted:** the bar was parity on TILE. v1 keeps 95 rows. It is the close call: a fifth of the forward time for 2.5% on one phase |
+| `hex_mix` | TRACK policy KL 5% worse [0.6%] and TOKEN 8% worse [1.7%]; TILE unchanged. Value MSE 2-5% better | **Left out** |
+| `bias_init` | TRACK, TILE, TOKEN policy KL within 1% | **Left out** |
+| `route_rel` | TRACK +1%, TILE 0%, TOKEN +1%; value MSE 1-2% better, inside the bar | No gain. ROUTE stays, as decided |
+| `frontier_rel` | TRACK 0%, TILE 0%, TOKEN +2% | No gain. Build distance stays out |
+| `both_rel` | Within 1% throughout | |
+
+- **The base model's held-out value MSE rises as it trains,** from 0.162 at
+  step 2,500 to 0.177 at 30,000, while its policy KL keeps falling: the value
+  head memorising, as the review found. At a weight of 0.25 it holds at 0.145.
+- **Nothing here improved the map policy.** That fits the limit below: v0's
+  targets come from play that seldom needs neighbour reasoning.
 
 **What they cannot show.** The targets are v0's own search, on v0's boards. A
 feature that matters only in positions v0 never reaches, or for decisions
