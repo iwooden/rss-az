@@ -154,6 +154,7 @@ def play(
         epoch_config = replace(epoch_config, num_simulations=simulations)
     evaluator = NNEvaluator(
         game, model, device, num_players=max_players, terminal_rank_weight=config.terminal_blend,
+        terminal_rank_tau=config.terminal_rank_tau,
         eval_dtype=None, input_spec=get_model_input_spec(config),
     )
     capacity = 2 * (max(config.max_simulations, epoch_config.num_simulations) + 1)

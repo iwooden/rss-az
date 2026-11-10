@@ -1499,8 +1499,9 @@ class RemoteEvaluator(BaseEvaluator):
         *,
         profile: bool = False,
         terminal_rank_weight: float = 0.5,
+        terminal_rank_tau: float = 0.0,
     ) -> None:
-        super().__init__(game, num_players, terminal_rank_weight)
+        super().__init__(game, num_players, terminal_rank_weight, terminal_rank_tau)
         self._worker_idx = worker_idx
         normalize_model_type(shared_bufs.model_type)
         self.layout_version = shared_bufs.layout_version

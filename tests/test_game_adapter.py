@@ -544,6 +544,12 @@ def test_rss_final_scores_are_the_net_worths_evaluate_terminal_reads(rss_case: C
             compute_terminal_values(scores, playout.num_players, weight),
             evaluator.evaluate_terminal(state),
         )
+        # In-tree terminal nodes take the soft rank's width from the evaluator too.
+        soft = BaseEvaluator(game, playout.max_players, terminal_rank_weight=weight, terminal_rank_tau=0.05)
+        np.testing.assert_array_equal(
+            compute_terminal_values(scores, playout.num_players, weight, 0.05),
+            soft.evaluate_terminal(state),
+        )
 
 
 # The self-play scalars train/main.py logged per reporting group before step 3

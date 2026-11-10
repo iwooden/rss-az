@@ -1153,6 +1153,7 @@ def main() -> None:
         evaluator = NNEvaluator(
             game, model, device, num_players=max_players,
             terminal_rank_weight=config.terminal_blend,
+            terminal_rank_tau=config.terminal_rank_tau,
             eval_dtype=config.eval_dtype,
             input_spec=model_input_spec,
         )

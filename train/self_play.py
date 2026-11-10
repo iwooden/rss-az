@@ -466,8 +466,9 @@ def play_game(
     blend_alpha = epoch_config.value_blend_alpha if epoch_config is not None else 1.0
     if blend_alpha < 1.0:
         rank_weight = getattr(evaluator, "terminal_rank_weight", 0.5)
+        rank_tau = getattr(evaluator, "terminal_rank_tau", 0.0)
         terminal_values = compute_terminal_values(
-            net_worths, num_players, rank_weight
+            net_worths, num_players, rank_weight, rank_tau,
         )
         stacked_value_targets = (
             blend_alpha * stacked_value_targets
@@ -540,6 +541,7 @@ def self_play_worker(
         game, config.effective_max_players, shared_bufs, worker_idx,
         profile=config.profile,
         terminal_rank_weight=config.terminal_blend,
+        terminal_rank_tau=config.terminal_rank_tau,
     )
 
     total_size = game.state_size(config.effective_max_players)

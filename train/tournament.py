@@ -440,6 +440,7 @@ def _build_players(
             device,
             num_players=input_spec.num_players,
             terminal_rank_weight=terminal_rank_weight,
+            terminal_rank_tau=e.config.terminal_rank_tau,
             input_spec=input_spec,
         )
         trained = EngineRules.from_config(e.config)

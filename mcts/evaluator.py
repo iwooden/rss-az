@@ -114,8 +114,38 @@ def _validate_model_input_spec(
     return input_spec
 
 
+def _hard_rank_values(net_worths: list[int], num_players: int) -> np.ndarray:
+    """Evenly spaced from +1.0 to -1.0 by placement, ties sharing their places' mean."""
+    rank_rewards = np.linspace(1.0, -1.0, num_players)
+    sorted_indices = np.argsort(net_worths)[::-1]  # descending
+    rank_values = np.zeros(num_players, dtype=np.float32)
+    i = 0
+    while i < num_players:
+        j = i + 1
+        while j < num_players and net_worths[sorted_indices[j]] == net_worths[sorted_indices[i]]:
+            j += 1
+        avg_reward = float(np.mean(rank_rewards[i:j]))
+        for k in range(i, j):
+            rank_values[sorted_indices[k]] = avg_reward
+        i = j
+    return rank_values
+
+
+def _soft_rank_values(net_worths: list[int], num_players: int, rank_tau: float) -> np.ndarray:
+    """Each player's mean tanh of its net-worth gap to every opponent, the gap
+    in units of ``rank_tau`` mean net worths.
+
+    The mean of the gaps' signs is the hard rank, so this equals it once every
+    gap is several ``rank_tau`` wide, and falls to the tied value as a gap
+    closes. Callers have ruled out an all-zero table, so the mean is positive.
+    """
+    nw = np.asarray(net_worths, dtype=np.float64)
+    gaps = (nw[:, None] - nw[None, :]) / (rank_tau * nw.mean())
+    return (np.tanh(gaps).sum(axis=1) / (num_players - 1)).astype(np.float32)
+
+
 def compute_terminal_values(
-    net_worths: list[int], num_players: int, rank_weight: float = 0.5,
+    net_worths: list[int], num_players: int, rank_weight: float = 0.5, rank_tau: float = 0.0,
 ) -> np.ndarray:
     """Compute canonical reward values for a terminal game state.
 
@@ -137,6 +167,10 @@ def compute_terminal_values(
         num_players: Number of players.
         rank_weight: Weight for rank component (0.0 = pure margin,
             1.0 = pure rank). Default 0.5 (equal blend).
+        rank_tau: 0 for the hard rank, where any gap decides a place. Above 0,
+            the soft rank's width as a share of the mean net worth
+            (``_soft_rank_values``): where final net worths bunch, as in 1889,
+            a hard rank turns on differences too small to predict.
 
     Returns:
         np.ndarray of shape (num_players,) with reward values per player.
@@ -146,19 +180,10 @@ def compute_terminal_values(
     if max_nw == 0:
         return np.zeros(num_players, dtype=np.float32)
 
-    # Rank component: evenly spaced from +1.0 to -1.0 by placement (zero-sum)
-    rank_rewards = np.linspace(1.0, -1.0, num_players)
-    sorted_indices = np.argsort(net_worths)[::-1]  # descending
-    rank_values = np.zeros(num_players, dtype=np.float32)
-    i = 0
-    while i < num_players:
-        j = i + 1
-        while j < num_players and net_worths[sorted_indices[j]] == net_worths[sorted_indices[i]]:
-            j += 1
-        avg_reward = float(np.mean(rank_rewards[i:j]))
-        for k in range(i, j):
-            rank_values[sorted_indices[k]] = avg_reward
-        i = j
+    if rank_tau > 0.0:
+        rank_values = _soft_rank_values(net_worths, num_players, rank_tau)
+    else:
+        rank_values = _hard_rank_values(net_worths, num_players)
 
     if rank_weight >= 1.0:
         return rank_values
@@ -188,10 +213,12 @@ class BaseEvaluator:
 
     def __init__(
         self, game: Game, num_players: int, terminal_rank_weight: float = 0.5,
+        terminal_rank_tau: float = 0.0,
     ) -> None:
         self.game = game
         self.num_players = num_players
         self.terminal_rank_weight = terminal_rank_weight
+        self.terminal_rank_tau = terminal_rank_tau
         self.num_tokens = game.num_tokens(num_players)
         self._num_players_from_row = game.num_players_from_row
 
@@ -222,7 +249,7 @@ class BaseEvaluator:
         """
         scores = self.game.final_scores(state)
         return compute_terminal_values(
-            scores, len(scores), self.terminal_rank_weight
+            scores, len(scores), self.terminal_rank_weight, self.terminal_rank_tau,
         )
 
 
@@ -248,9 +275,10 @@ class NNEvaluator(BaseEvaluator):
     def __init__(self, game: Game, model: torch.nn.Module, device: torch.device,
                  num_players: int = 3, *,
                  terminal_rank_weight: float = 0.5,
+                 terminal_rank_tau: float = 0.0,
                  eval_dtype: str | None = None,
                  input_spec: ModelInputSpec | None = None) -> None:
-        super().__init__(game, num_players, terminal_rank_weight)
+        super().__init__(game, num_players, terminal_rank_weight, terminal_rank_tau)
         self.model = model
         self.device = device
         self._autocast_dtype = self._DTYPE_MAP.get(eval_dtype) if eval_dtype else None

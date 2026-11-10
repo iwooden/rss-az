@@ -2159,6 +2159,7 @@ class _SearchEngine:
             device,
             num_players=self.max_players,
             terminal_rank_weight=self.config.terminal_blend,
+            terminal_rank_tau=self.config.terminal_rank_tau,
             eval_dtype=self.eval_dtype,
             input_spec=input_spec,
         )

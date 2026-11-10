@@ -403,6 +403,7 @@ def _append_mcts_stats_summary(
     state: GameState,
     total_vbackups: int,
     terminal_rank_weight: float,
+    terminal_rank_tau: float,
 ) -> None:
     """Append compact end-of-game aggregates for stats-only mode."""
     lines.append("")
@@ -456,7 +457,7 @@ def _append_mcts_stats_summary(
     lines.append(f"Net worths: {nw_str}")
     lines.append(f"Winner: P{winner} (${net_worths[winner]})")
 
-    terminal_values = compute_terminal_values(net_worths, num_players, terminal_rank_weight)
+    terminal_values = compute_terminal_values(net_worths, num_players, terminal_rank_weight, terminal_rank_tau)
     tv_parts = [f"P{i}={terminal_values[i]:+.3f}" for i in range(num_players)]
     lines.append(f"Terminal values (blend={terminal_rank_weight}): {', '.join(tv_parts)}")
 
@@ -616,6 +617,7 @@ def analyze_game(
     evaluator = NNEvaluator(
         game, model, device, num_players=max_players,
         terminal_rank_weight=terminal_rank_weight,
+        terminal_rank_tau=config.terminal_rank_tau,
         eval_dtype=_resolve_eval_dtype_override(config, eval_dtype),
         input_spec=get_model_input_spec(config),
     )
@@ -866,7 +868,7 @@ def analyze_game(
     if mcts_stats_only:
         _append_mcts_stats_summary(
             lines, per_move_stats, num_players, state,
-            total_vbackups, terminal_rank_weight,
+            total_vbackups, terminal_rank_weight, config.terminal_rank_tau,
         )
     else:
         # Game over summary
@@ -886,7 +888,9 @@ def analyze_game(
         lines.append(f"**Winner: P{winner} (${net_worths[winner]})**")
 
         # Terminal reward values
-        terminal_values = compute_terminal_values(net_worths, num_players, terminal_rank_weight)
+        terminal_values = compute_terminal_values(
+            net_worths, num_players, terminal_rank_weight, config.terminal_rank_tau,
+        )
         tv_parts = [f"P{i}={terminal_values[i]:+.3f}" for i in range(num_players)]
         lines.append(f"Terminal values (blend={terminal_rank_weight}): {', '.join(tv_parts)}")
 

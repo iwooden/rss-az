@@ -315,7 +315,7 @@ def continue_game(game: Game, evaluator: Any, config: TrainingConfig, epoch_conf
         )
     stats = record.game_stats
     net_worths = [int(v) for v in record.net_worths]
-    values = compute_terminal_values(net_worths, num_players, config.terminal_blend)
+    values = compute_terminal_values(net_worths, num_players, config.terminal_blend, config.terminal_rank_tau)
     return {
         "net_worths": net_worths,
         "values": [round(float(v), 4) for v in values],
@@ -397,6 +397,7 @@ class Player:
         max_players = self.config.effective_max_players
         self.evaluator = NNEvaluator(
             self.game, model, device, num_players=max_players, terminal_rank_weight=self.config.terminal_blend,
+            terminal_rank_tau=self.config.terminal_rank_tau,
             eval_dtype=None, input_spec=get_model_input_spec(self.config),
         )
         self.root = self.game.new_game(max_players, max_players, 0)  # carries the config's runtime flags

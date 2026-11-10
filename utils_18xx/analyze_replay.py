@@ -1064,6 +1064,7 @@ def format_replay_markdown(
             net_worths,
             num_players,
             config.terminal_blend,
+            config.terminal_rank_tau,
         )
         tv_parts = [f"P{i}={terminal_values[i]:+.3f}" for i in range(num_players)]
         winner = max(range(num_players), key=lambda i: net_worths[i])
@@ -1606,6 +1607,7 @@ def analyze_replay(
         device,
         num_players=config.effective_max_players,
         terminal_rank_weight=config.terminal_blend,
+        terminal_rank_tau=config.terminal_rank_tau,
         eval_dtype=config.eval_dtype,
         input_spec=get_model_input_spec(config),
     )

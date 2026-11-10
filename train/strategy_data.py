@@ -257,6 +257,7 @@ def _strategy_data_worker(
         shared_bufs,
         worker_idx,
         terminal_rank_weight=config.terminal_blend,
+        terminal_rank_tau=config.terminal_rank_tau,
     )
     total_size = get_layout(config.effective_max_players).total_size
     state_pool = StatePool(game, 2 * (config.max_simulations + 1), total_size)
@@ -783,6 +784,7 @@ def main() -> None:
                 device,
                 num_players=config.effective_max_players,
                 terminal_rank_weight=config.terminal_blend,
+                terminal_rank_tau=config.terminal_rank_tau,
                 eval_dtype=config.eval_dtype,
                 input_spec=model_input_spec,
             )

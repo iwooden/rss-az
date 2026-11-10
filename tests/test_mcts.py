@@ -426,6 +426,68 @@ class TestTerminalValues:
         np.testing.assert_array_almost_equal(rank, [-1.0, 1.0, 0.0])
 
 
+class TestSoftRank:
+    """``rank_tau`` > 0: the rank term follows the size of each gap."""
+
+    TAU = 0.05
+    TABLES = (
+        [6794, 6282, 6302, 5254], [5617, 4630, 5049, 5578], [100, 300, 200], [200, 200, 100],
+        [100, 100, 100], [0, 100, 50], [4764, 4100, 3900, 3500, 3158], [500, 1, 0],
+    )
+
+    def test_wide_gaps_give_the_hard_rank(self):
+        """Every gap many widths across: the soft rank is the hard one."""
+        for nw in ([1000, 3000, 2000], [4000, 1000, 3000, 2000], [1000, 5000, 3000, 2000, 4000]):
+            for weight in (1.0, 0.75):
+                np.testing.assert_allclose(
+                    compute_terminal_values(nw, len(nw), weight, rank_tau=self.TAU),
+                    compute_terminal_values(nw, len(nw), weight), atol=1e-6,
+                )
+
+    def test_ties_give_the_hard_rank(self):
+        """An exact tie shares its places either way."""
+        for nw in ([2000, 2000, 1000], [3000, 3000, 3000], [1000, 4000, 4000, 2500]):
+            np.testing.assert_allclose(
+                compute_terminal_values(nw, len(nw), 1.0, rank_tau=self.TAU),
+                compute_terminal_values(nw, len(nw), 1.0), atol=1e-6,
+            )
+
+    def test_a_near_tie_is_nearly_a_tie(self):
+        """Two seats ¥20 apart of ¥6,300 are 2/3 of the scale apart by hard rank."""
+        nw = [6794, 6282, 6302, 5254]
+        hard = compute_terminal_values(nw, 4, 1.0)
+        soft = compute_terminal_values(nw, 4, 1.0, rank_tau=self.TAU)
+        assert hard[2] - hard[1] == pytest.approx(2 / 3)
+        assert 0 < soft[2] - soft[1] < 0.1
+        # The seats well clear of them keep their places.
+        assert soft[0] > 0.9 and soft[3] < -0.99
+
+    def test_the_rank_term_matches_the_formula(self):
+        nw = [5000, 5250, 4000]
+        mean = sum(nw) / 3
+        expected = [
+            sum(np.tanh((a - b) / (self.TAU * mean)) for j, b in enumerate(nw) if j != i) / 2
+            for i, a in enumerate(nw)
+        ]
+        np.testing.assert_allclose(compute_terminal_values(nw, 3, 1.0, rank_tau=self.TAU), expected, atol=1e-6)
+
+    def test_zero_sum_and_bounded(self):
+        for nw in self.TABLES:
+            for weight in (1.0, 0.75, 0.0):
+                vals = compute_terminal_values(nw, len(nw), weight, rank_tau=self.TAU)
+                assert abs(vals.sum()) < 1e-5, nw
+                assert (np.abs(vals) <= 1.0 + 1e-6).all(), nw
+
+    def test_more_net_worth_never_lowers_a_value(self):
+        for extra in (10, 100, 1000):
+            low = compute_terminal_values([5000, 5100, 5200, 4900], 4, 0.75, rank_tau=self.TAU)
+            high = compute_terminal_values([5000 + extra, 5100, 5200, 4900], 4, 0.75, rank_tau=self.TAU)
+            assert high[0] > low[0]
+
+    def test_all_zero(self):
+        np.testing.assert_array_equal(compute_terminal_values([0, 0, 0], 3, rank_tau=self.TAU), [0.0, 0.0, 0.0])
+
+
 # ---------------------------------------------------------------------------
 # Sparse expansion (mcts_core.expand_node_sparse)
 # ---------------------------------------------------------------------------

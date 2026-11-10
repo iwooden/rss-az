@@ -272,6 +272,10 @@ class TrainingConfig:
     # Default 0.75 favors rank. Set to 1.0 for pure rank rewards (evenly spaced
     # in [-1, +1]).
     terminal_blend: float = 0.75
+    # Width of the soft rank, as a share of the mean net worth: the rank term
+    # is each player's mean tanh((nw - opponent's nw) / (tau * mean nw)) over
+    # opponents. 0 keeps the hard rank, where any gap decides a place.
+    terminal_rank_tau: float = 0.0
 
     # --- Replay Buffer ---
     buffer_capacity: int = 500_000
@@ -526,6 +530,10 @@ class TrainingConfig:
             )
 
         # Terminal blend
+        if self.terminal_rank_tau < 0.0:
+            raise ValueError(
+                f"terminal_rank_tau must be >= 0, got {self.terminal_rank_tau}"
+            )
         if not 0.0 <= self.terminal_blend <= 1.0:
             raise ValueError(
                 f"terminal_blend must be in [0, 1], got {self.terminal_blend}"

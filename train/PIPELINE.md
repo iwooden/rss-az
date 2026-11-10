@@ -99,6 +99,13 @@ Notes below name RSS's implementations where they matter
   0.75. Rank spaces +1..-1 evenly with averaged ties. Margin is
   `n/(n-1) * (nw - mean) / max_nw`. In-tree terminal nodes use the same reward.
   Evaluators default to 0.5, so pass `config.terminal_blend`.
+- **Optional soft rank.** With `terminal_rank_tau` > 0 (default 0; no active
+  config sets it), the rank term is each player's mean over opponents of
+  `tanh((nw - opponent_nw) / (tau * mean_nw))`. It equals the hard rank once
+  every gap is several `tau` wide and keeps its tie values, but a near-tie no
+  longer swings the target by a whole place. It is for games whose final net
+  worths bunch, as 1889's do ([`1889/v1-review.md`](../1889/v1-review.md) §3).
+  Evaluators default to 0, so pass `config.terminal_rank_tau` beside the blend.
 - **Epoch schedules.** `c_puct` anneals linearly from 3.5 to 2.5 over
   `c_puct_anneal_epochs` (20). Paths without an `EpochConfig` use
   `c_puct_final`. If all four `mcts_sims_*`/`mcts_ramp_*` fields are set, the
