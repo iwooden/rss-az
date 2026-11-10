@@ -466,7 +466,9 @@ values; the value head; initialization.
 **Changed:**
 
 - **Projections** take layout 2's widths.
-- **Relations:** 29 dynamic channels and the 10 static ones.
+- **Relations:** as built, 25 dynamic channels (ids 0-20 and 25-28) and the
+  10 static ones. Ids 21-24 join candidate rows, which the trunk no longer
+  holds.
 - **Heads read the new raw slots:**
   - `dividend`: the DIVIDEND row's six new slots;
   - `buy_train`: TRAIN 10 and the new phase flag, for all six rows;
@@ -531,7 +533,7 @@ plays better. The measure of strength is games between v1 and v0 at epoch 58.
 | `replay_ratio` | | 1.1 | 3.3 |
 | `training_steps_per_epoch` | 1,300 | unused | 3.3 |
 | `temp_anneal_start_pcts`, `_end_pcts` | | [0.3, 0.3, 0.3], [0.6, 0.6, 0.6] | 2.4 |
-| `temp_anneal_starts`, `_ends` and the policy-target ones | move numbers | removed | 2.4 |
+| `temp_anneal_starts`, `_ends` and the policy-target ones | move numbers | kept: config validation requires them, and the shares take precedence | 2.4 |
 | `value_blend_final` | 0.7 | 0.3 | 2.5 |
 | `heldout_rows` | (0) | 32,768 | 4 |
 | `value_loss_weight` | (1.0) | 0.25 | 10 |
@@ -653,3 +655,8 @@ leaves `tests/test_v2_parity.py` passing on its fixture.
 
 9.1-9.5 run on layout 1 and v0's model, so each can be smoke-tested locally
 before layout 2 exists.
+
+**Status, 2026-11-10:** 9.1 to 9.8 are built and on `az-1889`; the merged
+tree passes the suite (4,248 passed, 1 skipped) and pyright. 9.9 is in
+progress. As built, v1 also reads two raw slots Section 7 does not list:
+TRAIN 10 at TRAIN_PRICE (the buyer's gain) and TRAIN 14 at SELECT_TRAIN.
