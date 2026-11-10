@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -13,19 +13,20 @@ from core.data import MAX_ACTION_SIZE, GameConstants, GamePhases
 from core.state import GameState
 from entities.player import PLAYERS
 from entities.turn import TURN
+from games import get_game, rss_tournament
 from games.rss_live import is_cross_president_acq_offer_state
-from mcts.evaluator import NNEvaluator
+from games.rss_tournament import EngineRules, search_rules
+from mcts.search import StatePool
+from nn import create_model, get_model_input_spec
 from train import tournament
 from train.config import MCTSConfig, TrainingConfig
 from train.tournament import (
-    EngineRules,
     ModelEntry,
     ModelPlayer,
     _entry_mcts_config,
     _parse_checkpoint_spec,
     _resolve_game_rules,
     _resolve_tournament_num_players,
-    _search_rules,
     _validate_tournament_num_players,
 )
 
@@ -96,54 +97,6 @@ def test_tournament_validates_all_checkpoints_support_selected_count() -> None:
         _validate_tournament_num_players(entries, 3)
 
 
-def test_play_game_reads_turn_fields_via_entity(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run_search(
-        game: object,
-        state: object,
-        evaluator: object,
-        mcts_config: MCTSConfig,
-        rng: np.random.Generator,
-        *,
-        state_pool: object | None = None,
-    ) -> SimpleNamespace:
-        del game, state, evaluator, mcts_config, rng, state_pool
-        return SimpleNamespace(
-            legal_actions=np.array([0], dtype=np.uint16),
-            visit_counts=np.array([1], dtype=np.int32),
-        )
-
-    class FakeDriver:
-        def apply_action(
-            self,
-            state: object,
-            action: int,
-            history: list[tuple[int, int]] | None = None,
-        ) -> int:
-            del state, action, history
-            return tournament.STATUS_GAME_OVER
-
-    monkeypatch.setattr(tournament, "run_search", fake_run_search)
-    monkeypatch.setattr(tournament, "DRIVER", FakeDriver())
-
-    rules = EngineRules(v3_behavior=False, acq_same_president=True)
-    mcts_config = MCTSConfig(num_simulations=1, num_players=4)
-    net_worths = tournament._play_game(
-        game=object(),  # type: ignore[arg-type]
-        players=[
-            ModelPlayer(Mock(spec=NNEvaluator), mcts_config, rules) for _ in range(4)
-        ],
-        seat_to_model=[0, 1, 2, 3],
-        num_players=4,
-        max_players=5,
-        game_rules=rules,
-        game_seed=123,
-        rng=np.random.default_rng(0),
-        state_pool=object(),  # type: ignore[arg-type]
-    )
-
-    assert len(net_worths) == 4
-
-
 def test_game_rules_default_to_most_permissive_checkpoint() -> None:
     v2 = _entry("v2.pt", V2_CONFIG)
     v3 = _entry("v3.pt", V3_CONFIG)
@@ -161,13 +114,13 @@ def test_search_rules_stay_within_training_and_game_rules() -> None:
     v2 = EngineRules.from_config(V2_CONFIG)
     v3 = EngineRules.from_config(V3_CONFIG)
 
-    assert _search_rules(v3_game, v2) == legacy_game
+    assert search_rules(v3_game, v2) == legacy_game
     # Each checkpoint searches under its own ACQ price cap.
-    assert _search_rules(v3_game, v3) == EngineRules(True, False, 8)
-    assert _search_rules(legacy_game, v3) == EngineRules(False, True, 8)
+    assert search_rules(v3_game, v3) == EngineRules(True, False, 8)
+    assert search_rules(legacy_game, v3) == EngineRules(False, True, 8)
     # Legacy rules lack v3's cross-president price floors, so a legacy model
     # trained with cross-president offers keeps the game's v3 behavior.
-    assert _search_rules(v3_game, EngineRules(False, False)) == v3_game
+    assert search_rules(v3_game, EngineRules(False, False)) == v3_game
 
 
 def _legal_actions(state: GameState) -> list[int]:
@@ -192,7 +145,7 @@ def test_mixed_rule_games_search_each_seat_under_its_training_rules(
         [_entry("v2.pt", V2_CONFIG), _entry("v3.pt", V3_CONFIG)],
     )
     counts = {"cross_offers": 0, "forced": 0, "hidden_trades": 0}
-    real_search_state = tournament._search_state
+    real_search_state = rss_tournament.search_state
 
     def checked_search_state(
         state: GameState, rules: EngineRules, n: int, max_players: int,
@@ -234,22 +187,69 @@ def test_mixed_rule_games_search_each_seat_under_its_training_rules(
         legal = np.array(_legal_actions(state), dtype=np.uint16)
         return SimpleNamespace(legal_actions=legal, visit_counts=rng.random(len(legal)))
 
-    monkeypatch.setattr(tournament, "_search_state", checked_search_state)
+    monkeypatch.setattr(rss_tournament, "search_state", checked_search_state)
     monkeypatch.setattr(tournament, "run_search", fake_run_search)
     mcts_config = MCTSConfig(num_simulations=1, num_players=num_players)
     players = [
-        ModelPlayer("v2", mcts_config,
-                    _search_rules(game_rules, EngineRules.from_config(V2_CONFIG))),
-        ModelPlayer("v3", mcts_config,
-                    _search_rules(game_rules, EngineRules.from_config(V3_CONFIG))),
+        ModelPlayer(name, mcts_config, game_rules.seat(config, name, num_players, 5)[1])
+        for name, config in (("v2", V2_CONFIG), ("v3", V3_CONFIG))
     ]
+    game = get_game(game_rules.game_config(V3_CONFIG))
 
     for seed in range(8):
         tournament._play_game(
-            object(), players, [0, 1, 0], num_players, 5, game_rules, seed,  # type: ignore[arg-type]
+            game, players, [0, 1, 0], num_players, 5, seed,
             np.random.default_rng(seed), state_pool=None,  # type: ignore[arg-type]
         )
 
     assert counts["cross_offers"] > 0
     assert counts["forced"] > 0
     assert counts["hidden_trades"] > 0
+
+
+def test_each_checkpoint_reads_its_own_layout_in_a_shared_game() -> None:
+    """A v2 and a v3 model play one game, each evaluator built from its own
+    model's input spec and terminal settings, filling tokens in its layout."""
+    configs = [
+        dataclasses.replace(config, model_path=model_path, terminal_rank_tau=tau,
+                            d_model=32, d_proj=8, num_heads=4, num_layers=1)
+        for config, model_path, tau in (
+            (V2_CONFIG, "nn/transformer-v2.py", 0.0), (V3_CONFIG, "nn/transformer-v3.py", 0.05),
+        )
+    ]
+    entries = [
+        ModelEntry(Path(f"{i}.pt"), 0, create_model(config), config, str(i))
+        for i, config in enumerate(configs)
+    ]
+    game_rules = _resolve_game_rules(entries)
+    filled: set[tuple[int, int]] = set()
+
+    def spy(fill):
+        def fill_tokens(states, tokens, *, max_players, layout_version):
+            filled.add((layout_version, tokens.shape[-1]))
+            fill(states, tokens, max_players=max_players, layout_version=layout_version)
+        return fill_tokens
+
+    game = get_game(game_rules.game_config(configs[0]))
+    game = dataclasses.replace(
+        game, fill_tokens=spy(game.fill_tokens), fill_tokens_batch=spy(game.fill_tokens_batch),
+    )
+    mcts_config = MCTSConfig(num_simulations=2, num_players=3, search_batch_size=2)
+    players = tournament._build_players(
+        game, entries, torch.device("cpu"), 3, 5, game_rules, [mcts_config] * 2, [0.25, 0.75],
+    )
+
+    for player, entry, weight in zip(players, entries, [0.25, 0.75], strict=True):
+        evaluator = player.evaluator
+        assert evaluator.model is entry.model
+        assert evaluator.input_spec == get_model_input_spec(entry.config)
+        assert (evaluator.terminal_rank_weight, evaluator.terminal_rank_tau) == (
+            weight, entry.config.terminal_rank_tau,
+        )
+    scores = tournament._play_game(
+        game, players, [0, 1, 0], 3, 5, 1, np.random.default_rng(1),
+        StatePool(game, 2 * (mcts_config.num_simulations + 1), game.state_size(5)),
+    )
+    assert len(scores) == 3
+    assert filled == {(2, game.token_dim(2)), (3, game.token_dim(3))}
+    assert game.token_dim(2) != game.token_dim(3)

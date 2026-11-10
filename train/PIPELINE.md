@@ -5,9 +5,9 @@ are from `train/config.py`. Active runs are `train_configs/bigger-multi.json`
 (v2) and `train_configs/v3-09-20-26.json` (v3). Tuned values change, so check
 the config. Self-play policy diagnostics are in `train/POLICY_METRICS.md`.
 
-Search, the evaluators, the eval server, replay, the trainer, and `play_game`
-reach the game only through its `games.Game` adapter, which each process
-builds with `get_game(config)`. Dimensions come from the adapter and its
+Search, the evaluators, the eval server, replay, the trainer, `play_game`, and
+tournaments reach the game only through its `games.Game` adapter, which each
+process builds with `get_game(config)`. Dimensions come from the adapter and its
 `policy` layout (`unified_dim`, `max_action_size`, `build_action_lut()`).
 Notes below name RSS's implementations where they matter
 ([`1889/pipeline-refactor.md`](../1889/pipeline-refactor.md)).
@@ -266,6 +266,22 @@ Notes below name RSS's implementations where they matter
 - **Launch and stage tags.** `eval_server/` gives each epoch's real and
   launched (padded) rows, launches by launched size, and the serve loop's time
   by stage (`profile_stats.STAGES`); GPU work it doesn't wait on is uncounted.
+
+## Tournaments (`train/tournament.py`)
+
+- **Moves.** Each decision is a fresh search (seats are different models, so
+  no subtree reuse) with the checkpoint's root noise, which
+  `--no-dirichlet-noise` turns off, and plays the most-visited action.
+  `--sample-moves N` samples a game's first N decisions in proportion to
+  visits instead, as self-play's `start_explore_moves` does for started games,
+  so near-deterministic models play distinct games.
+- **Seats.** Seat 0 is the player who acts first (1889's seed picks it). A
+  1889 schedule is seat-balanced in rounds. RSS keeps its original schedule,
+  which is not: with fewer models than seats, the first models always take
+  the extra seats.
+- **Rules.** Each checkpoint searches with its own model's input spec and
+  terminal value settings. RSS checkpoints may differ in engine rules
+  (`games/rss_tournament.py`); 1889 ones must share their engine options.
 
 ## Operations (`train/main.py`)
 

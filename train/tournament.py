@@ -1,7 +1,8 @@
 """Tournament between model checkpoints.
 
-Play round-robin games between different training checkpoints
-to evaluate relative model strength over time.
+Play round-robin games between checkpoints of one game (RSS or 1889, through
+the ``Game`` adapter) to compare their strength. Each checkpoint searches with
+its own model, input layout, search settings, and terminal value settings.
 
 Usage:
     .venv/bin/python -m train.tournament cp1.pt,cp2.pt,cp3.pt [options]
@@ -19,13 +20,28 @@ Usage:
     # One checkpoint at two c_puct values
     .venv/bin/python -m train.tournament cp.pt@c_puct=1.2,cp.pt@c_puct=1.7
 
-Checkpoints trained under different engine rules can share a game. The game
-uses the most permissive checkpoint rules (v3 behavior and cross-president
-offers if any checkpoint was trained with them). Each checkpoint searches under
-its own training rules within the game's: a model trained with same-president
-acquisitions searches only those, and a legacy (v2) model sees legacy
-trade-history lifetime. A model trained without cross-president offers answers
-incoming ones with equal accept/reject priors, as in live play.
+Seats count from the player who acts first: P0 (1889's seed picks who that
+is; in RSS it is always player 0). A 1889 schedule is seat-balanced: it plays
+in rounds in which every model sits in every seat equally often. With fewer
+models than seats, a round is every arrangement of the most even splits (2
+models at 4 seats: the six 2-2 arrangements; at 3 seats: the 2-1 and 1-2
+ones); otherwise it is every rotation, in both directions, of every group of
+``num_players`` models. RSS keeps its original schedule, so its tournaments
+replay as before. Moves are the most-visited action after a search with each
+checkpoint's root noise; ``--sample-moves N`` samples a game's first N
+decisions from the visits instead, so games of near-deterministic models
+differ from their first moves (self-play's ``start_explore_moves`` does the
+same for started games). Games run one at a time in this process, or with
+``--workers K`` in K processes that each load every checkpoint; a seed then
+gives the same games for any K > 1, though not the ones a single process plays.
+
+The report adds a pairwise score to the per-place counts: the share of seat
+pairs in which one model's seat finished ahead of the other's, in the games
+both played (ties count half), with its standard error over those games.
+
+Checkpoints of RSS trained under different engine rules can share a game
+(``games/rss_tournament.py``). Every 1889 checkpoint must have been trained
+under the same engine options, which the games are played under.
 """
 
 from __future__ import annotations
@@ -34,32 +50,23 @@ import argparse
 import dataclasses
 import itertools
 import math
+import multiprocessing as mp
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Protocol
 
 import numpy as np
 import torch
 
-from core.actions import enumerate_legal_actions_py
-from core.data import MAX_ACTION_SIZE, GamePhases
-from core.driver import (
-    DRIVER,
-    STATUS_GAME_OVER_PY as STATUS_GAME_OVER,
-    STATUS_INVALID_PY as STATUS_INVALID,
-)
-from core.state import GameState
-from entities.player import PLAYERS
-from entities.turn import TURN
-from games import Game, get_game
-from games.rss_live import CrossPresidentOfferPriorEvaluator
+from games import STATUS_INVALID, Game, get_game
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool, run_search
 from nn import get_model_input_spec
 from train.checkpoint import load_model_from_checkpoint
-from train.config import MCTSConfig, TrainingConfig
+from train.config import _ENGINE_OPTIONS, MCTSConfig, TrainingConfig
 
 
 # ---------------------------------------------------------------------------
@@ -120,83 +127,80 @@ def _model_name(config: TrainingConfig) -> str:
 # Engine rules
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class EngineRules:
-    """Engine rule flags (runtime-only; not stored in the raw state array)."""
-    v3_behavior: bool
-    acq_same_president: bool
-    # Policy/search only; game legality never depends on it.
-    max_acq_price_actions: int = 0
+def _same_state(state: Any) -> Any:
+    return state
 
-    @classmethod
-    def from_config(cls, config: TrainingConfig) -> EngineRules:
-        return cls(
-            config.v3_behavior, config.acq_same_president, config.max_acq_price_actions,
-        )
+
+class GameRules(Protocol):
+    """The engine rules a tournament's games use, and how each checkpoint
+    searches within them (``_resolve_game_rules``)."""
+
+    def describe(self) -> str: ...
+
+    def game_config(self, config: TrainingConfig) -> TrainingConfig:
+        """``config`` with these rules: its adapter's ``new_game`` plays under them."""
+        ...
+
+    def seat(
+        self, config: TrainingConfig, evaluator: Any, num_players: int, max_players: int,
+    ) -> tuple[Any, Callable[[Any], Any], str]:
+        """For a checkpoint trained under ``config``: its evaluator, the game's
+        state as it searches it, and how that differs from the game's rules."""
+        ...
+
+
+@dataclass(frozen=True)
+class SharedRules:
+    """Engine options every checkpoint was trained with: the games use them,
+    and each checkpoint searches the game's own state."""
+    options: tuple[tuple[str, Any], ...]
 
     def describe(self) -> str:
-        mode = "v3" if self.v3_behavior else "legacy"
-        acq = ("same-president acquisitions" if self.acq_same_president
-               else "cross-president offers")
-        return f"{mode} rules, {acq}"
+        return ", ".join(f"{name}={value}" for name, value in self.options)
+
+    def game_config(self, config: TrainingConfig) -> TrainingConfig:
+        return config
+
+    def seat(
+        self, config: TrainingConfig, evaluator: Any, num_players: int, max_players: int,
+    ) -> tuple[Any, Callable[[Any], Any], str]:
+        del config, num_players, max_players
+        return evaluator, _same_state, ""
 
 
 def _resolve_game_rules(
     entries: list[ModelEntry],
     v3_behavior: bool | None = None,
     acq_same_president: bool | None = None,
-) -> EngineRules:
-    """Game rules: explicit overrides, else the most permissive checkpoint's."""
-    trained = [EngineRules.from_config(e.config) for e in entries]
-    return EngineRules(
-        v3_behavior=(any(r.v3_behavior for r in trained)
-                     if v3_behavior is None else v3_behavior),
-        acq_same_president=(all(r.acq_same_president for r in trained)
-                            if acq_same_president is None else acq_same_president),
-    )
+) -> GameRules:
+    """The rules for one game's checkpoints. RSS checkpoints may differ in
+    rules (``games.rss_tournament``), and the overrides are RSS's; every other
+    game's checkpoints must share their engine options (``SharedRules``)."""
+    games = {e.config.game for e in entries}
+    if len(games) > 1:
+        played = ", ".join(f"{e.path.name} {e.config.game}" for e in entries)
+        raise ValueError(f"checkpoints play different games: {played}")
+    game = games.pop()
+    if game == "rss":
+        from games.rss_tournament import resolve_game_rules
 
-
-def _search_rules(game: EngineRules, trained: EngineRules) -> EngineRules:
-    """Rules a checkpoint searches under: its training rules, within the game's.
-
-    Searching same-president only restricts the game's legal actions. Legacy
-    behavior drops v3's cross-president price floors, so it is used only with
-    same-president search; there it differs from v3 only in trade-history
-    lifetime (the rejection floor never applies to a player that makes no
-    cross-president offers). Each checkpoint keeps its own ACQ price cap.
-    """
-    same_president = game.acq_same_president or trained.acq_same_president
-    return EngineRules(
-        v3_behavior=game.v3_behavior and (trained.v3_behavior or not same_president),
-        acq_same_president=same_president,
-        max_acq_price_actions=trained.max_acq_price_actions,
-    )
-
-
-# Phases where legacy rules keep trade history; they clear it when INVEST ends.
-_INVEST_ROUND_PHASES = (int(GamePhases.PHASE_INVEST), int(GamePhases.PHASE_BID))
-
-
-def _search_state(
-    state: GameState, rules: EngineRules, num_players: int, max_players: int,
-) -> GameState:
-    """Return ``state`` as seen under ``rules``, copying when they differ."""
-    if (rules.v3_behavior == state.v3_behavior
-            and rules.acq_same_president == state.acq_same_president
-            and rules.max_acq_price_actions == state.max_acq_price_actions):
-        return state
-    view = GameState.from_array(
-        state._array, num_players, max_players=max_players,
-        v3_behavior=rules.v3_behavior,
-    )
-    view.acq_same_president = rules.acq_same_president
-    view.max_acq_price_actions = rules.max_acq_price_actions
-    if (state.v3_behavior and not rules.v3_behavior
-            and TURN.get_phase(view) not in _INVEST_ROUND_PHASES):
-        # V3 keeps trade history until the next INVEST.
-        for player_id in range(num_players):
-            PLAYERS[player_id].clear_roundtrip_tracking(view)
-    return view
+        return resolve_game_rules(
+            [e.config for e in entries], v3_behavior, acq_same_president,
+        )
+    if v3_behavior is not None or acq_same_president is not None:
+        raise ValueError("--v3-behavior and --acq-same-president are RSS options")
+    names = _ENGINE_OPTIONS[game]
+    differences = [
+        f"{name}: " + ", ".join(f"{e.path.name} {getattr(e.config, name)}" for e in entries)
+        for name in names
+        if len({getattr(e.config, name) for e in entries}) > 1
+    ]
+    if differences:
+        raise ValueError(
+            f"checkpoints were trained under different {game} engine options, "
+            f"which a tournament does not mix: {'; '.join(differences)}"
+        )
+    return SharedRules(tuple((name, getattr(entries[0].config, name)) for name in names))
 
 
 @dataclass
@@ -204,7 +208,9 @@ class ModelPlayer:
     """How one checkpoint searches in this tournament."""
     evaluator: Any
     mcts_config: MCTSConfig
-    rules: EngineRules
+    # The game's state as this checkpoint searches it
+    view: Callable[[Any], Any] = _same_state
+    rules: str = ""  # how its search differs from the game's rules, for the header
 
 
 # ---------------------------------------------------------------------------
@@ -217,24 +223,24 @@ def _play_game(
     seat_to_model: list[int],
     num_players: int,
     max_players: int,
-    game_rules: EngineRules,
     game_seed: int,
     rng: np.random.Generator,
     state_pool: StatePool,
+    sample_moves: int = 0,
 ) -> list[int]:
-    """Play one tournament game. Returns net worths per seat."""
-    state = GameState(num_players, max_players=max_players,
-                      v3_behavior=game_rules.v3_behavior,
-                      acq_same_president=game_rules.acq_same_president)
-    state.initialize_game(num_players, seed=game_seed, max_players=max_players)
-    legal = np.zeros(MAX_ACTION_SIZE, dtype=np.uint16)
+    """Play one tournament game. Returns final scores per seat; seat 0 acts first."""
+    state = game.new_game(num_players, max_players, game_seed)
+    first = game.active_player(state)
+    legal = np.empty(game.policy.max_action_size, dtype=np.uint16)
 
-    while TURN.get_phase(state) != GamePhases.PHASE_GAME_OVER:
-        active_player = TURN.get_active_player(state)
-        player = players[seat_to_model[active_player]]
-        search_state = _search_state(state, player.rules, num_players, max_players)
+    for move in itertools.count():
+        if game.is_terminal(state):
+            break
+        seat = (game.active_player(state) - first) % num_players
+        player = players[seat_to_model[seat]]
+        search_state = player.view(state)
 
-        if enumerate_legal_actions_py(search_state, legal) == 1:
+        if game.enumerate_policy_actions(search_state, legal) == 1:
             # Forced under this seat's rules; its own driver would auto-apply it.
             action = int(legal[0])
         else:
@@ -242,27 +248,66 @@ def _play_game(
             root = run_search(game, search_state, player.evaluator, player.mcts_config,
                               rng, state_pool=state_pool)
             assert root.legal_actions is not None and root.visit_counts is not None
-            action = int(root.legal_actions[np.argmax(root.visit_counts)])
+            visits = root.visit_counts
+            choice = (rng.choice(len(visits), p=visits / visits.sum())
+                      if move < sample_moves else np.argmax(visits))
+            action = int(root.legal_actions[choice])
 
-        history: list[tuple[int, int]] = []
-        status = DRIVER.apply_action(state, action, history=history)
+        status = game.apply_action(state, action)
         assert status != STATUS_INVALID, (
-            f"seat {active_player} chose action {action}, illegal under game rules"
+            f"seat {seat} chose action {action}, illegal under game rules"
         )
-        if status == STATUS_GAME_OVER:
-            break
 
-    return [PLAYERS[pid].get_net_worth(state) for pid in range(num_players)]
+    scores = game.final_scores(state)
+    return [scores[(seat + first) % num_players] for seat in range(num_players)]
 
 
 # ---------------------------------------------------------------------------
 # Matchup scheduling
 # ---------------------------------------------------------------------------
 
+def _balanced_schedule(
+    num_models: int, min_games_per_pair: int, num_players: int,
+) -> list[tuple[int, ...]]:
+    """Seat assignments, one per game, in rounds in which every model sits in
+    every seat equally often (see the module docstring). Rounds repeat until
+    every pair has played ``min_games_per_pair`` games together."""
+    if num_models < num_players:
+        base, extra = divmod(num_players, num_models)
+        round_ = sorted({
+            seating
+            for heavy in itertools.combinations(range(num_models), extra)
+            for seating in itertools.permutations([
+                m for m in range(num_models) for _ in range(base + (m in heavy))
+            ])
+        })
+    else:
+        round_ = [
+            group[k:] + group[:k]
+            for combo in itertools.combinations(range(num_models), num_players)
+            for group in (combo, combo[::-1])
+            for k in range(num_players)
+        ]
+    # By symmetry every pair plays together as often as models 0 and 1.
+    together = sum({0, 1} <= set(seating) for seating in round_)
+    return round_ * max(1, math.ceil(min_games_per_pair / together))
+
+
+def _rss_schedule(
+    num_models: int, min_games_per_pair: int, num_players: int,
+) -> Iterator[tuple[int, ...]]:
+    """RSS's original seat assignments, one per game."""
+    for triple, num_games in _generate_schedule(num_models, min_games_per_pair, num_players):
+        # All seat permutations for this triple, cycled over num_games
+        perms = list(itertools.permutations(triple))
+        for g in range(num_games):
+            yield perms[g % len(perms)]
+
+
 def _generate_schedule(
     num_models: int, min_games_per_pair: int, num_players: int,
 ) -> list[tuple[tuple[int, ...], int]]:
-    """Generate tournament schedule as (model_group, num_games) pairs.
+    """Generate RSS's tournament schedule as (model_group, num_games) pairs.
 
     For num_models < num_players, duplicates models to fill seats.
     For num_models >= num_players, uses all C(N, num_players) combinations
@@ -310,15 +355,34 @@ class PairStats:
     finishes: list[int] = field(default_factory=list)  # per-place counts (1st, 2nd, ...)
     wins: int = 0   # times a ranked strictly better than b
     games: int = 0  # games where both a and b played
+    # Per such game: the share of (a seat, b seat) pairs where a's seat
+    # finished ahead, ties counting half
+    pair_scores: list[float] = field(default_factory=list)
+
+    def pair_score(self) -> tuple[float, float]:
+        """Mean pairwise score and its standard error over games."""
+        scores = np.asarray(self.pair_scores, dtype=np.float64)
+        se = scores.std(ddof=1) / math.sqrt(len(scores)) if len(scores) > 1 else math.nan
+        return float(scores.mean()), float(se)
 
 
 @dataclass
 class GameResult:
-    """Record of one tournament game."""
+    """Record of one tournament game, by seat (seat 0 acts first)."""
     seat_to_model: list[int]
-    net_worths: list[int]
+    scores: list[int]
     ranks: list[int]
     seed: int
+
+
+def _ahead(rank_a: int, rank_b: int) -> float:
+    return 1.0 if rank_a < rank_b else 0.5 if rank_a == rank_b else 0.0
+
+
+def _seat_scores(ranks: list[int]) -> list[float]:
+    """Each seat's share of the other seats it finished ahead of, ties half."""
+    # A seat ties itself, which counts half.
+    return [(sum(_ahead(r, other) for other in ranks) - 0.5) / (len(ranks) - 1) for r in ranks]
 
 
 def _collect_pair_stats(
@@ -332,6 +396,15 @@ def _collect_pair_stats(
                 stats[(a, b)] = PairStats(finishes=[0] * num_players)
 
     for gr in results:
+        seats: dict[int, list[int]] = {}
+        for seat, model_idx in enumerate(gr.seat_to_model):
+            seats.setdefault(model_idx, []).append(seat)
+        for model_a, model_b in itertools.permutations(seats, 2):
+            stats[(model_a, model_b)].pair_scores.append(float(np.mean([
+                _ahead(gr.ranks[i], gr.ranks[j])
+                for i in seats[model_a] for j in seats[model_b]
+            ])))
+
         # Map model -> best rank achieved in this game
         model_best_rank: dict[int, int] = {}
         for seat, model_idx in enumerate(gr.seat_to_model):
@@ -411,6 +484,36 @@ def _format_report(
             )
         lines.append("")
 
+    lines.append("## Pairwise scores")
+    lines.append("")
+    lines.append("  The share of seat pairs in which the first model's seat finished ahead of")
+    lines.append("  the second's, ties counting half (0.5 = even), mean ± standard error over")
+    lines.append("  the games both played.")
+    lines.append("")
+    for i, j in itertools.combinations(range(len(entries)), 2):
+        ps = stats[(i, j)]
+        if ps.games == 0:
+            continue
+        mean, se = ps.pair_score()
+        lines.append(
+            f"  [{i}] vs [{j}]: {mean:.3f} ± {se:.3f}  ({ps.games} games)"
+        )
+    lines.append("")
+
+    seat_hdr = "  ".join(f"{f'P{s}':>6s}" for s in range(num_players))
+    lines.append("## Seats (P0 acts first)")
+    lines.append("")
+    lines.append(f"  {'Games per seat':<30s}  {seat_hdr}")
+    for i, entry in enumerate(entries):
+        counts = [sum(r.seat_to_model[s] == i for r in results) for s in range(num_players)]
+        lines.append(f"  {f'[{i}] {entry.label}':<30s}  "
+                     + "  ".join(f"{c:>6d}" for c in counts))
+    if results:
+        seat_scores = np.mean([_seat_scores(r.ranks) for r in results], axis=0)
+        lines.append(f"  {'Seat score (0.5 = even)':<30s}  "
+                     + "  ".join(f"{s:>6.3f}" for s in seat_scores))
+    lines.append("")
+
     return "\n".join(lines)
 
 
@@ -424,17 +527,18 @@ def _build_players(
     device: torch.device,
     num_players: int,
     max_players: int,
-    game_rules: EngineRules,
+    game_rules: GameRules,
     mcts_configs: list[MCTSConfig],
     terminal_rank_weights: list[float],
 ) -> list[ModelPlayer]:
-    """Build each checkpoint's evaluator and search rules for this game."""
+    """Build each checkpoint's evaluator, on its own model's input spec, and
+    its search rules within the game's."""
     players: list[ModelPlayer] = []
     for e, mcts_config, terminal_rank_weight in zip(
         entries, mcts_configs, terminal_rank_weights, strict=True,
     ):
         input_spec = get_model_input_spec(e.config)
-        evaluator: Any = NNEvaluator(
+        evaluator = NNEvaluator(
             game,
             e.model,
             device,
@@ -443,14 +547,10 @@ def _build_players(
             terminal_rank_tau=e.config.terminal_rank_tau,
             input_spec=input_spec,
         )
-        trained = EngineRules.from_config(e.config)
-        if trained.acq_same_president and not game_rules.acq_same_president:
-            evaluator = CrossPresidentOfferPriorEvaluator(
-                evaluator, num_players=num_players, max_players=max_players,
-            )
-        players.append(ModelPlayer(
-            evaluator, mcts_config, _search_rules(game_rules, trained),
-        ))
+        seat_evaluator, view, rules = game_rules.seat(
+            e.config, evaluator, num_players, max_players,
+        )
+        players.append(ModelPlayer(seat_evaluator, mcts_config, view, rules))
     return players
 
 
@@ -463,11 +563,15 @@ def run_tournament(
     min_games_per_pair: int,
     base_seed: int,
     terminal_rank_weights: list[float],
-    game_rules: EngineRules,
+    game_rules: GameRules,
+    sample_moves: int = 0,
+    workers: int = 1,
 ) -> tuple[list[GameResult], float]:
-    """Run the full tournament. Returns (results, elapsed_seconds)."""
-    # Every checkpoint plays RSS; each seat's rules travel on its search state.
-    game = get_game(entries[0].config)
+    """Run the full tournament under ``game_rules`` (``_resolve_game_rules``).
+    With ``workers`` > 1, games run in that many processes, each loading every
+    checkpoint. Returns (results in schedule order, elapsed_seconds)."""
+    # Each seat's rules travel on its search state.
+    game = get_game(game_rules.game_config(entries[0].config))
     players = _build_players(
         game, entries, device, num_players, max_players, game_rules,
         mcts_configs, terminal_rank_weights,
@@ -477,61 +581,128 @@ def run_tournament(
     state_pool = StatePool(game, 2 * (max_sims + 1), game.state_size(max_players))
     rng = np.random.default_rng(base_seed)
 
-    schedule = _generate_schedule(len(entries), min_games_per_pair, num_players)
-    total_games = sum(g for _, g in schedule)
+    # RSS keeps its original schedule, so its tournaments replay as before.
+    schedule = list((_rss_schedule if game.name == "rss" else _balanced_schedule)(
+        len(entries), min_games_per_pair, num_players,
+    ))
+    total_games = len(schedule)
 
     print(f"Tournament: {len(entries)} models, {total_games} games scheduled")
     print(f"  Players/game: {num_players}")
-    print(f"  Game rules: {game_rules.describe()}")
+    print(f"  Game rules: {game.name}, {game_rules.describe()}")
+    if sample_moves:
+        print(f"  Moves sampled from search visits: each game's first {sample_moves}")
+    if workers > 1:
+        print(f"  Worker processes: {workers}")
     for i, (e, player) in enumerate(zip(entries, players, strict=True)):
         cfg = player.mcts_config
-        price_cap = player.rules.max_acq_price_actions or "all"
-        offer_priors = (
-            "; equal cross-president offer priors"
-            if isinstance(player.evaluator, CrossPresidentOfferPriorEvaluator) else ""
-        )
-        print(f"  [{i}] {e.label}: searches {player.rules.describe()}{offer_priors}; "
+        print(f"  [{i}] {e.label}: "
               f"{cfg.num_simulations} sims, batch {cfg.search_batch_size}, "
               f"c_puct {cfg.c_puct}, dirichlet eps {cfg.dirichlet_epsilon}, "
-              f"acq prices {price_cap}")
+              f"input layout {player.evaluator.layout_version}"
+              + (f"; {player.rules}" if player.rules else ""))
     print()
 
-    results: list[GameResult] = []
-    game_num = 0
+    def play_here() -> Iterator[tuple[int, int, list[int], float]]:
+        for game_num, seating in enumerate(schedule, 1):
+            game_seed = int(rng.integers(0, 2**31))
+            t_game = time.perf_counter()
+            scores = _play_game(
+                game, players, list(seating), num_players, max_players,
+                game_seed, rng, state_pool, sample_moves,
+            )
+            yield game_num, game_seed, scores, time.perf_counter() - t_game
+
+    outcomes = play_here()
+    if workers > 1:
+        # Each game gets its own search rng, so results follow the seed
+        # whatever the number of workers, but differ from one process's.
+        tasks = [
+            (game_num, seating, int(rng.integers(0, 2**31)), base_seed)
+            for game_num, seating in enumerate(schedule, 1)
+        ]
+        outcomes = _play_in_workers(workers, tasks, (
+            [(e.path, e.c_puct) for e in entries], str(device), num_players, max_players,
+            mcts_configs, terminal_rank_weights, game_rules, sample_moves,
+        ))
+
+    results: list[tuple[int, GameResult]] = []
     t0 = time.perf_counter()
 
-    for triple, num_games in schedule:
-        # All seat permutations for this triple, cycled over num_games
-        perms = list(itertools.permutations(triple))
-        for g in range(num_games):
-            seat_to_model = list(perms[g % len(perms)])
-            game_seed = rng.integers(0, 2**31)
+    for game_num, game_seed, scores, dt in outcomes:
+        seat_to_model = list(schedule[game_num - 1])
+        ranks = _rank_players(scores)
+        results.append((game_num, GameResult(seat_to_model, scores, ranks, game_seed)))
 
-            t_game = time.perf_counter()
-            net_worths = _play_game(
-                game, players, seat_to_model, num_players, max_players,
-                game_rules, int(game_seed), rng, state_pool,
-            )
-            ranks = _rank_players(net_worths)
-            dt = time.perf_counter() - t_game
-
-            results.append(GameResult(seat_to_model, net_worths, ranks, int(game_seed)))
-            game_num += 1
-
-            # Progress line
-            seat_desc = ", ".join(
-                f"P{s}=[{m}]" for s, m in enumerate(seat_to_model)
-            )
-            rank_desc = ", ".join(
-                f"[{seat_to_model[s]}]=${net_worths[s]}(#{ranks[s]})"
-                for s in range(num_players)
-            )
-            print(f"  Game {game_num}/{total_games} ({dt:.1f}s): "
-                  f"{seat_desc} → {rank_desc}")
+        # Progress line
+        seat_desc = ", ".join(
+            f"P{s}=[{m}]" for s, m in enumerate(seat_to_model)
+        )
+        rank_desc = ", ".join(
+            f"[{seat_to_model[s]}]=${scores[s]}(#{ranks[s]})"
+            for s in range(num_players)
+        )
+        print(f"  Game {game_num}/{total_games} ({dt:.1f}s): "
+              f"{seat_desc} → {rank_desc}", flush=True)
 
     elapsed = time.perf_counter() - t0
     print(f"\nAll {total_games} games completed in {elapsed:.1f}s")
-    return results, elapsed
+    return [result for _, result in sorted(results, key=lambda r: r[0])], elapsed
+
+
+def _play_in_workers(
+    workers: int, tasks: list[tuple[int, tuple[int, ...], int, int]], setup: tuple[Any, ...],
+) -> Iterator[tuple[int, int, list[int], float]]:
+    """Play ``tasks`` in worker processes, yielding results as games finish."""
+    with mp.get_context("spawn").Pool(workers, _init_worker, setup) as pool:
+        yield from pool.imap_unordered(_play_task, tasks)
+
+
+# A worker process's players, from _init_worker
+_worker: dict[str, Any] = {}
+
+
+def _init_worker(
+    specs: list[tuple[Path, float | None]],
+    device: str,
+    num_players: int,
+    max_players: int,
+    mcts_configs: list[MCTSConfig],
+    terminal_rank_weights: list[float],
+    game_rules: GameRules,
+    sample_moves: int,
+) -> None:
+    """Load every checkpoint and build its player, as ``run_tournament`` does."""
+    torch.set_num_threads(1)  # parallelism comes from the workers
+    entries = []
+    for path, c_puct in specs:
+        model, config, epoch = _load_model(path, torch.device(device))
+        entries.append(ModelEntry(path, epoch, model, config, path.name, c_puct))
+    game = get_game(game_rules.game_config(entries[0].config))
+    players = _build_players(
+        game, entries, torch.device(device), num_players, max_players, game_rules,
+        mcts_configs, terminal_rank_weights,
+    )
+    max_sims = max(c.num_simulations for c in mcts_configs)
+    _worker.update(
+        game=game, players=players, num_players=num_players, max_players=max_players,
+        state_pool=StatePool(game, 2 * (max_sims + 1), game.state_size(max_players)),
+        sample_moves=sample_moves,
+    )
+
+
+def _play_task(
+    task: tuple[int, tuple[int, ...], int, int],
+) -> tuple[int, int, list[int], float]:
+    game_num, seating, game_seed, base_seed = task
+    t_game = time.perf_counter()
+    w = _worker
+    scores = _play_game(
+        w["game"], w["players"], list(seating), w["num_players"], w["max_players"],
+        game_seed, np.random.default_rng([base_seed, game_num]), w["state_pool"],
+        w["sample_moves"],
+    )
+    return game_num, game_seed, scores, time.perf_counter() - t_game
 
 
 def _resolve_tournament_num_players(
@@ -591,13 +762,24 @@ def main() -> None:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--v3-behavior", action=argparse.BooleanOptionalAction, default=None,
-        help="Game engine behavior (default: v3 if any checkpoint was trained "
-             "with it). Each checkpoint still searches under its own rules.",
+        help="RSS game engine behavior (default: v3 if any checkpoint was "
+             "trained with it). Each checkpoint still searches under its own rules.",
     )
     parser.add_argument(
         "--acq-same-president", action=argparse.BooleanOptionalAction, default=None,
-        help="Game acquisition scope (default: cross-president offers if any "
-             "checkpoint was trained with them)",
+        help="RSS game acquisition scope (default: cross-president offers if "
+             "any checkpoint was trained with them)",
+    )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Play games in this many processes, each loading every checkpoint "
+             "(default: 1, in this process). Results follow the seed for any "
+             "count above 1, but differ from a single process's.",
+    )
+    parser.add_argument(
+        "--sample-moves", type=int, default=0,
+        help="Sample each game's first N decisions in proportion to search "
+             "visits instead of playing the most visited (default: 0)",
     )
     parser.add_argument("--seed", type=int, default=42,
                         help="Base random seed (default: 42)")
@@ -684,6 +866,7 @@ def main() -> None:
     print()
 
     try:
+        game_rules = _resolve_game_rules(entries, args.v3_behavior, args.acq_same_president)
         tournament_num_players = _resolve_tournament_num_players(
             ref_config, args.num_players,
         )
@@ -717,8 +900,8 @@ def main() -> None:
     # Run tournament
     results, elapsed = run_tournament(
         entries, device, tournament_num_players, tournament_max_players, mcts_configs,
-        args.games_per_pair, args.seed, terminal_blends,
-        _resolve_game_rules(entries, args.v3_behavior, args.acq_same_president),
+        args.games_per_pair, args.seed, terminal_blends, game_rules, args.sample_moves,
+        args.workers,
     )
 
     # Build report

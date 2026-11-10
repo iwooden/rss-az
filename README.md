@@ -130,14 +130,15 @@ most-visited action; `acq_offers_top_choice_fraction` and
 self-play's temperature sampling picked.
 
 The setting is checkpointed with the config and applied by self-play, analysis,
-and live replay. Tournaments use one mode for all seats, defaulting to the first
-checkpoint's setting, with the same CLI override. On `GameState`, it is a runtime
+and live replay. Tournament games default to the most permissive checkpoint's
+setting, with the same CLI override, and each checkpoint searches under its own
+(see the tournament section). On `GameState`, it is a runtime
 flag alongside the other engine options, outside the raw int16 array; callers
 reconstructing a game for execution supply `v3_behavior` to `from_array` or
 `from_buffer`. Rebinding retains the wrapper's mode, and MCTS keeps it across
 subtree reuse, including the `acq_same_president` scope flag. Tournament
-acquisition scope defaults to the first checkpoint's config and accepts
-`--[no-]acq-same-president` as an override.
+acquisition scope defaults to cross-president offers if any checkpoint was
+trained with them and accepts `--[no-]acq-same-president` as an override.
 
 18xx.games does not enforce v3's acquisition offer limits, so its replay
 (`utils_18xx`) clears the `GameState.acq_offer_limits` runtime flag while
@@ -293,23 +294,47 @@ results file:
 .venv/bin/python -m utils_18xx.g1889_deviation report --positions positions.json --results results.jsonl
 ```
 
-Compare checkpoints in a small tournament:
+Compare checkpoints of one game (RSS or 1889) in a small tournament:
 
 ```bash
 .venv/bin/python -m train.tournament \
   checkpoints/checkpoint_epoch_0100.pt,checkpoints/checkpoint_epoch_0120.pt \
   --games-per-pair 20 \
   --simulations 200
+
+# 1889: v1 against v0 at 4 players, sampling each game's first 20 decisions
+.venv/bin/python -m train.tournament \
+  checkpoints/1889-v1/checkpoint_epoch_0100.pt,checkpoints/1889-v0/checkpoint_epoch_0058.pt \
+  --num-players 4 --simulations 1600 --search-batch-size 8 --sample-moves 20 --games-per-pair 60 \
+  --workers 8
 ```
 
 Append `@c_puct=VALUE` to a checkpoint path to override its c_puct; the same
 checkpoint can appear twice to compare settings
-(`cp.pt@c_puct=1.2,cp.pt@c_puct=1.7`).
+(`cp.pt@c_puct=1.2,cp.pt@c_puct=1.7`). Each checkpoint searches with its own
+model, input layout, and terminal value settings, in fp32, uncompiled. Games
+run one at a time, or with `--workers K` in K processes that each load every
+checkpoint (a seed then gives the same games for any K > 1, though not the
+ones one process plays). Moves are the most-visited action after a search with
+the checkpoint's root noise; `--sample-moves N` samples each game's first N
+decisions from the visits, so near-deterministic models still play different
+games.
 
-Checkpoints trained under different engine rules (e.g. v2 and v3) can play
+Seats count from the player who acts first (`P0`; 1889's seed picks who that
+is). A 1889 schedule plays in seat-balanced rounds: with fewer models than
+seats, every arrangement of the most even splits (2 models: 6 games at 3 and 4
+players, 20 at 5), otherwise every rotation of every group of models in both
+directions; `--games-per-pair` rounds up to whole rounds. RSS keeps its
+original schedule. Besides per-place counts, the report gives each pair's
+pairwise score (the share of seat pairs in which the first model's seat
+finished ahead, ties half; 0.5 is even) with its standard error over games, and
+games and mean score by seat.
+
+RSS checkpoints trained under different engine rules (e.g. v2 and v3) can play
 together. Games default to the most permissive checkpoint rules, and each
 checkpoint searches under the rules stored in its own config; the startup
-output lists both.
+output lists both. 1889 checkpoints must share their engine options
+(same-president sale flags and the auction pass cap), and the games use them.
 
 ## Live 18xx.games Play
 

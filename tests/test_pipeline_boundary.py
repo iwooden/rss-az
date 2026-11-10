@@ -18,8 +18,7 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENGINE_PACKAGES = frozenset({"core", "entities", "phases", "g1889"})
 RSS_TOOLING = frozenset({
-    "train/analyze_game.py", "train/debug_trace.py",
-    "train/strategy_data.py", "train/tournament.py",
+    "train/analyze_game.py", "train/debug_trace.py", "train/strategy_data.py",
 })
 # (module, imported module) -> (imported names, why it may stay). Empty since
 # step 4; a temporary entry names the step that removes it.
@@ -51,7 +50,7 @@ def test_pipeline_modules_cover_the_generic_pipeline():
     modules = _pipeline_modules()
     for module in ("mcts/search.py", "mcts/evaluator.py", "train/eval_server.py",
                    "train/replay_buffer.py", "train/trainer.py", "train/self_play.py",
-                   "train/main.py", "train/config.py", "nn/__init__.py"):
+                   "train/main.py", "train/config.py", "train/tournament.py", "nn/__init__.py"):
         assert module in modules
     assert not RSS_TOOLING & set(modules)
 
