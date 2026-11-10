@@ -66,6 +66,7 @@ from train.config import TrainingConfig
 HUMAN_GAMES = Path("tests/g1889/games/data")
 CONFIG = Path("train_configs/1889-v0.json")
 MIN_LEFT = 50
+_NEWEST_LAYOUT = 2  # the token layout whose fill leaves every cache in the row fresh
 MAX_PLAYOUT = 20_000  # decisions; uniform playouts from the opening take about 800
 _NUM_PLAYERS = get_layout(0).global_offset + get_global_fields().num_players
 
@@ -126,7 +127,11 @@ def _normalize(game: Game, state: GameState, records: np.ndarray) -> str | None:
         TURN.set_route_revenue(state, max_route_revenue(state, TURN.operating_corp(state)))
     if DRIVER.forced_action_py(state) >= 0:
         return "forced under the flags"
-    game.fill_relations_sparse(state, records, state.max_players)  # the extraction prologue
+    # Extraction's prologue refreshes the graph and route caches; a layout-2
+    # token fill also refreshes the hypothetical route maxes it alone reads.
+    game.fill_relations_sparse(state, records, state.max_players)
+    tokens = np.empty((game.num_tokens(state.max_players), game.token_dim(_NEWEST_LAYOUT)), dtype=np.float32)
+    game.fill_tokens(state, tokens, state.max_players, layout_version=_NEWEST_LAYOUT)
     return None
 
 

@@ -36,7 +36,7 @@ ROOT = GAME.new_game(MAX_PLAYERS, MAX_PLAYERS, 0)
 CHECKED_IN = REPO / "g1889/data/human_starts.npz"
 # 2 players (left out), then 5, 3, and 4: short games, so the playouts stay quick.
 SAMPLE = ("264038", "268833", "270133", "270907")
-TOKEN_LAYOUT = 1
+TOKEN_LAYOUT = 2  # its fill reads every cache in the row
 
 
 @pytest.fixture(scope="module")
