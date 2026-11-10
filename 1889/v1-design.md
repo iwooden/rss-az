@@ -40,22 +40,25 @@ A quarter of each epoch's games start from a decision in one of the 87 scraped
 
 **The file.**
 
-- **Builder:** `utils_18xx/g1889_start_positions.py`, run on the dev box. It
-  loads each game's states as `utils_18xx/g1889_deviation.py` does
-  (`load_scraped_extract`, then `snapshot.load_state`,
-  `utils_18xx/g1889_deviation.py:199-226`). That path reads the extract cache in
-  `tests/g1889/replay/.extract_cache/` and stats `submodules/18xx`, so the
+- **Builder:** `utils_18xx/g1889_start_positions.py`, run on the dev box
+  (built, commit `6445a99`). It replays each game through the
+  differential-replay harness (`tests/g1889/replay/harness.py`) and records
+  every row the engine rested at. That gives every engine decision, counted
+  in `play_game`'s `move_count` units, where loading each Ruby snapshot would
+  give only Ruby's stops. It reads the extract cache in
+  `tests/g1889/replay/.extract_cache/` and needs `submodules/18xx`, so the
   cloud box cannot run it.
 - **Contents:** one `.npz` holding the raw int16 rows, and for each row its
-  player count, source game, decision index, decisions left, and game phase;
-  plus the row size and a hash of the state layout.
+  player count, source game, decision index, decisions left, game phase,
+  decision phase, and round; plus the row size, the engine flags, and a hash
+  of the state layout.
 - **Rows are normalised** before saving: the extraction prologue runs on each
   (`g1889/token_data.pyx:347-354`), so its graph and route caches are fresh.
   At a DIVIDEND decision the revenue is set to the engine's best, as the
   deviation test sets it, since humans may have run a lesser route.
-- **Where it lives:** `g1889/data/human_starts.npz`, checked in, if it is
-  under 10 MB compressed; otherwise beside the checkpoints, copied by hand.
-  **Test:** its size. About 45,000 rows of 865 slots is 78 MB raw.
+- **Where it lives:** `g1889/data/human_starts.npz`, checked in. It holds
+  45,355 rows of 850 slots: 78 MB raw, 1.4 MB compressed. By player count:
+  24,261 at 3, 17,764 at 4, 3,330 at 5. By game phase: 5,700 to 9,200 each.
 - **Loading:** training refuses a file whose layout hash or row size differs
   from the engine's. Layout 2 adds cache slots to the row (5.9), so the file
   is rebuilt once after step 9.6.
@@ -77,8 +80,12 @@ A quarter of each epoch's games start from a decision in one of the 87 scraped
   `start_move`. With a row it builds its state as
   `game.scratch_state(game.new_game(...), row)`, which carries the run's
   flags, where `utils_18xx/g1889_deviation.py:291-331` patches `get_game` to do so.
-- The task a worker takes (`train/main.py:1246-1249`) gains a start index.
-  Workers open the file read-only and index it.
+- The main process loads the file once, and the task a worker takes
+  (`train/main.py:1246-1249`) carries its row (1.7 KB) and decision index.
+  128 workers each loading 78 MB would cost 10 GB.
+- The loader and the layout hash move from the builder's module to where the
+  pipeline may import them: `train/` cannot import the engine
+  (`tests/test_pipeline_boundary.py`), so they go behind the `Game` adapter.
 - `human_start_fraction` (0.25) of each player count's games in the epoch's
   schedule (`train/self_play.py:153-189`) get a start, drawn uniformly from
   that count's positions.
@@ -173,8 +180,9 @@ head already believes, and v0's head believes treasury is worthless.
 
 ### 3.1 What a row stores
 
-`ReplayBuffer` (`train/replay_buffer.py:120-131`) gains three arrays, and
-`SelfPlayExample` and `GameRecord` carry them:
+`ReplayBuffer` (`train/replay_buffer.py`) gains three arrays (built, commit
+`0b2aba3`). `GameRecord` carries the flags and the net worths; the buffer
+assigns the id as it inserts a game, so ids never decrease in write order:
 
 | Array | Type | Holds |
 |---|---|---|
@@ -193,10 +201,15 @@ head already believes, and v0's head believes treasury is worthless.
 ### 3.2 A buffer measured in epochs
 
 - **Config:** `buffer_epochs`, default 0 (off: today's behaviour).
-- The buffer's metadata records the first game id of each epoch. Sampling
-  draws from the rows of the newest `buffer_epochs` epochs. Rows are written
-  in game order, so those are the newest contiguous run of rows, and
-  `_sample_indices` (`train/replay_buffer.py:303-326`) needs only its length.
+- The buffer's metadata records `(epoch, first game id)` for each epoch
+  (`begin_epoch`). Sampling draws from the rows of the newest `buffer_epochs`
+  epochs that still hold rows. Rows are written in game order, so those are
+  the newest contiguous run of rows.
+- **A resume into a partly played epoch** (after a graceful shutdown) keeps
+  that epoch's earlier games in it, so the epoch holds them plus a full quota.
+  Rows from before the record, as in v0's buffer, count as one epoch.
+- The `min_buffer_size` check, the priority stats, and step scaling read the
+  window, not the whole buffer.
 - `buffer_capacity` stays as the memory cap: 2.5M rows, 7.3 GB. If the window
   outgrows it the oldest rows fall off as now, with a warning.
 - The capacity probe takes its held-out epochs from the same record.
@@ -204,7 +217,8 @@ head already believes, and v0's head believes treasury is worthless.
 ### 3.3 Steps from a replay ratio
 
 - **Config:** `replay_ratio`, default 0 (off).
-- Steps in an epoch = `replay_ratio` × the epoch's new rows / `batch_size`,
+- Steps in an epoch = `replay_ratio` × the epoch's rows in the buffer, by the
+  record / `batch_size`,
   scaled by the share of `buffer_epochs` the buffer holds so far. That scaling
   is what `_scaled_training_steps` does by fullness today
   (`train/main.py:713-724`): without it, the first epochs' rows would be drawn
