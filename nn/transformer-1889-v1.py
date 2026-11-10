@@ -322,6 +322,7 @@ class G1889TransformerNet(nn.Module):
     _relation_ids: torch.Tensor
     _trunk_rows: torch.Tensor
     _row_map: torch.Tensor
+    _row_cell: torch.Tensor
     _static_relations: torch.Tensor
     _head_offsets: torch.Tensor
     _side_planes: torch.Tensor
@@ -381,8 +382,15 @@ class G1889TransformerNet(nn.Module):
         assert len(trunk_rows) == trunk_tokens
         row_map = torch.full((256,), -1, dtype=torch.long)
         row_map[trunk_rows] = torch.arange(trunk_tokens)
+        # Where a record without weight is scattered: its own row's cell, with
+        # the candidates' rows folded onto the first trunk rows, so that an
+        # eval launch's filler stays spread over cells as it is for v0
+        # (``_flat_filler_rows``) and piles nothing onto one cell.
+        row_cell = row_map.clamp_min(0)
+        row_cell[_CANDIDATES] = torch.arange(_NUM_CANDIDATES)
         self.register_buffer("_trunk_rows", trunk_rows, persistent=False)
         self.register_buffer("_row_map", row_map, persistent=False)
+        self.register_buffer("_row_cell", row_cell, persistent=False)
 
         # --- Relations ---
         # A record's id gives its channel, or -1 for an id with none: the
@@ -584,16 +592,17 @@ class G1889TransformerNet(nn.Module):
         coords = relations.long()
         batch, relation, query, key, value = coords.unbind(1)
         channel = self._relation_channel[relation.clamp(0, 255)]
-        query, key = self._row_map[query], self._row_map[key]
-        # Any other record gets weight 0, channel 0, and cell 0 of its state:
-        # padding, a relation without a channel, or one that names a candidate
-        # row. Filtering them out would make N depend on the data.
-        real = (value > 0) & (channel >= 0) & (query >= 0) & (key >= 0)
+        # Any other record gets weight 0 and channel 0: padding, a relation
+        # without a channel, or one that names a candidate row. It keeps a cell
+        # (``_row_cell``): filtering it out would make N depend on the data.
+        real = (value > 0) & (channel >= 0) & (self._row_map[query] >= 0) & (self._row_map[key] >= 0)
         channel = channel.masked_fill(~real, 0)
         weights = value.to(dtype=self._relation_scales.dtype) * self._relation_scales[channel]
         num_tokens = self.cfg.num_trunk_tokens
-        cells = (query * num_tokens + key).masked_fill(~real, 0)
-        cells = batch * (self.cfg.num_heads * num_tokens * num_tokens) + cells
+        cells = (
+            batch * (self.cfg.num_heads * num_tokens * num_tokens)
+            + self._row_cell[query] * num_tokens + self._row_cell[key]
+        )
         return _FlatRelations(
             channel,
             (cells[None, :] + self._head_offsets).reshape(-1),

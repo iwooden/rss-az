@@ -66,6 +66,7 @@ from nn import _load_model_module, create_model, get_model_input_spec
 from nn.model_contract import flatten_relation_records
 from nn.policy_layout import PolicyLayout
 from train.checkpoint import load_model_from_checkpoint, save_checkpoint
+from train.eval_server import _flat_filler_rows
 from train.config import TrainingConfig
 
 import tests.g1889.test_model as T0
@@ -472,6 +473,32 @@ def test_the_finished_mask_is_the_records_over_the_trunks_rows(groups, model_for
     assert (bias[~visible] == torch.finfo(bias.dtype).min).all()
 
 
+def test_records_without_weight_stay_spread_over_cells(groups, model_for):
+    """An eval launch pads its records with filler, a cell to a row, so that the
+    scatter piles nothing onto one cell (``_flat_filler_rows``). v1 gives
+    weight 0 to more records than v0, filler naming candidate rows and the
+    candidates' own among them, and each keeps a cell: at most four of a
+    state's filler rows share one, the candidates' rows folded onto others."""
+    inputs = groups['mixed']
+    model = model_for(inputs.max_players)
+    edges, num_tokens, trunk = int(RelationSize.MAX_RELATION_EDGES), inputs.x.shape[1], model.cfg.num_trunk_tokens
+    filler = torch.from_numpy(_flat_filler_rows(2 * edges, edges, num_tokens))
+    assert ((filler[:, 2:4] >= CANDIDATES.start) & (filler[:, 2:4] < CANDIDATES.stop)).any()
+    with torch.inference_mode():
+        prepared = model._prepare_relations(filler)
+    assert not prepared.weights.any()
+    cells = prepared.flat_indices.reshape(NUM_HEADS, -1)
+    per_state = NUM_HEADS * trunk * trunk
+    assert (cells // per_state == filler[:, 0]).all()  # each row stays in its own state
+    for head in range(NUM_HEADS):
+        assert torch.bincount(cells[head]).max() <= 4
+    # The real records: those without weight keep cells too, a few to a cell at most.
+    with torch.inference_mode():
+        prepared = model._prepare_relations(inputs.flat)
+    weightless = prepared.weights == 0
+    assert weightless.any() and torch.bincount(prepared.flat_indices[:len(inputs.flat)][weightless]).max() <= 4
+
+
 def test_capacity_changes_nothing_for_the_same_weights(setups, model_for):
     """The same weights and 3-player states at capacity 3 and at capacity 5,
     where the two padded player rows are hidden."""
@@ -844,6 +871,7 @@ def test_the_module_contract(capacity):
     assert model._trunk_rows.tolist() == _trunk_rows(capacity)
     assert model._row_map.tolist() == [
         _trunk_rows(capacity).index(row) if row in _trunk_rows(capacity) else -1 for row in range(256)]
+    assert all(0 <= cell < 75 + capacity for cell in model._row_cell.tolist())
     assert model._static_relations.shape == (10, 75 + capacity, 75 + capacity)
     # NNEvaluator infers its spec from the model's cfg: the input keeps every row.
     inferred = _infer_model_input_spec(get_game(config), model, capacity)
