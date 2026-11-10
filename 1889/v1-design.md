@@ -491,18 +491,18 @@ Each trains v0's shape from scratch on v0's epoch-58 buffer, with the newest
 1,000 games held out, and reports held-out policy KL by phase and value MSE.
 Two seeds of the unchanged model give the noise floor.
 
-**Prepared, not run** (2026-11-09, `scratchpad/v1_tier_c/`). Every variant is
-built and checked on the CPU: the driver reproduces `train/capacity_probe.py`
-exactly on the unchanged model, and each variant's outputs at step 0 equal
-the unchanged model's. One command runs them in order and resumes after an
-interruption:
+**Prepared and launched by hand** (2026-11-09, `scratchpad/v1_tier_c/`).
+Every variant is built and checked on the CPU: the driver reproduces
+`train/capacity_probe.py` exactly on the unchanged model, and each variant's
+outputs at step 0 equal the unchanged model's. The bundle is on the 5090 pod's
+volume, where a 60-step run of five variants passed. One command, from
+`/workspace/rss-az`, runs all nine in order and resumes after an interruption:
 
-    scratchpad/v1_tier_c/launch.sh --device cuda --steps 20000 --batch-size 256
+    scratchpad/v1_tier_c/launch.sh --device cuda --steps 30000 --batch-size 256 --buffer checkpoints/1889-v0/replay_buffer
 
-- **Time, estimated:** nine variants at 20K steps take about 4 hours on the
-  5090 and about 18 on the pod's RTX 2000 Ada.
-- **The pod needs a newer torch:** it has 2.8.0, which lacks
-  `torch.optim.Muon`, v0's optimizer. 2.9 or later has it.
+- **Time, estimated:** nine variants at 30K steps take 6-7 hours on the 5090
+  (11-15 steps a second in the smoke run).
+- **Results:** `scratchpad/v1_tier_c/runs/summary.json` on the pod.
 - **Measured on the CPU with checkpoint 58:** on 600 states with no visible
   candidate, a trunk without the 15 candidate rows gives the same outputs as
   the full one (legal logits within 7.6e-6, values within 2.4e-6), at 0.81-0.83
@@ -529,14 +529,12 @@ are adopted on the review's evidence, and v1's run is their test.
 
 ## 11. Decisions
 
-The user settled these on 2026-11-09, except item 2, which is the review's
-answer to the user's question and awaits their word.
+The user settled these on 2026-11-09.
 
 1. **The simulation ramp** (2.3). *Decided 800 to 1,600.*
-2. **The buffer's length** (2.3, 3.2). *Recommended: start at 3 epochs and let
-   the run's held-out value loss decide.* The user's concern is that a longer
-   buffer dilutes each epoch's new games, and that Muon did better on RSS with
-   a smaller buffer.
+2. **The buffer's length** (2.3, 3.2). *Decided 3 epochs to start.* The
+   user's concern is that a longer buffer dilutes each epoch's new games, and
+   that Muon did better on RSS with a smaller buffer.
    - With `replay_ratio` fixed, a row is still drawn about 1.1 times in its
      life at any length. A longer buffer delays those draws; it does not
      remove them. At 6 epochs the average sampled row is about 3 epochs old,
@@ -545,9 +543,9 @@ answer to the user's question and awaits their word.
    - `buffer_epochs` can change at any resume, and the 2.5M-row cap keeps
      about 10 epochs of rows whatever the setting, so raising it takes effect
      at once on rows already held.
-   - **The rule:** if the held-out value loss (Section 4) is still several
-     times the training value loss after epoch 20, raise `buffer_epochs` to 6
-     at the next resume.
+   - **The rule for revisiting:** if the held-out value loss (Section 4) is
+     still several times the training value loss after epoch 20, raise
+     `buffer_epochs` to 6 at the next resume.
 3. **Keeping layout 1 for the tournament** (Section 8). *Decided yes.*
 4. **Where the Tier C runs happen.** *Decided the 5090.* The bundle is on its
    volume, and a 60-step run of five variants passed there on 2026-11-09.
