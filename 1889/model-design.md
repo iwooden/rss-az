@@ -1411,7 +1411,7 @@ state without a visible candidate.
 | TILE and ER_BONUS | `candidate`, a pointer over candidate rows the trunk has processed | `candidate`, a head over rows the trunk ran without them | 12.3 |
 | Dynamic relations | ids 0-24, 25 channels | ids 0-20 and 25-28, 25 channels | 12.4 |
 | Raw head slots | 4.2 | 12.2: layout 2's numbers, and the new per-choice slots | v1-design Section 7 |
-| Parameters at 256 × 15 | 18,218,872 | 18,497,016 | the candidate head, +247K; wider projections and head inputs, +31K |
+| Parameters at 256 × 15 | 18,218,872 | 18,497,528 | the candidate head, +247K; wider projections and head inputs, +31K |
 
 `hex_mix` and `bias_init` (v1-design Section 10) are not in it.
 
@@ -1435,8 +1435,8 @@ raw inputs; the rest are v0's slots where layout 2 put them.
 | DISCARD | `discard` | TRAIN `DISCARD_TYPES[i]` | TRAIN 12 |
 | BUY_TRAIN | `buy_train` | the six TRAIN rows | TRAIN 2-9 of each; **10**, the route max a purchase adds; **14**, its next depot purchase starts a phase |
 | | `buy_train_corp` | CORP c | CORP 15-19, 52, 55 (v0's 46, 49) |
-| SELECT_TRAIN | `select_train` | TRAIN t; the seller | TRAIN 10, 11; **13**, what the seller loses |
-| TRAIN_PRICE | `train_price` | PRICE; the train type; the seller | PRICE 5-23; **the selected TRAIN row's 13**, what the seller loses |
+| SELECT_TRAIN | `select_train` | TRAIN t; the seller | TRAIN 10, 11; **13**, what the seller loses; **14**, its next depot purchase starts a phase |
+| TRAIN_PRICE | `train_price` | PRICE; the train type; the seller | PRICE 5-23; **the selected TRAIN row's 10 and 13**, what the buyer gains and what the seller loses |
 | PRIVATE_PRICE | `private_price` | PRICE; the private | PRICE 5-23 |
 | PORT | `port` | HEX `PORT_LAY_HEX[i]` | the port tile's path mask at `PORT_LAY_ROT[i]` |
 
@@ -1445,13 +1445,13 @@ raw inputs; the rest are v0's slots where layout 2 put them.
   `tests/g1889/test_model_v1.py` checks every slot of every row against this table
   with the trunk's output held fixed, and the copied-weights test above checks
   the slots v0 already read.
-- **Left as v1-design Section 7 lists them:** `train_price` does not read TRAIN 10
-  raw (the buyer's gain, which layout 2 also fills at TRAIN_PRICE), `select_train`
-  does not read TRAIN 14, and `stock_corp` does not read the operating rank (CORP
-  38-44). Each still reaches its head through the row's final embedding.
-- **CANDIDATE 108** is the one raw slot here that v1-design Section 7 does not
-  list: the candidate head was ported with v0's raw slots, and 108 is the delta
+- **Beyond v1-design Section 7's list,** three raw reads of slots layout 2 fills
+  for these choices: TRAIN 10 at TRAIN_PRICE, since a price weighs what the train
+  is worth to each side; TRAIN 14 at SELECT_TRAIN; and CANDIDATE 108, the delta
   layout 2 added for the case where v0's (104) is zero.
+- **Left to the trunk:** the operating rank (CORP 38-44) at STOCK, and TRAIN 10 at
+  DIVIDEND, where the head reads no TRAIN row. Each reaches its head through the
+  rows' final embeddings.
 
 ### 12.3 The candidate head
 

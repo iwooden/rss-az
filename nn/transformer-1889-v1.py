@@ -129,8 +129,8 @@ _CANDIDATE_SLOTS = [1, *range(99, 109)]  # 108: the route max gained with the ne
 _DIVIDEND_SLOTS = slice(1, 13)  # 7-12: the next train's price, both shortfalls, room, two route maxes
 _TRAIN_DISCARD_SLOTS = slice(12, 13)
 _TRAIN_BUY_SLOTS = [*range(2, 11), 14]  # 10: the route max a purchase adds; 14: it starts a phase
-_TRAIN_SELECT_SLOTS = [10, 11, 13]  # 13: what the seller loses
-_TRAIN_SELLER_SLOTS = [13]
+_TRAIN_SELECT_SLOTS = [10, 11, 13, 14]  # 13: what the seller loses; 14: it starts a phase
+_TRAIN_PRICE_SLOTS = [10, 13]  # of the priced train: what the buyer gains, what the seller loses
 
 
 def _num_slots(slots: slice | list[int]) -> int:
@@ -492,9 +492,10 @@ class G1889TransformerNet(nn.Module):
         self.buy_train_corp_head = _mlp(ctx + d + _num_slots(_CORP_BUY_TRAIN_SLOTS), d, 2)
         # Per train type, with the seller: add one, trade one in for a D.
         self.select_train_head = _mlp(ctx + 2 * d + _num_slots(_TRAIN_SELECT_SLOTS), d, 2)
-        # The price grid, with the train type, the seller, and what the seller loses.
+        # The price grid, with the train type, the seller, and what the train is
+        # worth to each side.
         self.train_price_head = _mlp(
-            ctx + 3 * d + _num_slots(_PRICE_SLOTS) + _num_slots(_TRAIN_SELLER_SLOTS), d, 5,
+            ctx + 3 * d + _num_slots(_PRICE_SLOTS) + _num_slots(_TRAIN_PRICE_SLOTS), d, 5,
         )
         self.private_price_head = _mlp(ctx + 2 * d + _num_slots(_PRICE_SLOTS), d, 4)
         self.port_head = _mlp(ctx + d + int(D.NUM_PAIRS), d, 1)
@@ -816,7 +817,7 @@ class G1889TransformerNet(nn.Module):
             self.train_price_head(torch.cat(
                 [
                     context, _selected_row(raw, tokens, _TRAINS, _TRAIN_SELECTED), seller, price,
-                    _match(_selected_raw(raw, _TRAINS, _TRAIN_SELECTED, _TRAIN_SELLER_SLOTS), tokens),
+                    _match(_selected_raw(raw, _TRAINS, _TRAIN_SELECTED, _TRAIN_PRICE_SLOTS), tokens),
                 ],
                 dim=-1,
             )),                                                                               # TRAIN_PRICE (5)

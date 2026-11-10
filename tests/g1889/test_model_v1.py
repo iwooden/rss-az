@@ -262,8 +262,8 @@ def test_the_human_positions_fill_every_slot_a_head_newly_reads(groups):
         (K.DPHASE_BUY_TRAIN, R.ROW_TRAIN, D.NUM_TRAIN_TYPES, (10, 14)),
         (K.DPHASE_PAR, R.ROW_PRICE, 1, range(24, 30)),
         (K.DPHASE_STOCK, R.ROW_CORP, D.NUM_CORPS, (58, 59, 60, 68, 69, 70, 71, 72)),
-        (K.DPHASE_SELECT_TRAIN, R.ROW_TRAIN, D.NUM_TRAIN_TYPES, (13,)),
-        (K.DPHASE_TRAIN_PRICE, R.ROW_TRAIN, D.NUM_TRAIN_TYPES, (13,)),
+        (K.DPHASE_SELECT_TRAIN, R.ROW_TRAIN, D.NUM_TRAIN_TYPES, (13, 14)),
+        (K.DPHASE_TRAIN_PRICE, R.ROW_TRAIN, D.NUM_TRAIN_TYPES, (10, 13)),
         (K.DPHASE_TILE, R.ROW_CANDIDATE, D.MAX_LAY_CANDIDATES, (108,)),
     ):
         at = rng.choice(np.flatnonzero(positions.decision_phase == phase), 60, replace=False)
@@ -545,7 +545,8 @@ _BUY_TRAIN_IDS = _unified(K.DPHASE_BUY_TRAIN, [K.BUY_TRAIN_PASS, K.BUY_TRAIN_DEP
 # model-design §12.2, every raw read of every head: (row type, slots, the
 # unified slots row k of the type moves through them, given the state's rows).
 # New in v1: PRICE 24-29; CORP 58-60 and 68-72; DIVIDEND 7-12; TRAIN 10 and 14
-# for BUY_TRAIN, 13 for SELECT_TRAIN and TRAIN_PRICE; CANDIDATE 108.
+# for BUY_TRAIN, 13 and 14 for SELECT_TRAIN, 10 and 13 for TRAIN_PRICE;
+# CANDIDATE 108.
 READS = [
     ('PRIVATE', range(7, 14), lambda k, x: (
         (_unified(K.DPHASE_AUCTION, [K.AUCTION_BID + k - 1]) if k >= 1 else set())
@@ -564,10 +565,10 @@ READS = [
     ('DIVIDEND', range(1, 13), lambda k, x: _unified(K.DPHASE_DIVIDEND, range(2))),
     ('TRAIN', (12,), _by_table(K.DPHASE_DISCARD, D.DISCARD_TYPES)),
     ('TRAIN', [*range(2, 11), 14], lambda k, x: _BUY_TRAIN_IDS),
-    ('TRAIN', (10, 11, 13), lambda k, x: (
+    ('TRAIN', (10, 11, 13, 14), lambda k, x: (
         _unified(K.DPHASE_SELECT_TRAIN, [K.SELECT_TRAIN_TYPE + k])
         | _by_table(K.DPHASE_SELECT_TRAIN, D.TRADE_IN_TYPE, K.SELECT_TRAIN_TRADE_IN)(k, x))),
-    ('TRAIN', (13,), _if_selected('TRAIN', 1, _unified(K.DPHASE_TRAIN_PRICE, range(5)))),
+    ('TRAIN', (10, 13), _if_selected('TRAIN', 1, _unified(K.DPHASE_TRAIN_PRICE, range(5)))),
 ]
 # The rows read, of the types with many: every table's rows and others.
 SOME_ROWS = {'HEX': range(0, D.NUM_HEXES, 4), 'CANDIDATE': (0, 1, 7, 8, 14)}
@@ -965,8 +966,8 @@ def test_the_parameters_are_v0s_but_for_the_changes():
         'stock_corp_head.0.weight': (3 * d + 24 + 2, 3 * d + 32 + 2), 'par_head.0.weight': (4 * d + 19, 4 * d + 25),
         'dividend_head.0.weight': (4 * d + 7, 4 * d + 12),
         'buy_train_head.0.weight': (3 * d + 6 * (d + 8), 3 * d + 6 * (d + 10)),
-        'select_train_head.0.weight': (5 * d + 2, 5 * d + 3),
-        'train_price_head.0.weight': (6 * d + 19, 6 * d + 20),
+        'select_train_head.0.weight': (5 * d + 2, 5 * d + 4),
+        'train_price_head.0.weight': (6 * d + 19, 6 * d + 21),
     }
     candidate = {
         'candidate_norm.weight': (d,), 'exit_proj.weight': (d, d // 4), 'exit_proj.bias': (d,),
@@ -986,7 +987,7 @@ def test_the_parameters_are_v0s_but_for_the_changes():
     }
     total = sum(p.numel() for p in v1.parameters())
     assert total == sum(p.numel() for p in create_model(_config(3, **sizes)).parameters())
-    assert total == 18_497_016 and sum(p.numel() for p in v0.parameters()) == 18_218_872
+    assert total == 18_497_528 and sum(p.numel() for p in v0.parameters()) == 18_218_872
     assert sum(p.numel() for p in v1.blocks.parameters()) == sum(p.numel() for p in v0.blocks.parameters())
 
 
