@@ -329,11 +329,13 @@ def probe_config(
     run_config: TrainingConfig, model: ProbeModel, *, steps: int, batch_size: int, warmup_steps: int,
 ) -> TrainingConfig:
     """The trainer's config: the run's optimizer and rates at this model's size,
-    with its one LR schedule spanning the probe's steps."""
+    with its one LR schedule spanning the probe's steps. The probe has no
+    epochs, so the schedule counts steps whatever the run's ``replay_ratio``."""
     return dataclasses.replace(
         sized_config(run_config, model),
         batch_size=batch_size,
         min_buffer_size=max(run_config.min_buffer_size, batch_size),
+        replay_ratio=0.0,
         training_steps_per_epoch=steps,
         lr_decay_end_epoch=1,
         warmup_epochs=warmup_steps / steps,
@@ -391,6 +393,7 @@ def train_model(
     run_step: int,
     run_rng_state: dict[str, object] | None,
     signature: dict[str, Any],
+    run_game_lengths: dict[int, float] | None = None,
 ) -> dict[str, Any]:
     """Train and score one model, or return its finished result."""
     model_dir = out_dir / model_spec.role
@@ -494,6 +497,7 @@ def train_model(
         metrics={m: scores["all"][m] for m in MEASURES},
         buffer_stats={"size": len(train_buffer), "capacity": run_config.buffer_capacity},
         rng_state=run_rng_state,
+        game_lengths=run_game_lengths,
     ), checkpoint_path)
     result["checkpoint"] = str(checkpoint_path)
     _write_json(result_path, result)
@@ -720,6 +724,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 run_step=step,
                 run_rng_state=cp.get("rng_state"),
                 signature=signature,
+                run_game_lengths=cp.get("game_lengths"),
             )
         except RuntimeError as exc:  # NaN loss or out of memory: the others can still finish.
             failures[model_spec.role] = traceback.format_exc()

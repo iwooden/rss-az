@@ -218,6 +218,7 @@ def _apply_runtime_overrides(config: TrainingConfig, args: argparse.Namespace) -
 def _epoch_config_for_collection(
     config: TrainingConfig,
     args: argparse.Namespace,
+    game_lengths: dict[int, float],
 ) -> EpochConfig:
     num_simulations = (
         int(args.num_simulations)
@@ -229,6 +230,9 @@ def _epoch_config_for_collection(
         c_puct=c_puct,
         value_blend_alpha=1.0,
         num_simulations=num_simulations,
+        # With temp_anneal_*_pcts, the windows the checkpoint's next training
+        # epoch would play: shares of the lengths it stored.
+        temp_anneal_windows=config.temp_anneal_windows(game_lengths),
     )
 
 
@@ -683,7 +687,7 @@ def main() -> None:
     base_config = TrainingConfig.from_json(cp["config_json"])  # type: ignore[arg-type]
     config = _collection_config(base_config, args.player_counts)
     _apply_runtime_overrides(config, args)
-    epoch_config = _epoch_config_for_collection(config, args)
+    epoch_config = _epoch_config_for_collection(config, args, cp.get("game_lengths", {}))
 
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():

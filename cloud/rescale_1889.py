@@ -10,6 +10,9 @@ From the means over the last ``--window`` epochs logged through ``--epoch``:
 - ``buffer_capacity`` is 3.3 epochs of ``self_play_aggregate/total_examples``, and
   ``training_steps_per_epoch`` trains 1.1 times an epoch's samples, each to 3
   significant figures.
+
+A run that sets ``replay_ratio`` or ``temp_anneal_*_pcts`` does this itself each
+epoch; the tool refuses its config.
 """
 
 from __future__ import annotations
@@ -108,6 +111,12 @@ def main(argv: list[str] | None = None) -> None:
     except ImportError as exc:
         _fail(f"cannot import {exc.name}; activate the venv (install.sh installs it)")
     config = TrainingConfig.from_json(config_path.read_text())
+    if config.replay_ratio > 0 or config.temp_anneal_start_pcts:
+        _fail(
+            f"{config_path} sets replay_ratio or temp_anneal_*_pcts: its steps, LR schedule, and "
+            "temperature windows follow the run each epoch, and this rescale is of a run set in "
+            "steps and move numbers"
+        )
     logdir = args.logdir or config.tensorboard_dir
     scalars = read_tb_scalars(logdir)
     if not scalars:

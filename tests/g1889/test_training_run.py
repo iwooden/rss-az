@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import sys
 import threading
 from pathlib import Path
@@ -29,7 +30,7 @@ from nn import create_model
 from train import main as main_module
 from train.checkpoint import load_checkpoint, save_checkpoint
 from train.config import TrainingConfig
-from train.replay_buffer import ReplayBuffer
+from train.replay_buffer import FLAG_FROM_POSITION, ReplayBuffer
 from train.tb_reader import read_tb_scalars
 from train.trainer import Trainer
 
@@ -183,6 +184,129 @@ def test_a_run_with_buffer_epochs_trains_on_its_newest_epochs_across_resumes(tmp
         assert (net_worths == net_worths[0]).all()
         assert (net_worths[0, :players] >= 0).all() and net_worths[0, :players].max() > 0
         assert (net_worths[0, players:] == -1).all()
+
+
+def test_a_run_set_by_a_replay_ratio_and_temperature_shares_resumes_where_it_was(tmp_path, monkeypatch, capsys):
+    """One game a player count an epoch, through a graceful shutdown mid-epoch
+    and its resume (1889/v1-design.md 2.4, 3.3, 3.4):
+
+    - steps follow each epoch's rows, the replayed epoch's with the game it had;
+    - every step trains at the epoch schedule's rate for its epoch and its
+      share of the epoch's steps, on both optimizers, across the resumes;
+    - the first epoch plays at the initial temperature, each later one in the
+      windows its checkpoint's game lengths give, the replayed epoch in the
+      windows the interrupted one had, and a game started from a position
+      leaves its player count's length as it was;
+    - a checkpoint saved without lengths resumes at the initial temperature.
+    """
+    start_pcts, end_pcts = [0.3, 0.3, 0.25], [0.6, 0.6, 0.75]
+    fields = {
+        **_smoke_config(tmp_path), "buffer_epochs": 2, "buffer_capacity": 65_536, "replay_ratio": 1.1,
+        "training_steps_per_epoch": 5, "lr_decay_end_epoch": 4,
+        "temp_anneal_start_pcts": start_pcts, "temp_anneal_end_pcts": end_pcts,
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(fields))
+    checkpoints = tmp_path / "checkpoints"
+    device = torch.device("cpu")
+
+    games: list[tuple[int, object]] = []  # each game's player count and windows
+    rates: list[tuple[float, float | None]] = []  # each step's rates
+    started: set[int] = set()  # indexes into games to mark as started from a position
+    real_play_game, real_train_step = main_module.play_game, Trainer.train_step
+
+    def play_game(evaluator, config, *args, **kwargs):
+        record = real_play_game(evaluator, config, *args, **kwargs)
+        if len(games) in started:
+            record.flags |= FLAG_FROM_POSITION
+        games.append((kwargs["num_players"], kwargs["epoch_config"].temp_anneal_windows))
+        return record
+
+    def train_step(trainer, *args, **kwargs):
+        rates.append((trainer.lr, trainer.aux_lr))
+        return real_train_step(trainer, *args, **kwargs)
+
+    monkeypatch.setattr(main_module, "play_game", play_game)
+    monkeypatch.setattr(Trainer, "train_step", train_step)
+
+    def run(*args: str, stop: bool = False) -> str:
+        event = threading.Event()
+        if stop:
+            event.set()
+        with monkeypatch.context() as patch:
+            patch.setattr(main_module, "_start_shutdown_listener", lambda: event)
+            _train(patch, "--config", str(config_path), *args)
+        return capsys.readouterr().out
+
+    def windows(lengths: dict[int, float]) -> dict[int, tuple[int, int]]:
+        return {
+            n: (round(start * lengths[n]), round(end * lengths[n]))
+            for n, start, end in zip((3, 4, 5), start_pcts, end_pcts)
+        }
+
+    run()  # epoch 0
+    # q + Enter during epoch 1's first game: saved untrained, to be replayed.
+    assert "Trained: no" in run("--resume", "latest", "--num-epochs", "3", stop=True)
+    interrupted = load_checkpoint(checkpoints / "checkpoint_epoch_0001.pt", device)
+    started.add(4 + [n for n, _ in games[:3]].index(4))  # epoch 1's 4-player game, replayed
+    output = run("--resume", "latest", "--num-epochs", "3")  # epochs 1 and 2
+    assert "Resumed from epoch 0" in output and "no game lengths" not in output
+
+    scalars = read_tb_scalars(str(tmp_path / "runs"))
+    length = {n: [value for _, value in scalars[f"self_play_{n}p/game_length_mean"]] for n in (3, 4, 5)}
+    first = {n: length[n][0] for n in (3, 4, 5)}
+    second = {3: length[3][1], 4: first[4], 5: length[5][1]}
+    assert length[4][1] != first[4]  # the started game had a length of its own
+
+    # Temperature windows, by game: 3 of epoch 0, 1 before the shutdown, 3 + 3.
+    assert sorted(n for n, _ in games[:3]) == [3, 4, 5] and len(games) == 10
+    assert [seen for _, seen in games] == [{}] * 3 + [windows(first)] * 4 + [windows(second)] * 3
+    assert all(0 < start < end for start, end in windows(first).values())
+    assert interrupted["epoch"] == 0 and interrupted.get("game_lengths") == first
+    stored = [
+        load_checkpoint(checkpoints / f"checkpoint_epoch_{epoch:04d}.pt", device).get("game_lengths")
+        for epoch in (2, 3)
+    ]
+    assert stored == [second, {n: length[n][2] for n in (3, 4, 5)}]
+    for n in (3, 4, 5):
+        for edge, tag in enumerate(("start", "end")):
+            assert scalars[f"schedule/temp_anneal_{tag}_{n}p"] == [
+                (2, windows(first)[n][edge]), (3, windows(second)[n][edge]),
+            ]
+
+    # Steps: 1.1 draws a row, by the share of the 2 epochs held.
+    played = [int(value) for _, value in scalars["self_play_aggregate/total_examples"]]
+    sizes = [int(value) for _, value in scalars["buffer/size"]]
+    partial = sizes[1] - sum(played[:2])
+    assert partial > 0
+    steps = [round(1.1 * rows / 64 * share) for rows, share in (
+        (played[0], 1 / 2), (partial + played[1], 1), (played[2], 1),
+    )]
+    assert [value for _, value in scalars["epoch/training_steps"]] == steps
+    assert min(steps) > 5  # not training_steps_per_epoch, nor its share
+
+    # Rates: a warmup of 1 epoch, then the cosine to epoch 4, in epochs.
+    lr, lr_min = fields["learning_rate"], fields["lr_min"]
+    assert isinstance(lr, float) and isinstance(lr_min, float)
+
+    def rate(progress: float, step_share: float) -> float:
+        if progress < 1:
+            return lr * (progress + step_share)
+        return lr_min + (lr - lr_min) * 0.5 * (1 + math.cos(math.pi * (progress - 1) / 3))
+
+    expected = [rate(epoch + step / count, 1 / count) for epoch, count in enumerate(steps) for step in range(count)]
+    assert [main for main, _ in rates] == pytest.approx(expected, rel=1e-9)
+    assert all(aux == main for main, aux in rates)
+    assert rates[steps[0]][0] == lr and rates[-1][0] < 0.6 * lr  # the resume's first step; the decay under way
+
+    # A checkpoint from before the lengths: said, and played at temp_initial.
+    path = checkpoints / "checkpoint_epoch_0003.pt"
+    old = torch.load(path, weights_only=False)
+    del old["game_lengths"]
+    torch.save(old, path)
+    output = run("--resume", "latest", "--num-epochs", "4", stop=True)
+    assert "Checkpoint has no game lengths" in output
+    assert games[10:] == [(games[10][0], {})]
 
 
 def _buffer(config: TrainingConfig) -> ReplayBuffer:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -112,6 +113,10 @@ class EpochConfig:
     c_puct: float
     value_blend_alpha: float  # 0.0 = pure game outcome, 1.0 = pure A0GB
     num_simulations: int = 0  # 0 = use config default
+    # Action-temperature anneal windows in moves, by player count, from
+    # temp_anneal_*_pcts; a count without one plays at temp_initial. None =
+    # use the config's move-number windows.
+    temp_anneal_windows: dict[int, tuple[int, int]] | None = None
 
 
 @dataclass
@@ -227,6 +232,12 @@ class TrainingConfig:
     temp_final: float = 0.5
     temp_anneal_starts: list[int] = field(default_factory=list)
     temp_anneal_ends: list[int] = field(default_factory=list)
+    # The window as shares (0-1) of a game's length, one per player count as
+    # above. When set they replace the move numbers: each epoch's windows are
+    # these shares of the last finished epoch's mean game length at that
+    # count, and a count with no length yet plays at temp_initial throughout.
+    temp_anneal_start_pcts: list[float] = field(default_factory=list)
+    temp_anneal_end_pcts: list[float] = field(default_factory=list)
 
     # --- Policy target temperature schedule ---
     # Independent temperature applied to the MCTS visit-count distribution
@@ -299,6 +310,12 @@ class TrainingConfig:
     weight_decay: float = 1e-2
     grad_clip: float = 1.0          # global-norm clip; 0 disables
     training_steps_per_epoch: int = 1000
+    # Times a row is drawn over its buffer_epochs in the sampling window. When
+    # > 0, an epoch's steps follow its own rows (replay_ratio * rows /
+    # batch_size, times the share of buffer_epochs the window holds so far),
+    # training_steps_per_epoch is unused, and the LR schedule reads its
+    # progress in epochs. 0 = training_steps_per_epoch, scaled by fullness.
+    replay_ratio: float = 0.0
 
     # --- LR Schedule ---
     # Cosine annealing with linear warmup. Measured in training epochs so
@@ -511,6 +528,7 @@ class TrainingConfig:
             "policy_target_temp_anneal_starts",
             "policy_target_temp_anneal_ends",
         )
+        self._validate_temp_anneal_pcts()
 
         # c_puct annealing
         if self.c_puct_initial < 0:
@@ -647,6 +665,13 @@ class TrainingConfig:
             )
         if self.buffer_epochs < 0:
             raise ValueError(f"buffer_epochs must be >= 0, got {self.buffer_epochs}")
+        if self.replay_ratio < 0:
+            raise ValueError(f"replay_ratio must be >= 0, got {self.replay_ratio}")
+        if self.replay_ratio > 0 and self.buffer_epochs == 0:
+            raise ValueError(
+                "replay_ratio > 0 requires buffer_epochs > 0: the ratio is a "
+                "row's draws over its buffer_epochs in the sampling window"
+            )
         if self.min_buffer_size < self.batch_size:
             raise ValueError(
                 f"min_buffer_size ({self.min_buffer_size}) must be >= "
@@ -761,6 +786,47 @@ class TrainingConfig:
                 )
         return resolved_starts, resolved_ends
 
+    def _validate_temp_anneal_pcts(self) -> None:
+        """Validate the action-temperature window given as shares of a game."""
+        starts, ends = self.temp_anneal_start_pcts, self.temp_anneal_end_pcts
+        if not starts and not ends:
+            return
+        counts = self.iter_player_counts()
+        for name, values in (("temp_anneal_start_pcts", starts), ("temp_anneal_end_pcts", ends)):
+            if not isinstance(values, (list, tuple)) or len(values) != len(counts):
+                raise ValueError(
+                    "temp_anneal_start_pcts and temp_anneal_end_pcts must both be set, "
+                    f"with {len(counts)} entries for player counts "
+                    f"{counts[0]}-{counts[-1]}; got {name} = {values!r}"
+                )
+        for num_players, start, end in zip(counts, starts, ends):
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (start, end)):
+                raise ValueError(
+                    f"temp_anneal_start_pcts/_end_pcts entries must be numbers; "
+                    f"{num_players}p has {start!r}-{end!r}"
+                )
+            if not 0 <= start <= end <= 1:
+                raise ValueError(
+                    "temp_anneal_start_pcts/_end_pcts entries must have "
+                    f"0 <= start <= end <= 1; {num_players}p has {start}-{end}"
+                )
+
+    def temp_anneal_windows(
+        self, game_lengths: Mapping[int, float],
+    ) -> dict[int, tuple[int, int]] | None:
+        """``EpochConfig.temp_anneal_windows`` from each player count's mean
+        game length in moves: None unless ``temp_anneal_*_pcts`` are set, and
+        no window for a count without a length."""
+        if not self.temp_anneal_start_pcts:
+            return None
+        return {
+            num_players: (round(start * game_lengths[num_players]), round(end * game_lengths[num_players]))
+            for num_players, start, end in zip(
+                self.iter_player_counts(), self.temp_anneal_start_pcts, self.temp_anneal_end_pcts,
+            )
+            if num_players in game_lengths
+        }
+
     def _temperature_schedule_index(self, num_players: int) -> int:
         """Map an actual player count to its schedule array index."""
         if not (
@@ -776,7 +842,8 @@ class TrainingConfig:
         return num_players - self.effective_min_players
 
     def temp_anneal_window(self, num_players: int) -> tuple[int, int]:
-        """Action-sampling temperature anneal window for a player count."""
+        """Action-sampling temperature anneal window for a player count, in
+        move numbers: what applies without ``temp_anneal_*_pcts``."""
         idx = self._temperature_schedule_index(num_players)
         return self.temp_anneal_starts[idx], self.temp_anneal_ends[idx]
 
@@ -839,11 +906,17 @@ class TrainingConfig:
                 f"got {self.min_players}-{self.max_players}"
             )
 
-    def compute_epoch_config(self, epoch: int) -> EpochConfig:
+    def compute_epoch_config(
+        self, epoch: int, game_lengths: Mapping[int, float] | None = None,
+    ) -> EpochConfig:
         """Compute per-epoch dynamic values for annealing schedules.
 
         Args:
             epoch: Zero-indexed epoch number.
+            game_lengths: Mean game length in moves by player count, over the
+                last finished epoch's games from the opening; read only with
+                ``temp_anneal_*_pcts``. Without a count's length, as in a
+                run's first epoch, that count plays at ``temp_initial``.
         """
         # c_puct: linear anneal over first N epochs
         if self.c_puct_anneal_epochs <= 0 or epoch >= self.c_puct_anneal_epochs:
@@ -884,6 +957,7 @@ class TrainingConfig:
             c_puct=c_puct,
             value_blend_alpha=value_blend_alpha,
             num_simulations=num_sims,
+            temp_anneal_windows=self.temp_anneal_windows(game_lengths or {}),
         )
 
     def to_mcts_config(

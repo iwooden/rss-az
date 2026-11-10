@@ -201,6 +201,15 @@ class ReplayBuffer:
         """``(epoch, its first game id)`` for each epoch begun, oldest first."""
         return list(self._epochs)
 
+    @property
+    def epoch_rows(self) -> int:
+        """Rows held of the newest epoch begun: its games so far, with those a
+        resume found it already had."""
+        if not self._epochs:
+            return 0
+        start = self._epochs[-1][1]
+        return int(np.count_nonzero(self._game_ids[: self._size] >= start))
+
     def add_stacked(
         self,
         states: np.ndarray,

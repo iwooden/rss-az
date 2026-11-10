@@ -18,6 +18,9 @@ class Checkpoint(TypedDict):
     metrics: dict[str, float]
     buffer_stats: dict[str, int]
     rng_state: NotRequired[dict[str, object]]
+    # Mean game length in moves by player count, over the last finished
+    # epoch's games from the opening (for temp_anneal_*_pcts).
+    game_lengths: NotRequired[dict[int, float]]
 
 
 def _unwrap_state_dict(
@@ -39,6 +42,7 @@ def save_checkpoint(
     metrics: dict[str, float],
     buffer_stats: dict[str, int],
     rng_state: dict[str, object] | None = None,
+    game_lengths: dict[int, float] | None = None,
 ) -> None:
     """Save checkpoint via torch.save. Creates parent dirs if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -52,6 +56,8 @@ def save_checkpoint(
     }
     if rng_state is not None:
         data["rng_state"] = rng_state
+    if game_lengths is not None:
+        data["game_lengths"] = dict(game_lengths)
     torch.save(data, path)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Sequence
 from typing import Any, TYPE_CHECKING
 
 from rich.console import Console
@@ -111,9 +112,14 @@ def _format_avg_moves_by_count(count_avg_moves: dict[int, float]) -> str:
 
 def _format_anneal_windows(
     config: TrainingConfig,
-    starts: list[int],
-    ends: list[int],
+    starts: Sequence[int | str],
+    ends: Sequence[int | str],
+    unit: str = "",
 ) -> str:
+    """The windows by player count: ``anneal moves S-E``, or ``anneal S-E
+    <unit>`` for windows not in moves."""
+    label = "anneal" if unit else "anneal moves"
+    suffix = f" {unit}" if unit else ""
     windows = list(zip(config.iter_player_counts(), starts, ends))
     if not windows:
         return "anneal moves unavailable"
@@ -122,12 +128,12 @@ def _format_anneal_windows(
         start == first_start and end == first_end
         for _, start, end in windows
     ):
-        return f"anneal moves {first_start}\u2013{first_end}"
+        return f"{label} {first_start}\u2013{first_end}{suffix}"
     parts = [
         f"{num_players}p={start}\u2013{end}"
         for num_players, start, end in windows
     ]
-    return "anneal moves " + "  ".join(parts)
+    return f"{label} " + "  ".join(parts) + suffix
 
 
 def _format_policy_stats(
@@ -404,7 +410,14 @@ class TrainingLogger:
             str(config.num_workers) if config.num_workers > 0 else "single-process",
         )
         table.add_row("Games/epoch", f"{config.games_per_epoch:,}")
-        table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
+        if config.replay_ratio > 0:
+            table.add_row(
+                "Training steps/epoch",
+                f"replay ratio {config.replay_ratio:g} (draws per row over its "
+                f"{config.buffer_epochs} epochs in the window)",
+            )
+        else:
+            table.add_row("Training steps/epoch", f"{config.training_steps_per_epoch:,}")
         table.add_row("Batch size", str(config.batch_size))
         raw_d_ff = math.ceil(config.ff_mult * config.d_model)
         d_ff = ((raw_d_ff + 63) // 64) * 64
@@ -443,9 +456,17 @@ class TrainingLogger:
         table.add_row("LR", lr_desc)
         table.add_row("Weight decay", f"{config.weight_decay:.1e}")
         table.add_row("Buffer capacity", f"{config.buffer_capacity:,}")
-        action_window_desc = _format_anneal_windows(
-            config, config.temp_anneal_starts, config.temp_anneal_ends,
-        )
+        if config.temp_anneal_start_pcts:
+            action_window_desc = _format_anneal_windows(
+                config,
+                [f"{100 * pct:g}%" for pct in config.temp_anneal_start_pcts],
+                [f"{100 * pct:g}%" for pct in config.temp_anneal_end_pcts],
+                unit="of the last epoch's game length",
+            )
+        else:
+            action_window_desc = _format_anneal_windows(
+                config, config.temp_anneal_starts, config.temp_anneal_ends,
+            )
         table.add_row(
             "Action temp",
             f"{config.temp_initial} \u2192 {config.temp_final} "

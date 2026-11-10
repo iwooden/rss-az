@@ -157,10 +157,11 @@ would replace the judgment above with a number.
   player count. When set they replace `temp_anneal_starts` and `_ends`
   (`train/config.py:224-242`).
 - **Each epoch,** the main process turns them into move numbers from the last
-  finished epoch's mean game length at each player count, which it already
-  holds (`count_snapshots()`, `train/main.py:1365-1366`), and sends them in
-  `EpochConfig` (`train/config.py:103-114`), which `_compute_temperature`
-  reads in place of the config's windows (`train/self_play.py:125`).
+  finished epoch's mean game length at each player count
+  (`_OpeningGameLengths`, `train/main.py`) and sends them in
+  `EpochConfig.temp_anneal_windows`, which `_compute_temperature` reads in
+  place of the config's windows. Built in sub-step 9.3.
+- **The shares are fractions,** 0 to 1, whatever the field names say.
 - **The first epoch** has no length, so it plays at the initial temperature
   throughout.
 - **Lengths** are over games played from the start, and the checkpoint stores
@@ -231,8 +232,14 @@ Today's schedule counts optimizer steps over `lr_decay_end_epoch ×
 training_steps_per_epoch` (`train/trainer.py:133-157`). With steps varying by
 epoch, v1's reads progress in epochs: (epochs finished + the share of this
 epoch's steps done) / `lr_decay_end_epoch`, with the same warmup and cosine.
-It applies when `replay_ratio` is set; otherwise the schedule is today's. The
-trainer's saved state gains the progress value.
+It applies when `replay_ratio` is set; otherwise the schedule is today's.
+
+As built (sub-step 9.3), the trainer's saved state gains nothing. The main
+loop gives the trainer the epoch and its step count (`Trainer.begin_epoch`),
+so the rate depends only on the checkpoint's epoch and this epoch's steps,
+and a resume is exact by construction. The rate is today's formula at the
+step this would be had every epoch this one's steps, so at constant steps the
+two schedules agree at every step.
 
 ## 4. Telemetry
 

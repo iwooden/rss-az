@@ -1045,6 +1045,7 @@ def section_train_steps(ctx: Context) -> dict[str, Any]:
         shape_config = replace(
             config, d_model=d_model, num_layers=num_layers, num_heads=num_heads, batch_size=mode.train_batch,
             min_buffer_size=max(config.min_buffer_size, mode.train_batch),
+            replay_ratio=0.0,  # steps here have no epochs: the step LR schedule
         )
         torch.manual_seed(42)
         model = create_model(shape_config).to(mode.device)

@@ -132,13 +132,22 @@ class Trainer:
 
         # --- LR schedule (shared shape for all optimizers) ---
         decay_epochs = config.lr_decay_end_epoch or config.num_epochs
-        total_steps = decay_epochs * config.training_steps_per_epoch
-        warmup_steps = math.ceil(
-            config.warmup_epochs * config.training_steps_per_epoch
-        )
         lr_min_ratio = config.lr_min / config.learning_rate
+        # With replay_ratio, steps vary by epoch and the schedule reads its
+        # progress in epochs, which begin_epoch places: epochs finished, this
+        # epoch's steps, and how many of them are done.
+        self._epoch_schedule = config.replay_ratio > 0
+        self._epoch = self._epoch_steps = self._epoch_step = 0
 
         def lr_lambda(step: int) -> float:
+            steps_per_epoch = config.training_steps_per_epoch
+            if self._epoch_schedule:
+                # The step schedule's value at the same progress: the step
+                # this would be had every epoch this one's steps.
+                steps_per_epoch = max(self._epoch_steps, 1)
+                step = self._epoch * steps_per_epoch + self._epoch_step
+            total_steps = decay_epochs * steps_per_epoch
+            warmup_steps = math.ceil(config.warmup_epochs * steps_per_epoch)
             if step < warmup_steps:
                 return (step + 1) / max(warmup_steps, 1)
             progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
@@ -146,6 +155,7 @@ class Trainer:
             cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
             return lr_min_ratio + (1.0 - lr_min_ratio) * cosine_decay
 
+        self._lr_lambda = lr_lambda
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, lr_lambda
         )
@@ -155,6 +165,22 @@ class Trainer:
             )
         else:
             self._aux_scheduler = None
+
+    def begin_epoch(self, epoch: int, steps: int) -> None:
+        """Place the epoch-based LR schedule (``replay_ratio``) at the start of
+        an epoch that trains ``steps`` steps, ``epoch`` epochs having finished,
+        trained or not. Progress is ``epoch`` plus the share of ``steps`` done,
+        so the rate depends on nothing a resume lacks. The step schedule counts
+        optimizer steps and ignores this.
+        """
+        if not self._epoch_schedule:
+            return
+        self._epoch, self._epoch_steps, self._epoch_step = epoch, steps, 0
+        factor = self._lr_lambda(0)
+        for scheduler in (self.scheduler, self._aux_scheduler):
+            if scheduler is not None:
+                for group, base_lr in zip(scheduler.optimizer.param_groups, scheduler.base_lrs):
+                    group["lr"] = base_lr * factor
 
     def _setup_adamw(
         self, model: torch.nn.Module, config: TrainingConfig
@@ -450,6 +476,12 @@ class Trainer:
             values. ``policy_kl_sampled`` then reports the unweighted KL the
             policy actually trained on.
         """
+        if self._epoch_schedule and self._epoch_step >= self._epoch_steps:
+            raise RuntimeError(
+                "replay_ratio: the LR schedule reads progress in epochs, so "
+                "begin_epoch(epoch, steps) must come before each epoch's steps "
+                f"(step {self._epoch_step} of {self._epoch_steps})"
+            )
         self._ensure_scratch(batch_size)
         B = batch_size
 
@@ -656,6 +688,7 @@ class Trainer:
             )
 
         self.optimizer.step()
+        self._epoch_step += 1
         self.scheduler.step()
         if self._aux_optimizer is not None:
             self._aux_optimizer.step()

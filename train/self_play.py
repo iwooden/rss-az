@@ -121,9 +121,21 @@ def _compute_temperature(
     move_count: int,
     config: TrainingConfig,
     num_players: int,
+    epoch_config: EpochConfig | None = None,
 ) -> float:
-    """Compute action-sampling temperature for the current move."""
-    anneal_start, anneal_end = config.temp_anneal_window(num_players)
+    """Compute action-sampling temperature for the current move.
+
+    The epoch's windows (``temp_anneal_*_pcts`` of the last epoch's game
+    length) replace the config's move numbers; a player count they leave out
+    has no length yet and plays at the initial temperature.
+    """
+    windows = epoch_config.temp_anneal_windows if epoch_config is not None else None
+    if windows is None:
+        anneal_start, anneal_end = config.temp_anneal_window(num_players)
+    elif num_players in windows:
+        anneal_start, anneal_end = windows[num_players]
+    else:
+        return config.temp_initial
     return _compute_linear_temperature(
         move_count,
         config.temp_initial,
@@ -242,8 +254,9 @@ def play_game(
         evaluator: NNEvaluator or RemoteEvaluator for leaf evaluation.
         state_pool: Optional pre-allocated StatePool for MCTS node states.
             Reused across searches within the game and across games.
-        epoch_config: Per-epoch dynamic parameters (c_puct, value blend).
-            If None, uses config defaults (pure A0GB, c_puct_final).
+        epoch_config: Per-epoch dynamic parameters (c_puct, value blend,
+            action-temperature windows). If None, uses config defaults (pure
+            A0GB, c_puct_final, the config's move-number windows).
         num_players: Main-process assigned actual player count. Required for
             mixed player-count training.
         collect_strategy_trace: Also record the game's strategy trace and
@@ -380,7 +393,7 @@ def play_game(
         value_target = get_greedy_leaf_value(root, num_players)
 
         # Temperature-scaled sampling distribution over the same sparse list.
-        temperature = _compute_temperature(move_count, config, num_players)
+        temperature = _compute_temperature(move_count, config, num_players, epoch_config)
         sample_probs = scale_visit_counts_by_temperature(counts, temperature)
 
         # Stats: keep target and action-sampling distributions separate.

@@ -36,7 +36,7 @@ from train.eval_server import (
 from train.logging import TrainingLogger
 from train.profile_stats import EvalServerStats, GameProfileData, format_epoch_profile
 from train.policy_metrics import PolicyMetrics
-from train.replay_buffer import ReplayBuffer
+from train.replay_buffer import FLAG_FROM_POSITION, ReplayBuffer
 from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from train.self_play import (
@@ -565,6 +565,29 @@ class _SelfPlayMetricAccumulator:
         }
 
 
+class _OpeningGameLengths:
+    """An epoch's game lengths in moves by player count, over the games played
+    from the opening: a game started from a position measures only its
+    remainder."""
+
+    def __init__(self) -> None:
+        self._totals: dict[int, list[int]] = {}  # [games, moves]
+
+    def add_record(self, record: Any) -> None:
+        if record.flags & FLAG_FROM_POSITION:
+            return
+        totals = self._totals.setdefault(int(record.num_players), [0, 0])
+        totals[0] += 1
+        totals[1] += int(record.total_moves)
+
+    def means(self) -> dict[int, float]:
+        """Each player count's mean length; a count with no game is absent."""
+        return {
+            num_players: moves / games
+            for num_players, (games, moves) in sorted(self._totals.items())
+        }
+
+
 def _build_self_play_scalars(
     prefix: str, stats: dict[str, Any],
 ) -> dict[str, float]:
@@ -729,6 +752,27 @@ def _scaled_training_steps(
     else:
         held, full = min(max(buffer_size, 0), config.buffer_capacity), config.buffer_capacity
     return max(1, config.training_steps_per_epoch * held // full)
+
+
+def _epoch_training_steps(config: TrainingConfig, buffer: ReplayBuffer) -> int:
+    """Training steps for the epoch whose games ``buffer`` just took; 0 while
+    its sampling window is under ``min_buffer_size``.
+
+    With ``replay_ratio``, steps follow the epoch's own rows: ``replay_ratio *
+    rows / batch_size``, times the share of ``buffer_epochs`` the window holds.
+    An epoch then draws each row of the window ``replay_ratio / buffer_epochs``
+    times on average, ``replay_ratio`` times over the ``buffer_epochs`` epochs
+    the row spends there. Without the share, the first epochs' rows, sampled
+    from a window still filling, would be drawn about twice as often. The
+    epoch's rows include those a graceful shutdown left it before a resume.
+    Without ``replay_ratio``, ``_scaled_training_steps``.
+    """
+    if config.replay_ratio <= 0:
+        return _scaled_training_steps(config, buffer.window_size, buffer.window_epochs)
+    if buffer.window_size < config.min_buffer_size:
+        return 0
+    draws = config.replay_ratio * buffer.epoch_rows * buffer.window_epochs / config.buffer_epochs
+    return max(1, round(draws / config.batch_size))
 
 
 def _capture_rng_state(master_rng: np.random.Generator) -> dict[str, object]:
@@ -908,9 +952,18 @@ def main() -> None:
 
     # --- Resume: restore model weights (before compile + Trainer creation) ---
     start_epoch = 0
+    # Mean game length by player count over the last finished epoch's games
+    # from the opening: what temp_anneal_*_pcts are shares of.
+    game_lengths: dict[int, float] = {}
     if cp is not None:
         model.load_state_dict(cp["model_state_dict"])  # type: ignore[arg-type]
         start_epoch = cp["epoch"] + 1  # type: ignore[operator]
+        game_lengths = dict(cp.get("game_lengths", {}))
+        if config.temp_anneal_start_pcts and "game_lengths" not in cp:
+            print(
+                "  Checkpoint has no game lengths for temp_anneal_*_pcts: the "
+                "next epoch plays at temp_initial throughout"
+            )
 
     # --- Components (model-independent) ---
     # Compact int16 state — replay buffer stores raw state rows, the
@@ -1180,6 +1233,7 @@ def main() -> None:
             # --- Phase 1: Self-play ---
             model.eval()
             self_play_metrics = _SelfPlayMetricAccumulator()
+            opening_lengths = _OpeningGameLengths()
             game_profiles: list[GameProfileData] = []
 
             def _collect_record(record: object, game_idx: int) -> None:
@@ -1195,6 +1249,7 @@ def main() -> None:
                     net_worths=record.net_worths,  # type: ignore[union-attr]
                 )
                 self_play_metrics.add_record(record)
+                opening_lengths.add_record(record)
                 if record.profile is not None:  # type: ignore[union-attr]
                     game_profiles.append(record.profile)  # type: ignore[union-attr]
                 aggregate_stats = self_play_metrics.aggregate_snapshot()
@@ -1244,7 +1299,7 @@ def main() -> None:
                     es.reset_profile_stats()
 
             # Compute per-epoch annealing parameters
-            epoch_cfg = config.compute_epoch_config(epoch)
+            epoch_cfg = config.compute_epoch_config(epoch, game_lengths)
 
             logger.begin_self_play(epoch_num, config.num_epochs, config.games_per_epoch)
 
@@ -1320,9 +1375,8 @@ def main() -> None:
                     print("Game quota met — running training before shutdown...")
                     model.train()
                     shutdown_losses: dict[str, list[float]] = defaultdict(list)
-                    training_steps = _scaled_training_steps(
-                        config, buffer.window_size, buffer.window_epochs,
-                    )
+                    training_steps = _epoch_training_steps(config, buffer)
+                    trainer.begin_epoch(epoch, training_steps)
                     logger.begin_training(
                         epoch_num, config.num_epochs,
                         training_steps,
@@ -1337,8 +1391,10 @@ def main() -> None:
                     logger.end_training()
                     avg_losses = average_training_metrics(shutdown_losses)
                     did_train = True
+                    game_lengths.update(opening_lengths.means())
 
-                # Save checkpoint
+                # Save checkpoint. Untrained, the epoch is replayed on resume,
+                # under the game lengths it began with.
                 save_epoch = epoch if did_train else epoch - 1
                 shutdown_cp = (
                     Path(config.checkpoint_dir)
@@ -1356,6 +1412,7 @@ def main() -> None:
                         "capacity": config.buffer_capacity,
                     },
                     rng_state=_capture_rng_state(master_rng),
+                    game_lengths=game_lengths,
                 )
 
                 # Save replay buffer
@@ -1374,6 +1431,10 @@ def main() -> None:
                     f" --checkpoint-dir {config.checkpoint_dir}"
                 )
                 break
+
+            # The next epoch's temperature windows read this one's lengths; a
+            # player count with no game from the opening keeps its last.
+            game_lengths.update(opening_lengths.means())
 
             # Self-play Tensorboard metrics
             self_play_stats = self_play_metrics.aggregate_snapshot()
@@ -1397,6 +1458,11 @@ def main() -> None:
                     "schedule/c_puct": epoch_cfg.c_puct,
                     "schedule/value_blend_alpha": epoch_cfg.value_blend_alpha,
                     "schedule/num_simulations": epoch_cfg.num_simulations,
+                    **{
+                        f"schedule/temp_anneal_{edge}_{num_players}p": float(move)
+                        for num_players, window in (epoch_cfg.temp_anneal_windows or {}).items()
+                        for edge, move in zip(("start", "end"), window)
+                    },
                     **_build_epoch_self_play_scalars(self_play_metrics),
                 },
             )
@@ -1426,9 +1492,8 @@ def main() -> None:
             if buffer.window_size >= config.min_buffer_size:
                 model.train()
                 epoch_losses: dict[str, list[float]] = defaultdict(list)
-                training_steps = _scaled_training_steps(
-                    config, buffer.window_size, buffer.window_epochs,
-                )
+                training_steps = _epoch_training_steps(config, buffer)
+                trainer.begin_epoch(epoch, training_steps)
                 training_steps_done = training_steps
 
                 logger.begin_training(
@@ -1522,6 +1587,7 @@ def main() -> None:
                     metrics=avg_losses,
                     buffer_stats={"size": len(buffer), "capacity": config.buffer_capacity},
                     rng_state=_capture_rng_state(master_rng),
+                    game_lengths=game_lengths,
                 )
                 buffer.save(buffer_dir)
                 cleanup_checkpoints(Path(config.checkpoint_dir), config.keep_last_n)
@@ -1568,6 +1634,7 @@ def main() -> None:
                 avg_losses,
                 {"size": len(buffer), "capacity": config.buffer_capacity},
                 rng_state=_capture_rng_state(master_rng),
+                game_lengths=game_lengths,
             )
             buffer.save(buffer_dir)
 

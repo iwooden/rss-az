@@ -74,6 +74,17 @@ Notes below name RSS's implementations where they matter
   moves 60-120, so targets are sharpened and play never becomes greedy. If
   scalar start and end are both 0, per-player-count `*_anneal_starts/_ends`
   lists apply. Both active configs use those lists.
+- **Optional action windows by game length.** With `temp_anneal_start_pcts`
+  and `temp_anneal_end_pcts` (shares 0-1, one per player count; default
+  unset), the action temperature's window is those shares of the last finished
+  epoch's mean game length at that player count: 30% and 60% of 500 moves
+  anneal over moves 150-300. The main loop turns them into move numbers each
+  epoch and sends them in `EpochConfig`; `schedule/temp_anneal_*` logs them.
+  Lengths count only games played from the opening, and a player count with
+  none in an epoch keeps its last length. A count with no length yet, as every
+  count in a run's first epoch, plays at `temp_initial` throughout. The
+  config's move numbers then apply only to `play_game` calls whose
+  `EpochConfig` carries no windows; the target temperature keeps its own.
 - **A0GB value targets.** `get_greedy_leaf_value` follows max-visit children
   to a terminal node or to a node whose best child has 0 visits. That node's
   `value_sum / visit_count` is its single NN value or its terminal reward.
@@ -151,9 +162,23 @@ Notes below name RSS's implementations where they matter
   buffer_capacity` steps (`_scaled_training_steps`). Early epochs therefore
   train only briefly. With `buffer_epochs`, the fraction is instead the
   window's epochs over `buffer_epochs`.
-- **Step-based LR schedule.** Warmup plus cosine decay to `lr_min` spans
+- **Optional steps from a replay ratio.** With `replay_ratio` r > 0 (default
+  0; it needs `buffer_epochs`), `training_steps_per_epoch` is unused. An epoch
+  trains `r * its rows / batch_size` steps, times the same window fraction
+  (`_epoch_training_steps`), so a row is drawn about r times over the
+  `buffer_epochs` epochs it is sampled from, in the first epochs as later. The
+  epoch's rows are those of its games still in the buffer, with any a graceful
+  shutdown left it before a resume.
+- **LR schedule in steps, or in epochs.** Warmup plus cosine decay to `lr_min` spans
   `lr_decay_end_epoch * training_steps_per_epoch` optimizer steps. Because of
-  step scaling, `lr_min` arrives after that epoch.
+  step scaling, `lr_min` arrives after that epoch. With `replay_ratio`, steps
+  vary by epoch and the schedule reads progress in epochs instead: the epoch's
+  index plus the share of its steps done (`Trainer.begin_epoch`). It is the
+  same curve, the step schedule's value had every epoch the current one's
+  steps, so the two agree at constant steps. `lr_min` then arrives at
+  `lr_decay_end_epoch`, and an epoch that trains nothing still counts. The
+  capacity probe and `cloud/profile_1889.py` train without epochs, so they
+  set `replay_ratio` to 0 and keep the step schedule.
 - **Optimizer and loss.** The default `"muon"` puts 2-D hidden-layer weights
   on `torch.optim.Muon` (`match_rms_adamw`) and other parameters on an
   auxiliary AdamW. Layers listed by the model's `input_output_layers()`
@@ -211,7 +236,13 @@ Notes below name RSS's implementations where they matter
   epoch, and any other resume begins a new one. Another game's buffer, or a player-range or shape mismatch,
   skips it with only a warning. Checkpoints and buffers without a game are
   RSS's. A changed `training_steps_per_epoch` moves the LR schedule's span from
-  the restored step: the scheduler keeps its step, and this run's lambda.
+  the restored step: the scheduler keeps its step, and this run's lambda. With
+  `replay_ratio` the rate depends only on the epoch and the share of its steps
+  done, so a resume continues it exactly, and turning `replay_ratio` on at a
+  resume moves the rate to that epoch's. The checkpoint stores the game
+  lengths `temp_anneal_*_pcts` read, as of its epoch, so a resumed epoch, or
+  one replayed after a shutdown, plays in the windows it would have. A
+  checkpoint saved without them plays its next epoch at `temp_initial`.
 - **Model selection.** `model_path` selects the implementation; every config
   that builds a model names one (no default). A module that defines
   `build_model(config, spec)` builds its own model for any game; any other is

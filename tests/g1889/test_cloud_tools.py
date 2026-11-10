@@ -429,6 +429,35 @@ def test_an_rss_banner_reads_as_it_did(tmp_path, capsys) -> None:
         assert line in banner
 
 
+def _self_following(tmp_path: Path) -> Path:
+    """1889-v0's config, set by a replay ratio and temperature shares."""
+    fields = json.loads(Path("train_configs/1889-v0.json").read_text())
+    fields.update(
+        replay_ratio=1.1, buffer_epochs=3,
+        temp_anneal_start_pcts=[0.3, 0.3, 0.175], temp_anneal_end_pcts=[0.6, 0.6, 0.35],
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(fields))
+    return path
+
+
+def test_a_banner_shows_a_replay_ratio_and_temperature_shares(tmp_path, capsys) -> None:
+    banner = _banner(tmp_path, str(_self_following(tmp_path)), capsys)
+    assert "replay ratio 1.1 (draws per row over its 3 epochs in the window)" in banner
+    assert "anneal 3p=30%\u201360%  4p=30%\u201360%  5p=17.5%\u201335% of the last epoch's game length" in banner
+    # The target temperature keeps its move numbers, and v0's banner its own.
+    assert "anneal moves 3p=100\u2013200" in banner
+    plain = _banner(tmp_path, "train_configs/1889-v0.json", capsys)
+    assert "replay ratio" not in plain and "game length" not in plain
+    assert plain.count("anneal moves 3p=100\u2013200  4p=100\u2013200  5p=115\u2013230") == 2
+    assert "1,300" in plain
+
+
+def test_the_rescale_refuses_a_run_that_follows_itself(tmp_path) -> None:
+    with pytest.raises(SystemExit, match="sets replay_ratio or temp_anneal_"):
+        rescale.main(["--config", str(_self_following(tmp_path))])
+
+
 def test_help_names_no_one_game() -> None:
     assert "Rolling Stock" not in _build_parser().format_help()
     assert "AlphaZero self-play training" in _build_parser().format_help()
