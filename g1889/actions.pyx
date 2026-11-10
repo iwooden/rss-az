@@ -887,7 +887,7 @@ cdef int _source_trains(GameState state, int corp, int source, bint emergency, u
                 count = _put(ids, count, SELECT_TRAIN_TYPE + t)
         return count
     if emergency:
-        if _emergency_need(state, corp) > 0 or trains_cheapest_in_pool(state) != (source == TRAIN_SOURCE_POOL):
+        if emergency_need(state, corp) > 0 or trains_cheapest_in_pool(state) != (source == TRAIN_SOURCE_POOL):
             return 0
         return _put(ids, 0, SELECT_TRAIN_TYPE + trains_cheapest_type(state))
     if source == TRAIN_SOURCE_POOL:
@@ -926,7 +926,8 @@ cdef int _enumerate_select_train(GameState state, uint16_t* ids) noexcept nogil:
 # cheapest train; the UI offers both only in an emergency, as the engine does.
 
 
-cdef inline int _emergency_need(GameState state, int corp) noexcept nogil:
+cdef int emergency_need(GameState state, int corp) noexcept nogil:
+    """What the president must still raise for the cheapest train, in yen; 0 or less when their cash covers it."""
     return trains_cheapest_price(state) - corp_cash(state, corp) - player_cash(state, corp_president(state, corp))
 
 
@@ -942,7 +943,7 @@ cdef bint can_go_bankrupt(GameState state, int corp) noexcept nogil:
     train. Each corp's largest block counts in full, as every smaller one
     falls short then (``selling_minimum_shares?``)."""
     cdef int president = corp_president(state, corp)
-    cdef int need = _emergency_need(state, corp)
+    cdef int need = emergency_need(state, corp)
     cdef int sold = turn_ebuy_sold_mask(state)
     cdef int c
     for c in range(<int>NUM_CORPS):
@@ -951,7 +952,7 @@ cdef bint can_go_bankrupt(GameState state, int corp) noexcept nogil:
     return need > 0
 
 
-cdef int _emergency_sale_limit(GameState state, int corp, int seller, int need) noexcept nogil:
+cdef int emergency_sale_limit(GameState state, int corp, int seller, int need) noexcept nogil:
     """The largest block of ``seller``'s shares the president of ``corp`` may
     sell toward ``need`` (``can_sell?``; every smaller block is legal too):
     while the need is unmet, of each corp at most once this turn
@@ -968,12 +969,12 @@ cdef int _emergency_sale_limit(GameState state, int corp, int seller, int need) 
 
 cdef int _append_emergency(GameState state, int corp, uint16_t* ids, int count) noexcept nogil:
     """An emergency's other choices, after the trains: each corp whose shares
-    the president may sell (``_emergency_sale_limit``), then bankruptcy when
+    the president may sell (``emergency_sale_limit``), then bankruptcy when
     even all of that falls short (``can_go_bankrupt``)."""
-    cdef int need = _emergency_need(state, corp)
+    cdef int need = emergency_need(state, corp)
     cdef int c
     for c in range(<int>NUM_CORPS):
-        if _emergency_sale_limit(state, corp, c, need):
+        if emergency_sale_limit(state, corp, c, need):
             ids[count] = <uint16_t>(BUY_TRAIN_SELL + c)
             count += 1
     if can_go_bankrupt(state, corp):
@@ -988,7 +989,7 @@ cdef int _enumerate_emergency_sell_amount(GameState state, uint16_t* ids) noexce
     cdef int seller = turn_pending_corp(state)
     if corp < 0 or seller < 0:
         return 0
-    return _iota(ids, _emergency_sale_limit(state, corp, seller, _emergency_need(state, corp)))
+    return _iota(ids, emergency_sale_limit(state, corp, seller, emergency_need(state, corp)))
 
 
 cdef int _filter_private_buys(GameState state, uint16_t* ids, int count, int first) noexcept nogil:

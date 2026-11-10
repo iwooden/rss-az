@@ -41,7 +41,7 @@ from g1889.token_data import get_num_tokens, get_token_data, get_token_dim
 
 from tests.g1889.test_layout1_parity import apply_op, load_fixture, new_state
 
-LAYOUT_VERSIONS = (1,)
+LAYOUT_VERSIONS = (1, 2)
 GLOBALS = get_global_fields()
 GLOBAL_OFFSET = get_layout(0).global_offset
 DIRTY = [GLOBAL_OFFSET + getattr(GLOBALS, name) for name in GLOBALS._fields if name.endswith('_dirty')]

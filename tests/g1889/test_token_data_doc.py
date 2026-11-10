@@ -1,7 +1,7 @@
 """token-data-1889.md, the token contract, against the code: the row map and
-widths, each row type's slots (every slot from 1 to its width less one, once),
-the tile block, the relation ids and static planes, and the sizes and edge
-bound it states. test_extraction.py and test_extraction_relations.py check
+widths, each row type's slots in each layout (every slot from 1 to its width
+less one, once), the tile block, the relation ids and static planes, and the
+sizes and edge bound it states. test_extraction.py and test_extraction_relations.py check
 what the slots and records hold."""
 
 from pathlib import Path
@@ -10,7 +10,9 @@ import re
 import pytest
 
 from g1889.relations import RelationId, RelationSize, StaticRelationId, static_relation_planes
-from g1889.token_data import TileBlock, TokenDataSize, TokenRow, TokenWidth, get_num_tokens, get_token_widths
+from g1889.token_data import (
+    TileBlock, TokenDataSize, TokenRow, TokenWidth, TokenWidth2, get_num_tokens, get_token_dim, get_token_widths,
+)
 
 from tests.g1889.test_extraction_relations import BOUNDS
 
@@ -53,6 +55,26 @@ def test_the_row_map_and_widths():
 def test_each_row_type_lists_every_slot_once(name):
     width = int(TokenWidth[f'TW_{name}'])
     slots = [s for cell, *_ in _table(f'## {name} ({width})') for s in _slots(cell)]
+    assert sorted(slots) == list(range(1, width)), name
+
+
+def test_layout_2s_widths():
+    rows = _table('## Layout 2')
+    assert [name for name, *_ in rows] == list(ROW_TYPES)
+    for name, old, new in rows:
+        assert (int(old), int(new)) == (TokenWidth[f'TW_{name}'], TokenWidth2[f'TW2_{name}']), name
+    widths = get_token_widths(5, 2)
+    for name in ROW_TYPES:
+        start = TokenRow[f'ROW_{name}']
+        assert widths[start] == TokenWidth2[f'TW2_{name}'], name
+    assert '`TOKEN_DIM_2` = 109' in DOC and TokenDataSize.TOKEN_DIM_2 == 109 == get_token_dim(2) == max(widths)
+    assert get_token_dim(1) == TokenDataSize.TOKEN_DIM
+
+
+@pytest.mark.parametrize('name', ROW_TYPES)
+def test_each_row_type_lists_every_layout_2_slot_once(name):
+    width = int(TokenWidth2[f'TW2_{name}'])
+    slots = [s for cell, *_ in _table(f'### {name}, layout 2 ({width})') for s in _slots(cell)]
     assert sorted(slots) == list(range(1, width)), name
 
 

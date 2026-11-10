@@ -1,8 +1,16 @@
-"""Token extraction for 1889; see token_data.pxd and 1889/extraction-design.md §5.
+"""Token extraction for 1889; see token_data.pxd, 1889/extraction-design.md §5,
+and, for layout 2, 1889/v1-design.md §5 and token-data-1889.md.
 
 Rows (§5.1): GLOBAL, PRICE, DIVIDEND, the corps, the privates, the train
 types, the hexes, the candidates, and the players. Slot 0 of every row is its
 key mask and slot 1 its ``is_selected`` (§5.2).
+
+**Two layouts.** Layout 1 is pinned for ``nn/transformer-1889.py``
+(``tests/g1889/test_layout1_parity.py``): its fills below must not change.
+Layout 2 fills GLOBAL, PRICE, TRAIN, HEX, PRIVATE, and CANDIDATE as layout 1
+does and then adds to them (``_fill_global2`` and the like), and has its own
+fills for DIVIDEND, CORP, and PLAYER, whose slots move. Its slots are the
+``*2_`` names; where a row keeps layout 1's slots it uses layout 1's names.
 
 Per-choice features (§7) describe the decision's engine-legal choices, at
 that decision only. PRICE's amounts, DIVIDEND's outcomes, and the sale prices
@@ -21,44 +29,49 @@ cash and train-scale money, ¥100 for prices, values, bids, and revenues,
 
 import numpy as np
 
+from libc.math cimport log1p
 from libc.stdint cimport int16_t, uint16_t, uint32_t
 from libc.string cimport memset
 
 from g1889.actions cimport (
     ACTION_PAR, ACTION_PRICE_POINT, ACTION_TRADE_IN, ACTION_TRAIN_TYPE, ActionInfo, LayCandidate, can_buy_private,
-    can_exchange_dr, can_token, decode_action, enumerate_lay_candidates, enumerate_legal_actions, er_candidates,
-    get_decision_phase, in_emergency, lay_candidates, must_buy_train, price_amount, sale_limit,
+    can_exchange_dr, can_token, decode_action, emergency_need, emergency_sale_limit, enumerate_lay_candidates,
+    enumerate_legal_actions, er_candidates, get_decision_phase, in_emergency, lay_candidates, must_buy_train,
+    price_amount, sale_limit,
 )
 from g1889.constants cimport (
     ACTION_SIZE_BID, ACTION_SIZE_PAR, ACTION_SIZE_PRIVATE_PRICE, ACTION_SIZE_TRAIN_PRICE, DPHASE_BID,
     DPHASE_BUY_TRAIN, DPHASE_DISCARD, DPHASE_DIVIDEND, DPHASE_EMERGENCY_SELL_AMOUNT, DPHASE_ER_BONUS, DPHASE_PAR,
-    DPHASE_PRIVATE_PRICE, DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE, DPHASE_TOKEN,
-    DPHASE_TRACK, DPHASE_TRAIN_PRICE, MAX_ACTION_SIZE, MAX_SALE_SHARES, NUM_DECISION_PHASES, OWNER_CLOSED,
-    OWNER_CORP, OWNER_NOT_IN_PLAY, OWNER_PLAYER, OWNER_UNSOLD, ROUND_GAME_OVER, ROUND_OPERATING, ROUND_STOCK,
-    SHARES_PER_CORP, TRAIN_SOURCE_CORP,
+    DPHASE_PORT, DPHASE_PRIVATE_PRICE, DPHASE_SELECT_TRAIN, DPHASE_SELL_AMOUNT, DPHASE_STOCK, DPHASE_TILE,
+    DPHASE_TOKEN, DPHASE_TRACK, DPHASE_TRAIN_PRICE, MAX_ACTION_SIZE, MAX_SALE_SHARES, NUM_DECISION_PHASES,
+    OWNER_CLOSED, OWNER_CORP, OWNER_NOT_IN_PLAY, OWNER_PLAYER, OWNER_UNSOLD, ROUND_AUCTION, ROUND_GAME_OVER,
+    ROUND_OPERATING, ROUND_STOCK, SHARES_PER_CORP, STEP_BUY_PRIVATE_POST, STEP_BUY_PRIVATE_PRE, TRAIN_SOURCE_CORP,
 )
 from g1889.data.tables cimport (
-    CERT_LIMIT, CORP_HOME, D_TRAIN, ENDPOINT_PAIRS, ER_HEX, HEX_BLOCKER, HEX_EXIT_MASK, HEX_HOME_CORP,
-    HEX_NEIGHBOR, LABEL_NONE, MARKET_PRICE, MAX_CITY_SLOTS, MAX_CORP_TOKENS, MAX_LAY_CANDIDATES, NUM_CORPS,
-    NUM_GAME_PHASES, NUM_HEXES, NUM_PAIRS, NUM_PRIVATES, NUM_RCS, NUM_SIDES, NUM_SUPPLY_TILES, NUM_TRAIN_TYPES,
-    PHASE_ON_TRAIN, PHASE_ORS, PHASE_TILE_COLORS, PRIVATE_DR, PRIVATE_VALUE, RC_NONE, TERRAIN_MOUNTAIN,
+    CERT_LIMIT, CORP_HOME, D_TRAIN, ENDPOINT_PAIRS, ER_HEX, FLOAT_PERCENT, HEX_BLOCKER, HEX_EXIT_MASK,
+    HEX_HOME_CORP, HEX_NEIGHBOR, LABEL_NONE, MARKET_PRICE, MAX_CITY_SLOTS, MAX_CORP_TOKENS, MAX_LAY_CANDIDATES,
+    NUM_CORPS, NUM_GAME_PHASES, NUM_HEXES, NUM_PAIRS, NUM_PAR_PRICES, NUM_PRIVATES, NUM_RCS, NUM_SIDES,
+    NUM_SUPPLY_TILES, NUM_TRAIN_TYPES, PAR_PRICE, PHASE_ON_TRAIN, PHASE_ORS, PHASE_TILE_COLORS,
+    PHASE_TRAIN_LIMIT, PRIVATE_DR, PRIVATE_MF, PRIVATE_VALUE, RC_NONE, TERRAIN_MOUNTAIN,
     TERRAIN_WATER, TILE_BLOCKS_LAY, TILE_COLOR, TILE_COST, TILE_COUNT, TILE_EXITS, TILE_LABEL, TILE_MASK, TILE_RC,
     TILE_SLOTS, TILE_TERRAIN, TRAIN_PRICE, TRAIN_RUSTS_ON, UPG_ROT, UPG_START, UPG_TILE,
 )
 from g1889.entities.bank cimport bank_broken, bank_cash
 from g1889.entities.corp cimport (
-    corp_cash, corp_emergency_sale, corp_floated, corp_ipo_shares, corp_par_index, corp_par_price,
-    corp_pool_shares, corp_president, corp_token_price, corp_tokens_left,
+    corp_cash, corp_emergency_sale, corp_floated, corp_floated_mask, corp_ipo_shares, corp_par_index,
+    corp_par_price, corp_pool_shares, corp_president, corp_token_price, corp_tokens_left,
 )
 from g1889.entities.graph cimport GRAPH_NODE, GRAPH_SIDES, graph_refresh, graph_route_available
 from g1889.entities.hexmap cimport (
     hex_paths, hex_rotation, hex_tile, hex_tokens, map_blocked_for, map_free_slots, map_has_slot_for,
-    map_lay_cost, map_put_tile, map_put_token, map_revenue, map_token_count, map_touch_mask, supply_count,
+    map_center_bounds, map_lay_cost, map_put_tile, map_put_token, map_revenue, map_token_count, map_touch_mask,
+    supply_count,
 )
 from g1889.entities.market cimport (
-    MOVE_DOWN, MOVE_LEFT, MOVE_RIGHT, market_col, market_moved, market_price, market_row, market_type,
+    MOVE_DOWN, MOVE_LEFT, MOVE_RIGHT, MOVE_UP, market_col, market_moved, market_precedes, market_price, market_row,
+    market_sort_by_price, market_type,
 )
-from g1889.entities.phase cimport game_phase
+from g1889.entities.phase cimport game_phase, next_rust_phase, phase_on_train_bought
 from g1889.entities.player cimport (
     player_available, player_bid, player_cash, player_cert_count, player_passed, player_shares, player_sold_mask,
     player_value,
@@ -74,10 +87,12 @@ from g1889.entities.trains cimport (
 from g1889.entities.turn cimport (
     turn_active_player, turn_auction_discount, turn_auction_pass_payouts, turn_auction_private,
     turn_ebuy_sold_any, turn_ebuy_sold_mask, turn_num_players, turn_operating_corp, turn_pending_corp,
-    turn_pending_hex, turn_pending_private, turn_pending_train_source, turn_pending_train_type, turn_round,
-    turn_route_revenue, turn_sr_bought_corp, turn_sr_sold_mask, turn_turn,
+    turn_pending_hex, turn_pending_private, turn_pending_train_source, turn_pending_train_type, turn_return_step,
+    turn_round, turn_route_revenue, turn_sr_bought_corp, turn_sr_sold_mask, turn_turn,
 )
-from g1889.routes.solver cimport MAX_ROUTES, route_max
+from g1889.routes.solver cimport (
+    MAX_ROUTES, route_max, route_max_after_purchase, routes_refresh_hypotheticals, solve_routes_via,
+)
 from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, GameState, copy_row, view_row
 
 
@@ -247,9 +262,102 @@ cdef enum:
     PL_PRIVATES = 36
     PL_EMERGENCY_SOLD = 37
 
+# Layout 2 (1889/v1-design.md §5; token-data-1889.md). GLOBAL, PRICE, TRAIN,
+# and CANDIDATE keep layout 1's slots and add these; HEX and PRIVATE have no
+# new slot; DIVIDEND, CORP, and PLAYER are numbered anew.
+cdef enum:
+    # GLOBAL
+    G2_PRE = 44
+    G2_POST = 45
+    G2_ORS_LEFT = 46
+    G2_BANK_ORS = 47
+    G2_TRAIN_LIMIT = 48
+    G2_NEXT_TRAIN_LIMIT = 49
+    G2_SUPPLY = 50                  # + supply tile
+
+    # PRICE
+    PR2_FLOAT_SHARES = 24           # + par index
+
+    # DIVIDEND
+    DV2_REVENUE = 1
+    DV2_PAYOUT_PRICE = 2
+    DV2_WITHHOLD_PRICE = 3
+    DV2_TREASURY = 4
+    DV2_PRESIDENT = 5
+    DV2_POOL = 6
+    DV2_NEXT_PRICE = 7
+    DV2_WITHHOLD_SHORT = 8
+    DV2_PAYOUT_SHORT = 9
+    DV2_ROOM = 10
+    DV2_WITH_NEXT = 11
+    DV2_AFTER_RUST = 12
+
+    # CORP: slots 1-37 are layout 1's
+    C2_RANK = 38                    # + operating rank
+    C2_OPERATED = 45
+    C2_HEXES = 46
+    C2_CENTERS = 47
+    C2_REVENUE = 48
+    C2_SLOTS = 49
+    C2_ACTOR_SOLD = 50
+    C2_TURN_SOLD = 51
+    C2_EMERGENCY_SOLD = 52
+    C2_BOUGHT = 53
+    C2_SALE_LIMIT = 54
+    C2_EMERGENCY_SALE = 55
+    C2_PRIVATES = 56
+    C2_OPERATING = 57
+    C2_PAYOUT_PRICE = 58
+    C2_WITHHOLD_PRICE = 59
+    C2_SOLD_OUT_PRICE = 60
+    C2_TRAINS_OF_LIMIT = 61
+    C2_ROOM = 62
+    C2_SURVIVING = 63
+    C2_NEXT_ROOM = 64
+    C2_AFTER_RUST = 65
+    C2_WITH_NEXT = 66
+    C2_SHORTFALL = 67
+    C2_FLOAT_SHARES = 68
+    C2_FLOAT_COST = 69
+    C2_PRESIDENT_FLOATS = 70
+    C2_ACTOR_FLOATS = 71
+    C2_PRESIDENT_SOLD = 72
+    C2_EMERGENCY_NEED = 73
+    C2_LOG_PRICE = 74
+    C2_LOG_CASH = 75
+    C2_LOG_ROUTE = 76
+
+    # TRAIN
+    T2_SELLER_DELTA = 13
+    T2_STARTS_PHASE = 14
+
+    # CANDIDATE
+    CA2_NEXT_DELTA = 108
+
+    # PLAYER: slots 1-10 are layout 1's
+    PL2_SHARES = 11                 # + corp
+    PL2_SOLD = 18                   # + corp
+    PL2_BIDS = 25                   # + private - 1: TR, the topmost, is never bid on
+    PL2_PASSED = 31
+    PL2_PRESIDENCIES = 32
+    PL2_PRIVATES = 33
+    PL2_EMERGENCY_SOLD = 34
+    PL2_FLOATS_ALONE = 35
+    PL2_RESUMES = 36
+    PL2_INCOME = 37
+    PL2_LOG_CASH = 38
+    PL2_LOG_VALUE = 39
+
 cdef float MONEY_DIV = 1000.0
 cdef float PRICE_DIV = 100.0
 cdef float BANK_DIV = 7000.0
+cdef float LOG_DIV = 5.0
+# Shares that leave the IPO to float a corp, their cost at the lowest par,
+# and the largest supply of one tile.
+cdef int FLOAT_SHARES = <int>FLOAT_PERCENT * <int>SHARES_PER_CORP // 100
+cdef int LOWEST_PAR = min([PAR_PRICE[i] for i in range(<int>NUM_PAR_PRICES)])
+cdef int LOWEST_FLOAT = FLOAT_SHARES * LOWEST_PAR
+cdef float SUPPLY_DIV = max([TILE_COUNT[t] for t in range(<int>NUM_SUPPLY_TILES)])
 
 
 cdef struct _Context:
@@ -259,6 +367,15 @@ cdef struct _Context:
     int game_phase
     int actor                       # -1 at none
     int corp                        # the decision corp, -1 at none
+    # Layout 2 only (``_context2``)
+    int operating                   # the operating corp, -1 between turns and outside an OR
+    int rank[7]                     # NUM_CORPS: each corp's operating rank, -1 for none
+    int next_type                   # the next train: the cheapest on sale
+    int limit                       # the train limit now, and in the next phase
+    int next_limit
+    int rust_phase                  # the next phase that rusts a rank, or -1
+    bint emergency                  # the decision corp is in one,
+    int need                        # and what its president must still raise for the next train
 
 
 # A corp's reach (GRAPH): hexes with a reached side, reached centers, their
@@ -301,6 +418,11 @@ cdef inline int _moved_price(GameState state, int corp, int move) noexcept nogil
     return MARKET_PRICE[row][col]
 
 
+cdef inline float _log_yen(int yen) noexcept nogil:
+    """A log-scaled amount: ln(1 + ¥/100) / 5, which is 1.0 near ¥14,700."""
+    return <float>log1p(max(yen, 0) / 100.0) / LOG_DIV
+
+
 cdef inline int _payout(int shares, int revenue) noexcept nogil:
     """What ``shares`` earn of a payout of ``revenue``, rounded up, as the bank
     pays them (``_pay``, phases/dividend.pyx)."""
@@ -317,41 +439,47 @@ cpdef int get_num_tokens(int max_players) noexcept nogil:
 
 
 cdef int _check_layout(int layout_version) except -1:
-    if layout_version != 1:
+    if layout_version != 1 and layout_version != 2:
         raise ValueError(f"Unsupported 1889 token layout version: {layout_version}")
     return 0
 
 
 cpdef int get_token_dim(int layout_version) except -1:
     _check_layout(layout_version)
-    return <int>TOKEN_DIM
+    return <int>TOKEN_DIM if layout_version == 1 else <int>TOKEN_DIM_2
 
 
 cpdef object get_token_widths(int max_players, int layout_version):
     """Each row's width, a uint8 array over ``get_num_tokens(max_players)`` rows."""
     _check_layout(layout_version)
     assert 3 <= max_players <= 5, f"get_token_widths: max_players must be 3-5, got {max_players}"
-    widths = np.empty(get_num_tokens(max_players), dtype=np.uint8)
-    widths[<int>ROW_GLOBAL] = <int>TW_GLOBAL
-    widths[<int>ROW_PRICE] = <int>TW_PRICE
-    widths[<int>ROW_DIVIDEND] = <int>TW_DIVIDEND
-    widths[<int>ROW_CORP:<int>ROW_PRIVATE] = <int>TW_CORP
-    widths[<int>ROW_PRIVATE:<int>ROW_TRAIN] = <int>TW_PRIVATE
-    widths[<int>ROW_TRAIN:<int>ROW_HEX] = <int>TW_TRAIN
-    widths[<int>ROW_HEX:<int>ROW_CANDIDATE] = <int>TW_HEX
-    widths[<int>ROW_CANDIDATE:<int>ROW_PLAYER] = <int>TW_CANDIDATE
-    widths[<int>ROW_PLAYER:] = <int>TW_PLAYER
-    return widths
+    by_type = ((<int>TW_GLOBAL, <int>TW_PRICE, <int>TW_DIVIDEND, <int>TW_CORP, <int>TW_PRIVATE, <int>TW_TRAIN,
+                <int>TW_HEX, <int>TW_CANDIDATE, <int>TW_PLAYER) if layout_version == 1 else
+               (<int>TW2_GLOBAL, <int>TW2_PRICE, <int>TW2_DIVIDEND, <int>TW2_CORP, <int>TW2_PRIVATE, <int>TW2_TRAIN,
+                <int>TW2_HEX, <int>TW2_CANDIDATE, <int>TW2_PLAYER))
+    counts = (1, 1, 1, <int>NUM_CORPS, <int>NUM_PRIVATES, <int>NUM_TRAIN_TYPES, <int>NUM_HEXES,
+              <int>MAX_LAY_CANDIDATES, max_players)
+    return np.repeat(np.array(by_type, dtype=np.uint8), counts)
 
 
 cdef void extraction_prologue(GameState state) noexcept nogil:
     """Refresh every corp's GRAPH entries and route cache, writing them into
     the row as the engine's lazy getters do (§4). The fills then read the
-    graph block, ``route_available``, and ``route_cache`` raw."""
+    graph block, ``route_available``, ``route_cache``, and ``route_hexes`` raw."""
     cdef int c
     for c in range(<int>NUM_CORPS):
         graph_refresh(state, c)
         route_max(state, c)
+
+
+cdef void _prologue2(GameState state, GameState scratch) noexcept nogil:
+    """Layout 2's: the same, then each corp's hypothetical route maxes, which
+    are solved on ``scratch`` (``_scratch_for`` gives one while any is stale)."""
+    cdef int c
+    extraction_prologue(state)
+    if _global(state, GLOBALS.hyp_dirty):
+        for c in range(<int>NUM_CORPS):
+            routes_refresh_hypotheticals(state, scratch, c)
 
 
 cdef int tile_candidates(GameState state, int phase, int* hex, LayCandidate* buf) noexcept nogil:
@@ -374,12 +502,22 @@ cdef bint _has_hypotheticals(int phase) noexcept nogil:
             or phase == DPHASE_SELECT_TRAIN or phase == DPHASE_DISCARD)
 
 
-cdef GameState _scratch_for(GameState scratch, GameState state):
+cdef bint _needs_scratch(GameState state, int layout) noexcept nogil:
+    """Whether the state's fill uses the scratch state: its decision tries
+    choices on it, or, in layout 2, a hypothetical route max is stale or the
+    decision shows what the trains on sale would earn (TRAIN 10 and 13)."""
+    cdef int phase = get_decision_phase(state)
+    if _has_hypotheticals(phase):
+        return True
+    return layout == 2 and (_global(state, GLOBALS.hyp_dirty) != 0 or phase == DPHASE_BUY_TRAIN
+                            or phase == DPHASE_DIVIDEND or phase == DPHASE_TRAIN_PRICE)
+
+
+cdef GameState _scratch_for(GameState scratch, GameState state, int layout):
     """The call's scratch state for ``state`` (§4): ``scratch`` while it has the
-    state's capacity or the state's decision tries nothing, else a new one, a
-    copy of the row. One serves every hypothetical of a call."""
-    if (scratch is not None and scratch.max_players == state.max_players
-            or not _has_hypotheticals(get_decision_phase(state))):
+    state's capacity or the state's fill needs none, else a new one, a copy of
+    the row. One serves every hypothetical of a call."""
+    if scratch is not None and scratch.max_players == state.max_players or not _needs_scratch(state, layout):
         return scratch
     return GameState.from_array(state._array, turn_num_players(state), state.max_players)
 
@@ -403,19 +541,19 @@ cdef GameState bind_row(GameState view, object row, int max_players, str func):
 
 # def rather than cpdef: cpdef cannot take the keyword-only layout_version.
 def get_token_data(GameState state, float[:, ::1] buffer, int max_players=0, *, int layout_version):
-    """Fill ``buffer``, at least ``get_num_tokens(max_players)`` rows of
-    TOKEN_DIM, for ``state``; ``max_players`` 0 is the state's player count.
-    The refreshed caches are written into the state's row (§4)."""
+    """Fill ``buffer``, at least ``get_num_tokens(max_players)`` rows of the
+    layout's ``get_token_dim``, for ``state``; ``max_players`` 0 is the state's
+    player count. The refreshed caches are written into the state's row (§4)."""
     cdef int num_players = turn_num_players(state)
     cdef GameState scratch
-    _check_layout(layout_version)
+    cdef int dim = get_token_dim(layout_version)
     max_players = resolve_max_players(num_players, max_players, "get_token_data")
-    assert buffer.shape[0] >= get_num_tokens(max_players) and buffer.shape[1] == <int>TOKEN_DIM, \
-        f"get_token_data: buffer {(buffer.shape[0], buffer.shape[1])} for {get_num_tokens(max_players)} tokens"
-    scratch = _scratch_for(None, state)
+    assert buffer.shape[0] >= get_num_tokens(max_players) and buffer.shape[1] == dim, \
+        f"get_token_data: buffer {(buffer.shape[0], buffer.shape[1])} for {get_num_tokens(max_players)} tokens " \
+        f"of {dim}"
+    scratch = _scratch_for(None, state, layout_version)
     with nogil:
-        extraction_prologue(state)
-        _fill_buffer(state, scratch, buffer, num_players, get_num_tokens(max_players))
+        _fill_buffer(state, scratch, buffer, num_players, get_num_tokens(max_players), layout_version)
 
 
 def get_token_data_batch(list state_arrays, float[:, :, ::1] buffer, int max_players=0, *, int layout_version):
@@ -426,20 +564,19 @@ def get_token_data_batch(list state_arrays, float[:, :, ::1] buffer, int max_pla
     cdef int n = len(state_arrays)
     cdef int num_tokens, i
     cdef GameState view = None, scratch = None
-    _check_layout(layout_version)
+    cdef int dim = get_token_dim(layout_version)
     if n == 0:
         return
     if max_players == 0:
         max_players = <int>buffer.shape[1] - <int>ROW_PLAYER
     num_tokens = get_num_tokens(max_players)
-    assert buffer.shape[0] >= n and buffer.shape[1] >= num_tokens and buffer.shape[2] == <int>TOKEN_DIM, \
-        f"get_token_data_batch: buffer {(buffer.shape[0], buffer.shape[1], buffer.shape[2])} for {n} rows"
+    assert buffer.shape[0] >= n and buffer.shape[1] >= num_tokens and buffer.shape[2] == dim, \
+        f"get_token_data_batch: buffer {(buffer.shape[0], buffer.shape[1], buffer.shape[2])} for {n} rows of {dim}"
     for i in range(n):
         view = bind_row(view, state_arrays[i], max_players, "get_token_data_batch")
-        scratch = _scratch_for(scratch, view)
+        scratch = _scratch_for(scratch, view, layout_version)
         with nogil:
-            extraction_prologue(view)
-            _fill_buffer(view, scratch, buffer[i], turn_num_players(view), num_tokens)
+            _fill_buffer(view, scratch, buffer[i], turn_num_players(view), num_tokens, layout_version)
 
 
 # =============================================================================
@@ -447,39 +584,53 @@ def get_token_data_batch(list state_arrays, float[:, :, ::1] buffer, int max_pla
 # =============================================================================
 
 cdef void _fill_buffer(GameState state, GameState scratch, float[:, ::1] buffer, int num_players,
-                       int num_tokens) noexcept nogil:
-    """The rows; ``scratch`` is ``_scratch_for``'s, None when the decision tries nothing."""
+                       int num_tokens, int layout) noexcept nogil:
+    """The layout's prologue and rows; ``scratch`` is ``_scratch_for``'s, None
+    when the fill needs none."""
     cdef _Context x
-    cdef int i
-    memset(&buffer[0, 0], 0, num_tokens * <int>TOKEN_DIM * sizeof(float))
+    if layout == 1:
+        extraction_prologue(state)
+    else:
+        _prologue2(state, scratch)
+    memset(&buffer[0, 0], 0, num_tokens * buffer.shape[1] * sizeof(float))
     x.num_players = num_players
     x.phase = get_decision_phase(state)
     x.game_round = turn_round(state)
     x.game_phase = game_phase(state)
     x.actor = turn_active_player(state) if x.phase >= 0 else -1
     x.corp = _decision_corp(state, x.phase)
-    _fill_global(state, &buffer[<int>ROW_GLOBAL, 0], &x)
+    if layout == 1:
+        _fill_rows(state, scratch, buffer, &x)
+    else:
+        _context2(state, &x)
+        _fill_rows2(state, scratch, buffer, &x)
+
+
+cdef void _fill_rows(GameState state, GameState scratch, float[:, ::1] buffer, const _Context* x) noexcept nogil:
+    """Layout 1's rows."""
+    cdef int i
+    _fill_global(state, &buffer[<int>ROW_GLOBAL, 0], x)
     if (x.phase == DPHASE_BID or x.phase == DPHASE_PAR or x.phase == DPHASE_TRAIN_PRICE
             or x.phase == DPHASE_PRIVATE_PRICE):
-        _fill_price(state, &buffer[<int>ROW_PRICE, 0], &x)
+        _fill_price(state, &buffer[<int>ROW_PRICE, 0], x)
     elif x.phase == DPHASE_DIVIDEND:
-        _fill_dividend(state, &buffer[<int>ROW_DIVIDEND, 0], &x)
+        _fill_dividend(state, &buffer[<int>ROW_DIVIDEND, 0], x)
     for i in range(<int>NUM_CORPS):
-        _fill_corp(state, &buffer[<int>ROW_CORP + i, 0], i, &x)
+        _fill_corp(state, &buffer[<int>ROW_CORP + i, 0], i, x)
     for i in range(<int>NUM_PRIVATES):
-        _fill_private(state, &buffer[<int>ROW_PRIVATE + i, 0], i, &x)
+        _fill_private(state, &buffer[<int>ROW_PRIVATE + i, 0], i, x)
     for i in range(<int>NUM_TRAIN_TYPES):
-        _fill_train(state, &buffer[<int>ROW_TRAIN + i, 0], i, &x)
+        _fill_train(state, &buffer[<int>ROW_TRAIN + i, 0], i, x)
     for i in range(<int>NUM_HEXES):
-        _fill_hex(state, &buffer[<int>ROW_HEX + i, 0], i, &x)
+        _fill_hex(state, &buffer[<int>ROW_HEX + i, 0], i, x)
     if x.phase == DPHASE_TILE or x.phase == DPHASE_ER_BONUS:
-        _fill_candidates(state, scratch, buffer, &x)
+        _fill_candidates(state, scratch, buffer, x, 1)
     elif x.phase == DPHASE_TOKEN:
-        _fill_token_outcomes(state, scratch, buffer, &x)
+        _fill_token_outcomes(state, scratch, buffer, x)
     elif x.phase == DPHASE_SELECT_TRAIN or x.phase == DPHASE_DISCARD:
-        _fill_train_outcomes(state, scratch, buffer, &x)
-    for i in range(num_players):
-        _fill_player(state, &buffer[<int>ROW_PLAYER + i, 0], i, &x)
+        _fill_train_outcomes(state, scratch, buffer, x)
+    for i in range(x.num_players):
+        _fill_player(state, &buffer[<int>ROW_PLAYER + i, 0], i, x)
 
 
 cdef void _fill_global(GameState state, float* row, const _Context* x) noexcept nogil:
@@ -756,11 +907,17 @@ cdef void _fill_hex(GameState state, float* row, int h, const _Context* x) noexc
             row[H_CANDIDATES] = lay_candidates(state, x.corp, h, candidates) / <float>MAX_LAY_CANDIDATES
 
 
-cdef void _fill_candidates(GameState state, GameState scratch, float[:, ::1] buffer, const _Context* x) noexcept nogil:
+cdef void _fill_candidates(GameState state, GameState scratch, float[:, ::1] buffer, const _Context* x,
+                           int layout) noexcept nogil:
     """§5.8's rows at TILE and ER_BONUS, row k for candidate k, each lay tried
     on the scratch state (§7.1). The deltas are the decision corp's, the
     buyer at ER_BONUS. Another corp is refreshed only if its walks reach a
-    side of the hex: a lay on a hex they never enter cannot change its reach."""
+    side of the hex, since a lay on a hex they never enter cannot change its
+    reach, and only if the lay may have gained it a center
+    (``map_center_bounds``). Layout 2 divides the other corps' centers by 50
+    and adds CANDIDATE 108: the lay's Δ route max were the corp to buy the
+    next train (``route_with_next``'s purchase, tried on the laid scratch
+    state; one forest serves both solves unless the purchase starts a phase)."""
     cdef LayCandidate candidates[15]  # MAX_LAY_CANDIDATES
     cdef _Reach before[7]             # NUM_CORPS
     cdef _Reach after
@@ -769,13 +926,18 @@ cdef void _fill_candidates(GameState state, GameState scratch, float[:, ::1] buf
     cdef uint32_t old_paths, added
     cdef float cost
     cdef float* row
-    cdef int touch
+    cdef int bounds[7]                # NUM_CORPS
+    cdef int touch, route_after, next_after, with_next
+    cdef bint room, starts
     if count == 0:
         return
     touch = map_touch_mask(state, hex)  # one search serves every candidate's copy
+    room = layout == 2 and x.next_type >= 0 and corp_train_total(state, x.corp) < x.limit
+    starts = room and x.game_phase + 1 < <int>NUM_GAME_PHASES and PHASE_ON_TRAIN[x.game_phase + 1] == x.next_type
     old_paths = hex_paths(state, hex)
     cost = 0 if x.phase == DPHASE_ER_BONUS else map_lay_cost(state, hex, x.corp) / PRICE_DIV
     route = _corp_field(state, x.corp, CORP_FIELDS.route_cache)
+    with_next = _corp_field(state, x.corp, CORP_FIELDS.route_with_next) if room else route
     for c in range(<int>NUM_CORPS):
         if c == x.corp or graph_entry(state, c, hex):
             before[c] = _reach(state, c, x.game_phase)
@@ -794,8 +956,9 @@ cdef void _fill_candidates(GameState state, GameState scratch, float[:, ::1] buf
         row[CA_COST] = cost
         row[CA_COPIES] = supply_count(scratch, tile) / <float>TILE_COUNT[tile]
         grown = gained = 0
+        map_center_bounds(scratch, bounds)
         for c in range(<int>NUM_CORPS):
-            if c != x.corp and not graph_entry(state, c, hex):
+            if c != x.corp and (not graph_entry(state, c, hex) or bounds[c] <= before[c].centers):
                 continue
             graph_refresh(scratch, c)
             after = _reach(scratch, c, x.game_phase)
@@ -803,13 +966,25 @@ cdef void _fill_candidates(GameState state, GameState scratch, float[:, ::1] buf
                 row[CA_HEXES] = (after.hexes - before[c].hexes) / <float>NUM_HEXES
                 row[CA_CENTERS] = (after.centers - before[c].centers) / <float>NUM_RCS
                 row[CA_REVENUE] = (after.revenue - before[c].revenue) / PRICE_DIV
-                row[CA_ROUTE_DELTA] = (route_max(scratch, c) - route) / PRICE_DIV
+                # A lay only adds routes, and those pass its hex: search them alone.
+                if room and not starts:
+                    route_after = solve_routes_via(scratch, c, hex, route, x.next_type, with_next, &next_after)
+                else:
+                    route_after = next_after = solve_routes_via(scratch, c, hex, route, -1, 0, NULL)
+                row[CA_ROUTE_DELTA] = (route_after - route) / PRICE_DIV
                 row[CA_ROUTE_AVAILABLE] = graph_route_available(scratch, c)
             elif after.centers > before[c].centers:
                 grown += 1
                 gained += after.centers - before[c].centers
         row[CA_OTHERS] = grown / <float>(NUM_CORPS - 1)
         row[CA_OTHER_CENTERS] = gained / <float>NUM_RCS
+        if layout == 2:
+            row[CA_OTHER_CENTERS] = gained / 50.0
+            if starts:  # last: the purchase starts a phase on the scratch state
+                trains_set_count(scratch, x.corp, x.next_type, corp_train_count(scratch, x.corp, x.next_type) + 1)
+                phase_on_train_bought(scratch, x.next_type)
+                next_after = solve_routes_via(scratch, x.corp, hex, with_next, -1, 0, NULL)
+            row[CA2_NEXT_DELTA] = (next_after - with_next) / PRICE_DIV  # without room, the trains it holds
 
 
 cdef inline float _route_delta(GameState scratch, GameState state, int corp) noexcept nogil:
@@ -821,14 +996,17 @@ cdef void _fill_token_outcomes(GameState state, GameState scratch, float[:, ::1]
                                const _Context* x) noexcept nogil:
     """HEX 103-104 at TOKEN (§5.7): each city the decision corp may token,
     TOKEN's hexes, and its Δ route max with the token there, tried on the
-    scratch state."""
+    scratch state (``solve_routes_via``)."""
+    cdef int route = _corp_field(state, x.corp, CORP_FIELDS.route_cache)
     cdef int h
     for h in range(<int>NUM_HEXES):
         if can_token(state, x.corp, h):
             copy_row(scratch, state)
-            map_put_token(scratch, h, x.corp, 0)  # only the corp's own caches are read
+            map_put_token(scratch, h, x.corp, 0)  # the scratch caches are not read
             buffer[<int>ROW_HEX + h, H_TOKENABLE] = 1
-            buffer[<int>ROW_HEX + h, H_TOKEN_DELTA] = _route_delta(scratch, state, x.corp)
+            # The corp's own token only adds routes, and those pass its city.
+            buffer[<int>ROW_HEX + h, H_TOKEN_DELTA] = \
+                (solve_routes_via(scratch, x.corp, h, route, -1, 0, NULL) - route) / PRICE_DIV
 
 
 cdef void _fill_train_outcomes(GameState state, GameState scratch, float[:, ::1] buffer,
@@ -890,6 +1068,349 @@ cdef void _fill_player(GameState state, float* row, int i, const _Context* x) no
     row[PL_EMERGENCY_SOLD] = operating >= 0 and corp_president(state, operating) == i and turn_ebuy_sold_any(state)
 
 
+# =============================================================================
+# LAYOUT 2
+# =============================================================================
+
+cdef void _context2(GameState state, _Context* x) noexcept nogil:
+    """Layout 2's context. The operating rank is the corp's place in the
+    OR's order during an OR. In an SR and the auction it is the place the
+    next OR would give it: the floated corps in stock price order, market
+    stack included, and for a parred corp yet to float the place it would
+    take among them."""
+    cdef int order[7]  # NUM_CORPS
+    cdef int floated, count, c, i
+    x.operating = turn_operating_corp(state)
+    x.next_type = trains_cheapest_type(state)
+    x.limit = trains_limit(state)
+    x.next_limit = PHASE_TRAIN_LIMIT[min(x.game_phase + 1, <int>NUM_GAME_PHASES - 1)]
+    x.rust_phase = next_rust_phase(x.game_phase)
+    x.emergency = x.corp >= 0 and x.game_round == ROUND_OPERATING and in_emergency(state, x.corp)
+    x.need = max(emergency_need(state, x.corp), 0) if x.emergency else 0
+    for c in range(<int>NUM_CORPS):
+        x.rank[c] = -1
+    if x.game_round == ROUND_OPERATING:
+        for i in range(<int>NUM_CORPS):
+            c = _global(state, GLOBALS.or_order + i)
+            if c >= 0:
+                x.rank[c] = i
+    elif x.game_round != ROUND_GAME_OVER:
+        floated = corp_floated_mask(state)
+        count = market_sort_by_price(state, floated, order)
+        for i in range(count):
+            x.rank[order[i]] = i
+        for c in range(<int>NUM_CORPS):
+            if corp_par_index(state, c) >= 0 and not (floated >> c & 1):
+                x.rank[c] = 0
+                for i in range(count):
+                    x.rank[c] += market_precedes(state, order[i], c)
+
+
+cdef void _fill_rows2(GameState state, GameState scratch, float[:, ::1] buffer, const _Context* x) noexcept nogil:
+    """Layout 2's rows."""
+    cdef int i
+    _fill_global2(state, &buffer[<int>ROW_GLOBAL, 0], x)
+    if (x.phase == DPHASE_BID or x.phase == DPHASE_PAR or x.phase == DPHASE_TRAIN_PRICE
+            or x.phase == DPHASE_PRIVATE_PRICE):
+        _fill_price2(state, &buffer[<int>ROW_PRICE, 0], x)
+    elif x.phase == DPHASE_DIVIDEND:
+        _fill_dividend2(state, &buffer[<int>ROW_DIVIDEND, 0], x)
+    for i in range(<int>NUM_CORPS):
+        _fill_corp2(state, &buffer[<int>ROW_CORP + i, 0], i, x)
+    for i in range(<int>NUM_PRIVATES):
+        _fill_private(state, &buffer[<int>ROW_PRIVATE + i, 0], i, x)
+        if i != <int>PRIVATE_MF:  # the port tile is MF's
+            buffer[<int>ROW_PRIVATE + i, P_PORT_USED] = 0
+    for i in range(<int>NUM_TRAIN_TYPES):
+        _fill_train(state, &buffer[<int>ROW_TRAIN + i, 0], i, x)
+        buffer[<int>ROW_TRAIN + i, T2_STARTS_PHASE] = (x.game_phase + 1 < <int>NUM_GAME_PHASES
+                                                       and PHASE_ON_TRAIN[x.game_phase + 1] == i)
+    for i in range(<int>NUM_HEXES):
+        _fill_hex(state, &buffer[<int>ROW_HEX + i, 0], i, x)
+    if x.phase == DPHASE_TILE or x.phase == DPHASE_ER_BONUS:
+        _fill_candidates(state, scratch, buffer, x, 2)
+    elif x.phase == DPHASE_TOKEN:
+        _fill_token_outcomes(state, scratch, buffer, x)
+    elif (x.phase == DPHASE_SELECT_TRAIN or x.phase == DPHASE_DISCARD or x.phase == DPHASE_TRAIN_PRICE
+          or x.phase == DPHASE_BUY_TRAIN or x.phase == DPHASE_DIVIDEND):
+        _fill_train_outcomes2(state, scratch, buffer, x)
+    for i in range(x.num_players):
+        _fill_player2(state, &buffer[<int>ROW_PLAYER + i, 0], i, x)
+
+
+cdef void _fill_global2(GameState state, float* row, const _Context* x) noexcept nogil:
+    """Layout 1's GLOBAL, with the auction's slots cleared once it ends, and
+    slots 44-89: the step a private's sub-phase interrupts, the ORs left in
+    the set, the ORs until the bank breaks if every floated corp pays out its
+    route max each OR, the train limits, and the tile supply."""
+    cdef int cash = bank_cash(state)
+    cdef int drain = 0  # yen an OR, times SHARES_PER_CORP
+    cdef int c, t, step
+    _fill_global(state, row, x)
+    if x.game_round != ROUND_AUCTION:
+        row[G_PASS_PAYOUTS] = row[G_DISCOUNT] = 0
+    if x.phase == DPHASE_PRIVATE_PRICE or x.phase == DPHASE_ER_BONUS or x.phase == DPHASE_PORT:
+        step = turn_return_step(state)
+        row[G2_PRE] = step == STEP_BUY_PRIVATE_PRE
+        row[G2_POST] = step == STEP_BUY_PRIVATE_POST
+    if x.game_round == ROUND_OPERATING:
+        row[G2_ORS_LEFT] = (_global(state, GLOBALS.or_count) - _global(state, GLOBALS.or_num)) / 2.0
+    for c in range(<int>NUM_CORPS):
+        if corp_floated(state, c):
+            drain += _corp_field(state, c, CORP_FIELDS.route_cache) * (<int>SHARES_PER_CORP - corp_ipo_shares(state, c))
+    if cash > 0:
+        row[G2_BANK_ORS] = min(cash / (drain / <float>SHARES_PER_CORP) / 10.0, 1.0) if drain else 1.0
+    row[G2_TRAIN_LIMIT] = x.limit / <float>MAX_ROUTES
+    row[G2_NEXT_TRAIN_LIMIT] = x.next_limit / <float>MAX_ROUTES
+    for t in range(<int>NUM_SUPPLY_TILES):
+        row[G2_SUPPLY + t] = supply_count(state, t) / SUPPLY_DIV
+
+
+cdef void _fill_price2(GameState state, float* row, const _Context* x) noexcept nogil:
+    """Layout 1's PRICE, and at PAR slots 24-29: of the five shares that
+    must leave the IPO to float the corp, how many are out once the actor has
+    bought all their cash buys at each legal par (DR's exchange may have
+    taken one already)."""
+    cdef uint16_t ids[46]  # MAX_ACTION_SIZE
+    cdef ActionInfo info
+    cdef int count, i, out
+    _fill_price(state, row, x)
+    if x.phase != DPHASE_PAR:
+        return
+    out = <int>SHARES_PER_CORP - corp_ipo_shares(state, x.corp)
+    count = enumerate_legal_actions(state, ids)
+    for i in range(count):
+        info = decode_action(x.phase, ids[i])
+        if info.type == ACTION_PAR:
+            row[PR2_FLOAT_SHARES + ids[i]] = min(out + player_cash(state, x.actor) // info.amount, FLOAT_SHARES) \
+                / <float>FLOAT_SHARES
+
+
+cdef void _fill_dividend2(GameState state, float* row, const _Context* x) noexcept nogil:
+    """The DIVIDEND row: layout 1's outcomes (``_fill_dividend``) without the
+    per-share payout, then what each leaves toward the next train: its price
+    and the shortfalls while the corp has room for it, the room, and the
+    corp's two hypothetical route maxes."""
+    cdef int c = x.corp
+    cdef int revenue = turn_route_revenue(state)
+    cdef int cash = corp_cash(state, c)
+    cdef int pool = _payout(corp_pool_shares(state, c), revenue)
+    cdef int room = x.limit - corp_train_total(state, c)
+    cdef int price
+    row[0] = 1
+    row[DV2_REVENUE] = revenue / PRICE_DIV
+    row[DV2_PAYOUT_PRICE] = _moved_price(state, c, MOVE_RIGHT) / PRICE_DIV
+    row[DV2_WITHHOLD_PRICE] = _moved_price(state, c, MOVE_LEFT) / PRICE_DIV
+    row[DV2_TREASURY] = (cash + revenue) / MONEY_DIV
+    row[DV2_PRESIDENT] = _payout(player_shares(state, corp_president(state, c), c), revenue) / PRICE_DIV
+    row[DV2_POOL] = pool / PRICE_DIV
+    if room > 0 and x.next_type >= 0:
+        price = TRAIN_PRICE[x.next_type]
+        row[DV2_NEXT_PRICE] = price / MONEY_DIV
+        row[DV2_WITHHOLD_SHORT] = max(price - cash - revenue, 0) / MONEY_DIV
+        row[DV2_PAYOUT_SHORT] = max(price - cash - pool, 0) / MONEY_DIV
+    row[DV2_ROOM] = room / <float>MAX_ROUTES
+    row[DV2_WITH_NEXT] = _corp_field(state, c, CORP_FIELDS.route_with_next) / PRICE_DIV
+    row[DV2_AFTER_RUST] = _corp_field(state, c, CORP_FIELDS.route_after_rust) / PRICE_DIV
+
+
+cdef void _fill_corp2(GameState state, float* row, int c, const _Context* x) noexcept nogil:
+    """Slots 7-19, 58-60, and 74 only while parred. Slots 1-37 are layout 1's
+    (``_fill_corp``), but the sale prices are filled at every decision."""
+    cdef _Reach reach = _reach(state, c, x.game_phase)
+    cdef int cash = corp_cash(state, c)
+    cdef int route = _corp_field(state, c, CORP_FIELDS.route_cache)
+    cdef int president = corp_president(state, c)
+    cdef int held = corp_train_total(state, c)
+    cdef int owned = 0, rusting = 0, rusting_next = 0
+    cdef int i, market_r, market_c, to_float, cost
+    row[0] = 1
+    row[C_SELECTED] = c == x.corp
+    if x.phase == DPHASE_SELECT_TRAIN or x.phase == DPHASE_TRAIN_PRICE:
+        row[C_SELLER] = turn_pending_train_source(state) == <int>TRAIN_SOURCE_CORP + c
+    if x.phase == DPHASE_SELL_AMOUNT or x.phase == DPHASE_EMERGENCY_SELL_AMOUNT:
+        row[C_SALE] = turn_pending_corp(state) == c
+    row[C_FLOATED] = corp_floated(state, c)
+    row[C_HOME] = hex_tokens(state, CORP_HOME[c]) >> c & 1
+    if corp_par_index(state, c) >= 0:
+        row[C_PARRED] = 1
+        row[C_PAR_PRICE] = corp_par_price(state, c) / PRICE_DIV
+        row[C_PRICE] = market_price(state, c) / PRICE_DIV
+        row[C_ROW] = market_row(state, c) / 10.0
+        row[C_COL] = market_col(state, c) / 14.0
+        row[C_ZONE + market_type(state, c)] = 1
+        market_r, market_c = market_row(state, c), market_col(state, c)
+        for i in range(<int>MAX_SALE_SHARES):  # a row down per share sold; the bottom repeats
+            market_moved(market_r, market_c, MOVE_DOWN, 1, &market_r, &market_c)
+            row[C_SALE_PRICES + i] = MARKET_PRICE[market_r][market_c] / PRICE_DIV
+        row[C2_PAYOUT_PRICE] = _moved_price(state, c, MOVE_RIGHT) / PRICE_DIV
+        row[C2_WITHHOLD_PRICE] = _moved_price(state, c, MOVE_LEFT) / PRICE_DIV
+        row[C2_SOLD_OUT_PRICE] = _moved_price(state, c, MOVE_UP) / PRICE_DIV
+        row[C2_LOG_PRICE] = _log_yen(market_price(state, c))
+    row[C_SOLD_OUT] = corp_ipo_shares(state, c) == 0 and corp_pool_shares(state, c) == 0
+    row[C_CASH] = cash / MONEY_DIV
+    row[C_IPO] = corp_ipo_shares(state, c) / <float>SHARES_PER_CORP
+    row[C_POOL] = corp_pool_shares(state, c) / <float>SHARES_PER_CORP
+    row[C_TOKENS] = corp_tokens_left(state, c) / <float>MAX_CORP_TOKENS
+    row[C_TOKEN_PRICE] = corp_token_price(state, c) / PRICE_DIV
+    for i in range(<int>NUM_TRAIN_TYPES):
+        row[C_TRAINS + i] = corp_train_count(state, c, i) / <float>MAX_ROUTES
+        rusting += corp_train_count(state, c, i) if 0 <= x.rust_phase == _rust_phase(i) else 0
+        rusting_next += corp_train_count(state, c, i) if _rust_phase(i) == x.game_phase + 1 else 0
+    row[C_CROWDED] = held > x.limit
+    row[C_LAST_REVENUE] = _corp_field(state, c, CORP_FIELDS.last_revenue) / PRICE_DIV
+    row[C_ROUTE_MAX] = route / PRICE_DIV
+    row[C_ROUTE_AVAILABLE] = _corp_field(state, c, CORP_FIELDS.route_available) != 0
+    row[C_MUST_BUY] = must_buy_train(state, c)
+    row[C_EMERGENCY] = c == x.corp and x.emergency
+    if x.rank[c] >= 0:
+        row[C2_RANK + x.rank[c]] = 1
+    if x.game_round == ROUND_OPERATING:
+        row[C2_OPERATED] = 0 <= x.rank[c] < _global(state, GLOBALS.or_index)
+    row[C2_HEXES] = reach.hexes / <float>NUM_HEXES
+    row[C2_CENTERS] = reach.centers / <float>NUM_RCS
+    row[C2_REVENUE] = reach.revenue / PRICE_DIV
+    row[C2_SLOTS] = reach.slots / 15.0
+    if x.actor >= 0:
+        row[C2_ACTOR_SOLD] = player_sold_mask(state, x.actor) >> c & 1
+        if x.game_round == ROUND_STOCK:
+            row[C2_SALE_LIMIT] = sale_limit(state, x.actor, c) / <float>MAX_SALE_SHARES
+    if x.emergency:
+        row[C2_EMERGENCY_SALE] = emergency_sale_limit(state, x.corp, c, x.need) / <float>MAX_SALE_SHARES
+        if c == x.corp:
+            row[C2_EMERGENCY_NEED] = x.need / MONEY_DIV
+    row[C2_TURN_SOLD] = turn_sr_sold_mask(state) >> c & 1
+    row[C2_EMERGENCY_SOLD] = turn_ebuy_sold_mask(state) >> c & 1
+    row[C2_BOUGHT] = turn_sr_bought_corp(state) == c
+    for i in range(<int>NUM_PRIVATES):
+        owned += private_owner(state, i) == <int>OWNER_CORP + c
+    row[C2_PRIVATES] = owned / <float>NUM_PRIVATES
+    row[C2_OPERATING] = c == x.operating
+    row[C2_TRAINS_OF_LIMIT] = held / <float>x.limit
+    row[C2_ROOM] = (x.limit - held) / <float>MAX_ROUTES
+    row[C2_SURVIVING] = (held - rusting) / <float>MAX_ROUTES
+    row[C2_NEXT_ROOM] = (x.next_limit - (held - rusting_next)) / <float>MAX_ROUTES
+    row[C2_AFTER_RUST] = _corp_field(state, c, CORP_FIELDS.route_after_rust) / PRICE_DIV
+    row[C2_WITH_NEXT] = _corp_field(state, c, CORP_FIELDS.route_with_next) / PRICE_DIV
+    if x.next_type >= 0:
+        row[C2_SHORTFALL] = max(TRAIN_PRICE[x.next_type] - cash, 0) / MONEY_DIV
+    # The shares still to leave the IPO before the corp floats, at par; at the lowest par while unparred.
+    to_float = max(corp_ipo_shares(state, c) - (<int>SHARES_PER_CORP - FLOAT_SHARES), 0)
+    if to_float and not corp_floated(state, c):
+        cost = to_float * (corp_par_price(state, c) if corp_par_index(state, c) >= 0 else LOWEST_PAR)
+        row[C2_FLOAT_SHARES] = to_float / <float>FLOAT_SHARES
+        row[C2_FLOAT_COST] = cost / MONEY_DIV
+        row[C2_PRESIDENT_FLOATS] = president >= 0 and player_cash(state, president) >= cost
+        row[C2_ACTOR_FLOATS] = x.actor >= 0 and player_cash(state, x.actor) >= cost
+    row[C2_PRESIDENT_SOLD] = president >= 0 and (player_sold_mask(state, president) >> c & 1) != 0
+    row[C2_LOG_CASH] = _log_yen(cash)
+    row[C2_LOG_ROUTE] = _log_yen(route)
+
+
+cdef void _fill_train_outcomes2(GameState state, GameState scratch, float[:, ::1] buffer,
+                                const _Context* x) noexcept nogil:
+    """TRAIN 10-13: what a train changes for the decision corp's route max,
+    each purchase tried on the scratch state with the phase it starts
+    (``route_max_after_purchase``), and no train added past MAX_ROUTES.
+
+    - SELECT_TRAIN, each legal choice: one more of type t (slot 10) or a D
+      for a traded t (slot 11); from a corp, also the seller's Δ (slot 13).
+    - TRAIN_PRICE, the pending type: slots 10 and 13, as at SELECT_TRAIN.
+    - BUY_TRAIN and DIVIDEND, while the corp has room under the limit: slot
+      10 for each type the depot sells or the pool holds, whatever its price.
+    - DISCARD, each legal choice: one fewer of type t (slot 12)."""
+    cdef uint16_t ids[46]  # MAX_ACTION_SIZE
+    cdef int c = x.corp
+    cdef int route = _corp_field(state, c, CORP_FIELDS.route_cache)
+    cdef int held = corp_train_total(state, c)
+    cdef int seller = turn_pending_train_source(state) - <int>TRAIN_SOURCE_CORP
+    cdef ActionInfo info
+    cdef int count, i, t, types, value
+    if x.phase == DPHASE_BUY_TRAIN or x.phase == DPHASE_DIVIDEND:
+        if held >= x.limit:
+            return
+        types = trains_depot_types(state)
+        for t in range(<int>NUM_TRAIN_TYPES):
+            if types >> t & 1 or pool_count(state, t):
+                value = (_corp_field(state, c, CORP_FIELDS.route_with_next) if t == x.next_type
+                         else route_max_after_purchase(state, scratch, c, t, -1))
+                buffer[<int>ROW_TRAIN + t, T_ADD_DELTA] = (value - route) / PRICE_DIV
+        return
+    if x.phase == DPHASE_TRAIN_PRICE:
+        if held < <int>MAX_ROUTES and seller >= 0:
+            _fill_corp_sale(state, scratch, &buffer[<int>ROW_TRAIN + turn_pending_train_type(state), 0], c, seller,
+                            turn_pending_train_type(state))
+        return
+    count = enumerate_legal_actions(state, ids)
+    for i in range(count):
+        info = decode_action(x.phase, ids[i])
+        t = info.train_type
+        if info.type == ACTION_TRAIN_TYPE:
+            if held >= <int>MAX_ROUTES:
+                continue
+            if seller >= 0:
+                _fill_corp_sale(state, scratch, &buffer[<int>ROW_TRAIN + t, 0], c, seller, t)
+            else:
+                buffer[<int>ROW_TRAIN + t, T_ADD_DELTA] = \
+                    (route_max_after_purchase(state, scratch, c, t, -1) - route) / PRICE_DIV
+        elif info.type == ACTION_TRADE_IN:
+            buffer[<int>ROW_TRAIN + t, T_TRADE_IN_DELTA] = \
+                (route_max_after_purchase(state, scratch, c, <int>D_TRAIN, t) - route) / PRICE_DIV
+        else:  # a discard: one fewer of type t
+            copy_row(scratch, state)
+            trains_set_count(scratch, c, t, corp_train_count(state, c, t) - 1)
+            buffer[<int>ROW_TRAIN + t, T_DISCARD_DELTA] = _route_delta(scratch, state, c)
+
+
+cdef void _fill_corp_sale(GameState state, GameState scratch, float* row, int buyer, int seller, int t) noexcept nogil:
+    """TRAIN 10 and 13 on type t's row for one of ``seller``'s passing to
+    ``buyer``: a corp's train starts no phase."""
+    copy_row(scratch, state)
+    trains_set_count(scratch, buyer, t, corp_train_count(state, buyer, t) + 1)
+    trains_set_count(scratch, seller, t, corp_train_count(state, seller, t) - 1)
+    row[T_ADD_DELTA] = _route_delta(scratch, state, buyer)
+    row[T2_SELLER_DELTA] = _route_delta(scratch, state, seller)
+
+
+cdef void _fill_player2(GameState state, float* row, int i, const _Context* x) noexcept nogil:
+    """Slots 1-10 are layout 1's (``_fill_player``)."""
+    cdef int n = x.num_players
+    cdef int cash = player_cash(state, i)
+    cdef int presidencies = 0, privates = 0, income = 0
+    cdef int c, p
+    row[0] = 1
+    row[PL_SELECTED] = i == x.actor
+    if x.actor >= 0:
+        row[PL_SEAT + (i - x.actor + n) % n] = 1
+    row[PL_PRIORITY] = i == _global(state, GLOBALS.priority_player)
+    row[PL_CASH] = cash / MONEY_DIV
+    row[PL_VALUE] = player_value(state, i) / MONEY_DIV
+    row[PL_CERTS_OF_LIMIT] = player_cert_count(state, i) / <float>CERT_LIMIT[n]
+    for c in range(<int>NUM_CORPS):
+        row[PL2_SHARES + c] = player_shares(state, i, c) / <float>SHARES_PER_CORP
+        row[PL2_SOLD + c] = player_sold_mask(state, i) >> c & 1
+        presidencies += corp_president(state, c) == i
+        if corp_floated(state, c):
+            income += _payout(player_shares(state, i, c), _corp_field(state, c, CORP_FIELDS.route_cache))
+    for p in range(<int>NUM_PRIVATES):
+        if p:
+            row[PL2_BIDS + p - 1] = player_bid(state, i, p) / PRICE_DIV
+        if private_owner(state, p) == <int>OWNER_PLAYER + i:
+            privates += 1
+            income += private_revenue(state, p)
+    row[PL2_PASSED] = player_passed(state, i)
+    row[PL2_PRESIDENCIES] = presidencies / <float>NUM_CORPS
+    row[PL2_PRIVATES] = privates / <float>NUM_PRIVATES
+    # The operating corp's president: an emergency sale since the turn's last purchase.
+    row[PL2_EMERGENCY_SOLD] = x.operating >= 0 and corp_president(state, x.operating) == i and turn_ebuy_sold_any(state)
+    row[PL2_FLOATS_ALONE] = cash >= LOWEST_FLOAT
+    row[PL2_RESUMES] = (x.phase == DPHASE_BID and turn_auction_private(state) >= 0
+                        and i == _global(state, GLOBALS.auction_turn))
+    row[PL2_INCOME] = income / MONEY_DIV
+    row[PL2_LOG_CASH] = _log_yen(cash)
+    row[PL2_LOG_VALUE] = _log_yen(player_value(state, i))
+
+
 # The row map against the tables, and each row type's last slot against its width.
 assert ROW_PRIVATE - ROW_CORP == NUM_CORPS and ROW_TRAIN - ROW_PRIVATE == NUM_PRIVATES
 assert ROW_HEX - ROW_TRAIN == NUM_TRAIN_TYPES and ROW_CANDIDATE - ROW_HEX == NUM_HEXES
@@ -905,5 +1426,18 @@ assert CA_ADDED + NUM_PAIRS == CA_COST and CA_OTHER_CENTERS + 1 == TW_CANDIDATE
 assert PL_SEAT + 5 == PL_PRIORITY and PL_EMERGENCY_SOLD + 1 == TW_PLAYER
 assert <int>TOKEN_DIM == max(TW_GLOBAL, TW_PRICE, TW_DIVIDEND, TW_CORP, TW_PRIVATE, TW_TRAIN, TW_HEX, TW_CANDIDATE,
                              TW_PLAYER)
+# Layout 2: the same, and the rows it shares with layout 1 are no narrower.
+assert <int>G2_PRE == <int>TW_GLOBAL and G2_SUPPLY + NUM_SUPPLY_TILES == TW2_GLOBAL
+assert <int>PR2_FLOAT_SHARES == <int>TW_PRICE and PR2_FLOAT_SHARES + NUM_PAR_PRICES == TW2_PRICE
+assert DV2_AFTER_RUST + 1 == TW2_DIVIDEND
+assert <int>C2_RANK == <int>C_OR_POSITION and C2_RANK + NUM_CORPS == C2_OPERATED and C2_LOG_ROUTE + 1 == TW2_CORP
+assert <int>TW2_PRIVATE == <int>TW_PRIVATE and <int>TW2_HEX == <int>TW_HEX
+assert <int>T2_SELLER_DELTA == <int>TW_TRAIN and T2_STARTS_PHASE + 1 == TW2_TRAIN
+assert <int>CA2_NEXT_DELTA == <int>TW_CANDIDATE and CA2_NEXT_DELTA + 1 == TW2_CANDIDATE
+assert <int>PL2_SHARES == <int>PL_CERTS and PL2_SHARES + NUM_CORPS == PL2_SOLD and PL2_SOLD + NUM_CORPS == PL2_BIDS
+assert PL2_BIDS + NUM_PRIVATES - 1 == PL2_PASSED and PL2_LOG_VALUE + 1 == TW2_PLAYER
+assert <int>TOKEN_DIM_2 == max(TW2_GLOBAL, TW2_PRICE, TW2_DIVIDEND, TW2_CORP, TW2_PRIVATE, TW2_TRAIN, TW2_HEX,
+                               TW2_CANDIDATE, TW2_PLAYER)
+assert MAX_ROUTES == 4 and FLOAT_SHARES == 5  # the divisors token-data-1889.md states
 # The fills' buffers are sized with literals.
 assert MAX_LAY_CANDIDATES == 15 and NUM_CORPS == 7 and MAX_ACTION_SIZE == 46

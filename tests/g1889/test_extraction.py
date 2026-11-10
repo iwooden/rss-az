@@ -232,10 +232,10 @@ def test_sizes_follow_the_row_map():
 
 
 @pytest.mark.parametrize('call', [
-    lambda: get_token_dim(2),
-    lambda: get_token_widths(5, 3),
+    lambda: get_token_dim(3),
+    lambda: get_token_widths(5, 0),
     lambda: get_token_data(new_game(3), np.zeros((93, 108), np.float32), layout_version=0),
-    lambda: get_token_data_batch([], np.zeros((0, 95, 108), np.float32), layout_version=2),
+    lambda: get_token_data_batch([], np.zeros((0, 95, 108), np.float32), layout_version=3),
 ])
 def test_other_layout_ids_raise(call):
     with pytest.raises(ValueError, match='Unsupported 1889 token layout version'):

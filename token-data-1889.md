@@ -1,29 +1,41 @@
 # Shikoku 1889 Token Data Spec
 
-This document is the token contract for 1889's layout 1, which step 8's
-`nn/transformer-1889.py` reads: the rows, their slots, the relations, and
-which slots each policy head reads. It matches `g1889/token_data.pyx/.pxd`
-and `g1889/relations.pyx/.pxd`; where they differ, the code is right and
-this document is wrong. The rationale is in
+This document is the token contract for 1889: the rows, their slots in each
+layout, the relations, and which slots each policy head reads. Layout 1 is
+what step 8's `nn/transformer-1889.py` (v0) reads; layout 2
+([`1889/v1-design.md`](1889/v1-design.md) §5) is for
+`nn/transformer-1889-v1.py`. It matches `g1889/token_data.pyx/.pxd` and
+`g1889/relations.pyx/.pxd`; where they differ, the code is right and this
+document is wrong. The rationale is in
 [`1889/extraction-design.md`](1889/extraction-design.md) §4-7, and
 `tests/g1889/test_token_data_doc.py` pins the tables below against the code.
 
 The `Game` adapter (`games/g1889.py`) exposes the extractors:
-`num_tokens(max_players)`, `token_dim(1)`, `num_relations` (25),
+`num_tokens(max_players)`, `token_dim(layout_version)`, `num_relations` (25),
 `max_relation_edges` (2,048), and the six fills, which take
-`layout_version=1` for tokens.
+`layout_version` for tokens.
 
 ## Layout id
 
 `get_token_dim(layout_version)` and `get_token_widths(max_players,
-layout_version)` accept only 1 and raise `ValueError` for any other id. A
-1889 model module declares `INPUT_LAYOUT_VERSION = 1`.
+layout_version)` accept 1 and 2 and raise `ValueError` for any other id. A
+1889 model module declares its `INPUT_LAYOUT_VERSION`, and each evaluator
+fills its own model's layout, so models of both can share a game.
+
+**Layout 1 is pinned.** v0 stays playable as the tournament's opponent
+(v1-design §8), so its tokens must not change:
+`tests/g1889/test_layout1_parity.py` holds them on a fixture, as
+`tests/test_v2_parity.py` holds RSS's v2. The sections up to "Layout 2"
+describe layout 1; layout 2 is described by its differences, with a full
+slot table per row type.
 
 ## Shapes
 
-- **Tokens:** `(num_tokens(max_players), 108)` float32, sent to the eval
-  server as float16. `TOKEN_DIM` = 108, the CANDIDATE width; every row is
-  zero-padded to it, and `get_token_widths` gives each row's width.
+- **Tokens:** `(num_tokens(max_players), 108)` float32 in layout 1 and
+  `(num_tokens(max_players), 109)` in layout 2, sent to the eval
+  server as float16. `TOKEN_DIM` = 108 and `TOKEN_DIM_2` = 109, the
+  CANDIDATE widths; every row is
+  zero-padded to its layout's, and `get_token_widths` gives each row's width.
 - **Dense relations:** `(25, T, T)` uint8, queries by keys, T =
   `num_tokens(max_players)`.
 - **Sparse records:** `(2048, 4)` uint8 rows `(relation, query, key,
@@ -34,7 +46,11 @@ layout_version)` accept only 1 and raise `ValueError` for any other id. A
 Inputs depend only on the row, never on the runtime policy flags.
 Extraction writes the refreshed GRAPH and route caches back into the row it
 reads (extraction-design §4), so rows passed to it must be writable; the
-output is the same whether those caches were fresh or stale.
+output is the same whether those caches were fresh or stale
+(`tests/g1889/test_cache_purity.py`). Layout 2's token fills also refresh
+each corp's two hypothetical route maxes (`route_after_rust`,
+`route_with_next`; `g1889/routes/solver.pxd`); layout 1's and the relation
+fills leave those stale.
 
 ## Rows
 
@@ -261,14 +277,204 @@ corp's, the buyer at ER_BONUS, against the current state.
 | 35, 36 | presidencies /7, privates owned /3 |
 | 37 | on the operating corp's president: an emergency sale since the turn's last purchase |
 
+## Layout 2
+
+Layout 2 has layout 1's rows in layout 1's order, so token indices in
+relation records are the same in both. Widths:
+
+| Type | Layout 1 | Layout 2 |
+|---|---|---|
+| GLOBAL | 44 | 90 |
+| PRICE | 24 | 30 |
+| DIVIDEND | 8 | 13 |
+| CORP | 51 | 77 |
+| PRIVATE | 18 | 18 |
+| TRAIN | 13 | 15 |
+| HEX | 105 | 105 |
+| CANDIDATE | 108 | 109 |
+| PLAYER | 38 | 40 |
+
+Slot 0, visibility, the selections, the actor, the decision corp, and the
+divisors are layout 1's. Further terms:
+
+- **The next train** is the cheapest train on sale, in the depot or the
+  pool (`trains_cheapest_type`; TRAIN 7 marks it). There always is one.
+- **Room** is the train limit less the trains held. It is negative while a
+  corp is over the limit (at DISCARD).
+- **A purchase** is tried on a scratch copy of the state: the train is
+  added, `phase_on_train_bought` starts the phase its type starts (rusting
+  trains and changing offboard revenues), and the route solver runs. A
+  trade-in moves the traded train to the pool first, as the engine does.
+- **The next rust** is the start of the first later phase that rusts a rank:
+  phase 4 (the 2s) from phases 2-3, phase 6 (the 3s) from 4-5, phase D (the
+  4s) from 6, and none in phase D.
+- **Route max with the next train** (`route_with_next`): the corp's route
+  max after it buys the next train, while it has room; its route max now
+  without room. **Route max after the next rust** (`route_after_rust`): its
+  route max with no purchase once that phase has started, at that phase's
+  revenues; its route max now in phase D. Both are cached in the row.
+- **Log-scaled** amounts are ln(1 + ¥/100) / 5: 0.48 at ¥1,000 and 1.0
+  near ¥14,700.
+
+Where v1-design §5 left a definition open, the choice is marked **Chosen**.
+
+### GLOBAL, layout 2 (90)
+
+| Slots | Feature |
+|---|---|
+| 1-38 | as layout 1 |
+| 39, 40 | all-pass auction payouts /3, A's auction discount /20, during the auction; 0 once it ends |
+| 41-43 | as layout 1 |
+| 44, 45 | at PRIVATE_PRICE, ER_BONUS, and an OR's PORT: the step the sub-phase returns to (`return_step`) is BUY_PRIVATE_PRE, before the corp's lay; is BUY_PRIVATE_POST, after its trains. Both 0 at an SR's PORT, and at replay's overrides from other steps |
+| 46 | ORs left in the set after this one /2; 0 outside an OR |
+| 47 | ORs until the bank breaks /10, capped at 1: bank cash / the drain of an OR, which is the sum over floated corps of route max × shares outside the IPO / 10. 1 with no drain, 0 once the bank is broken |
+| 48, 49 | the train limit now /4; in the next phase /4 (the same in phase D) |
+| 50-89 | copies of supply tile t left in supply /5 (the largest `TILE_COUNT`), at slot 50 + t |
+
+### PRICE, layout 2 (30)
+
+| Slots | Feature |
+|---|---|
+| 1-23 | as layout 1 |
+| 24-29 | at PAR, for legal par index i at slot 24 + i: of the five shares that must leave the IPO to float the corp, how many are out once the actor has bought all their cash buys at that par, /5: min(5, shares already out + ⌊cash / par⌋). 0 for a par that is not legal and at other decisions. **Chosen:** shares already out count (DR's exchange can take an IR share before IR is parred) |
+
+### DIVIDEND, layout 2 (13)
+
+Visible at DIVIDEND, for the operating corp's revenue r. Layout 1's slot 2
+(the per-share payout, slot 1 / 10) is gone, and its slots 3-7 move down one.
+
+| Slots | Feature |
+|---|---|
+| 1 | r /100 |
+| 2, 3 | share price after a payout and after a withhold /100 |
+| 4 | treasury after a withhold /1000 |
+| 5, 6 | the president's payout and the corp's payout for its pool shares /100, each ⌈shares × r/10⌉ |
+| 7 | the next train's list price /1000; 0 without room |
+| 8, 9 | the shortfall to that price after a withhold, max(0, price − treasury − r), and after a payout, max(0, price − treasury − the corp's pool payout), /1000; 0 without room |
+| 10 | room /4 |
+| 11, 12 | the corp's route max with the next train and after the next rust /100 (CORP 66 and 65) |
+
+### CORP, layout 2 (77)
+
+| Slots | Feature |
+|---|---|
+| 1-14 | as layout 1 |
+| 15-19 | share price after selling 1-5 shares /100 (a row down per share; at a column's bottom the price repeats), for every parred corp at every decision |
+| 20-37 | as layout 1 |
+| 38-44 | the corp's operating rank, one-hot. In an OR: its place in the OR's order (all zero for a corp not in it). In an SR and the auction: the place the next OR would give it if prices stood: the floated corps in stock price order, market stack included (`market_sort_by_price`). **Chosen:** a parred corp yet to float has the place it would take among the floated corps were it to float now, so it can share a slot with the corp it would displace; an unparred corp has none; the sold-out move at the SR's end is not applied (slot 60 shows it) |
+| 45 | operated this OR; 0 outside an OR |
+| 46, 47, 48 | hexes reached /52, centers reached /25, their revenue now /100 (layout 1's 40-42) |
+| 49 | reached cities with a slot for the corp /15 |
+| 50 | sold by the actor this SR |
+| 51 | sold this SR turn |
+| 52 | sold in this turn's emergency |
+| 53 | bought or parred this SR turn |
+| 54 | the actor's largest sale now /5: 0 outside an SR and when the turn bars it |
+| 55 | while the decision corp is in an emergency: the largest block of this corp its president may sell toward the train now /5, the legal limit (`emergency_sale_limit`: 0 once the need is met or the corp was sold this turn, and no more shares than the need takes); 0 otherwise |
+| 56 | privates owned /7 |
+| 57 | is the operating corp (`operating_corp`): at DISCARD the decision corp is the crowded corp, and this marks whose turn it is |
+| 58, 59, 60 | share price after a payout (right), after a withhold (left), and after ending an SR sold out (up) /100 |
+| 61 | trains held / the train limit |
+| 62 | room /4 |
+| 63 | trains that survive the next rust /4 (all of them in phase D) |
+| 64 | room when the next phase starts /4: its limit less the trains that survive its start; negative when the corp will have to discard. **Chosen:** signed, and for the next phase, which may rust nothing |
+| 65, 66 | route max after the next rust, and with the next train, /100 |
+| 67 | the shortfall from the treasury to the next train's list price /1000, with room or not |
+| 68 | shares that must still leave the IPO before the corp floats /5: 0 once floated; 5 for an unparred corp (4 for IR after DR's exchange) |
+| 69 | their cost /1000 at par; **Chosen:** at the lowest par, ¥65, for an unparred corp |
+| 70, 71 | the president's cash covers that cost; the actor's does. 0 once floated, and 70 while unparred |
+| 72 | the president has sold this corp this SR (and so may not buy it back) |
+| 73 | on the decision corp in an emergency: the cash its president must still raise /1000, max(0, the cheapest train's price − treasury − the president's cash) |
+| 74, 75, 76 | log-scaled share price (0 while unparred), treasury, and route max |
+
+Slots 7-19, 58-60, and 74 are 0 while the corp is unparred.
+
+### PRIVATE, layout 2 (18)
+
+| Slots | Feature |
+|---|---|
+| 1-14 | as layout 1 |
+| 15 | MF's port tile used, on MF's row only |
+| 16, 17 | as layout 1 |
+
+### TRAIN, layout 2 (15)
+
+| Slots | Feature |
+|---|---|
+| 1-9 | as layout 1 |
+| 10 | Δ route max /100 of the decision corp buying one of this type (a purchase, so with the phase it starts). At SELECT_TRAIN: each legal type of the pending source. At BUY_TRAIN and DIVIDEND, while the corp has room: each type the depot sells or the pool holds, whatever its price. **Chosen:** also at TRAIN_PRICE, on the pending type's row |
+| 11 | at SELECT_TRAIN: Δ route max /100 of trading one of this type in for a D, with the phase the D starts |
+| 12 | at DISCARD: Δ route max /100 of discarding one of this type |
+| 13 | at SELECT_TRAIN from a corp, each legal type, and at TRAIN_PRICE, the pending type: the seller's Δ route max /100 on losing one (0 or less) |
+| 14 | its next depot purchase starts a new phase: the type is the next phase's train (`PHASE_ON_TRAIN`). **Chosen:** set whether or not the depot sells the type yet, so one row has it until phase D |
+
+Slots 10-13 are set only for the choices named, and 10 only while the corp
+holds fewer than 4 trains.
+
+### HEX, layout 2 (105)
+
+| Slots | Feature |
+|---|---|
+| 1-104 | as layout 1 |
+
+### CANDIDATE, layout 2 (109)
+
+| Slots | Feature |
+|---|---|
+| 1-106 | as layout 1 |
+| 107 | other corps' summed Δ centers reached /50 |
+| 108 | Δ route max /100 of the lay if the decision corp also bought the next train: its route max with the next train (a purchase) on the laid map, less the same on the map now (CORP 66). Slot 104's value without room |
+
+### PLAYER, layout 2 (40)
+
+Layout 1's slots 11 (certificates /25), 26 (a bid on TR, the topmost, which
+is never bid on), and 34 (bankrupt: the game has ended) are gone.
+
+| Slots | Feature |
+|---|---|
+| 1-10 | as layout 1 |
+| 11-17 | shares by corp /10 |
+| 18-24 | sold this SR, by corp |
+| 25-30 | bids by private /100, privates MF to UTF (`PrivateId` 1-6) |
+| 31 | passed |
+| 32, 33 | presidencies /7, privates owned /7 |
+| 34 | on the operating corp's president: an emergency sale since the turn's last purchase |
+| 35 | can float a corp alone: cash of at least five shares at the lowest par, ¥325 |
+| 36 | in a closed auction's BID: this player acts when the auction resolves (`auction_turn`: the next normal turn's, or the first SR's opener) |
+| 37 | income of an OR at the current route maxes /1000: ⌈shares × route max / 10⌉ for each floated corp, and the revenue of the privates owned |
+| 38, 39 | log-scaled cash and net worth |
+
+### Scale changes from layout 1
+
+CORP 49 (/15, was 43 at /5), CORP 56 (/7, was 50 at /3), CANDIDATE 107
+(/50, was /25), and PLAYER 33 (/7, was 36 at /3) no longer exceed 1. The
+last is not in v1-design §5.7; v1-review §5.4 lists it with the others.
+
+### Slot ranges
+
+On every decision of 87 human, 45 self-play, and 36 random games (88,019
+states), the slots outside [0, 1] are the yen families, as in layout 1:
+treasuries and cash /1000 reach 4.0 and 6.4, a net worth 10.3 (PLAYER 9),
+share prices /100 3.5, bids /100 3.9, and revenues and route maxes /100
+11.5 (CORP 66, DIVIDEND 11). The signed slots: TRAIN 10 from −0.9 (a
+purchase that rusts the corp's own trains) to 7.2, TRAIN 13 to −6.7,
+CANDIDATE 108 to 4.8, CORP 62 from −0.25 and CORP 64 from −0.5, and GLOBAL
+34 to −1.45. CORP 61 reaches 1.5 and PLAYER 10 1.36 (over a limit). No slot
+is constant. No decision fills CANDIDATE 10, 28, 29, 38-40, 42, 64, 68, 69,
+72, 76, or 77, in either layout: a candidate is never the port tile, a
+printed, white, gray, or red tile, or an offboard, and the labelled K and T
+tiles upgrade their city with one candidate, which the driver lays itself.
+`tests/g1889/test_extraction_layout2.py` holds each slot to its bound.
+
 ## Known unbounded slots
 
 Values are of order 1 under self-play's flags. Under uncapped engine-legal
 play, the auction can loop on passes, paying the sold privates' revenue
 each round without end: GLOBAL 39 then grows without bound, and with the
 players' cash (PLAYER 8-9) the bid slots grow too: PRICE 5-23 at BID,
-PRIVATE 10, 12, and 13, and PLAYER 26-32. Self-play's
-`auction_pass_payout_cap` (1) bounds them.
+PRIVATE 10, 12, and 13, and PLAYER 26-32 (25-30 in layout 2). Self-play's
+`auction_pass_payout_cap` (1) limits how far, though it forces only a
+player who can afford the topmost private (v1-review §5.4).
 
 ## Relations
 
@@ -371,3 +577,26 @@ CANDIDATE rows 0-7 can be visible.
 
 BUY_TRAIN reads no outcome deltas: SELECT_TRAIN's, the next decision, show
 them, as TILE's candidate rows show TRACK's.
+
+### Layout 2
+
+The rows are layout 1's. The slots that move, and what layout 2 adds for
+each decision's choices (v1-design §7 lists which of these v1's heads read
+raw):
+
+| Decision | Row | Slots, layout 2 |
+|---|---|---|
+| STOCK | CORP c | 7-25, 50-54; the float, 68-71; the three market moves, 58-60; the president's sale, 72; the operating rank, 38-44 |
+| PAR | PRICE | 5 + id; the shares affordable at that par, 24 + id |
+| SELL_AMOUNT, EMERGENCY_SELL_AMOUNT | the CORP row slot 3 selects | 15 + id |
+| DIVIDEND | DIVIDEND | 1, 3, 4, 8 for withhold; 1, 2, 5, 6, 9 for payout; the next train, 7 and 10-12; TRAIN t's slot 10 for what each train on sale would add |
+| BUY_TRAIN | TRAIN rows; CORP c | 2-9, 10, 14; 15-19, 52, 55; the decision corp's 62-67 and 73 |
+| SELECT_TRAIN | TRAIN t; TRAIN `TRADE_IN_TYPE[i]` | 10, 13, 14; 11 |
+| TRAIN_PRICE | PRICE; the TRAIN row slot 1 selects | 5 + id; 10 and 13 |
+| DISCARD | TRAIN `DISCARD_TYPES[i]` | 12 |
+| TILE, ER_BONUS | CANDIDATE k | 2-108 |
+| PRIVATE_PRICE, ER_BONUS, an OR's PORT | GLOBAL | 44, 45 |
+| BID | PLAYER | 36 |
+
+BUY_TRAIN and DIVIDEND now read the purchase's outcome on TRAIN 10 before
+SELECT_TRAIN, which the driver usually plays by itself.

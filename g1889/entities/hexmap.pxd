@@ -24,6 +24,8 @@ cdef void invalidate_connectivity(GameState state) noexcept nogil
 
 # The corps whose connectivity or routes may depend on the hex, as a corp mask.
 cdef int map_touch_mask(GameState state, int hex) noexcept nogil
+# For each corp, an upper bound on the revenue centers GRAPH reaches, from the same search.
+cdef void map_center_bounds(GameState state, int* counts) noexcept nogil
 
 # MAP.lay's and MAP.place_token's writes, without their checks, for nogil
 # callers that apply legal changes (extraction's hypotheticals). ``touch`` is

@@ -71,6 +71,11 @@ from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, ROUTE_HEX_WORDS, GameStat
 
 
 cdef enum:
+    ANY_ROUTE = 0                   # _Search.only
+    VIA_ROUTE = 1
+    OFF_ROUTE = 2
+
+cdef enum:
     EDGE_WORDS = 5                  # half-edges hex * 6 + side: 312 bits
     NO_NODE = -1
     SORTED_SIBLINGS = 64            # siblings a walk orders by their best revenue; more go in pre-order
@@ -80,6 +85,7 @@ cdef struct _Segment:
     uint64_t edges[5]               # EDGE_WORDS
     int a, b                        # its centers, a < b
     int first_hex, num_hexes        # its hexes from a's to b's, in _Solver.hexes
+    bint via                        # crosses or ends on _Solver.via
 
 
 cdef struct _Node:                  # a route, and the root of the routes that extend it
@@ -90,6 +96,8 @@ cdef struct _Node:                  # a route, and the root of the routes that e
     int8_t left                     # whether it extends the left ray
     int8_t anchor
     int8_t stops
+    int8_t via                      # the route passes _Solver.via
+    int8_t own                      # bit k: train k may take this route itself
     int16_t revenue[2]              # to other trains, to D trains
     int16_t best[4]                 # MAX_ROUTES: the most train k earns on a route in the subtree, or -1
 
@@ -99,6 +107,7 @@ cdef struct _Solver:
     uint32_t blocks                 # centers a route may end at but not pass
     int value[2][25]                # NUM_RCS: each center's pay to other trains and to D trains
     int max_stops                   # the longest train's distance, at most NUM_RCS
+    int via                         # the hex a restricted search asks routes to pass, or -1
     _Segment* segments
     int num_segments, segment_cap
     int8_t* hexes
@@ -123,6 +132,7 @@ cdef struct _Search:
     int distance[4]
     bint repeats[5]                 # train k has train k - 1's type (False past the last)
     int next_type[4]                # the first train after k of another type
+    int only[4]                     # the routes train k may take: any, those that pass _Solver.via, or the rest
     int bound[5]                    # the sum of the best single routes of trains k on
 
 
@@ -163,12 +173,16 @@ cdef inline void _union(uint64_t* out, const uint64_t* a, const uint64_t* b) noe
 cdef void _add_segment(_Solver* s, int a, int b, const uint64_t* used, const int8_t* trail,
                        int length) noexcept nogil:
     cdef _Segment* segment
+    cdef int i
     s.segments = <_Segment*>_reserve(s.segments, &s.segment_cap, s.num_segments + 1, sizeof(_Segment))
     s.hexes = <int8_t*>_reserve(s.hexes, &s.hex_cap, s.num_hexes + length, sizeof(int8_t))
     segment = &s.segments[s.num_segments]
     memcpy(segment.edges, used, sizeof(segment.edges))
     segment.a = a
     segment.b = b
+    segment.via = False
+    for i in range(length):
+        segment.via = segment.via or trail[i] == s.via
     segment.first_hex = s.num_hexes
     segment.num_hexes = length
     memcpy(&s.hexes[s.num_hexes], trail, length)
@@ -298,6 +312,7 @@ cdef int _add_node(_Solver* s, int parent, int segment, int end, bint left) noex
     node.left = left
     node.anchor = <int8_t>s.anchor
     node.stops = <int8_t>s.stops
+    node.via = s.segments[segment].via or (parent != NO_NODE and s.nodes[parent].via)
     node.revenue[0] = <int16_t>s.revenue[0]
     node.revenue[1] = <int16_t>s.revenue[1]
     s.num_nodes += 1
@@ -407,8 +422,9 @@ cdef int _walk(_Solver* s, _Search* q, int k, const uint64_t* used, int after, i
 
 cdef int _visit(_Solver* s, _Search* q, int k, const uint64_t* used, int after, int root, int i,
                 const uint64_t* parent_edges, const _Later* later, int best, int* picks) noexcept nogil:
-    """Give train ``k`` route ``i``, unless it shares track with ``used`` or
-    is numbered ``after`` or below, and search its subtree. What the later
+    """Give train ``k`` route ``i``, unless it shares track with ``used``,
+    is numbered ``after`` or below, or is not one train k may take, and
+    search its subtree. What the later
     trains earn after its parent bounds what they earn after it, and is
     exact when their routes there still fit. A next train of k's type takes
     a route in i's tree or a later one."""
@@ -426,7 +442,7 @@ cdef int _visit(_Solver* s, _Search* q, int k, const uint64_t* used, int after, 
     next_after = root - 1 if q.repeats[k + 1] else NO_NODE
     _union(edges, parent_edges, s.segments[node.segment].edges)
     here = later[0]
-    if i > after:
+    if i > after and node.own >> k & 1:
         if not (later.exact and not _overlaps(s.segments[node.segment].edges, later.edges)
                 and not (0 <= later.picks[k + 1] <= next_after)):
             _union(taken, used, edges)
@@ -483,14 +499,21 @@ cdef int _solve(_Solver* s, _Search* q, int k, const uint64_t* used, int after, 
 
 
 cdef void _set_bests(_Solver* s, _Search* q) noexcept nogil:
-    """Each node's best revenue to each train over its subtree, within the
-    train's distance, and the trains' best single routes."""
+    """Each node's best revenue to each train over its subtree, among the
+    routes the train may take (those within its distance, and on or off
+    ``_Solver.via`` as ``_Search.only`` asks), and the trains' best single
+    routes."""
     cdef int i, k, parent
     cdef _Node* node
     for i in range(s.num_nodes):
         node = &s.nodes[i]
+        node.own = 0
         for k in range(q.num_trains):
-            node.best[k] = node.revenue[q.kind[k]] if node.stops <= q.distance[k] else -1
+            if node.stops <= q.distance[k] and (q.only[k] == ANY_ROUTE or (q.only[k] == VIA_ROUTE) == node.via):
+                node.own |= <int8_t>(1 << k)
+                node.best[k] = node.revenue[q.kind[k]]
+            else:
+                node.best[k] = -1
     for i in range(s.num_nodes - 1, -1, -1):
         parent = s.nodes[i].parent
         for k in range(q.num_trains):
@@ -543,36 +566,41 @@ cdef int _write_hexes(_Solver* s, int node, int8_t* hexes) noexcept nogil:
     return count
 
 
-cdef int solve_routes(GameState state, int corp, RouteSet* out) noexcept nogil:
-    """The corp's maximum revenue over its trains this turn; with ``out``, the
-    routes that earn it, one per train with a route, longest train first."""
-    cdef _Solver s
-    cdef _Search q
-    cdef int train[4]               # MAX_ROUTES
-    cdef int picks[4]
-    cdef uint64_t empty[5]
-    cdef int phase = game_phase(state)
-    cdef int t, n, v, hex, k, best
-    memset(&s, 0, sizeof(s))
-    memset(&q, 0, sizeof(q))
-    memset(empty, 0, sizeof(empty))
-    if out != NULL:
-        out.revenue = 0
-        out.num_routes = 0
+cdef void _list_trains(const int* counts, _Search* q, int* train) noexcept nogil:
+    """The search's trains for ``counts`` of each type, longest first, their
+    types in ``train``."""
+    cdef int t, n, k
+    memset(q, 0, sizeof(_Search))
     for t in range(<int>NUM_TRAIN_TYPES - 1, -1, -1):
-        for n in range(corp_train_count(state, corp, t)):
+        for n in range(counts[t]):
             if q.num_trains == <int>MAX_ROUTES:
-                fprintf(stderr, b"solve_routes: corp %d has more than MAX_ROUTES %d trains\n", corp, <int>MAX_ROUTES)
+                fprintf(stderr, b"solve_routes: more than MAX_ROUTES %d trains\n", <int>MAX_ROUTES)
                 abort()
             k = q.num_trains
             train[k] = t
             q.kind[k] = t == <int>D_TRAIN
             q.distance[k] = min(<int>TRAIN_DISTANCE[t], <int>NUM_RCS)
             q.repeats[k] = k > 0 and train[k - 1] == t
-            s.max_stops = max(s.max_stops, q.distance[k])
             q.num_trains += 1
     for k in range(q.num_trains - 1, -1, -1):
         q.next_type[k] = q.next_type[k + 1] if k + 1 < q.num_trains and q.repeats[k + 1] else k + 1
+
+
+cdef inline int _longest(const _Search* q) noexcept nogil:
+    """The longest train's distance: the trains come longest first."""
+    return q.distance[0] if q.num_trains else 0
+
+
+cdef bint _build(GameState state, int corp, int max_stops, int via, _Solver* s) noexcept nogil:
+    """Load the corp's centers and, if it has a token and a train that can
+    run, the map's segments and its routes of up to ``max_stops`` stops, each
+    marked if it passes hex ``via`` (-1 for none). Returns whether there is
+    anything to search; if so, ``_release`` after."""
+    cdef int phase = game_phase(state)
+    cdef int v, hex, k
+    memset(s, 0, sizeof(_Solver))
+    s.max_stops = max_stops
+    s.via = via
     for v in range(<int>NUM_RCS):
         hex = RC_HEX[v]
         if hex_tokens(state, hex) >> corp & 1:
@@ -581,15 +609,85 @@ cdef int solve_routes(GameState state, int corp, RouteSet* out) noexcept nogil:
             s.blocks |= (<uint32_t>1) << v
         for k in range(2):
             s.value[k][v] = map_revenue(state, hex, phase, k)
-    if q.num_trains == 0 or s.tokens == 0 or s.max_stops < 2:
-        return 0
+    if s.tokens == 0 or max_stops < 2:
+        return False
+    _find_segments(state, s)
+    _find_routes(s)
+    return True
 
-    _find_segments(state, &s)
-    _find_routes(&s)
-    _set_bests(&s, &q)
-    for k in range(q.num_trains):
+
+cdef void _release(_Solver* s) noexcept nogil:
+    free(s.segments)
+    free(s.hexes)
+    free(s.adjacency)
+    free(s.nodes)
+
+
+cdef int _search(_Solver* s, _Search* q, int floor, int* picks) noexcept nogil:
+    """The most ``q``'s trains earn on ``s``'s routes when that is above
+    ``floor``, a revenue they are known to reach, else ``floor``; their
+    routes in ``picks`` (-1 for none, and for all at ``floor``). A forest
+    built for longer trains serves: each train takes routes within its own
+    distance."""
+    cdef uint64_t empty[5]
+    cdef int k
+    memset(empty, 0, sizeof(empty))
+    for k in range(<int>MAX_ROUTES):
         picks[k] = -1
-    best = _solve(&s, &q, 0, empty, NO_NODE, 0, picks)
+    if q.num_trains == 0:
+        return max(floor, 0)
+    _set_bests(s, q)
+    return _solve(s, q, 0, empty, NO_NODE, floor, picks)
+
+
+cdef int _search_via(_Solver* s, const _Search* q, int floor, int* picks) noexcept nogil:
+    """The most ``q``'s trains earn with a route through ``s.via`` when that
+    is above ``floor``, else ``floor``. One search for each train that may be
+    the first to pass the hex: the trains before it keep off it, and those
+    after it run anywhere. Trains of one type no longer stand for each other,
+    but a train of the type of the one before it need not be first: the two
+    would swap routes."""
+    cdef _Search f
+    cdef uint64_t empty[5]
+    cdef int best = max(floor, 0)
+    cdef int j, k
+    memset(empty, 0, sizeof(empty))
+    for j in range(q.num_trains):
+        if q.repeats[j]:
+            continue
+        f = q[0]
+        memset(f.bound, 0, sizeof(f.bound))
+        for k in range(q.num_trains):
+            f.only[k] = OFF_ROUTE if k < j else (VIA_ROUTE if k == j else ANY_ROUTE)
+            f.repeats[k] = False
+            f.next_type[k] = k + 1
+        _set_bests(s, &f)
+        best = _solve(s, &f, 0, empty, NO_NODE, best, picks)
+    return best
+
+
+cdef inline void _held(GameState state, int corp, int* counts) noexcept nogil:
+    cdef int t
+    for t in range(<int>NUM_TRAIN_TYPES):
+        counts[t] = corp_train_count(state, corp, t)
+
+
+cdef int _solve_routes(GameState state, int corp, RouteSet* out, int floor) noexcept nogil:
+    """``solve_routes``, given a revenue the corp is known to reach (0 for none)."""
+    cdef _Solver s
+    cdef _Search q
+    cdef int counts[6]              # NUM_TRAIN_TYPES
+    cdef int train[4]               # MAX_ROUTES
+    cdef int picks[4]
+    cdef int k, best
+    if out != NULL:
+        out.revenue = 0
+        out.num_routes = 0
+    _held(state, corp, counts)
+    _list_trains(counts, &q, train)
+    if q.num_trains == 0 or not _build(state, corp, _longest(&q), -1, &s):
+        return 0
+    best = _search(&s, &q, floor, picks)
     if out != NULL and best > 0:
         out.revenue = best
         for k in range(q.num_trains):
@@ -599,11 +697,48 @@ cdef int solve_routes(GameState state, int corp, RouteSet* out) noexcept nogil:
             out.route_revenue[out.num_routes] = s.nodes[picks[k]].revenue[q.kind[k]]
             out.num_hexes[out.num_routes] = _write_hexes(&s, picks[k], out.hexes[out.num_routes])
             out.num_routes += 1
+    _release(&s)
+    return best
 
-    free(s.segments)
-    free(s.hexes)
-    free(s.adjacency)
-    free(s.nodes)
+
+cdef int solve_routes(GameState state, int corp, RouteSet* out) noexcept nogil:
+    """The corp's maximum revenue over its trains this turn; with ``out``, the
+    routes that earn it, one per train with a route, longest train first."""
+    return _solve_routes(state, corp, out, 0)
+
+
+cdef int solve_routes_via(GameState state, int corp, int hex, int floor, int extra_type, int extra_floor,
+                          int* with_extra) noexcept nogil:
+    """The corp's maximum revenue, given that it was ``floor`` before a
+    change at ``hex`` that left every route it had and added only routes
+    through the hex: a lay there (``MAP.lay``'s upgrades keep a tile's
+    track, city slots, and revenue), or the corp's own token. Then the
+    answer is ``floor`` or what a set of routes with one through the hex
+    earns, which is all the search looks at. With ``extra_type`` >= 0, also
+    the same in ``with_extra`` with one more train of that type, from
+    ``extra_floor``, on the same route forest."""
+    cdef _Solver s
+    cdef _Search q
+    cdef int counts[6]              # NUM_TRAIN_TYPES
+    cdef int train[4]               # MAX_ROUTES
+    cdef int picks[4]
+    cdef int best = floor
+    cdef int longest
+    _held(state, corp, counts)
+    _list_trains(counts, &q, train)
+    longest = _longest(&q)
+    if extra_type >= 0:
+        with_extra[0] = extra_floor
+        longest = max(longest, min(<int>TRAIN_DISTANCE[extra_type], <int>NUM_RCS))
+    if not _build(state, corp, longest, hex, &s):
+        return floor
+    if q.num_trains:
+        best = _search_via(&s, &q, floor, picks)
+    if extra_type >= 0:
+        counts[extra_type] += 1
+        _list_trains(counts, &q, train)
+        with_extra[0] = _search_via(&s, &q, extra_floor, picks)
+    _release(&s)
     return best
 
 
@@ -649,14 +784,16 @@ cdef int route_max_after_purchase(GameState state, GameState scratch, int corp, 
     """See solver.pxd. The purchase is the engine's: the traded train goes to
     the pool first (``TRAINS.trade_in_for_d``), where a 4 rusts as phase D
     begins, then ``phase_on_train_bought``. The caller keeps the corp within
-    ``MAX_ROUTES`` trains."""
+    ``MAX_ROUTES`` trains. One more train in the same phase earns no less
+    than the corp's route max now, which is then the search's floor."""
+    cdef bint started
     copy_row(scratch, state)
     if trade_in >= 0:
         trains_set_count(scratch, corp, trade_in, corp_train_count(scratch, corp, trade_in) - 1)
         trains_set_pool(scratch, trade_in, pool_count(scratch, trade_in) + 1)
     trains_set_count(scratch, corp, train_type, corp_train_count(scratch, corp, train_type) + 1)
-    phase_on_train_bought(scratch, train_type)
-    return solve_routes(scratch, corp, NULL)
+    started = phase_on_train_bought(scratch, train_type)
+    return _solve_routes(scratch, corp, NULL, 0 if started or trade_in >= 0 else route_max(state, corp))
 
 
 cdef void routes_refresh_hypotheticals(GameState state, GameState scratch, int corp) noexcept nogil:

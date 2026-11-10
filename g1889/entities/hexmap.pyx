@@ -6,7 +6,7 @@ from libc.string cimport memset
 from g1889.constants cimport OWNER_CORP
 from g1889.data.tables cimport (
     HEX_EXIT_MASK, HEX_HOME_CORP, HEX_NEIGHBOR, HEX_RC, MAX_TILE_PATHS, NODE, NUM_CORPS, NUM_HEXES, NUM_SIDES,
-    NUM_SUPPLY_TILES, PAIR_A, PAIR_B, PRIVATE_SMR, RC_CITY, RC_D_REVENUE, RC_OFFBOARD, RC_REVENUE, SMR_DISCOUNT,
+    NUM_SUPPLY_TILES, NUM_TILES, PAIR_A, PAIR_B, PRIVATE_SMR, RC_CITY, RC_D_REVENUE, RC_OFFBOARD, RC_REVENUE, SMR_DISCOUNT,
     TERRAIN_MOUNTAIN, TILE_CANON_ROT, TILE_COST, TILE_MASK, TILE_PATH_COUNT, TILE_PATHS, TILE_RC, TILE_REVENUE,
     TILE_SLOTS, TILE_TERRAIN, UPG_ROT, UPG_START, UPG_TILE,
 )
@@ -112,17 +112,16 @@ cdef inline int _blocked_corps(GameState state, int hex, int tile) noexcept nogi
     return everyone & ~tokens if TILE_RC[tile] == <int>RC_CITY and _count(tokens) >= TILE_SLOTS[tile] else 0
 
 
-cdef int map_touch_mask(GameState state, int hex) noexcept nogil:
-    """The corps whose connectivity or routes may depend on ``hex`` (above)."""
-    cdef uint8_t taken[52][6]       # [NUM_HEXES][MAX_TILE_PATHS]: the corps that take each path
-    cdef uint8_t touched[52]
-    cdef uint8_t queued[52][6]
+cdef void _search_track(GameState state, uint8_t[6]* taken, uint8_t* touched) noexcept nogil:
+    """The search above, for every corp at once: the corps that take each
+    path, ``taken[hex][path slot]``, and that touch each hex."""
+    cdef uint8_t queued[52][6]      # [NUM_HEXES][MAX_TILE_PATHS]
     cdef int16_t queue[312]         # paths to follow, a ring: each is in it once at most
     cdef int head = 0, count = 0
     cdef int h, k, k2, tile, rotation, pair, end, side, across, facing, tile_across, rotation_across, pair_across
     cdef int corps, onward, entry
-    memset(taken, 0, sizeof(taken))
-    memset(touched, 0, sizeof(touched))
+    memset(taken, 0, 52 * 6)
+    memset(touched, 0, 52)
     memset(queued, 0, sizeof(queued))
     for h in range(<int>NUM_HEXES):
         corps = hex_tokens(state, h)
@@ -169,7 +168,38 @@ cdef int map_touch_mask(GameState state, int hex) noexcept nogil:
                         queued[across][k2] = 1
                         queue[(head + count) % 312] = <int16_t>(across * <int>MAX_TILE_PATHS + k2)
                         count += 1
+
+
+cdef int map_touch_mask(GameState state, int hex) noexcept nogil:
+    """The corps whose connectivity or routes may depend on ``hex`` (above)."""
+    cdef uint8_t taken[52][6]       # [NUM_HEXES][MAX_TILE_PATHS]
+    cdef uint8_t touched[52]
+    _search_track(state, taken, touched)
     return touched[hex]
+
+
+cdef void map_center_bounds(GameState state, int* counts) noexcept nogil:
+    """For each corp, into ``counts`` (NUM_CORPS), how many revenue centers
+    the search above reaches for it: its token cities and the centers at a
+    path it takes. GRAPH reaches no center the search does not (every path
+    GRAPH records, the search takes), so this bounds GRAPH's count from
+    above, at a fraction of a walk's cost: a corp whose bound is no higher
+    after a lay than GRAPH's count before it has gained no center."""
+    cdef uint8_t taken[52][6]       # [NUM_HEXES][MAX_TILE_PATHS]
+    cdef uint8_t touched[52]
+    cdef int h, k, c, tile, rotation, corps
+    _search_track(state, taken, touched)
+    for c in range(<int>NUM_CORPS):
+        counts[c] = 0
+    for h in range(<int>NUM_HEXES):
+        corps = hex_tokens(state, h)
+        tile = hex_tile(state, h)
+        rotation = hex_rotation(state, h)
+        for k in range(TILE_PATH_COUNT[tile]):
+            if PAIR_B[TILE_PATHS[tile][rotation][k]] == <int>NODE:
+                corps |= taken[h][k]
+        for c in range(<int>NUM_CORPS):
+            counts[c] += corps >> c & 1
 
 
 cdef void map_put_tile(GameState state, int hex, int tile, int rotation, int touch) noexcept nogil:
@@ -392,6 +422,13 @@ cdef class HexMap:
             BANK.transfer(state, <int>OWNER_CORP + corp, <int>BANK_ACCOUNT, price)
 
 
+# A lay never takes anything from a route: every upgrade keeps its tile's
+# paths, city slots, and revenue (``solve_routes_via`` relies on it).
+assert all(not (TILE_MASK[k // <int>NUM_SIDES][k % <int>NUM_SIDES] & ~TILE_MASK[UPG_TILE[i]][UPG_ROT[i]])
+           and TILE_SLOTS[UPG_TILE[i]] >= TILE_SLOTS[k // <int>NUM_SIDES]
+           and TILE_REVENUE[UPG_TILE[i]] >= TILE_REVENUE[k // <int>NUM_SIDES]
+           and TILE_RC[UPG_TILE[i]] == TILE_RC[k // <int>NUM_SIDES]
+           for k in range(<int>NUM_TILES * <int>NUM_SIDES) for i in range(UPG_START[k], UPG_START[k + 1]))
 # map_touch_mask's arrays are sized with literals, and its corp masks are 8 bits.
 assert <int>NUM_HEXES == 52 and <int>MAX_TILE_PATHS == 6 and <int>NUM_CORPS <= 8
 

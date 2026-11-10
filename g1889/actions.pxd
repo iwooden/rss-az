@@ -93,6 +93,10 @@ cdef bint must_buy_train(GameState state, int corp) noexcept nogil
 # Emergency money (§6.2): a must-buy the treasury cannot fund.
 cdef bint in_emergency(GameState state, int corp) noexcept nogil
 cdef bint can_go_bankrupt(GameState state, int corp) noexcept nogil
+# What the president must still raise, and the largest block of ``seller``
+# they may sell toward ``need``, EMERGENCY_SELL_AMOUNT's ids.
+cdef int emergency_need(GameState state, int corp) noexcept nogil
+cdef int emergency_sale_limit(GameState state, int corp, int seller, int need) noexcept nogil
 
 # Privates (§5.1, §5.3): purchases by the operating corp, DR's exchange, MF's
 # port tile (PORT's ids), and ER's lays on C4 sorted like TILE's; whether a

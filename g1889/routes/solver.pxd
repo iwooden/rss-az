@@ -23,6 +23,12 @@ scratch copy of the row:
 
 Only extraction reads them. They go stale with the route cache, and when the
 cheapest train on sale changes type (``trains_set_depot``, ``trains_set_pool``).
+
+``solve_routes_via`` is for a change that only adds routes, all through one
+hex: a lay, or the corp's own token. From the route max before the change it
+searches only sets of routes with one through the hex, on one forest for the
+corp's trains and, if asked, for one more train too. Extraction's candidate
+and token rows use it.
 """
 
 from libc.stdint cimport int8_t
@@ -43,6 +49,9 @@ cdef struct RouteSet:
                                     # each; a crossing tile's hex can appear twice
 
 cdef int solve_routes(GameState state, int corp, RouteSet* out) noexcept nogil
+# After a lay or the corp's own token at ``hex``, from the route max before it.
+cdef int solve_routes_via(GameState state, int corp, int hex, int floor, int extra_type, int extra_floor,
+                          int* with_extra) noexcept nogil
 cdef int route_max(GameState state, int corp) noexcept nogil
 cdef bint route_hex(GameState state, int corp, int hex) noexcept nogil
 

@@ -753,5 +753,5 @@ def test_g1889_extraction_sizes(g1889_case: Case):
     relations, and 2,048 records, above §6.3's worst case of 1,844."""
     game = g1889_case.game
     assert [game.num_tokens(max_players) for max_players in (3, 4, 5)] == [93, 94, 95]
-    assert game.token_dim(1) == 108
+    assert (game.token_dim(1), game.token_dim(2)) == (108, 109)  # v1-design §5: layout 2
     assert (game.num_relations, game.max_relation_edges) == (25, 2048)
