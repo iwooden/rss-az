@@ -31,4 +31,4 @@ runtime/*
 !runtime/*.template.json
 
 # Ignore local gamelogs/profiles/etc.
-*.json
+/*.json
