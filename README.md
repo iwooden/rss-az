@@ -38,8 +38,9 @@ for development guidance.
   run, and `1889-v0-smoke.json` its local smoke test (run with `--no-compile`).
   `1889-v1.json` and `1889-v1-smoke.json` are the second run's, on
   `nn/transformer-1889-v1.py` ([`1889/v1-design.md`](1889/v1-design.md)).
-  [`1889/model-design.md`](1889/model-design.md) Section 11 is the run's runbook,
-  with `cloud/profile_1889.py`, `cloud/rescale_1889.py`, and `train/capacity_probe.py`.
+  [`1889/model-design.md`](1889/model-design.md) Section 11 is the runs' runbook:
+  11.1 for v1's launch, with `cloud/setup.sh` and `cloud/profile_1889.py`, and 11.2
+  for v0's run, with `cloud/rescale_1889.py` and `train/capacity_probe.py`.
 - `utils_18xx/` - 18xx.games replay parsing, replay analysis, API client, and
   live-play server.
 - `tests/` - phase tests, engine invariants, model contract tests, MCTS tests,
@@ -213,6 +214,13 @@ Resume the newest checkpoint from the configured checkpoint directory:
 
 ```bash
 .venv/bin/python -m train --config train_configs/bigger-multi.json --resume latest
+```
+
+A 1889 run launches the same way, on the cloud box by the runbook above
+(`train_configs/1889-v1.json`), or here as a smoke test on the local GPU:
+
+```bash
+.venv/bin/python -m train --config train_configs/1889-v1-smoke.json --no-compile
 ```
 
 Watch training metrics:

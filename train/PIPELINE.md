@@ -134,8 +134,8 @@ Notes below name RSS's implementations where they matter
   0.75. Rank spaces +1..-1 evenly with averaged ties. Margin is
   `n/(n-1) * (nw - mean) / max_nw`. In-tree terminal nodes use the same reward.
   Evaluators default to 0.5, so pass `config.terminal_blend`.
-- **Optional soft rank.** With `terminal_rank_tau` > 0 (default 0; no active
-  config sets it), the rank term is each player's mean over opponents of
+- **Optional soft rank.** With `terminal_rank_tau` > 0 (default 0; 1889-v1's
+  config sets 0.05), the rank term is each player's mean over opponents of
   `tanh((nw - opponent_nw) / (tau * mean_nw))`. It equals the hard rank once
   every gap is several `tau` wide and keeps its tie values, but a near-tie no
   longer swings the target by a whole place. It is for games whose final net
@@ -254,7 +254,7 @@ Notes below name RSS's implementations where they matter
   caller flattens the padded wire records on the CPU
   (`flatten_relation_records`). N is a dynamic dimension in both batch-shape
   modes. A dynamic launch ships its real records; a bucketed one rounds them up
-  with value-0 rows to B × K, K a power of two from 256 to 2,048, the small
+  with value-0 rows to B × K, K a power of two from 256 to 4,096, the small
   set of shapes CUDA graphs need. 1889's model also accepts dense planes, for
   tests. Keep each model's formats in parity.
 - **Precision and weights.** Eval servers keep autocast (`eval_dtype`) open
@@ -285,7 +285,9 @@ Notes below name RSS's implementations where they matter
 
 ## Operations (`train/main.py`)
 
-- **Shutdown.** `q` + Enter (TTY only) drains in-flight games into replay.
+- **Shutdown.** `q` + Enter (TTY only) drains in-flight games into replay,
+  waiting up to 120 s for them (`_drain_workers`); a game still in play then
+  is dropped.
   If the epoch quota and `min_buffer_size` are met, it trains first. It then
   saves a checkpoint and replay. Ctrl-C exits without saving; workers ignore
   SIGINT.
@@ -305,6 +307,8 @@ Notes below name RSS's implementations where they matter
   resume moves the rate to that epoch's. The checkpoint stores the game
   lengths `temp_anneal_*_pcts` read, as of its epoch, so a resumed epoch, or
   one replayed after a shutdown, plays in the windows it would have. A
+  replayed epoch's own lengths, which set the next epoch's windows, and its
+  `self_play_*` scalars cover the games played after the resume alone. A
   checkpoint saved without them plays its next epoch at `temp_initial`. An
   epoch's start positions follow from `seed`, the epoch, and the file, not
   from the restored RNG state, so a resumed epoch draws the starts it would

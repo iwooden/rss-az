@@ -8,7 +8,8 @@ and 8.6 is built too: the profile, the rescale helper, the capacity probe, and t
 runbook (Section 11). The 8.5 profile ran on the 5090 on 2026-11-05 (Sections 5.3,
 5.7, and 6.5). What remains is the run and the probe, whose results these sections
 record. Section 12 describes v1, `nn/transformer-1889-v1.py`, by its differences
-from v0 (2026-11-10). Step 8 builds the first 1889 model,
+from v0 (2026-11-10), and 12.7 what was checked before its launch, whose sequence
+is Section 11.1. Step 8 builds the first 1889 model,
 `nn/transformer-1889.py` v0, on step 7's inputs ([`token-data-1889.md`](../token-data-1889.md), rationale
 in [`extraction-design.md`](extraction-design.md)), adds what the pipeline
 needs to train it, and runs it once.
@@ -1248,11 +1249,181 @@ The user settled these on 2026-11-04. Each item gives the options and the decisi
 
 ## 11. Runbook
 
-The first run on the cloud RTX 5090, in order. The box is reached only by the user,
-so each step that needs it writes a file to send back. Commands run from the repo
-root, in the venv, with the box's tmux keeping the run's TTY for `q`.
+The runs on the cloud RTX 5090, in order. The box is reached only by the user, so
+each step that needs it writes a file to send back. Commands run from the repo
+root, with the box's tmux keeping the run's TTY for `q`. 11.1 is the sequence for
+the next launch, v1's. 11.2 is v0's run as it went, kept as its record and for its
+notes on the box and the build.
+
+### 11.1 v1's launch
 
 **1. Code.** The user pushes `az-1889` from the dev box.
+
+**2. Setup and build.** On the pod v0 and Tier C ran on, a Runpod container on
+`runpod/pytorch:1.5.0-cu1320-torch2130-ubuntu2404`, with the checkout on its volume
+and the image's Python (11.2):
+
+```bash
+cd /workspace/rss-az
+git status --short              # nothing tracked may be modified; scratchpad/ is ignored
+git fetch origin az-1889 && git checkout az-1889 && git pull --ff-only origin az-1889
+python -c "import torch, Cython, numpy, rich, tensorboard; print(torch.__version__, Cython.__version__)"
+python setup.py clean_build 2>&1 | grep -E "(warning|error)" || true
+pytest tests/g1889 tests/test_pipeline_boundary.py -q
+df -h /dev/shm /workspace       # the workers' shared buffers take 37 MB (v0's 29); the buffer saves 7.4 GB
+free -g                         # and holds as much in memory at its cap (v0's: 2.9 GB)
+```
+
+- **The import line** printed `2.13.0+cu132 3.3.1` for v0. A container made anew from
+  the image has lost the packages `pip` added; put them back first, with
+  `install.sh`'s list and the image's torch:
+  `pip install setuptools 'numpy>=2.0' 'Cython>=3.0' 'tensorboard>=2.0' 'rich>=13.0' 'matplotlib>=3.0' 'tqdm>=4.0' 'scikit-learn>=1.0' 'pytest>=8.0' && pip install --no-deps 'captum>=0.7'`.
+- **The build** is the default one, with the engine's assertions, as v0's was. It can
+  look hung for minutes (11.2). `setup.py --release` is not for this box: the tests
+  that feed the engine invalid input crash a release build (a segmentation fault at
+  `tests/g1889/phases/test_trains.py`, on the dev box), and it buys nothing a run can
+  see: a leaf's extraction is 5-9% faster, of the 1-2% of a core a worker spends on it.
+- **The tests** take 10 minutes on the dev box's 32 threads (1,372 of them); the replay
+  tests skip without the scraped games.
+- **A machine with nothing on it** takes the script instead, which makes a venv with
+  `install.sh`'s torch 2.14, builds, and runs every test:
+  `GH_TOKEN="ghp_..." REPO_DIR=/workspace/rss-az bash cloud/setup.sh`, then
+  `cd /workspace/rss-az && source .venv/bin/activate` in every shell. Whichever torch
+  it is, step 3 profiles it.
+- **Nothing else to copy.** The start positions are in the repo
+  (`g1889/data/human_starts.npz`, 1.5 MB), and the run reads no other file. v0's
+  checkpoints stay where they are: step 7 plays against `checkpoints/1889-v0`.
+
+**3. Profile.** With nothing else on the GPU, in the tmux session the run will keep:
+
+```bash
+tmux new -s 1889-v1
+python cloud/profile_1889.py
+```
+
+It profiles `train_configs/1889-v1.json`, takes about 20 minutes, and writes
+`1889-v1-cloud-profile.json` as it goes. Send that file back; 12.7 records it.
+
+- **Stops the launch until understood:** a `FAIL` on graph breaks, compiled graphs,
+  recompiles, each (B, K) recording one graph, compiled against eager, filler across
+  K, the weight sync, or memory growth; or `v1/v0 model time` over 1.
+- **Results to record, not blockers:** v1 against v0 away from 0.80-0.85 but under 1;
+  `v0/v3` against the 1.43 and 1.71 of 2026-11-05, which says whether the box is the
+  same; the two `launch sizes between the buckets` lines and `what the sizes between
+  cost`, which are for step 5's padding; a leaf's extraction; and steps a second.
+- **v0 again,** if a number needs its twin: `--config train_configs/1889-v0.json`,
+  which writes `1889-v0-cloud-profile.json`.
+
+**4. Launch.**
+
+```bash
+ls checkpoints/1889-v1 runs/1889-v1     # neither exists: an old run's files would be overwritten or merged
+TORCH_LOGS=recompiles python -m train --config train_configs/1889-v1.json
+```
+
+The server compiles before the first game, for 4 minutes with v0. The banner shows
+`nn/transformer-1889-v1.py`, 18,497,528 parameters, `replay ratio 1.1 (draws per row
+over its 3 epochs in the window)`, `anneal 30%–60% of the last epoch's game length`,
+and the started games; before it, `Start positions: g1889/data/human_starts.npz,
+45,355 rows (3p 24,261, 4p 17,764, 5p 3,330)`.
+
+**5. The first epochs.** `tensorboard --logdir runs/1889-v1`.
+
+- **Compile and memory.** One `Recompiling function forward` in the warmup, batch 1 to
+  batch 2, and none after. `nvidia-smi`: memory stops growing once the shapes in use
+  are recorded.
+- **Throughput.** `profile/server_throughput` against v0's 25.2K evaluations a second;
+  the profile's v1/v0 ratio says what to expect. `epoch/duration_secs` against v0's
+  1.02-1.15 hours.
+- **Padding.** `eval_server/padding_share`: the share of launched rows that are
+  padding, with `eval_server/launches_at_<B>` and `real_rows_mean_at_<B>` behind it.
+  Local runs padded 9-17% with 8 workers (12.7) and 28% with 6 (v1-design Section 4).
+  If the cloud's is near the 28%, finer launch sizes are the fix, and the profile's
+  `launch_sizes` table prices them; `eval_server/forward_share`
+  and `idle_share` say whether the server is the limit at all.
+- **Epoch 1 differs by design.** It plays at `temp_initial` throughout, with no
+  `schedule/temp_anneal_*` tag: there is no game length yet. From epoch 2 the tags are
+  30% and 60% of the last epoch's `self_play_<n>p/game_length_mean`. Training runs
+  about 430 steps in epoch 1, 860 in epoch 2, and 1,290 from epoch 3
+  (`epoch/training_steps`: 1.1 x the epoch's rows x `buffer/window_epochs` / 3 / 256),
+  and the rate warms up over epoch 1's steps.
+- **Starts.** `self_play_started/games` is 126 of the 500, 42 at each player count,
+  and `self_play_aggregate` and `self_play_<n>p` cover the other 374.
+- **The value head.** `heldout/value_mse` beside `epoch/value_loss_avg`, their ratio
+  `heldout/value_mse_over_training`, and `heldout/value_mse_q1` to `_q4`. v0's training
+  loss read 0.020 where fresh games scored 0.206. **The rule** (v1-design Section 11):
+  if the held-out value loss is still several times the training value loss after
+  epoch 20, set `"buffer_epochs": 6` in `train_configs/1889-v1.json` at the next
+  resume (step 6). The 2.5M-row cap already holds those epochs' rows.
+- **What should move within 20 epochs,** if the design works (v1-design Section 9;
+  v0's stall was set by epoch 10), under `self_play_aggregate/`, with the humans' figure
+  and checkpoint 58's (6.6; v1-review Section 2):
+
+  | Tag | Humans | v0 at epoch 58 |
+  |---|---|---|
+  | `par_65_share` | 27% | 83% |
+  | `corp_cash_max_5s` | ¥639 | ¥358 |
+  | `withhold_share_<phase>`, 2 to D | 1%, 10%, 17%, 19%, 20%, 4% | 3% over phases 3-5 |
+  | `trains_bought_5`, `_6`, `_D` | 3, 1.84, 2.31 | 1.41, 0, 0 |
+  | `par_price`, `corp_cash_float` | ¥81, ¥813 | ¥69, ¥684 |
+  | `par_stranded_share`, `sr2_shares_sold`, `tokens_placed` | 12%, 0.29, 7.4 | 52%, 6.3, 4.0 |
+  | `phase_start_or_<phase>`, 3 to D | 3.4, 5.7, 8.0, 9.9, 11.7 | 4.2, 6.4, 10.3, no 6 or D |
+
+- **The rest,** as v0's: `self_play_<n>p/game_length_mean`, `end_bank`,
+  `track_pass_share`, `corps_floated`, `epoch/grad_norm_avg` and
+  `epoch/grad_clipped_share`, and `loss/*`, which a NaN stops with an error.
+
+**6. Stopping and resuming.** Press `q`, then Enter, in the run's terminal, and wait
+for `Shutdown complete`, which names the checkpoint. Then:
+
+```bash
+TORCH_LOGS=recompiles python -m train --config train_configs/1889-v1.json --resume latest
+```
+
+- **Stop just after an epoch's summary.** A stop mid-epoch waits 120 s for the games
+  in play, drops the rest, and saves the finished ones in the buffer. The resume then
+  plays that epoch's 500 games again beside them, as one epoch, with steps for all its
+  rows. Nothing breaks (12.7), but 128 workers' games, about 15 minutes each, would
+  mostly be dropped.
+- **`Training complete.` after `Shutdown complete`** is printed on every exit.
+  Ctrl-C saves nothing. A checkpoint is otherwise written every 5 epochs, so a crash
+  costs up to 4.
+- **Always with `--config`.** A resume takes the checkpoint's config, then the file
+  over it, then flags, and prints `Config override:` for each field the file changes:
+  none, unless the file was edited, as for `buffer_epochs`.
+- **It continues** the rate, the temperature windows, and the start positions where
+  they were (`train/PIPELINE.md`, Operations).
+- **v0's steps that are gone:** the epoch-20 rescale, which `cloud/rescale_1889.py`
+  refuses for a config with `replay_ratio`: the steps, the buffer, and the windows
+  follow the run. The capacity probe (11.2, step 7) is not part of this launch, and
+  has not been run on a v1 checkpoint.
+
+**7. v1 against v0,** once a checkpoint is worth it (v1-design Section 8):
+
+```bash
+python -m train.tournament \
+  checkpoints/1889-v1/checkpoint_epoch_0100.pt,checkpoints/1889-v0/checkpoint_epoch_0058.pt \
+  --num-players 4 --simulations 1600 --search-batch-size 8 --sample-moves 20 --games-per-pair 60 \
+  --workers 8 --output v1-vs-v0-4p.report
+```
+
+- **The score** is the first checkpoint's against the second's: over 0.5, v1 is
+  ahead. v0 against itself scores 0.50 ± 0.04, and v0 against an untrained v1 1.00
+  (12.7).
+- **It runs in fp32, uncompiled,** each worker loading both models, so it shares the
+  GPU with a run only by slowing it: play between a stop and a resume, or copy the
+  checkpoint to the dev box. `--num-players` 3 and 5 are separate commands.
+
+**Checked before the box** (2026-11-10; 12.7): the profile, whole, on v1 and on v0,
+on the CPU and on ROCm, and on the CPU compiled through the real kwargs and warmup at
+all 45 (B, K) and the 10 between; `train_configs/1889-v1-smoke.json` through
+`python -m train` with a stop mid-epoch and two resumes; v0 against v1 in one game.
+Inductor's CUDA graphs, bf16 under compilation, the 128-worker server, and every time
+above are the 5090's to report.
+
+### 11.2 v0's run
+
+**1. Code.** The user pushed `az-1889` from the dev box.
 
 **2. Setup and build.** A fresh box:
 
@@ -1301,7 +1472,8 @@ image, or profiles again.
 python cloud/profile_1889.py
 ```
 
-It takes under half an hour and writes `1889-cloud-profile.json` as it goes. Send
+It took under half an hour and wrote `1889-cloud-profile.json` as it went (the
+script now takes the run by `--config`, and names its file for it: 11.1). Send
 that file back; Sections 5.3 and 6.5 record it. A `FAIL` on graph breaks, recompiles,
 compiled against eager, or the weight sync stops the launch until it is understood. A
 ratio outside 1.7-2.0 or a different record pattern is a result to record, and
@@ -1561,3 +1733,116 @@ launches take 0.8 ms longer.
   evaluator, eval-server, and warmup tests with v1 as their model; and a run
   through `train.main` with started games, `replay_ratio`, the held-out loss, a
   resume, and `load_model_from_checkpoint`.
+- `tests/g1889/test_tournament.py`: v0 and v1 in one game at 3, 4, and 5 players,
+  each evaluator filling its own layout (108 and 109 slots) under its own
+  `terminal_rank_tau`, with v1's blocks on 80 rows and v0's on 95.
+- `tests/g1889/test_cloud_tools.py`: the profile on v1's config and on v0's, and
+  `graph_timing`'s `fullgraph` compile of each model.
+
+### 12.7 Before the launch
+
+Sub-step 9.9 of v1-design Section 12, on the dev box (2026-11-10; scripts and
+outputs in `scratchpad/v1_99/`). The 5090's profile goes here when it has run.
+
+**The profile.** `cloud/profile_1889.py` takes the run by `--config`, v1's by
+default, and names its output for it (`1889-v1-cloud-profile.json`).
+
+- **`model_time`** times v3, v0, and v1 on the same playout states. v1 over v0 is
+  a check, expected at 0.80-0.85 and failing above 1. v0 over v3 is reported beside
+  the 1.43 and 1.71 of 5.3.
+- **Dropped:** v0 on padded records, as one tensor and as three, and v0 at 8 heads,
+  which were 8 of v0's 12 compiles and 10 of its 25 minutes. 5.3 holds their
+  results. The three-tensor variant sized its bias by the input's 95 rows, which is
+  not v1's trunk.
+- **`launches`, `replay`, `memory`** cover K = 4,096: 45 pairs. The eval server's
+  warmup is the one they call, with the run's largest launch, 256. It runs each B
+  at K = 256 only; any other K costs its shape one launch without a graph and one
+  recording in the serve loop, as 6.5 measured, and that is what `launches` counts.
+- **`launch_sizes`** (new) launches the serving model, all rows real, at every
+  bucket and at 12, 24, 48, 96, and 192, at K = 256 and 512: the forward time a
+  launch padded to the next bucket would save at the size between, and the
+  compiles, recorded graphs, and memory those 10 shapes add. One compiled graph
+  serves them: Dynamo's batch is dynamic from 2 up. The server launches at powers
+  of two; this only measures.
+- **`extraction`** (new) times a search leaf's tokens and records in both layouts,
+  on children of 400 human positions a game phase, as v1-design Section 5.9
+  measured it but through the policy's actions and the start-position file.
+- **`train_steps`** trains at the run's `value_loss_weight` and replay priorities
+  and gives the minutes an epoch's steps take.
+
+**Measured** on the dev box (RX 9070 XT under ROCm, fp32, uncompiled, at 256 × 15;
+a 9950X3D), a check of the script more than of the model:
+
+| | v1's run | v0's run |
+|---|---|---|
+| Model time, batch 16: v3, v0, v1 | 15.5, 18.4, 17.5 ms (v1 / v0 0.95) | 14.8, 18.3 ms |
+| Model time, batch 64 | 36.0, 55.7, 48.5 ms (0.87) | 35.8, 55.3 ms |
+| Forward at B = 8, 16, 32, 64, K = 256 | 12.6, 17.4, 27.7, 48.5 ms | 12.4, 18.0, 30.7, 55.5 ms |
+| Forward at B = 12, 24, 48 | 16.9, 22.3, 38.2 ms | 15.5, 24.4, 43.2 ms |
+| Saved on the next bucket | 3%, 19%, 21% | 14%, 20%, 22% |
+| Training steps a second, batch 64 | 5.6 | 5.0 |
+
+| A leaf's extraction, µs, by the parent's game phase | 2 | 3 | 4 | 5 | 6 | D | All |
+|---|---|---|---|---|---|---|---|
+| Layout 1, mean | 6.0 | 7.8 | 8.5 | 10.8 | 17.6 | 29.5 | 14.2 |
+| Layout 2, mean | 6.8 | 9.3 | 10.8 | 12.9 | 25.7 | 59.2 | 22.5 |
+| Layout 2 over layout 1 | 1.12 | 1.20 | 1.27 | 1.20 | 1.46 | 2.01 | 1.58 |
+| Layout 2, 99th percentile | 16 | 39 | 46 | 54 | 135 | 550 | 283 |
+
+- **K changes little:** 1,024 for 256 adds 0-3% at every size.
+- **On the CPU, compiled** through the real kwargs and warmup, at 128 × 4: at all 45
+  (B, K) pairs and the 10 between, no graph break, two compiled graphs (batch 1 and
+  the rest), no recompile, and outputs within 2e-7 of eager at every shape and after
+  a weight sync, and the same across K. The sizes between needed no compile.
+- **A release build** (`setup.py --release`, in a copy) extracts 5-9% faster, and
+  its test run ends in a segmentation fault at the first test that feeds the engine
+  invalid input. The cloud build stays the default one (11.1).
+
+**The smoke run.** `python -m train --config train_configs/1889-v1-smoke.json
+--no-compile` on a pty: 8 workers and one eval server on the local GPU in fp32, 12
+games an epoch at 64 simulations, batches of 64. `q` in epoch 2 after 5 games, a
+resume that finished the epoch, and a second resume with `--num-epochs 3`. Read from
+the event files, the buffer saved by each run, and the checkpoints:
+
+| | Epoch 1 | Epoch 2, to the stop | Epoch 2, resumed | Epoch 3 |
+|---|---|---|---|---|
+| Games: opening + started | 9 + 3 | 9 + 2, and 1 dropped | 9 + 3 | 9 + 3 |
+| Rows | 7,064 | 8,642 | 9,092 | 11,173 |
+| Window: rows, epochs | 7,064, 1 | | 24,798, 2 | 35,971, 3 |
+| Steps, run and by `replay_ratio` | 40, 40 | untrained | 203, 203 | 192, 192 |
+| Rate at the first and last step | 2.5e-5, 1e-3 | | 1e-3, 0.9999754e-3 | 0.9999752e-3, 0.9999012e-3 |
+| Windows at 3, 4, 5 players | none | not logged | 152-305, 251-502, 227-455 | 237-473, 244-488, 294-588 |
+| The lengths they are 30% and 60% of | | | epoch 1's 507.7, 836.7, 757.7 | epoch 2's 788.7, 813.7, 980.0 |
+| `heldout/` tags; rows | 53; 2,048 | | 55; 2,048 | 51; 2,048 |
+| Held-out value MSE over training's | 0.415 / 0.328 = 1.26 | | 0.465 / 0.147 = 3.15 | 0.506 / 0.054 = 9.46 |
+| `eval_server/` shares' sum; padding | 1.000; 16.9% | | 1.000; 12.7% | 1.000; 8.9% |
+| Evaluations a second; ms a launch | 877; 26.3 | | 841; 24.4 | 913; 24.2 |
+
+- **Steps** are `round(1.1 × rows × window epochs / 3 / 64)`, with epoch 2's rows the
+  17,734 of both its parts.
+- **The rate** is the epoch schedule's at each of the 43 logged steps, within 6e-11,
+  through both resumes.
+- **The replayed epoch stayed one epoch:** the buffer's record is
+  `[[0, 0], [1, 12]]` after the stop and after the resume, with games 12-34 in epoch
+  2, and `[[0, 0], [1, 12], [2, 35]]` after epoch 3. The stop left
+  `checkpoint_epoch_0001.pt` at epoch 1 with epoch 1's lengths, so the replay played
+  in the windows the first attempt had; its started games began from the same
+  positions.
+- **`heldout/`** has every split each epoch, and fewer tags where a decision phase
+  has no row in the sample. The ratio climbs as 12 games an epoch are memorised,
+  which says nothing of the run's.
+- **Padding** is under the 28% of v1-design Section 4's 6-worker run: here launches
+  at 32 carried 27.7-28.9 real rows.
+- **Two things `train/PIPELINE.md` did not say,** now added to it: the drain waits
+  120 s and then drops the games still in play (1 of 7 here); and a replayed epoch's
+  lengths, for the next epoch's windows, and its `self_play_*` scalars cover the
+  games after the resume alone (epoch 3's windows above come from 9 of epoch 2's 18
+  opening games). `Training complete.` is also printed after `Shutdown complete`.
+
+**v0 against v1** (`train/tournament.py`, Section 9's hook): checkpoint 58 against a
+256 × 15 v1 at its initial weights, saved as `train/main.py` saves a run stopped
+before it trains; 4 players, 32 simulations in leaf batches of 8, the first 20
+decisions sampled, 4 workers on the local GPU. **Measured:** v0 scores 1.000 ± 0.000
+over 24 games, first and second in every one, with v0 on layout 1 and v1 on layout
+2 in the same games. With v1 listed first, the score reads 0.000 over 6 games: it is
+the first checkpoint's.

@@ -11,21 +11,27 @@ set -euo pipefail
 #   curl -sL <raw-url-to-this-script> | bash
 #   # — or —
 #   GH_TOKEN="ghp_..." bash cloud/setup.sh
+#   # — or, on a pod whose disk that lasts is a volume —
+#   GH_TOKEN="ghp_..." REPO_DIR=/workspace/rss-az bash cloud/setup.sh
 #
 # What this does:
 #   1. Configures git HTTPS auth via GH_TOKEN (no SSH keys needed)
 #   2. Installs system deps (Python 3.12, Ruby, build tools)
-#   3. Clones the repo, on $REPO_BRANCH (default az-1889)
+#   3. Clones the repo, on $REPO_BRANCH (default az-1889), to $REPO_DIR
 #   4. Creates venv, installs Python packages + CUDA PyTorch
-#   5. Builds Cython extensions
+#   5. Builds Cython extensions, with their assertions: a --release build strips
+#      them, and the tests that feed the engine invalid input then crash
 #   6. Runs the test suite
 #   7. Prints a ready-to-train command
 # ============================================================================
 
 REPO_URL="https://github.com/iwooden/rss-az.git"
-REPO_DIR="$HOME/rss-az"
+REPO_DIR="${REPO_DIR:-$HOME/rss-az}"
 REPO_BRANCH="${REPO_BRANCH:-az-1889}"
 PYTHON=python3.12
+# A container's root has no sudo, and needs none.
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then SUDO=sudo; fi
 
 # --- Colors for status output ---
 info()  { echo -e "\033[1;34m==>\033[0m \033[1m$*\033[0m"; }
@@ -50,8 +56,8 @@ chmod 600 "$HOME/.git-credentials"
 # 2. System dependencies
 # ============================================================================
 info "Installing system packages"
-sudo apt-get update -qq
-sudo apt-get install -y -qq \
+$SUDO apt-get update -qq
+$SUDO apt-get install -y -qq \
     software-properties-common \
     build-essential \
     ruby \
@@ -60,10 +66,10 @@ sudo apt-get install -y -qq \
 # Python 3.12 — Lambda instances ship 3.10/3.11; add deadsnakes if needed
 if ! command -v "$PYTHON" &>/dev/null; then
     info "Adding deadsnakes PPA for Python 3.12"
-    sudo add-apt-repository -y ppa:deadsnakes/ppa
-    sudo apt-get update -qq
+    $SUDO add-apt-repository -y ppa:deadsnakes/ppa
+    $SUDO apt-get update -qq
 fi
-sudo apt-get install -y -qq \
+$SUDO apt-get install -y -qq \
     python3.12 \
     python3.12-venv \
     python3.12-dev \
@@ -159,5 +165,5 @@ ok "Setup complete! Next, per 1889/model-design.md Section 11:"
 echo ""
 echo "  cd $REPO_DIR && source .venv/bin/activate"
 echo "  python cloud/profile_1889.py"
-echo "  python -m train --config train_configs/1889-v0.json"
+echo "  TORCH_LOGS=recompiles python -m train --config train_configs/1889-v1.json"
 echo ""

@@ -1,7 +1,7 @@
 """1889 tournaments (``train/tournament.py``; 1889/v1-design.md §8): games through the
 ``Game`` adapter on a seat-balanced schedule, seats counted from the player who acts
 first, a pairwise score with its standard error, and checkpoints of one game and one
-set of engine options."""
+set of engine options; and v0 and v1, on their two token layouts, in one game."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ CONFIG = TrainingConfig(
     d_model=32, num_heads=4, num_layers=1, zero_sum_values=True,
 )
 GAME = get_game(CONFIG)
+V1_CONFIG = dataclasses.replace(CONFIG, model_path="nn/transformer-1889-v1.py", terminal_rank_tau=0.05)
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +48,7 @@ def checkpoints(tmp_path_factory) -> dict[str, Path]:
         "a": CONFIG,
         "b": dataclasses.replace(CONFIG, terminal_rank_tau=0.05),
         "uncapped": dataclasses.replace(CONFIG, auction_pass_payout_cap=0),
+        "v1": V1_CONFIG,
     }
     for seed, (name, config) in enumerate(configs.items()):
         torch.manual_seed(seed)
@@ -97,6 +99,55 @@ def test_two_models_play_every_even_arrangement_and_get_a_pairwise_score(
     seat_scores = _groups(r"Seat score \(0\.5 = even\) +([\d. ]+)\n", out)[0].split()
     assert len(seat_scores) == num_players
     assert np.mean([float(s) for s in seat_scores]) == pytest.approx(0.5, abs=1e-3)
+
+
+@pytest.mark.parametrize("num_players", [3, 4, 5])
+def test_v0_and_v1_share_a_game_each_on_its_own_layout(checkpoints, monkeypatch, capsys, num_players):
+    """The evaluators of one game fill different layouts, under their own terminal
+    values, and v1's trunk runs without the candidate rows."""
+    fills: list[set[tuple[int, int]]] = []
+    trunk_rows: list[set[int]] = []
+    evaluators: list[tournament.NNEvaluator] = []
+
+    class Spy(tournament.NNEvaluator):
+        def __init__(self, game, model, *args, **kwargs):
+            filled: set[tuple[int, int]] = set()
+            rows: set[int] = set()
+
+            def spy(fill):
+                def wrapped(state, out, *, max_players, layout_version):
+                    filled.add((layout_version, out.shape[-1]))
+                    fill(state, out, max_players=max_players, layout_version=layout_version)
+                return wrapped
+
+            game = dataclasses.replace(
+                game, fill_tokens=spy(game.fill_tokens), fill_tokens_batch=spy(game.fill_tokens_batch),
+            )
+            model.blocks[0].register_forward_hook(lambda _block, inputs, _output: rows.add(inputs[0].shape[1]))
+            super().__init__(game, model, *args, **kwargs)
+            fills.append(filled)
+            trunk_rows.append(rows)
+            evaluators.append(self)
+
+    monkeypatch.setattr(tournament, "NNEvaluator", Spy)
+    # Two of the round's arrangements, for time: every one seats both models.
+    schedule = tournament._balanced_schedule
+    monkeypatch.setattr(tournament, "_balanced_schedule", lambda *args: list(schedule(*args))[:2])
+    # Leaf batches of 2, so the single-state and the batch fills both run.
+    out = _tournament(
+        monkeypatch, capsys, f"{checkpoints['a']},{checkpoints['v1']}", "--device", "cpu",
+        "--simulations", "2", "--search-batch-size", "2", "--games-per-pair", "1",
+        "--num-players", str(num_players), "--sample-moves", "10",
+    )
+    assert "All 2 games completed" in out
+    assert "[0] transformer-1889 epoch 0:" in out and "input layout 1" in out
+    assert "[1] transformer-1889-v1 epoch 3:" in out and "input layout 2" in out
+    mean, played = _groups(r"\[0\] vs \[1\]: (\d\.\d+) ± \d\.\d+  \((\d+) games\)", out)
+    assert 0 <= float(mean) <= 1 and int(played) == 2
+
+    assert fills == [{(1, 108)}, {(2, 109)}]
+    assert trunk_rows == [{95}, {80}]
+    assert [(e.layout_version, e.token_dim, e.terminal_rank_tau) for e in evaluators] == [(1, 108, 0.0), (2, 109, 0.05)]
 
 
 def test_worker_processes_play_the_games_the_seed_gives(checkpoints, monkeypatch):

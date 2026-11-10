@@ -1,6 +1,6 @@
-"""The tools of the first 1889 run (1889/model-design.md §11): the epoch-20 rescale
-and the 8.5 profile, here on the CPU with what needs the 5090 stubbed or skipped;
-the startup banner and ``--help``.
+"""The tools of the 1889 runs (1889/model-design.md §11): v0's epoch-20 rescale and
+the cloud profile, of v1 and of v0, here on the CPU with what needs the 5090 stubbed
+or skipped; the startup banner and ``--help``.
 """
 
 from __future__ import annotations
@@ -141,9 +141,14 @@ def _passing_sections() -> dict[str, dict[str, object]]:
     once, histogram = profile.launches_recorded_once(pairs)
     return {
         "model_time": {
-            "rows": [{"case": "v0", "batch": 256, "gpu_ms": 8.0}, {"case": "v3", "batch": 256, "gpu_ms": 4.4}],
-            "ratios": {"256": {"v0_over_v3": 1.82, "padded_three_tensors_over_v0": 1.2, "8heads_over_v0": 1.1}},
-            "padded_matches_v0": _difference(0.0),
+            "rows": [
+                {"case": "v3", "batch": 256, "gpu_ms": 4.0}, {"case": "v0", "batch": 256, "gpu_ms": 7.0},
+                {"case": "v1", "batch": 256, "gpu_ms": 5.8},
+            ],
+            "ratios": profile.model_time_ratios(
+                [{"case": case, "batch": 256, "gpu_ms": ms} for case, ms in (("v3", 4.0), ("v0", 7.0), ("v1", 5.8))],
+                (256,), "v1",
+            ),
         },
         "compile": {"graph_breaks": {}, "unique_graphs": 2},
         "launches": {
@@ -163,15 +168,43 @@ def _passing_sections() -> dict[str, dict[str, object]]:
             "samples": [{}], "launches": 7200, "new_captures": 0, "new_compiles": 0,
             "growth_mb": {"reserved_mb": 0.0, "allocated_mb": 0.0, "device_free_mb": -1.0},
         },
-        "train_steps": {"batch": 256, "shapes": {"256x15": {"steps_per_second": 20.0, "hours_for_40k_steps": 0.5}}},
+        "launch_sizes": {
+            "rows": [{"batch": 24, "k": 256}, {"batch": 32, "k": 256}],
+            "between_against_bucket": {
+                "B=24,K=256": {"bucket": 32, "forward_ms": 2.0, "bucket_forward_ms": 2.5, "saving": 0.2},
+            },
+            "shapes_between": 1,
+            "added": {"bucket": {}, "between": {"compiles": 0, "captures": 1, "reserved_mb": 20.0, "device_free_mb": -22.0}},
+        },
+        "extraction": {"by_game_phase": {name: _extraction(mean) for name, mean in (("2", 6.0), ("D", 104.0), ("all", 33.0))}},
+        "train_steps": {
+            "batch": 256, "epoch_steps": 1289,
+            "shapes": {"256x15": {"steps_per_second": 20.0, "hours_for_40k_steps": 0.5, "minutes_for_an_epoch": 1.1}},
+        },
+    }
+
+
+def _extraction(layout2_mean: float) -> dict[str, object]:
+    return {
+        "children": 100, "mean_ratio": 2.0,
+        "layout1": {"mean": layout2_mean / 2, "p99": 600.0}, "layout2": {"mean": layout2_mean, "p99": 1500.0},
     }
 
 
 def test_a_good_run_passes_every_check() -> None:
     checks = profile.build_checks(_passing_sections(), profile.CUDA_MODE)
     statuses = _statuses(checks)
-    assert statuses["v0/v3 model time, batch 256"] == "PASS"
+    # v0 against v3 is on record (model-design §5.3); v1 against v0 is this profile's.
+    assert statuses["v0/v3 model time, batch 256"] == "INFO"
+    assert statuses["v1/v0 model time, batch 256"] == "PASS"
+    assert statuses["a leaf's extraction, layout 2"] == "PASS"
+    assert statuses["training, 256x15"] == "PASS"
     assert statuses["each (B, K) records one graph"] == "PASS"
+    details = {check["name"]: check["detail"] for check in checks}
+    assert "0.83, expected 0.8-0.85" in details["v1/v0 model time, batch 256"]
+    assert "B = 24 2.00 for 32's 2.50 (20%)" in details["launch sizes between the buckets, K = 256"]
+    assert "1 shapes: 0 compiles, 1 graphs recorded, reserved +20 MB" in details["what the sizes between cost"]
+    assert "1.1 min for an epoch's 1,289 steps" in details["training, 256x15"]
     assert statuses["recorded graphs against pairs"] == "PASS"
     assert "FAIL" not in statuses.values()
 
@@ -179,10 +212,8 @@ def test_a_good_run_passes_every_check() -> None:
 @pytest.mark.parametrize(
     ("change", "failing"),
     [
-        (lambda s: s["model_time"]["ratios"]["256"].update(v0_over_v3=2.3), "v0/v3 model time, batch 256"),
-        (lambda s: s["model_time"]["ratios"]["256"].update(v0_over_v3=1.5), "v0/v3 model time, batch 256"),
-        (lambda s: s["model_time"]["ratios"]["256"].update(padded_three_tensors_over_v0=0.9),
-         "v0's bias path against padded, batch 256"),
+        (lambda s: s["model_time"]["ratios"]["256"].update(v1_over_v0=1.05), "v1/v0 model time, batch 256"),
+        (lambda s: s["model_time"]["rows"][2].update(error="Traceback\nRuntimeError: boom"), "model_time v1 batch 256"),
         (lambda s: s["compile"].update(graph_breaks={"a": 1}), "graph breaks in warmup"),
         (lambda s: s["compile"].update(unique_graphs=3), "compiled graphs after warmup"),
         (lambda s: s["launches"].update(compiles_after_warmup=1), "recompiles across launches"),
@@ -197,8 +228,10 @@ def test_a_good_run_passes_every_check() -> None:
          "replay follows a weight sync"),
         (lambda s: s["memory"]["growth_mb"].update(reserved_mb=1024.0), "memory over 7,200 launches"),
         (lambda s: s["memory"].update(new_captures=4), "memory over 7,200 launches"),
-        (lambda s: s["train_steps"]["shapes"]["256x15"].update(steps_per_second=1.0), "probe training, 256x15"),
+        (lambda s: s["extraction"]["by_game_phase"].update({"D": _extraction(900.0)}), "a leaf's extraction, layout 2"),
+        (lambda s: s["train_steps"]["shapes"]["256x15"].update(steps_per_second=1.0), "training, 256x15"),
         (lambda s: s.update(compile={"status": "error", "error": "boom"}), "compile"),
+        (lambda s: s.update(launch_sizes={"status": "error", "error": "boom"}), "launch_sizes"),
     ],
 )
 def test_each_bad_result_fails_its_check(change, failing: str) -> None:
@@ -249,25 +282,75 @@ def test_a_cuda_graph_recording_is_not_a_compile() -> None:
         callback_handler.end_callbacks.remove(events._on_compile_end)
 
 
-def test_a_cpu_smoke_run_writes_its_json_and_skips_cuda_parts_with_notes(tmp_path, capsys) -> None:
+@pytest.mark.parametrize(
+    ("argv", "cases", "trunk_ratio"),
+    [
+        ([], ["v3", "v0", "v1"], True),  # the default: v1's run
+        (["--config", "train_configs/1889-v0.json"], ["v3", "v0"], False),
+    ],
+)
+def test_a_cpu_smoke_run_writes_its_json_and_skips_cuda_parts_with_notes(
+    argv: list[str], cases: list[str], trunk_ratio: bool, tmp_path, capsys,
+) -> None:
     output = tmp_path / "profile.json"
-    assert profile.main(["--cpu", "--smoke", "--output", str(output)]) == 0
+    assert profile.main(["--cpu", "--smoke", "--output", str(output), *argv]) == 0
     printed = capsys.readouterr().out
     assert "Summary" in printed
     report = json.loads(output.read_text())
     assert report["mode"] == "cpu"
+    assert report["model"] == cases[-1]
+    assert report["config"]["model_path"] == json.loads(Path(report["config_path"]).read_text())["model_path"]
     assert set(report["sections"]) == set(profile.ALL_SECTIONS)
-    assert "error" not in json.dumps(report["sections"]["model_time"]["rows"])
+    model_time = report["sections"]["model_time"]
+    assert "error" not in json.dumps(model_time["rows"])
+    assert [row["case"] for row in model_time["rows"]] == cases
+    assert ("v1_over_v0" in model_time["ratios"]["4"]) == trunk_ratio
+    assert "v0_over_v3" in model_time["ratios"]["4"]
     assert report["sections"]["compile"]["status"] == "skipped"
     statuses = _statuses(report["checks"])
     assert statuses["CUDA graph record and replay"] == "SKIP"
     assert statuses["memory growth"] == "SKIP"
     assert "FAIL" not in statuses.values()
-    # v0's padded and three-tensor paths are the same function as its flat one.
-    assert report["sections"]["model_time"]["three_tensors_match_v0"]["logit_max_abs"] < 1e-4
     assert report["pool"]["states"] == 256
     for pair in report["sections"]["launches"]["pairs"].values():
         assert len(pair["ms"]) == 4
+
+    # Every bucket and one size between them, at each K, and that size against its bucket.
+    sizes = report["sections"]["launch_sizes"]
+    assert [(row["batch"], row["kind"]) for row in sizes["rows"] if row["k"] == 256] == [
+        (1, "bucket"), (2, "bucket"), (4, "bucket"), (8, "bucket"), (16, "bucket"), (3, "between"),
+    ]
+    assert sizes["between_against_bucket"]["B=3,K=512"]["bucket"] == 4
+    # Both layouts' extraction on the human positions, in every game phase.
+    phases = report["sections"]["extraction"]["by_game_phase"]
+    assert list(phases) == ["2", "3", "4", "5", "6", "D", "all"]
+    assert all(phase["children"] > 0 and phase["layout1"]["mean"] > 0 for phase in phases.values())
+    assert report["sections"]["extraction"]["parents"] == dict.fromkeys(["2", "3", "4", "5", "6", "D"], 5)
+    # The run's own loss weight and replay priorities, and its steps an epoch.
+    train = report["sections"]["train_steps"]
+    assert train["value_loss_weight"] == report["config"]["value_loss_weight"] == (0.25 if trunk_ratio else 1.0)
+    assert train["epoch_steps"] == (1289 if trunk_ratio else 1300)
+
+
+def test_a_profile_is_named_for_its_config_and_refuses_another_game(tmp_path, monkeypatch) -> None:
+    def stop(*_: object, **__: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(profile, "make_pool", stop)
+    monkeypatch.chdir(tmp_path)
+    for name in ("nn", "train", "cloud", "train_configs", "g1889"):
+        (tmp_path / name).symlink_to(Path(__file__).parents[2] / name)
+    for argv, written in (
+        ([], "1889-v1-profile-cpu.json"),
+        (["--config", "train_configs/1889-v0.json"], "1889-v0-profile-cpu.json"),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            profile.main(["--cpu", "--sections", "extraction", *argv])
+        assert json.loads((tmp_path / written).read_text())["config_path"].endswith(written[:7] + ".json")
+    with pytest.raises(SystemExit, match="is a rss config"):
+        profile.main(["--cpu", "--config", profile.V3_CONFIG])
+    with pytest.raises(SystemExit, match="no config file nowhere.json"):
+        profile.main(["--cpu", "--config", "nowhere.json"])
 
 
 class _StubCuda:
@@ -317,11 +400,13 @@ class _StubCuda:
         pass
 
 
-def test_the_graph_timing_runs_through_on_a_stubbed_cuda(monkeypatch) -> None:
+@pytest.mark.parametrize("config_file", [profile.V0_CONFIG, profile.DEFAULT_CONFIG])
+def test_the_graph_timing_runs_through_on_a_stubbed_cuda(config_file: str, monkeypatch) -> None:
     """``graph_timing`` can't run here on a real CUDA; this catches its typos and
-    its report's shape. The 5090's timing is the only real test of it."""
+    its report's shape, and that each model compiles whole (``fullgraph``). The
+    5090's timing is the only real test of it."""
     config = profile._model_config(
-        TrainingConfig.from_json(Path(profile.V0_CONFIG).read_text()), profile.replace(profile.CPU_MODE, d_model=32, num_layers=1),
+        TrainingConfig.from_json(Path(config_file).read_text()), profile.replace(profile.CPU_MODE, d_model=32, num_layers=1),
     )
     game = profile.get_game(config)
     pool = profile.make_pool(game, config, 32)
@@ -341,17 +426,6 @@ def test_the_graph_timing_runs_through_on_a_stubbed_cuda(monkeypatch) -> None:
     assert result["dynamo_graph_breaks"] == {}
     assert result["unique_graphs"] == 1
     assert result["eager_vs_compiled"]["logit_max_abs"] < 1e-3
-
-
-def test_the_three_tensor_variant_goes_where_its_model_is() -> None:
-    """Built in eval mode, on its model's device: a miss here only shows on a GPU."""
-    config = profile._model_config(
-        TrainingConfig.from_json(Path(profile.V0_CONFIG).read_text()), profile.replace(profile.CPU_MODE, d_model=32, num_layers=1),
-    )
-    net = profile.create_model(config).train()
-    variant = profile.three_tensor_variant(net)
-    assert not variant.training
-    assert next(variant.parameters()).device == next(net.parameters()).device
 
 
 def _run_script(script: str, *args: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:

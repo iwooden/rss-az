@@ -514,6 +514,10 @@ plays better. The measure of strength is games between v1 and v0 at epoch 58.
   - A fixture test pins layout 1's tokens on fixed states, as
     `tests/test_v2_parity.py` pins v2's.
   - Relations need no version (Section 6).
+- **A stop mid-epoch drops most games in play:** the drain waits 120 s. Stop
+  just after an epoch's summary. A replayed epoch's game lengths, which set
+  the next epoch's temperature windows, cover only the games after the
+  resume.
 - This is the one place v1 keeps compatibility with v0, and it costs a second
   fill path in `g1889/token_data.pyx`. It stays until v1 has beaten v0; then
   layout 1 and v0's model file can go.
@@ -656,7 +660,12 @@ leaves `tests/test_v2_parity.py` passing on its fixture.
 9.1-9.5 run on layout 1 and v0's model, so each can be smoke-tested locally
 before layout 2 exists.
 
-**Status, 2026-11-10:** 9.1 to 9.8 are built and on `az-1889`; the merged
-tree passes the suite (4,248 passed, 1 skipped) and pyright. 9.9 is in
-progress. As built, v1 also reads two raw slots Section 7 does not list:
+**Status, 2026-11-10:** 9.1 to 9.9 are built and on `az-1889`; the tree
+passes the suite (4,254 passed, 1 skipped) and pyright. What is left is on
+the cloud box: the profile and the launch, in the order model-design §11.1
+gives. Checked locally for 9.9 (model-design §12.7): the profile on v1 and
+v0; the checked-in smoke config with a mid-epoch stop and two resumes, whose
+steps, LR, windows, and buffer record match `train/PIPELINE.md`; and v0 at
+epoch 58 against an untrained v1 in one game, which v0 wins 1.000 over 24
+games, each model on its own layout. As built, v1 also reads two raw slots Section 7 does not list:
 TRAIN 10 at TRAIN_PRICE (the buyer's gain) and TRAIN 14 at SELECT_TRAIN.

@@ -1,4 +1,5 @@
-"""The 8.5 profile of the first 1889 run (1889/model-design.md §5.3, §5.7, §6.5).
+"""The cloud profile of a 1889 run, before its launch (1889/model-design.md §11;
+v0's results are in §5.3 and §6.5, v1's in §12.7).
 
 Standalone; run from the repo root. It imports production code, compiles through
 the real ``get_compile_kwargs`` and ``_warmup_compiled_model``, and feeds real
@@ -9,23 +10,29 @@ what it had, and prints a pass/fail summary. Send the JSON back.
     python cloud/profile_1889.py --cpu          # uncompiled CPU, CUDA parts skipped
     python cloud/profile_1889.py --cpu --compile
     python cloud/profile_1889.py --rocm         # uncompiled ROCm, fp32, small batches
+    python cloud/profile_1889.py --config train_configs/1889-v0.json
 
-Sections, each failing alone:
+``--config`` names the run, 1889-v1's by default. Sections, each failing alone:
 
 - ``model_time``: model-only time at batch 64 and 256 as ``v3-cloud-profile.json``
   measured v3 (Inductor without its graphs, then an explicit CUDA graph, timed by
-  CUDA events), v3 against v0, with v0 on the padded records of the bias path it
-  replaced and at 8 heads;
+  CUDA events): v3, v0, and the run's model if it is not v0, on the same states;
 - ``compile``: ``torch.compile`` with graph breaks and recompiles counted;
 - ``launches``: a serve-loop launch at every (B, K) pair, by launch number, with
   outputs against eager at each shape's first launches and at replay;
 - ``replay``: compiled against eager on new inputs and after a weight sync, and the
   same states at different K;
 - ``memory``: recorded graphs and GPU memory over many launches;
-- ``train_steps``: the probe's training steps a second, at each of its shapes.
+- ``launch_sizes``: the serve path's time at every launch size and at sizes between
+  them, which the eval server does not launch at: what finer sizes than powers of
+  two would save on a padded launch, and cost in recorded graphs and their memory;
+- ``extraction``: a search leaf's token and relation extraction on this CPU, layout
+  2 against layout 1, on the checked-in human positions by game phase;
+- ``train_steps``: training steps a second at the run's settings, and at the
+  capacity probe's other shapes.
 
-The bias variants here are diagnostics, not the model's paths. CUDA graphs' record
-and replay is what this torch does, read off the run, not assumed from its source.
+CUDA graphs' record and replay is what this torch does, read off the run, not
+assumed from its source.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ import gc
 import hashlib
 import json
 import logging
+import platform
 import statistics
 import subprocess
 import sys
@@ -49,7 +57,10 @@ def _fail(message: str) -> NoReturn:
     sys.exit(f"profile_1889: {message}")
 
 
-REQUIRED_FILES = ("nn/transformer-1889.py", "train_configs/1889-v0.json", "train_configs/v3-10-01-26.json")
+REQUIRED_FILES = (
+    "nn/transformer-1889.py", "nn/transformer-1889-v1.py", "train_configs/1889-v0.json",
+    "train_configs/1889-v1.json", "train_configs/v3-10-01-26.json",
+)
 for _path in REQUIRED_FILES:
     if not Path(_path).exists():
         _fail(f"no {_path}: run from the repo root, on the az-1889 branch")
@@ -66,6 +77,7 @@ try:
     from train.eval_server import (
         SharedEvalBuffers,
         _flat_filler_rows,
+        _next_power_of_two,
         _resolve_flat_launch_rows,
         _warmup_compiled_model,
     )
@@ -79,18 +91,30 @@ except Exception as exc:  # ImportError, or a stale extension's ValueError
     )
 
 
-REVISION = 1
+REVISION = 2
+DEFAULT_CONFIG = "train_configs/1889-v1.json"
 V0_CONFIG = "train_configs/1889-v0.json"
 V3_CONFIG = "train_configs/v3-10-01-26.json"
-ALL_SECTIONS = ("model_time", "compile", "launches", "replay", "memory", "train_steps")
+START_POSITIONS = "g1889/data/human_starts.npz"
+ALL_SECTIONS = (
+    "model_time", "compile", "launches", "replay", "memory", "launch_sizes", "extraction", "train_steps",
+)
+# Sections that launch the serving model, which the compile section builds.
+SERVING_SECTIONS = ("launches", "replay", "memory", "launch_sizes")
+MODEL_LABELS = {"nn/transformer-1889.py": "v0", "nn/transformer-1889-v1.py": "v1"}
 
-# v3-cloud-profile.json's v3 at v3-10-01-26's settings (mixing off), for reference
-# only: the ratio comes from this run's own v3. Same box, 2026-10.
+# For reference only, since the ratios come from one run's own models: v3 in
+# v3-cloud-profile.json (v3-10-01-26's settings, mixing off; 2026-10), and what
+# 1889-cloud-profile.json measured on the 5090 (2026-11-05; model-design §5.3).
 V3_REFERENCE_MS = {64: 1.843, 256: 4.354}
+V0_OVER_V3_MEASURED = {64: 1.43, 256: 1.71}
 
-# Section 5.3 and 6.5's expectations.
-RATIO_EXPECTED = (1.7, 2.0)
-MIN_PROBE_STEPS_PER_SECOND = 5.0  # 40K steps in about two hours at v0's size
+# model-design §12.5: 80 trunk rows for 95. At small batches a launch's fixed
+# cost brings the ratio toward 1; over 1 is a result to understand before a run.
+V1_OVER_V0_EXPECTED = (0.80, 0.85)
+EXTRACTION_MAX_MEAN_US = 500  # a tenth of a worker's core at its 200 leaves a second (v1-design §5.9)
+MIN_TRAIN_STEPS_PER_SECOND = 5.0  # the probe's 40K steps in about two hours, a run's epoch in minutes
+EPOCH_ROWS = 300_000  # the samples of 500 games (model-design §7.1), for an epoch's steps
 LOGIT_MAX_ABS = 0.05
 VALUE_MAX_ABS = 0.01
 POLICY_MAX_TV = 0.01
@@ -117,29 +141,37 @@ class Mode:
     rounds: int
     train_batch: int
     train_steps: int
+    between: tuple[int, ...]  # launch sizes between the buckets, for launch_sizes
+    size_ks: tuple[int, ...]  # and the Ks it launches every size at
+    extraction_parents: int  # human positions a game phase, for extraction
     d_model: int = 256
     num_layers: int = 15
     pool_states: int = 2048
     probe_shapes: tuple[str, ...] = tuple(PROBE_SHAPES)
-    output: str = "1889-cloud-profile.json"
+    output: str = "cloud-profile"  # after the config's name
 
 
+# Every (B, K) a bucketed server can launch at the run's cap of 256: B a power of
+# two, K one from 256 to the 4,096 records a state can hold. The sizes between are
+# 1.5 times a bucket, at the two Ks most launches take: 10 more recorded graphs,
+# which with the 40 of B >= 2 stay at Inductor's warning limit of 50.
 CUDA_MODE = Mode(
     "cuda", "cuda", compiled=True, graphs=True, autocast=True,
     sizes=(64, 256), buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256), ks=(256, 512, 1024, 2048, 4096),
     launches_per_pair=12, memory_cycles=200, iterations=100, rounds=5, train_batch=256, train_steps=60,
+    between=(12, 24, 48, 96, 192), size_ks=(256, 512), extraction_parents=400,
 )
 ROCM_MODE = Mode(
     "rocm", "cuda", compiled=False, graphs=False, autocast=False,
     sizes=(16, 64), buckets=(8, 16, 32, 64), ks=(256, 1024), launches_per_pair=4, memory_cycles=3,
-    iterations=3, rounds=2, train_batch=64, train_steps=10, probe_shapes=("256x15",),
-    output="1889-profile-rocm.json",
+    iterations=10, rounds=5, train_batch=64, train_steps=10, probe_shapes=("256x15",),
+    between=(12, 24, 48), size_ks=(256, 1024), extraction_parents=400, output="profile-rocm",
 )
 CPU_MODE = Mode(
     "cpu", "cpu", compiled=False, graphs=False, autocast=False,
     sizes=(4, 16), buckets=(1, 2, 4, 8, 16), ks=(256, 512), launches_per_pair=4, memory_cycles=2,
     iterations=2, rounds=2, train_batch=16, train_steps=4, probe_shapes=("256x15",), d_model=128, num_layers=4,
-    output="1889-profile-cpu.json",
+    between=(3, 6, 12), size_ks=(256, 512), extraction_parents=400, output="profile-cpu",
 )
 
 
@@ -230,18 +262,6 @@ def flat_inputs(
     return _wire_tokens(entries, mode), _legal(entries, mode), relations
 
 
-def padded_inputs(
-    pool: list[Entry], batch: int, offset: int, mode: Mode,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """v0's inputs with every state's E records, padding included: each padded
-    record lands on one cell, the contention §5.3 asks about."""
-    entries = _rows_at(pool, batch, offset)
-    records = torch.from_numpy(np.stack([e.records for e in entries])).to(torch.int16)
-    batch_ids = torch.arange(batch, dtype=torch.int16)[:, None, None].expand(-1, records.shape[1], 1)
-    flat = torch.cat((batch_ids, records), dim=2).reshape(-1, 5).to(mode.device)
-    return _wire_tokens(entries, mode), _legal(entries, mode), flat
-
-
 def padded_wire_inputs(
     pool: list[Entry], batch: int, offset: int, mode: Mode,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -318,33 +338,6 @@ def differences_within_limits(difference: dict[str, float]) -> bool:
 # ---------------------------------------------------------------------------
 # Model-only time
 # ---------------------------------------------------------------------------
-
-def three_tensor_variant(base: torch.nn.Module) -> torch.nn.Module:
-    """v0 on v3's bias path, a diagnostic: zeros with the records scattered in,
-    plus the static bias, plus visibility, three dense tensors a layer (§5.3)."""
-    cls: Any = type(base)
-    num_dynamic = base._relation_scales.shape[0]  # type: ignore[union-attr]
-
-    class ThreeTensors(cls):
-        def _attention_bias(self, relations: Any, hidden_keys: torch.Tensor, layer_idx: int, ref: torch.Tensor) -> torch.Tensor:
-            mult = self.relation_bias_mult[layer_idx].to(device=ref.device, dtype=ref.dtype)
-            size = self.cfg.num_tokens
-            bias = ref.new_zeros(ref.shape[0], self.cfg.num_heads, size, size)
-            values = mult.index_select(1, relations.relation_ids) * relations.weights.to(device=ref.device, dtype=ref.dtype)
-            bias.reshape(-1).scatter_add_(0, relations.flat_indices, values.reshape(-1))
-            static = torch.einsum(
-                "rij,hr->hij", self._static_relations.to(device=ref.device, dtype=ref.dtype), mult[:, num_dynamic:],
-            )
-            bias = bias + static
-            visibility = torch.zeros_like(hidden_keys, dtype=bias.dtype).masked_fill(
-                hidden_keys, torch.finfo(bias.dtype).min,
-            )
-            return bias + visibility
-
-    net: torch.nn.Module = ThreeTensors(base.cfg)  # type: ignore[union-attr]
-    net.load_state_dict(base.state_dict())
-    return net.to(next(base.parameters()).device).eval()
-
 
 def graph_timing(
     net: torch.nn.Module,
@@ -446,7 +439,11 @@ def section_model_time(ctx: Context) -> dict[str, Any]:
     mode = ctx.mode
     v3_config = _model_config(ctx.v3_config, mode)
     v3_pool = make_pool(ctx.v3_game, v3_config, mode.pool_states)
-    pool = ctx.pool
+    # v0 on the run's states in its own layout: the playouts are the same ones.
+    v0_config = ctx.config if ctx.label == "v0" else ctx.v0_config
+    v0_pool = ctx.pool if ctx.label == "v0" else make_pool(ctx.game, v0_config, mode.pool_states)
+    if not all(np.array_equal(a.records, b.records) for a, b in zip(ctx.pool, v0_pool, strict=True)):
+        raise RuntimeError("v0's pool is not the run's states: the two layouts' playouts parted")
     num_tokens = ctx.game.num_tokens(ctx.config.effective_max_players)
     edges = ctx.game.max_relation_edges
     options = _graph_options() if mode.graphs else {}
@@ -457,51 +454,34 @@ def section_model_time(ctx: Context) -> dict[str, Any]:
             else "uncompiled wall time: a harness check, not the 5090's test"
         ),
         "v3_reference_ms": V3_REFERENCE_MS,
+        "v0_over_v3_measured": V0_OVER_V3_MEASURED,
         "rows": rows,
     }
 
-    def new_v3() -> torch.nn.Module:
-        torch.manual_seed(42)
-        return create_model(v3_config).to(mode.device).eval()
+    def factory(config: TrainingConfig) -> Callable[[], torch.nn.Module]:
+        def build() -> torch.nn.Module:
+            torch.manual_seed(42)
+            return create_model(config).to(mode.device).eval()
+        return build
 
-    def new_v0(num_heads: int = 4) -> torch.nn.Module:
-        torch.manual_seed(42)
-        return create_model(replace(ctx.config, num_heads=num_heads)).to(mode.device).eval()
-
-    cases: list[tuple[str, Callable[[], torch.nn.Module], str]] = [
-        ("v3", new_v3, "wire"),
-        ("v0", new_v0, "flat"),
-        ("v0_padded_one_tensor", new_v0, "padded"),
-        ("v0_padded_three_tensors", lambda: three_tensor_variant(new_v0()), "padded"),
-        ("v0_8heads", lambda: new_v0(8), "flat"),
-        ("v0_8heads_padded_three_tensors", lambda: three_tensor_variant(new_v0(8)), "padded"),
+    # v3 takes its eval server's padded records; 1889's models take flat rows.
+    cases: list[tuple[str, Callable[[], torch.nn.Module], list[Entry] | None]] = [
+        ("v3", factory(v3_config), None),
+        ("v0", factory(v0_config), v0_pool),
     ]
+    if ctx.label != "v0":
+        cases.append((ctx.label, factory(ctx.config), ctx.pool))
     with torch.inference_mode(), _autocast(mode):
-        # The diagnostic must compute what the model does.
-        batch = mode.sizes[0]
-        k = launch_k(pool, batch, (0,))
-        flat = flat_inputs(pool, batch, 0, mode, k=k, num_tokens=num_tokens, edges=edges)
-        padded = padded_inputs(pool, batch, 0, mode)
-        reference = new_v0()(*flat)
-        result["padded_matches_v0"] = output_differences(reference, new_v0()(*padded), flat[1])
-        result["three_tensors_match_v0"] = output_differences(
-            reference, three_tensor_variant(new_v0())(*padded), flat[1],
-        )
-        del flat, padded, reference
-        _release(mode)
         for size in mode.sizes:
-            for name, factory, inputs in cases:
+            for name, build, pool in cases:
                 row: dict[str, Any] = {"case": name, "batch": size}
                 print(f"  {name}, batch {size}...", flush=True)
                 net = None
                 try:
-                    net = factory()
-                    if inputs == "wire":
+                    net = build()
+                    if pool is None:
                         data = padded_wire_inputs(v3_pool, size, 0, mode)
                         changed = padded_wire_inputs(v3_pool, size, size, mode)
-                    elif inputs == "padded":
-                        data = padded_inputs(pool, size, 0, mode)
-                        changed = padded_inputs(pool, size, size, mode)
                     else:
                         k = launch_k(pool, size, (0, size))
                         row["k"] = k
@@ -520,25 +500,21 @@ def section_model_time(ctx: Context) -> dict[str, Any]:
                 ctx.save()
                 del net
                 _release(mode)
-    result["ratios"] = model_time_ratios(rows, mode.sizes)
+    result["ratios"] = model_time_ratios(rows, mode.sizes, ctx.label)
     return result
 
 
-def model_time_ratios(rows: list[dict[str, Any]], sizes: tuple[int, ...]) -> dict[str, dict[str, float]]:
-    """Each batch's times against v3, and the bias path's and 8 heads' against v0."""
+def model_time_ratios(
+    rows: list[dict[str, Any]], sizes: tuple[int, ...], label: str = "v0",
+) -> dict[str, dict[str, float]]:
+    """Each batch's v0 against v3, and the run's model against v0."""
     ms = {(r["case"], r["batch"]): r["gpu_ms"] for r in rows if "gpu_ms" in r}
     ratios: dict[str, dict[str, float]] = {}
     for size in sizes:
         by_batch: dict[str, float] = {}
-        for name, over, under in (
-            ("v0_over_v3", "v0", "v3"),
-            ("padded_one_tensor_over_v0", "v0_padded_one_tensor", "v0"),
-            ("padded_three_tensors_over_v0", "v0_padded_three_tensors", "v0"),
-            ("8heads_over_v0", "v0_8heads", "v0"),
-            ("8heads_padded_over_padded", "v0_8heads_padded_three_tensors", "v0_padded_three_tensors"),
-        ):
-            if (over, size) in ms and (under, size) in ms:
-                by_batch[name] = ms[(over, size)] / ms[(under, size)]
+        for over, under in (("v0", "v3"), (label, "v0")):
+            if over != under and (over, size) in ms and (under, size) in ms:
+                by_batch[f"{over}_over_{under}"] = ms[(over, size)] / ms[(under, size)]
         ratios[str(size)] = by_batch
     return ratios
 
@@ -1011,9 +987,154 @@ def section_memory(ctx: Context) -> dict[str, Any]:
     }
 
 
+def section_launch_sizes(ctx: Context) -> dict[str, Any]:
+    """The serve path's time by launch size, every row real: at the buckets, then
+    at sizes between them, where a server with finer sizes would launch what it
+    now pads to the next bucket. Each new (B, K) records a graph; none should
+    compile."""
+    mode = ctx.mode
+    _, model, events, captures = _serving_model(ctx)
+    rng = np.random.default_rng(9)
+    rows: list[dict[str, Any]] = []
+
+    def mark() -> dict[str, Any]:
+        return {
+            "captures": captures.count if captures else None,
+            "compiles": events.compiles if events else None,
+            **memory_stats(mode),
+        }
+
+    marks = [mark()]
+    with _autocast(mode):
+        launcher = ctx.launcher()
+        for kind, sizes in (("bucket", mode.buckets), ("between", mode.between)):
+            for launch_n in sizes:
+                for k in mode.size_ks:
+                    pool = ctx.by_k[k]
+                    launch_ms = [
+                        launcher.launch(model, [pool[i] for i in rng.integers(0, len(pool), launch_n)], launch_n, k)[0]
+                        for _ in range(mode.launches_per_pair)
+                    ]
+                    # The last launch's inputs are in place: the forward and its copy back.
+                    forward_ms = []
+                    for _ in range(mode.rounds):
+                        begin = time.perf_counter()
+                        for _ in range(mode.iterations):
+                            launcher.run(model, launch_n, launch_n, launch_n * k)
+                        forward_ms.append(1000 * (time.perf_counter() - begin) / mode.iterations)
+                    rows.append({
+                        "batch": launch_n, "k": k, "kind": kind,
+                        "launch_ms": statistics.median(launch_ms[len(launch_ms) // 2:]),
+                        "forward_ms": statistics.median(forward_ms),
+                    })
+                    print(f"  B={launch_n}, K={k}: {rows[-1]['forward_ms']:.3f} ms", flush=True)
+            marks.append(mark())
+            ctx.save()
+    forward = {(row["batch"], row["k"]): row["forward_ms"] for row in rows}
+    return {
+        "rows": rows,
+        # A launch that pads to the bucket today, at the size between instead.
+        "between_against_bucket": {
+            f"B={size},K={k}": {
+                "bucket": _next_power_of_two(size),
+                "forward_ms": forward[(size, k)],
+                "bucket_forward_ms": forward[(_next_power_of_two(size), k)],
+                "saving": 1 - forward[(size, k)] / forward[(_next_power_of_two(size), k)],
+            }
+            for size in mode.between for k in mode.size_ks
+        },
+        "shapes_between": len(mode.between) * len(mode.size_ks),
+        # What the buckets and then the sizes between added: the first is 0 after
+        # the launches section, which recorded the buckets.
+        "added": {
+            kind: {name: after[name] - before[name] for name in before if before[name] is not None}
+            for kind, before, after in zip(("bucket", "between"), marks, marks[1:])
+        },
+    }
+
+
+def _microseconds(samples: list[float]) -> dict[str, float]:
+    return {
+        "mean": float(np.mean(samples)), "median": float(np.median(samples)),
+        "p99": float(np.percentile(samples, 99)), "max": float(np.max(samples)),
+    }
+
+
+def section_extraction(ctx: Context) -> dict[str, Any]:
+    """A search leaf's extraction on one core of this CPU, by layout, after
+    v1-design §5.9's measure: fill a human position, which writes its caches
+    back, apply each of its policy actions to a copy, and time the child's tokens
+    and records, the faster of two runs. In µs, by the parent's game phase."""
+    from games.g1889_starts import engine_options, load_start_positions
+
+    game, config = ctx.game, ctx.config
+    capacity = config.effective_max_players
+    positions = load_start_positions(
+        Path(config.start_positions_path or START_POSITIONS), capacity, engine_options(config),
+    )
+    rng = np.random.default_rng(3)
+    layouts = (1, 2)
+    tokens = {v: np.empty((game.num_tokens(capacity), game.token_dim(v)), np.float32) for v in layouts}
+    records = np.empty((game.max_relation_edges, 4), np.uint8)
+    actions = np.empty(game.policy.max_action_size, np.uint16)
+    roots = {n: game.new_game(n, capacity, 0) for n in config.iter_player_counts()}
+
+    def fill(state: Any, version: int) -> None:
+        game.fill_tokens(state, tokens[version], max_players=capacity, layout_version=version)
+        game.fill_relations_sparse(state, records, max_players=capacity)
+
+    samples: dict[str, dict[int, list[float]]] = {}
+    parents: dict[str, int] = {}
+    for index, name in enumerate(positions.phase_names.tolist()):
+        candidates = np.flatnonzero(positions.game_phase == index)
+        chosen = rng.choice(candidates, min(ctx.mode.extraction_parents, len(candidates)), replace=False)
+        samples[name], parents[name] = {v: [] for v in layouts}, len(chosen)
+        for position in chosen:
+            root = roots[int(positions.num_players[position])]
+            for version in layouts:
+                parent = positions.rows[position].copy()
+                state = game.scratch_state(root, parent)
+                fill(state, version)
+                for action in actions[:game.enumerate_policy_actions(state, actions)].tolist():
+                    best = None
+                    for _ in range(2):
+                        child = game.scratch_state(root, parent.copy())
+                        if game.apply_action(child, action) != STATUS_OK:  # the game's end
+                            break
+                        begin = time.perf_counter_ns()
+                        fill(child, version)
+                        elapsed = (time.perf_counter_ns() - begin) / 1000
+                        best = elapsed if best is None else min(best, elapsed)
+                    if best is not None:
+                        samples[name][version].append(best)
+    samples["all"] = {v: [x for by_layout in samples.values() for x in by_layout[v]] for v in layouts}
+    return {
+        "positions": str(config.start_positions_path or START_POSITIONS),
+        "cpu": _cpu_name(),
+        "parents": parents,
+        "by_game_phase": {
+            name: {
+                "children": len(by_layout[2]),
+                **{f"layout{v}": _microseconds(by_layout[v]) for v in layouts},
+                "mean_ratio": float(np.mean(by_layout[2]) / np.mean(by_layout[1])),
+            }
+            for name, by_layout in samples.items() if by_layout[1]
+        },
+    }
+
+
+def _cpu_name() -> str:
+    try:
+        lines = Path("/proc/cpuinfo").read_text().splitlines()
+        return next(line.split(":", 1)[1].strip() for line in lines if line.startswith("model name"))
+    except Exception:
+        return platform.processor()
+
+
 def section_train_steps(ctx: Context) -> dict[str, Any]:
     """The real trainer on a buffer of playout rows, fp32 and uncompiled, as the
-    probe trains. Targets are uniform over legal slots: timing, not learning."""
+    run and the probe train, at the run's loss weights and replay priorities.
+    Targets are uniform over legal slots: timing, not learning."""
     mode = ctx.mode
     if not hasattr(torch.optim, "Muon"):
         raise RuntimeError(f"torch {torch.__version__} has no optimizer Muon; install.sh pins the torch to use")
@@ -1036,7 +1157,15 @@ def section_train_steps(ctx: Context) -> dict[str, Any]:
         player_counts=np.array([e.players for e in ctx.pool], dtype=np.uint8),
         priorities=np.ones(len(ctx.pool), dtype=np.float32),
     )
-    results: dict[str, Any] = {"batch": mode.train_batch, "steps": mode.train_steps, "shapes": {}}
+    # A run's steps an epoch: its replay ratio over the planned rows, or the config's count.
+    epoch_steps = (
+        round(config.replay_ratio * EPOCH_ROWS / config.batch_size) if config.replay_ratio > 0
+        else config.training_steps_per_epoch
+    )
+    results: dict[str, Any] = {
+        "batch": mode.train_batch, "steps": mode.train_steps, "value_loss_weight": config.value_loss_weight,
+        "replay_priority_fraction": config.replay_priority_fraction, "epoch_steps": epoch_steps, "shapes": {},
+    }
     for name in mode.probe_shapes:
         print(f"  {name}...", flush=True)
         d_model, num_layers, num_heads = PROBE_SHAPES[name]
@@ -1065,6 +1194,7 @@ def section_train_steps(ctx: Context) -> dict[str, Any]:
         results["shapes"][name] = {
             "steps_per_second": rate,
             "hours_for_40k_steps": 40_000 / rate / 3600,
+            "minutes_for_an_epoch": epoch_steps / rate / 60,
             "parameters": sum(p.numel() for p in model.parameters()),
             "peak_allocated_mb": torch.cuda.max_memory_allocated() / 2**20 if mode.device == "cuda" else None,
         }
@@ -1090,7 +1220,9 @@ class Serving:
 @dataclass
 class Context:
     mode: Mode
+    label: str  # the run's model: "v0", "v1"
     config: TrainingConfig
+    v0_config: TrainingConfig
     v3_config: TrainingConfig
     game: Game
     v3_game: Game
@@ -1169,7 +1301,7 @@ def _mode_from_args(args: argparse.Namespace) -> Mode:
     if args.smoke:
         mode = replace(
             mode, d_model=32, num_layers=1, pool_states=256, launches_per_pair=4, memory_cycles=2, iterations=2,
-            rounds=2, train_steps=2, sizes=mode.sizes[:1],
+            rounds=2, train_steps=2, sizes=mode.sizes[:1], between=mode.between[:1], extraction_parents=5,
         )
     return mode
 
@@ -1196,34 +1328,23 @@ def build_checks(sections: dict[str, dict[str, Any]], mode: Mode) -> list[dict[s
         for row in model_time["rows"]:
             if "error" in row:
                 add(f"model_time {row['case']} batch {row['batch']}", "FAIL", _last_line(row["error"]))
+        uncompiled = "" if mode.graphs else "; uncompiled here"
         for size, ratios in model_time["ratios"].items():
             v3_ms = next((r["gpu_ms"] for r in model_time["rows"] if r["case"] == "v3" and str(r["batch"]) == size and "gpu_ms" in r), None)
             if mode.graphs and v3_ms is not None and int(size) in V3_REFERENCE_MS:
                 add(f"v3 model time, batch {size}", "INFO", f"{v3_ms:.2f} ms; v3-cloud-profile.json had {V3_REFERENCE_MS[int(size)]:.2f}")
-            if "v0_over_v3" in ratios:
-                value = ratios["v0_over_v3"]
-                low, high = RATIO_EXPECTED
-                add(
-                    f"v0/v3 model time, batch {size}",
-                    verdict(low <= value <= high) if mode.graphs else "INFO",
-                    f"{value:.2f}, expected {low}-{high}" + ("" if mode.graphs else " on the 5090; uncompiled here"),
-                )
-            if "padded_three_tensors_over_v0" in ratios:
-                value = ratios["padded_three_tensors_over_v0"]
-                add(
-                    f"v0's bias path against padded, batch {size}",
-                    verdict(value > 1.0) if mode.graphs else "INFO",
-                    f"padded takes {value:.2f} times v0, expected above 1",
-                )
-            if "8heads_over_v0" in ratios:
-                add(
-                    f"8 heads against 4, batch {size}", "INFO",
-                    f"{ratios['8heads_over_v0']:.2f} times on v0's path; about 1.10 on the CPU",
-                )
-        for name in ("padded_matches_v0", "three_tensors_match_v0"):
-            if name in model_time:
-                add(f"diagnostic {name}", verdict(differences_within_limits(model_time[name])),
-                    f"logit max {model_time[name]['logit_max_abs']:.2e}")
+            for name, value in ratios.items():
+                over, under = name.split("_over_")
+                if under == "v3":
+                    measured = V0_OVER_V3_MEASURED.get(int(size))
+                    detail = f"{value:.2f}" + (f"; the 5090 measured {measured:.2f} on 2026-11-05" if measured else "")
+                    add(f"v0/v3 model time, batch {size}", "INFO", detail + uncompiled)
+                else:
+                    low, high = V1_OVER_V0_EXPECTED
+                    add(
+                        f"{over}/v0 model time, batch {size}", verdict(value <= 1.0) if mode.graphs else "INFO",
+                        f"{value:.2f}, expected {low}-{high} at a full batch and under 1 at any" + uncompiled,
+                    )
 
     compile_section = sections.get("compile", {})
     if "graph_breaks" in compile_section:
@@ -1302,14 +1423,51 @@ def build_checks(sections: dict[str, dict[str, Any]], mode: Mode) -> list[dict[s
         else:
             add("memory growth", "SKIP", "needs CUDA graphs; ran as a harness check")
 
+    launch_sizes = sections.get("launch_sizes", {})
+    if "between_against_bucket" in launch_sizes:
+        for k in sorted({row["k"] for row in launch_sizes["rows"]}):
+            add(
+                f"launch sizes between the buckets, K = {k}", "INFO",
+                "forward ms, with the saving on the bucket's: " + ", ".join(
+                    f"B = {key.split(',')[0][2:]} {entry['forward_ms']:.2f} for {entry['bucket']}'s "
+                    f"{entry['bucket_forward_ms']:.2f} ({entry['saving']:.0%})"
+                    for key, entry in launch_sizes["between_against_bucket"].items() if key.endswith(f"K={k}")
+                ),
+            )
+        added = launch_sizes["added"]["between"]
+        if "compiles" in added:
+            add(
+                "what the sizes between cost", "INFO",
+                f"{launch_sizes['shapes_between']} shapes: {added['compiles']} compiles, "
+                f"{added.get('captures', 0)} graphs recorded, reserved {added.get('reserved_mb', 0):+.0f} MB, "
+                f"device free {added.get('device_free_mb', 0):+.0f} MB",
+            )
+
+    extraction = sections.get("extraction", {})
+    if "by_game_phase" in extraction:
+        phases = extraction["by_game_phase"]
+        worst = max((name for name in phases if name != "all"), key=lambda name: phases[name]["layout2"]["mean"])
+        add(
+            "a leaf's extraction, layout 2", verdict(phases[worst]["layout2"]["mean"] <= EXTRACTION_MAX_MEAN_US),
+            f"mean {phases['all']['layout2']['mean']:.0f} us over all phases and {phases[worst]['layout2']['mean']:.0f} "
+            f"in game phase {worst}, p99 {phases[worst]['layout2']['p99']:.0f}; the dev box (a 9950X3D) measured "
+            f"24, 65, and 600. Limit {EXTRACTION_MAX_MEAN_US} in the worst phase, a tenth of a core at 200 leaves a second",
+        )
+        add(
+            "layout 2 against layout 1", "INFO",
+            ", ".join(f"{name} {phase['mean_ratio']:.2f}" for name, phase in phases.items())
+            + f"; layout 1's mean {phases['all']['layout1']['mean']:.0f} us",
+        )
+
     train = sections.get("train_steps", {})
     if "shapes" in train:
         for name, shape in train["shapes"].items():
             rate = shape["steps_per_second"]
             add(
-                f"probe training, {name}",
-                verdict(rate >= MIN_PROBE_STEPS_PER_SECOND) if mode.graphs else "INFO",
-                f"{rate:.1f} steps/s at batch {train['batch']}, {shape['hours_for_40k_steps']:.1f} h for 40K",
+                f"training, {name}",
+                verdict(rate >= MIN_TRAIN_STEPS_PER_SECOND) if mode.graphs else "INFO",
+                f"{rate:.1f} steps/s at batch {train['batch']}: {shape['minutes_for_an_epoch']:.1f} min for an "
+                f"epoch's {train['epoch_steps']:,} steps, {shape['hours_for_40k_steps']:.1f} h for the probe's 40K",
             )
     return checks
 
@@ -1331,7 +1489,10 @@ def print_summary(checks: list[dict[str, str]], output: Path) -> None:
 
 
 def _source_hashes() -> dict[str, str]:
-    paths = ("nn/transformer-1889.py", "nn/transformer-v3.py", "train/eval_server.py", "train/gpu/nvidia.py", "cloud/profile_1889.py")
+    paths = (
+        "nn/transformer-1889.py", "nn/transformer-1889-v1.py", "nn/transformer-v3.py", "train/eval_server.py",
+        "train/gpu/nvidia.py", "cloud/profile_1889.py",
+    )
     return {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in paths}
 
 
@@ -1344,12 +1505,13 @@ def _git_commit() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--config", default=DEFAULT_CONFIG, help=f"The run's config (default: {DEFAULT_CONFIG})")
     parser.add_argument("--cpu", action="store_true", help="CPU, uncompiled unless --compile; CUDA parts skipped")
     parser.add_argument("--rocm", action="store_true", help="ROCm, uncompiled, fp32, small batches; CUDA parts skipped")
     parser.add_argument("--compile", action="store_true", help="With --cpu: the compile path, without graphs")
     parser.add_argument("--smoke", action="store_true", help="A tiny model and few launches, to check the script")
     parser.add_argument("--sections", default=",".join(ALL_SECTIONS), help="Comma-separated sections to run")
-    parser.add_argument("--output", help="The JSON to write (default: 1889-cloud-profile.json on the 5090)")
+    parser.add_argument("--output", help="The JSON to write (default: <config name>-cloud-profile.json on the 5090)")
     args = parser.parse_args(argv)
     sections = args.sections.split(",")
     unknown = set(sections) - set(ALL_SECTIONS)
@@ -1357,9 +1519,18 @@ def main(argv: list[str] | None = None) -> int:
         _fail(f"unknown --sections {sorted(unknown)}; they are {', '.join(ALL_SECTIONS)}")
 
     mode = _mode_from_args(args)
-    output = Path(args.output or mode.output)
+    if not Path(args.config).is_file():
+        _fail(f"no config file {args.config}")
+    output = Path(args.output or f"{Path(args.config).stem}-{mode.output}.json")
     try:
-        config = _model_config(TrainingConfig.from_json(Path(V0_CONFIG).read_text()), mode)
+        config = _model_config(TrainingConfig.from_json(Path(args.config).read_text()), mode)
+    except Exception as exc:
+        _fail(f"cannot read {args.config} ({type(exc).__name__}: {exc})")
+    if config.game != "1889":
+        _fail(f"{args.config} is a {config.game} config; this profiles 1889 runs")
+    label = MODEL_LABELS.get(config.model_path or "", Path(config.model_path or "model").stem)
+    try:
+        v0_config = _model_config(TrainingConfig.from_json(Path(V0_CONFIG).read_text()), mode)
         v3_config = TrainingConfig.from_json(Path(V3_CONFIG).read_text())
         game, v3_game = get_game(config), get_game(v3_config)
     except Exception as exc:
@@ -1379,6 +1550,8 @@ def main(argv: list[str] | None = None) -> int:
         "gpu": torch.cuda.get_device_name() if mode.device == "cuda" else None,
         "git_commit": _git_commit(),
         "source_sha256": _source_hashes(),
+        "config_path": args.config,
+        "model": label,
         "config": json.loads(config.to_json()),
         "input_note": "reachable random-play states; not measured MCTS traffic",
         "weights": "random initialized",
@@ -1398,7 +1571,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"Warning: only {report['memory_at_start']['device_free_mb']:,.0f} MB free on the GPU; "
                 "is a run still on it?", flush=True,
             )
-    print(f"Mode {mode.name}, torch {torch.__version__}; writing {output}", flush=True)
+    print(f"Mode {mode.name}, {args.config} ({label}), torch {torch.__version__}; writing {output}", flush=True)
     print(f"Generating real states from random playouts ({mode.pool_states})...", flush=True)
     try:
         pool = make_pool(game, config, mode.pool_states)
@@ -1421,7 +1594,7 @@ def main(argv: list[str] | None = None) -> int:
     empty = [k for k, states in by_k.items() if not states]
     if empty:
         _fail(f"no playout state fits K = {empty}")
-    ctx = Context(mode, config, v3_config, game, v3_game, pool, by_k, save)
+    ctx = Context(mode, label, config, v0_config, v3_config, game, v3_game, pool, by_k, save)
 
     runners: dict[str, Callable[[Context], dict[str, Any]]] = {
         "model_time": section_model_time,
@@ -1429,6 +1602,8 @@ def main(argv: list[str] | None = None) -> int:
         "launches": section_launches,
         "replay": section_replay,
         "memory": section_memory,
+        "launch_sizes": section_launch_sizes,
+        "extraction": section_extraction,
         "train_steps": section_train_steps,
     }
     for name in sections:
@@ -1436,7 +1611,7 @@ def main(argv: list[str] | None = None) -> int:
         begin = time.perf_counter()
         section: dict[str, Any]
         try:
-            if name in ("launches", "replay", "memory") and mode.compiled and ctx.serving is None:
+            if name in SERVING_SECTIONS and mode.compiled and ctx.serving is None:
                 raise RuntimeError("the compile section did not produce a model")
             section = runners[name](ctx)
         except Exception as exc:
