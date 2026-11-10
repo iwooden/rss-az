@@ -156,8 +156,6 @@ def _fields(tmp_path: Path) -> dict[str, object]:
         "games_per_epoch": 12,
         "buffer_capacity": 65_536,
         "heldout_rows": 1_000_000,
-        # The smoke config's ramp starts at 800 simulations a move.
-        "mcts_sims_start": None, "mcts_sims_end": None, "mcts_ramp_start_epoch": None, "mcts_ramp_end_epoch": None,
         "checkpoint_dir": str(tmp_path / "checkpoints"),
         "tensorboard_dir": str(tmp_path / "runs"),
     }
