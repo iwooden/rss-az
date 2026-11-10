@@ -661,9 +661,10 @@ leaves `tests/test_v2_parity.py` passing on its fixture.
 before layout 2 exists.
 
 **Status, 2026-11-10:** 9.1 to 9.9 are built and on `az-1889`; the tree
-passes the suite (4,254 passed, 1 skipped) and pyright. What is left is on
-the cloud box: the profile and the launch, in the order model-design §11.1
-gives. Checked locally for 9.9 (model-design §12.7): the profile on v1 and
+passes the suite (4,254 passed, 1 skipped) and pyright. The 5090's profile
+ran at f65b573 and passed every check (model-design §12.7): v1's model time
+is 0.85 of v0's at batch 256 and a served launch's 0.90. What is left is the
+launch, as model-design §11.1 gives it. Checked locally for 9.9 (model-design §12.7): the profile on v1 and
 v0; the checked-in smoke config with a mid-epoch stop and two resumes, whose
 steps, LR, windows, and buffer record match `train/PIPELINE.md`; and v0 at
 epoch 58 against an untrained v1 in one game, which v0 wins 1.000 over 24

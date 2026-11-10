@@ -1742,7 +1742,7 @@ launches take 0.8 ms longer.
 ### 12.7 Before the launch
 
 Sub-step 9.9 of v1-design Section 12, on the dev box (2026-11-10; scripts and
-outputs in `scratchpad/v1_99/`). The 5090's profile goes here when it has run.
+outputs in `scratchpad/v1_99/`). The 5090's profile follows the dev box's.
 
 **The profile.** `cloud/profile_1889.py` takes the run by `--config`, v1's by
 default, and names its output for it (`1889-v1-cloud-profile.json`).
@@ -1797,6 +1797,54 @@ a 9950X3D), a check of the script more than of the model:
 - **A release build** (`setup.py --release`, in a copy) extracts 5-9% faster, and
   its test run ends in a segmentation fault at the first test that feeds the engine
   invalid input. The cloud build stays the default one (11.1).
+
+**Measured on the 5090** (`1889-v1-cloud-profile.json`, 2026-11-10, at f65b573;
+torch 2.13.0+cu132; compiled, bf16, random weights on 2,048 random-play states).
+Every check passed. v0's figures are `1889-cloud-profile.json`'s of 2026-11-05.
+
+| ms | B = 64 | B = 256 |
+|---|---|---|
+| Model only: v3 | 1.62 | 4.16 |
+| Model only: v0 (ratio to v3) | 2.31 (1.43) | 7.10 (1.71) |
+| Model only: v1 (ratio to v0) | 2.08 (0.90) | 6.03 (0.85) |
+| A served launch at K = 512: v1, v0 (ratio) | 3.12, 3.22 (0.97) | 9.24, 10.23 (0.90) |
+
+- **The box is the same:** v0 over v3 is 1.43 and 1.71 again.
+- **v1 over v0** is 0.85 at a full batch, as expected, and 0.90 at 64. A served
+  launch gains less: 0.90 at 256, 0.91-0.97 from 4 to 128, and 1.01-1.04 at 1
+  and 2, where v1's extra small operations show.
+- **A served launch costs about 3.2 ms over the model alone at 256,** for v1 as
+  for v0 (3.1). 2.6 ms of it is inside the forward and its copy back (8.66 ms
+  against 6.03), which the profile does not split further; the run's
+  `eval_server/*_share` tags time the stages around it.
+- **Compile:** no graph breaks, two compiled graphs, 245 s of warmup (v0: 244).
+  45 graphs for the 45 pairs, one each, none compiled after the warmup, and no
+  launch over 19 ms. K = 4,096 costs 24% over K = 256 at B = 256 (11.3 ms
+  against 9.1), 21% at 128, and 14% or less below.
+- **Against eager:** logits within 8.8e-3, values 2.0e-3, policy total variation
+  2.4e-3 on first launches, and the same on replays and after a weight sync
+  (1.2e-2, 3.0e-3, 3.5e-3). Filler changes nothing across K, exactly.
+- **Memory:** 946 MB reserved with all 45 shapes recorded, 1,850 MB for the
+  process by `nvidia-smi`, and no growth over 9,000 launches. Training peaks at
+  7.0 GB.
+- **Training:** 14.9 steps a second at batch 256 (v0's profile: 13.2), 1.4 minutes
+  for an epoch of 1,289 steps.
+
+| Forward ms at the size between, K = 256 | 12 for 16 | 24 for 32 | 48 for 64 | 96 for 128 | 192 for 256 |
+|---|---|---|---|---|---|
+| Between, bucket | 1.38, 1.45 | 1.82, 2.00 | 2.42, 2.86 | 3.79, 4.67 | 6.60, 8.54 |
+| Saved | 5% | 9% | 15% | 19% | 23% |
+
+- **The sizes between cost nothing to add:** 10 shapes recorded 10 graphs with no
+  compile and no more memory. K = 512 gives the same savings. Whether to build
+  them is the run's `eval_server/padding_share` and `launches_at_<B>` to say.
+
+| A leaf's extraction, µs, by the parent's game phase (a 9950X) | 2 | 3 | 4 | 5 | 6 | D | All |
+|---|---|---|---|---|---|---|---|
+| Layout 1, mean | 5.2 | 6.9 | 7.6 | 9.8 | 15.5 | 25.8 | 12.5 |
+| Layout 2, mean | 5.9 | 8.4 | 9.6 | 11.8 | 22.3 | 51.7 | 19.8 |
+| Layout 2 over layout 1 | 1.12 | 1.21 | 1.27 | 1.21 | 1.44 | 2.00 | 1.58 |
+| Layout 2, 99th percentile | 14 | 38 | 42 | 51 | 121 | 463 | 243 |
 
 **The smoke run.** `python -m train --config train_configs/1889-v1-smoke.json
 --no-compile` on a pty: 8 workers and one eval server on the local GPU in fp32, 12
