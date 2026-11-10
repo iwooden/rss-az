@@ -1,4 +1,4 @@
-"""The deviation test (``train/deviation_1889.py``): its positions are where withholding,
+"""The deviation test (``utils_18xx/g1889_deviation.py``): its positions are where withholding,
 and only withholding, buys the next train; its branches play out from them untouched;
 and ``play`` resumes, with ``report`` pairing the branches by position."""
 
@@ -27,7 +27,7 @@ from mcts.search import StatePool
 from nn import create_model, get_model_input_spec
 from train.checkpoint import save_checkpoint
 from train.config import TrainingConfig
-from train.deviation_1889 import (
+from utils_18xx.g1889_deviation import (
     BRANCHES,
     HUMAN_GAMES,
     _apply_choice,

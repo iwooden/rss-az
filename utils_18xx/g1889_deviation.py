@@ -21,11 +21,11 @@ other seats' results and the ORs left show whom a purchase helps.
 
 Stages, each from the repo root:
 
-    python -m train.deviation_1889 positions (--buffer DIR | --human [DIR]) --out positions.json \\
+    python -m utils_18xx.g1889_deviation positions (--buffer DIR | --human [DIR]) --out positions.json \\
         [--per-cell 5]
-    python -m train.deviation_1889 play --checkpoint CKPT --positions positions.json \\
+    python -m utils_18xx.g1889_deviation play --checkpoint CKPT --positions positions.json \\
         --results results.jsonl [--continuations 2] [--deep 4] [--workers 1] [--device D]
-    python -m train.deviation_1889 report --positions positions.json --results results.jsonl
+    python -m utils_18xx.g1889_deviation report --positions positions.json --results results.jsonl
 
 ``positions`` reads a saved replay buffer (``metadata.json``, ``states.npy``, and
 ``player_counts.npy``; copy them off a slow mount first) in write order and splits it into

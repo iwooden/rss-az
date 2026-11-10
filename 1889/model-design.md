@@ -983,7 +983,7 @@ for it alone. Either financing pays and the model does not see it (the payback l
 about 3 ORs, 100 decisions, past the decision), or it does not pay against players who
 never finance, and every seat is right to pay out.
 
-**The test** (`train/deviation_1889.py`). At each such DIVIDEND position, it plays two
+**The test** (`utils_18xx/g1889_deviation.py`). At each such DIVIDEND position, it plays two
 branches to the end, every seat the checkpoint at its self-play settings: `model`, the
 model's own choice, and `finance`, a withhold and the depot purchase, then the model.
 The president's terminal value (`compute_terminal_values`, the value head's target),

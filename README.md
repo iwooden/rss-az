@@ -286,11 +286,11 @@ withhold-and-buy, and report the paired difference. `play` resumes from its
 results file:
 
 ```bash
-.venv/bin/python -m train.deviation_1889 positions --buffer checkpoints/1889-v0/replay_buffer \
+.venv/bin/python -m utils_18xx.g1889_deviation positions --buffer checkpoints/1889-v0/replay_buffer \
   --out positions.json --per-cell 5
-.venv/bin/python -m train.deviation_1889 play --checkpoint checkpoints/1889-v0/checkpoint_epoch_0055.pt \
+.venv/bin/python -m utils_18xx.g1889_deviation play --checkpoint checkpoints/1889-v0/checkpoint_epoch_0055.pt \
   --positions positions.json --results results.jsonl --workers 3
-.venv/bin/python -m train.deviation_1889 report --positions positions.json --results results.jsonl
+.venv/bin/python -m utils_18xx.g1889_deviation report --positions positions.json --results results.jsonl
 ```
 
 Compare checkpoints in a small tournament:
