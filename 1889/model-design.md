@@ -759,6 +759,12 @@ rounding N up in bucketed mode.
   launch ships B × K flat rows, with B its bucket and K the smallest of 256, 512,
   1,024, and 2,048 that holds its real records. This always fits: a state has at
   most 2,048. Dynamic mode runs without CUDA graphs and ships the real N.
+- **Since v1's step 9.6** (v1-design §6) a state has at most 4,096 records, of 29
+  relations: a slot's records take 16 KB of capacity, the filler table and the
+  pinned flat buffers double, and K can reach 4,096. Nothing in the server
+  changed for it: K is the next power of two over a launch's mean real records
+  a state, which the largest state seen (1,714 records, human phase D) keeps at
+  2,048 or below, so the shapes a run reaches are the 36 above.
 - **Filler:** the rows past the real records have value 0, which the model gives
   no weight (3.4), so outputs are bit for bit those without filler. They come
   from a table built once, 2,048 rows a state, each on a cell of its own, and a

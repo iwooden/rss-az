@@ -39,6 +39,7 @@ import g1889.data.tables as D
 from g1889.driver import DRIVER, STATUS_INVALID
 from g1889.relations import (
     RelationId as REL,
+    RelationSize,
     StaticRelationId as SREL,
     get_relation_coord_data_batch,
     get_relation_data_batch,
@@ -161,7 +162,7 @@ def _inputs(samples: list[Sample], max_players: int) -> Inputs:
     rows = [s.row for s in samples]
     x = np.zeros((len(rows), get_num_tokens(max_players), TOKEN_DIM), np.float32)
     get_token_data_batch(rows, x, max_players, layout_version=1)
-    records = np.zeros((len(rows), 2048, 4), np.uint8)
+    records = np.zeros((len(rows), int(RelationSize.MAX_RELATION_EDGES), 4), np.uint8)
     get_relation_coord_data_batch(rows, records, max_players)
     mask = torch.zeros(len(rows), POLICY_LAYOUT.unified_dim, dtype=torch.bool)
     for i, sample in enumerate(samples):
@@ -309,6 +310,22 @@ def test_records_past_the_relations_and_value_0_records_carry_no_weight(inputs, 
     _assert_same(_run(model, inputs.x, inputs.mask, torch.cat([dense, junk], dim=1)), base)
 
 
+def test_relations_25_to_28_change_nothing_for_v0(inputs, model_for):
+    """v1-design §6: extraction now also emits each player's sales of the SR
+    (25-26) and each corp's route hexes (27-28). v0 consumes ids 0-24, so
+    its outputs with the real records are those without the new ones, on
+    flat records and on dense planes."""
+    model = model_for(inputs.max_players)
+    new = inputs.flat[:, 1] > int(REL.REL_EXIT_OF)
+    present = set(inputs.flat[new, 1].tolist())
+    assert present == {int(r) for r in (REL.REL_SOLD_THIS_SR, REL.REL_SOLD_BY, REL.REL_ROUTE, REL.REL_ROUTE_OF)}
+    with_new = _run(model, inputs.x, inputs.mask, inputs.flat)
+    _assert_same(with_new, _run(model, inputs.x, inputs.mask, inputs.flat[~new]), tol=0)
+    dense = inputs.dense()
+    assert dense.shape[1] == int(REL.NUM_RELATIONS) == 29 and dense[:, 25:].any()
+    _assert_same(_run(model, inputs.x, inputs.mask, dense), _run(model, inputs.x, inputs.mask, dense[:, :25]), tol=0)
+
+
 def test_the_finished_mask_scales_records_adds_static_planes_and_hides_keys(groups, model_for):
     inputs = groups['mixed']
     model = model_for(inputs.max_players)
@@ -325,7 +342,7 @@ def test_the_finished_mask_scales_records_adds_static_planes_and_hides_keys(grou
     static = static_relation_planes(inputs.max_players).astype(np.float64)
     expected = np.zeros((len(inputs.samples), NUM_HEADS, *static.shape[1:]))
     expected += np.einsum('rij,hr->hij', static, mult[:, 25:])
-    for b, relation, query, key, value in inputs.flat.tolist():
+    for b, relation, query, key, value in inputs.flat[inputs.flat[:, 1] < 25].tolist():  # v0's relations
         expected[b, :, query, key] += mult[:, relation] * value * scales[relation]
     visible = ~hidden.expand_as(bias)
     assert np.allclose(bias[visible].numpy(), expected[visible.numpy()], atol=1e-5)
@@ -866,8 +883,9 @@ def test_every_parameter_learns_through_flat_records(groups, model_for):
     for name, parameter in model.named_parameters():
         assert parameter.grad is not None and parameter.grad.abs().sum() > 0, name
     columns = model.relation_bias_mult.grad.abs().sum((0, 1))
-    assert (columns[inputs.flat[:, 1].unique().long()] > 0).all() and (columns[25:] > 0).all()
-    assert len(inputs.flat[:, 1].unique()) == 25
+    consumed = inputs.flat[inputs.flat[:, 1] < 25, 1].unique().long()  # the records hold later ids too
+    assert (columns[consumed] > 0).all() and (columns[25:] > 0).all()
+    assert len(consumed) == 25
 
 
 def test_autocast_with_fp16_tokens_runs_the_eval_server_s_dtypes(inputs, model_for):

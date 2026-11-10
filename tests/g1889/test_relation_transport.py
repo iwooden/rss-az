@@ -33,7 +33,7 @@ import torch.nn as nn
 from torch._dynamo.testing import CompileCounterWithBackend
 from torch._dynamo.utils import counters
 
-from g1889.relations import get_relation_coord_data_batch, get_relation_data_batch
+from g1889.relations import RelationSize, get_relation_coord_data_batch, get_relation_data_batch
 from g1889.token_data import get_num_tokens
 from games import Game, get_game
 from mcts.evaluator import NNEvaluator
@@ -62,7 +62,7 @@ from tests.g1889.test_model import Sample, _sample_setup, _slot
 
 MAX_PLAYERS = 5
 TOKEN_DIM = 108
-EDGES = 2048
+EDGES = int(RelationSize.MAX_RELATION_EDGES)  # 4,096
 UNIFIED = 228
 NUM_TOKENS = get_num_tokens(MAX_PLAYERS)
 
@@ -419,7 +419,7 @@ def _assert_bucketed_launches(launches: list[tuple[int, np.ndarray]]) -> None:
     for launch_n, rows in launches:
         assert launch_n == _next_power_of_two(launch_n)
         rows_per_state = len(rows) // launch_n
-        assert len(rows) == launch_n * rows_per_state and rows_per_state in (256, 512, 1024, 2048)
+        assert len(rows) == launch_n * rows_per_state and rows_per_state in (256, 512, 1024, 2048, 4096)
         shapes.add((launch_n, rows_per_state))
 
         batch, relation, query, key, value = rows.T
@@ -524,8 +524,9 @@ def _get_result(results: Any, server: EvaluationServer, workers: list[Any]) -> A
     ("real_rows", "launch_n", "expected"),
     [
         (0, 1, 256), (2, 1, 256), (256, 1, 256), (257, 1, 512), (1050, 1, 2048), (2048, 1, 2048),
+        (2049, 1, 4096), (2642, 1, 4096), (4096, 1, 4096),  # the fifth K: a state has at most 4,096
         (512, 2, 512), (513, 2, 1024), (58_824, 256, 65_536), (65_536, 256, 65_536), (65_537, 256, 131_072),
-        (256 * 2048, 256, 256 * 2048),
+        (256 * 2048, 256, 256 * 2048), (256 * 2048 + 1, 256, 256 * 4096), (256 * 4096, 256, 256 * 4096),
     ],
 )
 def test_bucketed_launches_round_up_to_the_smallest_b_by_k(real_rows, launch_n, expected):

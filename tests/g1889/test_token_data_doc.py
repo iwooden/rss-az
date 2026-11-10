@@ -95,5 +95,5 @@ def test_the_relations():
     assert named == {int(r): r.name[5:] for r in StaticRelationId
                      if r not in (StaticRelationId.SREL_HEX_SIDE, StaticRelationId.NUM_STATIC_RELATIONS)}
     assert static_relation_planes(5).shape == (10, 95, 95) == (StaticRelationId.NUM_STATIC_RELATIONS, 95, 95)
-    assert '`max_relation_edges` = **2,048**' in DOC and RelationSize.MAX_RELATION_EDGES == 2048
-    assert 'bounded by **1,844**' in DOC and sum(BOUNDS.values()) == 1844
+    assert '`max_relation_edges` = **4,096**' in DOC and RelationSize.MAX_RELATION_EDGES == 4096
+    assert 'bounded by **2,642**' in DOC and sum(BOUNDS.values()) == 2642

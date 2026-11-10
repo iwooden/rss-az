@@ -10,6 +10,11 @@ record count.
 Relations 21-24 exist at TILE and ER_BONUS: each visible candidate row to
 its hex and to the hex across each of its exits, over the token fill's
 candidate list (``tile_candidates``).
+
+Relations 25-26 are each player's sales of this SR (``sold_mask``, which the
+SR's end clears). Relations 27-28 join each corp to the hexes of the routes
+that earn its route max: ``route_hexes``, which the solver caches with the
+route max, so the records cost no solve of their own.
 """
 
 import numpy as np
@@ -26,10 +31,11 @@ from g1889.data.tables cimport (
 from g1889.entities.corp cimport corp_president
 from g1889.entities.graph cimport GRAPH_NODE, GRAPH_SIDES
 from g1889.entities.hexmap cimport hex_paths, hex_tokens
-from g1889.entities.player cimport player_bid, player_shares
+from g1889.entities.player cimport player_bid, player_shares, player_sold_mask
 from g1889.entities.private cimport private_owner
 from g1889.entities.trains cimport corp_train_count
 from g1889.entities.turn cimport turn_num_players
+from g1889.routes.solver cimport route_hex
 from g1889.state cimport GameState
 from g1889.token_data cimport (
     ROW_CANDIDATE, ROW_CORP, ROW_HEX, ROW_PLAYER, ROW_PRIVATE, ROW_TRAIN, bind_row, extraction_prologue,
@@ -161,7 +167,7 @@ cdef int _check_count(int count, str func) except -1:
 cdef int _fill_planes(GameState state, unsigned char[:, :, ::1] planes, int num_players) noexcept nogil:
     """The dense form: zeroed planes with every record scattered in. Returns
     the record count."""
-    cdef Record records[2048]               # MAX_RELATION_EDGES
+    cdef Record records[4096]               # MAX_RELATION_EDGES
     cdef int count = _emit(state, num_players, records)
     cdef int k
     memset(&planes[0, 0, 0], 0, planes.shape[0] * planes.shape[1] * planes.shape[2])
@@ -209,6 +215,8 @@ cdef int _emit(GameState state, int num_players, Record* out) noexcept nogil:
             if s > 0:
                 n = _pair(out, n, REL_PLAYER_HOLDS, <int>ROW_PLAYER + i, corp, 1)
                 n = _pair(out, n, REL_PLAYER_SHARES, <int>ROW_PLAYER + i, corp, s)
+            if player_sold_mask(state, i) >> c & 1:
+                n = _pair(out, n, REL_SOLD_THIS_SR, <int>ROW_PLAYER + i, corp, 1)
         i = corp_president(state, c)
         if i >= 0:
             n = _pair(out, n, REL_PRESIDES, <int>ROW_PLAYER + i, corp, 1)
@@ -224,6 +232,8 @@ cdef int _emit(GameState state, int num_players, Record* out) noexcept nogil:
                 n = _pair(out, n, REL_REACHES_HEX, corp, <int>ROW_HEX + h, 1)
             if entry & <int>GRAPH_NODE:
                 n = _pair(out, n, REL_REACHES_CENTER, corp, <int>ROW_HEX + h, 1)
+            if route_hex(state, c, h):
+                n = _pair(out, n, REL_ROUTE, corp, <int>ROW_HEX + h, 1)
     for p in range(<int>NUM_PRIVATES):
         owner = private_owner(state, p)
         if owner >= <int>OWNER_CORP:
@@ -250,9 +260,9 @@ cdef int _emit(GameState state, int num_players, Record* out) noexcept nogil:
     return n
 
 
-assert <int>MAX_RELATION_EDGES == 2048 and sizeof(Record) == RELATION_RECORD_WIDTH  # the stack buffer, the record cast
+assert <int>MAX_RELATION_EDGES == 4096 and sizeof(Record) == RELATION_RECORD_WIDTH  # the stack buffer, the record cast
 assert <int>MAX_LAY_CANDIDATES == 15  # the candidate buffer
-assert REL_EXIT_OF + 1 == NUM_RELATIONS and SREL_ABILITY_OF + 1 == NUM_STATIC_RELATIONS
+assert REL_ROUTE_OF + 1 == NUM_RELATIONS and SREL_ABILITY_OF + 1 == NUM_STATIC_RELATIONS
 # Every open side has a hex across, so the track-link test may read it.
 assert all(HEX_NEIGHBOR[h][s] >= 0 for h in range(<int>NUM_HEXES) for s in range(<int>NUM_SIDES)
            if HEX_EXIT_MASK[h] >> s & 1)

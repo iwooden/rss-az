@@ -476,7 +476,9 @@ centers, 232 track links, and 210 candidate edges. It assumes:
 - `MAX_LAY_CANDIDATES` candidates of at most 6 exits.
 
 **`max_relation_edges` = 2,048**, the next power of two, as RSS rounds 248
-to 256 (`core/relations.pxd:31-35`). The emitter asserts the count.
+to 256 (`core/relations.pxd:31-35`). The emitter asserts the count. (v1's
+step 9.6 added relations 25-28, sales and route hexes: the bound is 2,642 and
+`max_relation_edges` 4,096; `token-data-1889.md` has the current figures.)
 
 **Measured** (records per state):
 

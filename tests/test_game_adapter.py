@@ -750,8 +750,8 @@ def test_g1889_has_selfplay_stats_but_no_strategy_trace(g1889_case: Case):
 
 def test_g1889_extraction_sizes(g1889_case: Case):
     """extraction-design §5.1 and §6: 90 + max_players tokens of width 108, 25
-    relations, and 2,048 records, above §6.3's worst case of 1,844."""
+    relations, and 4,096 records, above the worst case of 2,642 (v1-design §6)."""
     game = g1889_case.game
     assert [game.num_tokens(max_players) for max_players in (3, 4, 5)] == [93, 94, 95]
     assert (game.token_dim(1), game.token_dim(2)) == (108, 109)  # v1-design §5: layout 2
-    assert (game.num_relations, game.max_relation_edges) == (25, 2048)
+    assert (game.num_relations, game.max_relation_edges) == (29, 4096)

@@ -12,6 +12,10 @@ prologue, which writes the refreshed caches into the row (§4).
 
 ``static_relation_planes`` gives the planes that never change (§6.2), which
 the model holds as buffers; they never cross IPC.
+
+Relation extraction has no layout version: ids only append
+(1889/v1-design.md §6 added 25-28), and a model consumes the ids it knows,
+so ``nn/transformer-1889.py`` reads today's records as it read the first 25.
 """
 
 from g1889.state cimport GameState
@@ -43,11 +47,16 @@ cpdef enum RelationId:
     REL_CANDIDATE_OF = 22
     REL_CANDIDATE_EXIT = 23         # candidate -> the hex across each of its exits
     REL_EXIT_OF = 24
-    NUM_RELATIONS = 25
+    REL_SOLD_THIS_SR = 25           # player -> corp: sold it this SR
+    REL_SOLD_BY = 26
+    REL_ROUTE = 27                  # corp -> hex: on one of its best routes now
+    REL_ROUTE_OF = 28
+    NUM_RELATIONS = 29
 
 cpdef enum RelationSize:
-    # §6.3: the bounds sum to 1,844 records, rounded up to a power of two.
-    MAX_RELATION_EDGES = 2048
+    # §6.3 and v1-design §6: the bounds sum to 2,642 records, rounded up to a
+    # power of two.
+    MAX_RELATION_EDGES = 4096
     RELATION_RECORD_WIDTH = 4
 
 # §6.2

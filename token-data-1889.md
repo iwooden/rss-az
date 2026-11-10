@@ -11,9 +11,9 @@ document is wrong. The rationale is in
 `tests/g1889/test_token_data_doc.py` pins the tables below against the code.
 
 The `Game` adapter (`games/g1889.py`) exposes the extractors:
-`num_tokens(max_players)`, `token_dim(layout_version)`, `num_relations` (25),
-`max_relation_edges` (2,048), and the six fills, which take
-`layout_version` for tokens.
+`num_tokens(max_players)`, `token_dim(layout_version)`, `num_relations` (29),
+`max_relation_edges` (4,096), and the six fills, which take
+`layout_version` for tokens. Relations have no layout version.
 
 ## Layout id
 
@@ -36,9 +36,9 @@ slot table per row type.
   server as float16. `TOKEN_DIM` = 108 and `TOKEN_DIM_2` = 109, the
   CANDIDATE widths; every row is
   zero-padded to its layout's, and `get_token_widths` gives each row's width.
-- **Dense relations:** `(25, T, T)` uint8, queries by keys, T =
+- **Dense relations:** `(29, T, T)` uint8, queries by keys, T =
   `num_tokens(max_players)`.
-- **Sparse records:** `(2048, 4)` uint8 rows `(relation, query, key,
+- **Sparse records:** `(4096, 4)` uint8 rows `(relation, query, key,
   value)`, zero past the count. A record with value 0 is padding.
 - **Players:** 3 ≤ `num_players` ≤ `max_players` ≤ 5. Batches take raw rows,
   which may mix player counts at one capacity.
@@ -480,9 +480,11 @@ player who can afford the topmost private (v1-review §5.4).
 
 ### Dynamic relations (IPC)
 
-`num_relations` = 25. Each pair's reverse is the next id; TRACK_LINK is its
+`num_relations` = 29. Each pair's reverse is the next id; TRACK_LINK is its
 own. No (relation, query, key) cell repeats, so the dense planes hold
-exactly the records.
+exactly the records. Ids 0-24 are layout 1's era, which v0 consumes; 25-28
+came with layout 2 (v1-design §6). Extraction emits all of them whatever
+layout the tokens are filled in.
 
 | Id | Relation | Query → key | Value |
 |---|---|---|---|
@@ -511,6 +513,10 @@ exactly the records.
 | 22 | CANDIDATE_OF | hex → candidate | 1 |
 | 23 | CANDIDATE_EXIT | candidate → the hex across each of its exits | 1 |
 | 24 | EXIT_OF | hex → candidate | 1 |
+| 25 | SOLD_THIS_SR | player → corp: sold it this SR (PLAYER's sold slots; the SR's end clears them) | 1 |
+| 26 | SOLD_BY | corp → player | 1 |
+| 27 | ROUTE | corp → hex: on one of the routes that earn its route max now (`route_hexes`) | 1 |
+| 28 | ROUTE_OF | hex → corp | 1 |
 
 - **The model scales** the two count pairs: shares (2, 3) by 1/10 and
   trains (12, 13) by 1/4. Every other plane is binary.
@@ -520,7 +526,16 @@ exactly the records.
   token reaches nothing.
 - **Candidates** (21-24) exist only at TILE and ER_BONUS, for the visible
   candidate rows.
-- A model may ignore trailing ids; later steps append theirs after 24.
+- **Routes** (27, 28) are the hexes of the solver's routes for the trains
+  the corp holds, stops and the track between them: where its revenue runs,
+  what a token would block, and what track corps share. The solver caches
+  them in the row with the route max, so the records cost no solve of
+  their own. Where several route sets earn the route max, they are the set
+  the solver picks, which depends only on the state. A corp without a
+  route has none.
+- A model may ignore trailing ids: ids only append. v0
+  (`nn/transformer-1889.py`) consumes 0-24 and gives the same outputs with
+  or without the later records (`tests/g1889/test_model.py`).
 
 ### Static relations (model buffers)
 
@@ -538,11 +553,14 @@ they never cross IPC, and the `Game` adapter has no field for them.
 
 ### The edge bound
 
-The records per state are bounded by **1,844**: 140 for shares, 14
+The records per state are bounded by **2,642**: 140 for shares, 14
 presidency, 14 ownership, 70 bids, 56 trains, 30 stations, 728 reached
-hexes, 350 reached centers, 232 track links, and 210 candidate edges.
-`max_relation_edges` = **2,048**, and the fills assert the count. A model
-takes E from its input's shape, not from a constant.
+hexes, 350 reached centers, 232 track links, 210 candidate edges, 70
+sales (5 players × 7 corps, both ways), and 728 route hexes (7 corps × 52
+hexes, both ways). `max_relation_edges` = **4,096**, and the fills assert
+the count. A model takes E from its input's shape, not from a constant.
+The most seen is 1,714, on 88,019 states of human, self-play, and random
+games (1,374 of them with ids 0-24; at most 66 sales and 432 route records).
 
 ## Per-choice readouts
 

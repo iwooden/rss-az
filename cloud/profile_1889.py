@@ -126,7 +126,7 @@ class Mode:
 
 CUDA_MODE = Mode(
     "cuda", "cuda", compiled=True, graphs=True, autocast=True,
-    sizes=(64, 256), buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256), ks=(256, 512, 1024, 2048),
+    sizes=(64, 256), buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256), ks=(256, 512, 1024, 2048, 4096),
     launches_per_pair=12, memory_cycles=200, iterations=100, rounds=5, train_batch=256, train_steps=60,
 )
 ROCM_MODE = Mode(

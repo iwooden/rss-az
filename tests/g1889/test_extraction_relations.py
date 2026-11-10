@@ -8,7 +8,8 @@ live state, as the eval worker extracts them:
   lists (``lay_candidates_py``, ``er_candidates_py``) with their values, and
   nothing else;
 - they join only visible tokens, each group stays within its §6.1 bound, and
-  the bounds sum to §6.3's 1,844, below MAX_RELATION_EDGES;
+  the bounds sum to 2,642 (§6.3's 1,844, and v1-design §6's sales and
+  routes), below MAX_RELATION_EDGES;
 - the dense planes on a copy with every cache stale scatter the same records,
   and write back what the token fill does, so either fill may come first;
 - the static planes are the tables' neighbors, homes, and ability hexes.
@@ -31,6 +32,7 @@ from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
 from g1889.entities.trains import TRAINS
 from g1889.entities.turn import TURN
+from g1889.routes.solver import best_routes_py
 from g1889.relations import (
     RelationId as REL,
     RelationSize,
@@ -61,6 +63,9 @@ BOUNDS = {
     (REL.REL_TRACK_LINK,): 232,
     (REL.REL_CANDIDATE_AT,): 15, (REL.REL_CANDIDATE_OF,): 15,
     (REL.REL_CANDIDATE_EXIT,): 90, (REL.REL_EXIT_OF,): 90,
+    # v1-design §6: a sale per player and corp, and a route hex per corp and hex.
+    (REL.REL_SOLD_THIS_SR,): 35, (REL.REL_SOLD_BY,): 35,
+    (REL.REL_ROUTE,): 364, (REL.REL_ROUTE_OF,): 364,
 }
 
 
@@ -125,8 +130,12 @@ def _edges(state):
             if shares := PLAYERS[i].shares(state, c):
                 pair(REL.REL_PLAYER_HOLDS, _player(i), _corp(c))
                 pair(REL.REL_PLAYER_SHARES, _player(i), _corp(c), shares)
+            if PLAYERS[i].sold_mask(state) >> c & 1:
+                pair(REL.REL_SOLD_THIS_SR, _player(i), _corp(c))
         if (president := corp.president(state)) >= 0:
             pair(REL.REL_PRESIDES, _player(president), _corp(c))
+        for h in {h for route in best_routes_py(state, c) for h in route['hexes']}:
+            pair(REL.REL_ROUTE, _corp(c), _hex(h))
         for t in range(D.NUM_TRAIN_TYPES):
             if count := TRAINS.corp_trains(state, c, t):
                 pair(REL.REL_CORP_TRAINS, _corp(c), R.ROW_TRAIN + t, count)
@@ -181,9 +190,9 @@ def test_records_are_the_entity_relations(samples):
 
 def test_records_join_visible_tokens_within_their_bounds(samples):
     """Every record's query and key are visible rows, so the model drops none;
-    each group stays within its §6.1 bound; and the bounds sum to §6.3's
-    1,844, below MAX_RELATION_EDGES, which the largest count respects."""
-    assert sum(BOUNDS.values()) == 1844 < MAX_EDGES == 2048
+    each group stays within its bound; and the bounds sum to 2,642, below
+    MAX_RELATION_EDGES, which the largest count respects."""
+    assert sum(BOUNDS.values()) == 2642 < MAX_EDGES == 4096
     assert sorted(r for group in BOUNDS for r in group) == list(range(NUM_RELATIONS))
     largest = 0
     for row, max_players, records, count in samples:
@@ -260,3 +269,35 @@ def test_static_planes_follow_the_tables(max_players):
         assert nonzero(planes[relation]) == edges
         np.testing.assert_array_equal(planes[relation + 1], planes[relation].T)
     assert planes.max() == 1 and not planes[:, R.ROW_PLAYER:].any() and not planes[:, :, R.ROW_PLAYER:].any()
+
+
+# =============================================================================
+# SALES AND ROUTES (v1-design §6)
+# =============================================================================
+
+def test_sales_and_routes_are_what_the_tokens_show(samples):
+    """SOLD_THIS_SR is PLAYER 19-25 of layout 1, the sales the SR's end
+    clears, and ROUTE's hexes are those of routes that earn CORP 34, the
+    route max: a corp without a route has none."""
+    sales = routes = 0
+    for row, max_players, records, count in samples[::5]:
+        state = _state(row.copy())
+        tokens = _tokens(_state(row.copy()), max_players)
+        planes = _materialize(records, count, max_players)
+        num_players = TURN.num_players(state)
+        sold = planes[REL.REL_SOLD_THIS_SR, _player(0):_player(num_players), _corp(0):_corp(D.NUM_CORPS)]
+        np.testing.assert_array_equal(sold, tokens[_player(0):_player(num_players), 19:26])
+        np.testing.assert_array_equal(planes[REL.REL_SOLD_BY], planes[REL.REL_SOLD_THIS_SR].T)
+        np.testing.assert_array_equal(planes[REL.REL_ROUTE_OF], planes[REL.REL_ROUTE].T)
+        if TURN.round(state) != K.ROUND_STOCK:
+            assert not sold.any()
+        sales += int(sold.sum())
+        for c in range(D.NUM_CORPS):
+            on_route = np.flatnonzero(planes[REL.REL_ROUTE, _corp(c), _hex(0):_hex(D.NUM_HEXES)])
+            best = best_routes_py(state, c)
+            assert sum(route['revenue'] for route in best) == round(float(tokens[_corp(c), 34]) * 100)
+            assert bool(len(on_route)) == bool(best)
+            stops = {h for route in best for h in route['stops']}
+            assert stops <= set(on_route.tolist()) and len(on_route) >= 2 * bool(best)
+            routes += len(on_route)
+    assert sales > 100 and routes > 1000
