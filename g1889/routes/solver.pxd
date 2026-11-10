@@ -4,9 +4,25 @@ its trains, and the routes that earn it.
 ``solve_routes`` is exact and needs no GIL, so extraction can run it in a
 nogil prologue; ``out`` may be NULL when only the revenue is wanted.
 ``max_route_revenue`` (``route_max`` without the GIL) caches the result in
-the corp's ``route_cache`` behind ``route_dirty``, which MAP, TRAINS, and
-PHASE writes set (``entities/corp.pxd``). ``best_routes_py`` returns the
+the corp's ``route_cache``, and the hexes of the routes that earn it in
+``route_hexes`` (``route_hex``), behind ``route_dirty``, which MAP, TRAINS,
+and PHASE writes set (``entities/corp.pxd``). ``best_routes_py`` returns the
 routes for tests, analysis, and live play.
+
+Two hypothetical route maxes are cached beside it, behind ``hyp_dirty``
+(``routes_refresh_hypotheticals``; 1889/v1-design.md §5.9), each solved on a
+scratch copy of the row:
+
+- ``route_after_rust``: with no purchase, once the next phase that rusts a
+  rank has started (``next_rust_phase``; the phases before it start on the
+  way). The route max now when no rust is left, in phase D.
+- ``route_with_next``: with one more train of the cheapest type on sale
+  (``trains_cheapest_type``) and the phase that purchase starts
+  (``phase_on_train_bought``). The route max now when the corp has no room
+  under the train limit.
+
+Only extraction reads them. They go stale with the route cache, and when the
+cheapest train on sale changes type (``trains_set_depot``, ``trains_set_pool``).
 """
 
 from libc.stdint cimport int8_t
@@ -28,6 +44,16 @@ cdef struct RouteSet:
 
 cdef int solve_routes(GameState state, int corp, RouteSet* out) noexcept nogil
 cdef int route_max(GameState state, int corp) noexcept nogil
+cdef bint route_hex(GameState state, int corp, int hex) noexcept nogil
+
+# A corp's route max with one more train of ``train_type``, or with a D for a
+# traded ``trade_in`` (-1 for none), and the phase the purchase starts: tried
+# on ``scratch``, a state of ``state``'s capacity, which is left changed.
+cdef int route_max_after_purchase(GameState state, GameState scratch, int corp, int train_type,
+                                  int trade_in) noexcept nogil
+cdef void routes_refresh_hypotheticals(GameState state, GameState scratch, int corp) noexcept nogil
 
 cpdef int max_route_revenue(GameState state, int corp)
 cpdef list best_routes_py(GameState state, int corp)
+cpdef list route_hexes_py(GameState state, int corp)
+cpdef tuple route_hypotheticals_py(GameState state, int corp)

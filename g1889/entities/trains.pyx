@@ -4,8 +4,11 @@ Ruby's ``Depot`` keeps every train object and moves it between owners
 (``depot.rb``, ``Game#buy_train``, ``Game#rust``); the engine counts trains
 by type in the depot, the pool (Ruby's ``discarded``), and each corp. Every
 change to a corp's count goes through ``trains_set_count``, which makes the
-corp's route cache stale. A rusted train leaves play, so the counts of a
-rank that has rusted no longer add up to ``TRAIN_COUNT``.
+corp's route caches stale, and every change to the depot or the pool through
+``trains_set_depot`` and ``trains_set_pool``: when one changes which train is
+the cheapest on sale, every corp's route max with the next train goes stale
+(``route_with_next``, ``routes/solver.pxd``). A rusted train leaves play, so
+the counts of a rank that has rusted no longer add up to ``TRAIN_COUNT``.
 """
 
 from libc.stdint cimport int16_t
@@ -16,7 +19,7 @@ from g1889.data.tables cimport (
     TRAIN_TRADE_IN,
 )
 from g1889.entities.bank cimport BANK_ACCOUNT, Bank
-from g1889.entities.corp cimport invalidate_route
+from g1889.entities.corp cimport invalidate_all_hypotheticals, invalidate_route
 from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, TRAIN_FIELDS, GameState
 
 from g1889.entities import bank as _bank
@@ -117,9 +120,41 @@ cdef int trade_in_price(int train_type) noexcept nogil:
 
 
 cdef void trains_set_count(GameState state, int corp, int train_type, int count) noexcept nogil:
-    """Set a corp's count of one train type; the corp's route cache goes stale."""
+    """Set a corp's count of one train type; the corp's route caches go stale."""
     state._data[_corp_slot(corp, train_type)] = <int16_t>count
     invalidate_route(state, corp)
+
+
+cdef inline void _set_on_sale(GameState state, int slot, int count) noexcept nogil:
+    """Write a depot or pool count. If the cheapest train on sale is now of
+    another type, every corp's route max with the next train is stale."""
+    cdef int cheapest = trains_cheapest_type(state)
+    state._data[slot] = <int16_t>count
+    if trains_cheapest_type(state) != cheapest:
+        invalidate_all_hypotheticals(state)
+
+
+cdef void trains_set_depot(GameState state, int train_type, int count) noexcept nogil:
+    _set_on_sale(state, LAYOUT.trains_offset + TRAIN_FIELDS.depot + train_type, count)
+
+
+cdef void trains_set_pool(GameState state, int train_type, int count) noexcept nogil:
+    _set_on_sale(state, LAYOUT.trains_offset + TRAIN_FIELDS.pool + train_type, count)
+
+
+cdef void trains_rust(GameState state, int train_type) noexcept nogil:
+    """Every train of each rank that rusts on ``train_type`` leaves play:
+    the corps', the pool's, and any left in the depot (``rust_trains!``)."""
+    cdef int r, c
+    for r in range(<int>NUM_TRAIN_TYPES):
+        if TRAIN_RUSTS_ON[r] != train_type:
+            continue
+        for c in range(<int>NUM_CORPS):
+            if corp_train_count(state, c, r):
+                trains_set_count(state, c, r, 0)
+        trains_set_pool(state, r, 0)
+        if depot_count(state, r) > 0:
+            trains_set_depot(state, r, 0)
 
 
 cdef inline int _check(int train_type, int count, int lowest) except -1:
@@ -135,14 +170,14 @@ cdef class Trains:
 
     cpdef void set_depot(self, GameState state, int train_type, int count):
         _check(train_type, count, -1)
-        state._data[LAYOUT.trains_offset + TRAIN_FIELDS.depot + train_type] = <int16_t>count
+        trains_set_depot(state, train_type, count)
 
     cpdef int pool(self, GameState state, int train_type):
         return pool_count(state, train_type)
 
     cpdef void set_pool(self, GameState state, int train_type, int count):
         _check(train_type, count, 0)
-        state._data[LAYOUT.trains_offset + TRAIN_FIELDS.pool + train_type] = <int16_t>count
+        trains_set_pool(state, train_type, count)
 
     cpdef int corp_trains(self, GameState state, int corp, int train_type):
         return corp_train_count(state, corp, train_type)
@@ -227,19 +262,9 @@ cdef class Trains:
         self.set_pool(state, train_type, pool_count(state, train_type) + 1)
 
     cpdef void rust(self, GameState state, int train_type):
-        """Every train of each rank that rusts on ``train_type`` leaves play:
-        the corps', the pool's, and any left in the depot (``rust_trains!``)."""
-        cdef int r, c
+        """Rust the ranks that rust on ``train_type`` (``trains_rust``)."""
         _check(train_type, 0, 0)
-        for r in range(<int>NUM_TRAIN_TYPES):
-            if TRAIN_RUSTS_ON[r] != train_type:
-                continue
-            for c in range(<int>NUM_CORPS):
-                if corp_train_count(state, c, r):
-                    self.set_corp_trains(state, c, r, 0)
-            self.set_pool(state, r, 0)
-            if depot_count(state, r) > 0:
-                self.set_depot(state, r, 0)
+        trains_rust(state, train_type)
 
 
 TRAINS = Trains()

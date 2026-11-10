@@ -12,6 +12,7 @@ cdef int private_owner(GameState state, int private) noexcept nogil
 cdef int private_flags(GameState state, int private) noexcept nogil
 cdef int private_revenue(GameState state, int private) noexcept nogil
 cdef bint private_blocks_hex(GameState state, int hex) noexcept nogil
+cdef void private_close(GameState state, int private) noexcept nogil
 
 # Auction (Ruby's WaterfallAuction): unsold privates sell top-down.
 cdef int topmost_private(GameState state) noexcept nogil

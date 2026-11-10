@@ -229,7 +229,8 @@ class TestTrackTileToken:
         hold(state, IR, {1: 6})
         enter_operating_round(state)
         assert order(state) == [KO, IR]
-        GRAPH.refresh(state, IR)
+        for corp in (KO, IR):
+            GRAPH.refresh(state, corp)
         cash, bank, nine = CORPS[KO].cash(state), BANK.cash(state), TILE['9']
         assert GRAPH.sides_reached(state, KO, HEX['K8']) == 0
         apply_and_verify(state, track_slot('K6'))
@@ -240,7 +241,7 @@ class TestTrackTileToken:
         assert (MAP.tile(state, HEX['K6']), MAP.rotation(state, HEX['K6'])) == (nine, 0)
         assert MAP.supply(state, nine) == D.TILE_COUNT[nine] - 1 and TURN.pending_hex(state) == -1
         assert CORPS[KO].cash(state) == cash - 80 and BANK.cash(state) == bank + 80  # K6's terrain
-        assert GRAPH.dirty(result.state_at(1), IR)  # the lay made every corp's connectivity stale
+        assert not GRAPH.dirty(result.state_at(1), IR)  # the lay touches KO's network only: IR's is far west
         assert GRAPH.sides_reached(state, KO, HEX['K8']) == 1 << 3  # the straight reaches K8's north side
 
     def test_a_hex_with_one_candidate_forces_tile(self):

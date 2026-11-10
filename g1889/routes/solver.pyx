@@ -51,7 +51,7 @@ from the first one's tree (its root at the anchor) on; every pair is still
 tried once at least.
 """
 
-from libc.stdint cimport int8_t, int16_t, int32_t, uint32_t, uint64_t
+from libc.stdint cimport int8_t, int16_t, int32_t, uint16_t, uint32_t, uint64_t
 from libc.stdio cimport fprintf, stderr
 from libc.stdlib cimport abort, free, malloc, realloc
 from libc.string cimport memcpy, memset
@@ -61,9 +61,13 @@ from g1889.data.tables cimport (
     NUM_TRAIN_TYPES, PAIR_A, PAIR_B, RC_HEX, RC_OFFBOARD, TILE_PATH_COUNT, TILE_PATHS, TILE_RC, TRAIN_DISTANCE,
 )
 from g1889.entities.hexmap cimport hex_rotation, hex_tile, hex_tokens, map_blocked_for, map_revenue
-from g1889.entities.phase cimport game_phase
-from g1889.entities.trains cimport corp_train_count
-from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, GameState
+from g1889.entities.phase cimport game_phase, next_rust_phase, phase_advance, phase_on_train_bought
+from g1889.entities.trains cimport (
+    corp_train_count, corp_train_total, pool_count, trains_cheapest_type, trains_limit, trains_set_count,
+    trains_set_pool,
+)
+from g1889.entities.turn cimport turn_num_players
+from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, ROUTE_HEX_WORDS, GameState, copy_row
 
 
 cdef enum:
@@ -607,16 +611,77 @@ cdef int solve_routes(GameState state, int corp, RouteSet* out) noexcept nogil:
 # CACHE AND PYTHON ENTRY POINTS
 # =============================================================================
 
+cdef inline int _corp_slot(int corp, int field) noexcept nogil:
+    return LAYOUT.corps_offset + corp * CORP_FIELDS.size + field
+
+
 cdef int route_max(GameState state, int corp) noexcept nogil:
     """The corp's maximum revenue, solved again only when ``route_dirty`` marks
-    its ``route_cache`` stale."""
+    its ``route_cache`` stale; the solve also writes ``route_hexes``."""
     cdef int dirty_slot = LAYOUT.global_offset + GLOBALS.route_dirty
-    cdef int cache_slot = LAYOUT.corps_offset + corp * CORP_FIELDS.size + CORP_FIELDS.route_cache
+    cdef int cache_slot = _corp_slot(corp, CORP_FIELDS.route_cache)
+    cdef int hexes_slot = _corp_slot(corp, CORP_FIELDS.route_hexes)
     cdef int dirty = state._data[dirty_slot]
+    cdef uint16_t words[4]          # ROUTE_HEX_WORDS
+    cdef RouteSet routes
+    cdef int i, k, hex
     if dirty >> corp & 1:
-        state._data[cache_slot] = <int16_t>solve_routes(state, corp, NULL)
+        state._data[cache_slot] = <int16_t>solve_routes(state, corp, &routes)
+        memset(words, 0, sizeof(words))
+        for i in range(routes.num_routes):
+            for k in range(routes.num_hexes[i]):
+                hex = routes.hexes[i][k]
+                words[hex >> 4] |= <uint16_t>(1 << (hex & 15))
+        for i in range(<int>ROUTE_HEX_WORDS):
+            state._data[hexes_slot + i] = <int16_t>words[i]
         state._data[dirty_slot] = <int16_t>(dirty & ~(1 << corp))
     return state._data[cache_slot]
+
+
+cdef bint route_hex(GameState state, int corp, int hex) noexcept nogil:
+    """Whether the hex is on one of the routes that earn the corp's route
+    max, read raw from ``route_hexes``: fresh after ``route_max``."""
+    return <uint16_t>state._data[_corp_slot(corp, CORP_FIELDS.route_hexes) + (hex >> 4)] >> (hex & 15) & 1
+
+
+cdef int route_max_after_purchase(GameState state, GameState scratch, int corp, int train_type,
+                                  int trade_in) noexcept nogil:
+    """See solver.pxd. The purchase is the engine's: the traded train goes to
+    the pool first (``TRAINS.trade_in_for_d``), where a 4 rusts as phase D
+    begins, then ``phase_on_train_bought``. The caller keeps the corp within
+    ``MAX_ROUTES`` trains."""
+    copy_row(scratch, state)
+    if trade_in >= 0:
+        trains_set_count(scratch, corp, trade_in, corp_train_count(scratch, corp, trade_in) - 1)
+        trains_set_pool(scratch, trade_in, pool_count(scratch, trade_in) + 1)
+    trains_set_count(scratch, corp, train_type, corp_train_count(scratch, corp, train_type) + 1)
+    phase_on_train_bought(scratch, train_type)
+    return solve_routes(scratch, corp, NULL)
+
+
+cdef void routes_refresh_hypotheticals(GameState state, GameState scratch, int corp) noexcept nogil:
+    """Recompute the corp's ``route_after_rust`` and ``route_with_next`` if
+    ``hyp_dirty`` marks them stale (solver.pxd), each on ``scratch``, a state
+    of ``state``'s capacity. Refreshes the route cache first."""
+    cdef int dirty_slot = LAYOUT.global_offset + GLOBALS.hyp_dirty
+    cdef int dirty = state._data[dirty_slot]
+    cdef int now = route_max(state, corp)
+    cdef int rust = next_rust_phase(game_phase(state))
+    cdef int next_type = trains_cheapest_type(state)
+    cdef int held = corp_train_total(state, corp)
+    cdef int after_rust = now, with_next = now
+    if not (dirty >> corp & 1):
+        return
+    if rust >= 0 and held:
+        copy_row(scratch, state)
+        while game_phase(scratch) < rust:
+            phase_advance(scratch)
+        after_rust = solve_routes(scratch, corp, NULL)
+    if next_type >= 0 and held < trains_limit(state):
+        with_next = route_max_after_purchase(state, scratch, corp, next_type, -1)
+    state._data[_corp_slot(corp, CORP_FIELDS.route_after_rust)] = <int16_t>after_rust
+    state._data[_corp_slot(corp, CORP_FIELDS.route_with_next)] = <int16_t>with_next
+    state._data[dirty_slot] = <int16_t>(dirty & ~(1 << corp))
 
 
 cdef inline int _check(int corp) except -1:
@@ -647,10 +712,28 @@ cpdef list best_routes_py(GameState state, int corp):
     return routes
 
 
+cpdef list route_hexes_py(GameState state, int corp):
+    """The hexes on the routes that earn the corp's route max, from the cache."""
+    _check(corp)
+    route_max(state, corp)
+    return [h for h in range(<int>NUM_HEXES) if route_hex(state, corp, h)]
+
+
+cpdef tuple route_hypotheticals_py(GameState state, int corp):
+    """The corp's (route max after the next rust, route max with the next
+    train), from the cache (``routes_refresh_hypotheticals``)."""
+    _check(corp)
+    cdef GameState scratch = GameState.from_array(state._array, turn_num_players(state), state.max_players)
+    routes_refresh_hypotheticals(state, scratch, corp)
+    return (<int>state._data[_corp_slot(corp, CORP_FIELDS.route_after_rust)],
+            <int>state._data[_corp_slot(corp, CORP_FIELDS.route_with_next)])
+
+
 # The solver's arrays are sized with literals: by the largest train limit
 # (RouteSet, _Node, _Search), and by NUM_RCS, whose centers fit a 32-bit mask.
 assert <int>NUM_RCS == 25 and <int>MAX_ROUTE_HEXES == 104
 assert 64 * <int>EDGE_WORDS >= <int>NUM_HEXES * <int>NUM_SIDES
+assert <int>ROUTE_HEX_WORDS == 4  # route_max's buffer
 
 # Python mirrors: a bare assignment would be shadowed by the cdef names.
 for _name, _member in RouteLimits.__members__.items():

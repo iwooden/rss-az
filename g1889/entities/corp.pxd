@@ -2,10 +2,14 @@
 
 MARKET owns ``market_row``/``market_col``/``market_stamp`` and TRAINS the
 train counts, and MAP's token placement lowers ``tokens_left``.
-``route_cache`` and ``route_available`` are caches behind the global
-``route_dirty`` and ``conn_dirty`` masks: GRAPH fills and reads
-``route_available`` (``GRAPH.route_available``), and the route solver owns
-``route_cache``.
+``route_available``, ``route_cache`` with ``route_hexes``, and
+``route_after_rust`` with ``route_with_next`` are caches behind the global
+``conn_dirty``, ``route_dirty``, and ``hyp_dirty`` masks: GRAPH fills and
+reads ``route_available`` (``GRAPH.route_available``), and the route solver
+owns the rest (``routes/solver.pxd``). Whatever makes a corp's route cache
+stale makes its two hypothetical route maxes stale too, so the invalidators
+here set both masks; ``invalidate_all_hypotheticals`` is for the one thing
+that changes only those, the next train.
 
 Shares are 10% units, and the President's Certificate counts 2. Ruby moves
 certificates in a presidency change, but each holder's units stay the same
@@ -36,7 +40,9 @@ cdef int corp_max_sale(GameState state, int player, int corp) noexcept nogil
 cdef int corp_emergency_sale(GameState state, int player, int corp) noexcept nogil
 
 cdef void invalidate_route(GameState state, int corp) noexcept nogil
+cdef void invalidate_routes(GameState state, int mask) noexcept nogil
 cdef void invalidate_all_routes(GameState state) noexcept nogil
+cdef void invalidate_all_hypotheticals(GameState state) noexcept nogil
 
 
 cdef class Corporation:
@@ -60,6 +66,7 @@ cdef class Corporation:
     cpdef int last_revenue(self, GameState state)
     cpdef void set_last_revenue(self, GameState state, int revenue)
     cpdef bint route_dirty(self, GameState state)
+    cpdef bint hyp_dirty(self, GameState state)
 
     # Stock round
     cdef void _move_to_player(self, GameState state, int player, int shares, int price) except *

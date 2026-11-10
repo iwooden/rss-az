@@ -51,7 +51,7 @@ from g1889.entities.phase import PHASE
 from g1889.entities.player import PLAYERS
 from g1889.entities.private import PRIVATES
 from g1889.entities.turn import TURN
-from g1889.routes.solver import max_route_revenue
+from g1889.routes.solver import max_route_revenue, route_hypotheticals_py
 from g1889.state import GameState, get_corp_fields, get_global_fields, get_layout
 
 from tests.g1889.phases.conftest import apply_and_verify, exact_id, legal_ids, new_game, policy_ids
@@ -96,23 +96,30 @@ def _choose(state, rng, flags):
 
 
 def _assert_fresh_caches(state, msg):
-    """Every connectivity and route cache marked clean equals a recomputation."""
+    """Every connectivity, route, and hypothetical-route cache marked clean
+    equals a recomputation."""
     layout = get_layout(state.max_players)
     row = state._array
     fresh = GameState.from_array(row, TURN.num_players(state), max_players=state.max_players)
-    for field in (GLOBALS.conn_dirty, GLOBALS.route_dirty):  # test setup: drop every cache
+    for field in (GLOBALS.conn_dirty, GLOBALS.route_dirty, GLOBALS.hyp_dirty):  # test setup: drop every cache
         fresh._array[layout.global_offset + field] = ALL_CORPS
-    dirty = int(row[layout.global_offset + GLOBALS.conn_dirty])
-    route_dirty = int(row[layout.global_offset + GLOBALS.route_dirty])
+    dirty, route_dirty, hyp_dirty = (int(row[layout.global_offset + field])
+                                     for field in (GLOBALS.conn_dirty, GLOBALS.route_dirty, GLOBALS.hyp_dirty))
+    assert not route_dirty & ~hyp_dirty, f'{msg}: a stale route with its hypotheticals marked fresh'
     for c in range(D.NUM_CORPS):
+        corp = layout.corps_offset + c * CORP_FIELDS.size
         if not route_dirty >> c & 1:
-            cache = layout.corps_offset + c * CORP_FIELDS.size + CORP_FIELDS.route_cache
-            assert row[cache] == max_route_revenue(fresh, c), f'{msg}: corp {c} route cache is stale'
+            routes = slice(corp + CORP_FIELDS.route_hexes, corp + CORP_FIELDS.route_after_rust)
+            assert row[corp + CORP_FIELDS.route_cache] == max_route_revenue(fresh, c) \
+                and np.array_equal(row[routes], fresh._array[routes]), f'{msg}: corp {c} route cache is stale'
+        if not hyp_dirty >> c & 1:
+            cached = (row[corp + CORP_FIELDS.route_after_rust], row[corp + CORP_FIELDS.route_with_next])
+            assert cached == route_hypotheticals_py(fresh, c), f'{msg}: corp {c} hypothetical routes are stale'
         if dirty >> c & 1:
             continue
         GRAPH.refresh(fresh, c)
         graph = slice(layout.graph_offset + c * D.NUM_HEXES, layout.graph_offset + (c + 1) * D.NUM_HEXES)
-        route = layout.corps_offset + c * CORP_FIELDS.size + CORP_FIELDS.route_available
+        route = corp + CORP_FIELDS.route_available
         assert np.array_equal(row[graph], fresh._array[graph]) and row[route] == fresh._array[route], \
             f'{msg}: corp {c} graph cache is stale'
 

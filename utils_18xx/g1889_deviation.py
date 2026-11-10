@@ -90,7 +90,7 @@ FIELDS = get_global_fields()
 GLOBALS = get_layout(D.MIN_PLAYERS).global_offset  # the same for every player count
 ROUND, GAME_PHASE, TURN_NUM, OR_NUM = (GLOBALS + f for f in (FIELDS.round, FIELDS.game_phase, FIELDS.turn, FIELDS.or_num))
 # The global block, less the cache flags a search's extraction clears: where a game is.
-WHERE = np.setdiff1d(np.arange(GLOBALS, GLOBALS + FIELDS.size), [GLOBALS + FIELDS.conn_dirty, GLOBALS + FIELDS.route_dirty])
+WHERE = np.setdiff1d(np.arange(GLOBALS, GLOBALS + FIELDS.size), [GLOBALS + getattr(FIELDS, f) for f in FIELDS._fields if f.endswith("_dirty")])
 
 
 # =============================================================================

@@ -87,13 +87,25 @@ cdef int corp_token_price(GameState state, int corp) noexcept nogil:
     return CORP_TOKEN_PRICE[corp][CORP_TOKENS[corp] - left] if left > 0 else 0
 
 
+cdef void invalidate_routes(GameState state, int mask) noexcept nogil:
+    """Mark the route caches of the corps in ``mask`` stale, and with them
+    their hypothetical route maxes, which depend on everything a route does."""
+    cdef int16_t* g = state._data + LAYOUT.global_offset
+    g[GLOBALS.route_dirty] = <int16_t>(g[GLOBALS.route_dirty] | mask)
+    g[GLOBALS.hyp_dirty] = <int16_t>(g[GLOBALS.hyp_dirty] | mask)
+
+
 cdef void invalidate_route(GameState state, int corp) noexcept nogil:
-    cdef int slot = LAYOUT.global_offset + GLOBALS.route_dirty
-    state._data[slot] = <int16_t>(state._data[slot] | (1 << corp))
+    invalidate_routes(state, 1 << corp)
 
 
 cdef void invalidate_all_routes(GameState state) noexcept nogil:
-    state._data[LAYOUT.global_offset + GLOBALS.route_dirty] = <int16_t>((1 << <int>NUM_CORPS) - 1)
+    invalidate_routes(state, (1 << <int>NUM_CORPS) - 1)
+
+
+cdef void invalidate_all_hypotheticals(GameState state) noexcept nogil:
+    """The next train changed: every corp's route max with it is stale."""
+    state._data[LAYOUT.global_offset + GLOBALS.hyp_dirty] = <int16_t>((1 << <int>NUM_CORPS) - 1)
 
 
 # =============================================================================
@@ -231,6 +243,9 @@ cdef class Corporation:
 
     cpdef bint route_dirty(self, GameState state):
         return (state._data[LAYOUT.global_offset + GLOBALS.route_dirty] >> self.corp_id) & 1
+
+    cpdef bint hyp_dirty(self, GameState state):
+        return (state._data[LAYOUT.global_offset + GLOBALS.hyp_dirty] >> self.corp_id) & 1
 
     # Stock round. Every payment goes to or from the bank (rules §6.2).
 

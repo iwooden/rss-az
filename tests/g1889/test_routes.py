@@ -20,7 +20,9 @@ import g1889.data.tables as D
 from g1889.entities.hexmap import MAP
 from g1889.entities.phase import PHASE
 from g1889.entities.trains import TRAINS
-from g1889.routes.solver import MAX_ROUTES, best_routes_py, max_route_revenue
+from g1889.routes.solver import (
+    MAX_ROUTES, best_routes_py, max_route_revenue, route_hexes_py, route_hypotheticals_py,
+)
 from g1889.state import GameState, get_corp_fields, get_global_fields, get_layout
 
 from tests.g1889.route_brute import normal
@@ -173,11 +175,85 @@ def test_the_route_cache_goes_stale_with_the_map_trains_and_phase():
 
     set_trains(state, KO, [D.TRAIN_2, D.TRAIN_3])  # the corp's trains: its own cache only
     assert _dirty(state) == 1 << KO and max_route_revenue(state, KO) == 50
-    for hex_id, tile, rotation in TO_KOTOHIRA:      # lays: every corp
+    for hex_id, tile, rotation in TO_KOTOHIRA:      # lays: the corps whose track touches the hex
         MAP.lay(state, HEX[hex_id], TILE[tile], rotation)
-    assert _dirty(state) == ALL_CORPS and max_route_revenue(state, KO) == 130
-    max_route_revenue(state, SR)
-    MAP.place_token(state, HEX['I2'], SR)          # tokens: every corp
-    assert _dirty(state) == ALL_CORPS and max_route_revenue(state, KO) == 130
+    assert _dirty(state) == 1 << KO and max_route_revenue(state, KO) == 130
+    MAP.place_token(state, HEX['I2'], SR)          # tokens: their corp, and those whose track faces the hex
+    assert _dirty(state) == 1 << SR | 1 << KO and max_route_revenue(state, KO) == 130
+    MAP.place_token(state, HEX['E2'], IR)          # far from KO's track: IR alone
+    assert _dirty(state) == 1 << SR | 1 << IR
+    assert (max_route_revenue(state, SR), max_route_revenue(state, IR), _dirty(state)) == (0, 0, 0)
     PHASE.set_current(state, D.GAME_PHASE_5)        # phases: every corp
     assert _dirty(state) == ALL_CORPS and max_route_revenue(state, KO) == 150
+
+
+def _hyp_dirty(state):
+    return int(state._array[get_layout(state.max_players).global_offset + get_global_fields().hyp_dirty])
+
+
+def test_the_route_hexes_are_those_of_the_best_routes():
+    """``route_hexes``, cached with the route max: the union of the routes' hexes."""
+    state = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=[D.TRAIN_2, D.TRAIN_2])
+    expected = sorted({h for route in best_routes_py(state, KO) for h in route['hexes']})
+    assert route_hexes_py(state, KO) == expected == sorted(HEX[h] for h in ('J1', 'J3', 'K4', 'J5'))
+    assert route_hexes_py(state, AR) == []
+    set_trains(state, KO, [D.TRAIN_2])  # one train: the better route alone, to Sakaide
+    assert route_hexes_py(state, KO) == sorted(HEX[h] for h in ('J1', 'J3', 'K4'))
+    set_trains(state, KO, [D.TRAIN_3])  # a 3 reaches Kotohira past the town
+    assert route_hexes_py(state, KO) == sorted(HEX[h] for h in ('K4', 'J5', 'I4'))
+
+
+@pytest.mark.parametrize('phase, trains, rusted, rust_phase', [
+    (D.GAME_PHASE_2, [D.TRAIN_2, D.TRAIN_2], [], D.GAME_PHASE_4),           # the 2s rust at phase 4
+    (D.GAME_PHASE_3, [D.TRAIN_2, D.TRAIN_3], [D.TRAIN_3], D.GAME_PHASE_4),
+    (D.GAME_PHASE_4, [D.TRAIN_3, D.TRAIN_4], [D.TRAIN_4], D.GAME_PHASE_6),  # the 3s at phase 6, past phase 5
+    (D.GAME_PHASE_6, [D.TRAIN_4, D.TRAIN_6], [D.TRAIN_6], D.GAME_PHASE_D),  # the 4s at phase D
+    (D.GAME_PHASE_D, [D.TRAIN_6, D.TRAIN_D], [D.TRAIN_6, D.TRAIN_D], D.GAME_PHASE_D),  # nothing left to rust
+])
+def test_the_route_max_after_the_next_rust(phase, trains, rusted, rust_phase):
+    """``route_after_rust``: the trains that survive the next rust, at that
+    phase's revenues (the offboard pays more from phase 5)."""
+    state = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=trains, phase=phase)
+    later = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=rusted, phase=rust_phase)
+    assert route_hypotheticals_py(state, KO)[0] == max_route_revenue(later, KO)
+    assert route_hypotheticals_py(state, AR) == (0, 0)
+
+
+def test_the_route_max_with_the_next_train():
+    """``route_with_next``: one more of the cheapest train on sale, with the
+    phase its purchase starts; the route max now without room for it."""
+    state = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=[D.TRAIN_2])
+    more = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=[D.TRAIN_2, D.TRAIN_2])
+    assert TRAINS.cheapest_type(state) == D.TRAIN_2
+    assert route_hypotheticals_py(state, KO)[1] == max_route_revenue(more, KO) > max_route_revenue(state, KO)
+    # The first 4 starts phase 4, where the 2 rusts: the 4 runs alone.
+    state = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=[D.TRAIN_2, D.TRAIN_3], phase=D.GAME_PHASE_3)
+    for t in (D.TRAIN_2, D.TRAIN_3):
+        TRAINS.set_depot(state, t, 0)
+    after = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=[D.TRAIN_3, D.TRAIN_4], phase=D.GAME_PHASE_4)
+    assert TRAINS.cheapest_type(state) == D.TRAIN_4
+    assert route_hypotheticals_py(state, KO)[1] == max_route_revenue(after, KO)
+    # At the limit (two trains from phase 5) there is nothing to buy.
+    state = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=[D.TRAIN_4, D.TRAIN_5], phase=D.GAME_PHASE_5)
+    assert route_hypotheticals_py(state, KO)[1] == max_route_revenue(state, KO)
+
+
+def test_the_hypothetical_route_maxes_go_stale_with_the_routes_and_the_next_train():
+    state = network(*TO_SAKAIDE, *TO_KOTOHIRA, trains=[D.TRAIN_2])
+    for c in range(D.NUM_CORPS):
+        route_hypotheticals_py(state, c)
+    assert _hyp_dirty(state) == _dirty(state) == 0
+    set_trains(state, KO, [D.TRAIN_2, D.TRAIN_2])               # whatever makes a route stale
+    assert _hyp_dirty(state) == _dirty(state) == 1 << KO
+    route_hypotheticals_py(state, KO)
+    TRAINS.set_depot(state, D.TRAIN_2, TRAINS.depot(state, D.TRAIN_2) - 1)  # a copy sold: the same next train
+    assert _hyp_dirty(state) == 0
+    with_two = route_hypotheticals_py(state, KO)[1]
+    TRAINS.set_depot(state, D.TRAIN_2, 0)                        # the last: the next train is a 3
+    assert TRAINS.cheapest_type(state) == D.TRAIN_3
+    assert _hyp_dirty(state) == ALL_CORPS and _dirty(state) == 0
+    assert route_hypotheticals_py(state, KO)[1] > with_two
+    for c in range(D.NUM_CORPS):
+        route_hypotheticals_py(state, c)
+    TRAINS.set_pool(state, D.TRAIN_2, 1)                         # a discarded 2 is the cheapest again
+    assert _hyp_dirty(state) == ALL_CORPS and route_hypotheticals_py(state, KO)[1] == with_two

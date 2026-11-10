@@ -190,11 +190,13 @@ def _candidate_count(state):
 
 def _cache_slots(row):
     """The slots extraction writes back: the graph block, each corp's route
-    cache and ``route_available``, and the two dirty masks."""
+    cache, route hexes, and ``route_available``, and their two dirty masks.
+    Layout 1 leaves the hypothetical route maxes and ``hyp_dirty`` alone."""
     mask = np.zeros(row.shape, bool)
     mask[LAYOUT.graph_offset:LAYOUT.graph_offset + D.NUM_CORPS * D.NUM_HEXES] = True
     for c in range(D.NUM_CORPS):
-        for field in (CORP_FIELDS.route_cache, CORP_FIELDS.route_available):
+        for field in (CORP_FIELDS.route_cache, CORP_FIELDS.route_available,
+                      *range(CORP_FIELDS.route_hexes, CORP_FIELDS.route_after_rust)):
             mask[LAYOUT.corps_offset + c * CORP_FIELDS.size + field] = True
     for field in (GLOBALS.conn_dirty, GLOBALS.route_dirty):
         mask[LAYOUT.global_offset + field] = True

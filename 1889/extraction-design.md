@@ -121,8 +121,8 @@ mirror (engine-design §1):
 
 | Module | Addition | Reused by |
 |---|---|---|
-| `entities/hexmap` | `map_put_tile(state, hex, tile, rotation)`: supply exchange, canonical rotation, `invalidate_connectivity` (`hexmap.pyx:47`) | `MAP.lay` after its asserts (`hexmap.pyx:204-218`) |
-| `entities/hexmap` | `map_put_token(state, hex, corp)`: `tokens_left` − 1, the mask bit | `MAP.place_token` (`:228-237`) |
+| `entities/hexmap` | `map_put_tile(state, hex, tile, rotation, touch)`: supply exchange, canonical rotation, and the caches of the corps in `touch` marked stale (`map_touch_mask` of the hex before the lay; v1's step 9.6, every corp until then) | `MAP.lay` after its asserts |
+| `entities/hexmap` | `map_put_token(state, hex, corp, touch)`: `tokens_left` − 1, the mask bit; marks `touch` and the corp | `MAP.place_token` |
 | `entities/trains` | `trains_set_count(state, corp, type, count)` | `TRAINS.set_corp_trains` (`trains.pyx:144-149`) |
 | `entities/market` | `market_moved(row, col, move, steps, int* row, int* col)`, pure | `MARKET.move_*` (`market.pyx:113-146`) |
 | `entities/turn`, `phases/stock` | `sr_bought` holds the bought or parred corp + 1 (0 for none), which `_acted` records (`stock.pyx:84-90`); `turn_sr_bought_corp(state)`, −1 for none | `turn_sr_bought`'s callers, unchanged |
@@ -182,7 +182,8 @@ has hypotheticals, and none if no row has (a copy of the row through
 `GameState.from_array`: 0.6 µs). For each hypothetical, nogil code
 copies the row in, applies the change through Section 3's primitives, and
 calls `graph_refresh`, `route_max`, or `lay_candidates` on it. A lay marks
-every corp stale (`hexmap.pyx:47-49`), so the scratch caches are recomputed.
+the corps it touches stale (every corp, until v1's step 9.6; engine-design
+§4), so their scratch caches are recomputed.
 The live row is never touched beyond its own caches. The solver aborts above
 `MAX_ROUTES` (4) trains (`solver.pyx:560-562`), so a hypothetical train is
 added only to a corp holding fewer than 4.

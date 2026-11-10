@@ -1,6 +1,8 @@
 """MAP: each hex's tile, canonical rotation, and token mask, and the tile supply.
 
-Any change to the map makes every corp's connectivity and routes stale.
+A lay or a token makes stale the connectivity and routes of the corps whose
+networks touch the hex (``map_touch_mask``), and a token its own corp's; the
+raw setters, which may put anything anywhere, every corp's.
 
 Home reservations are implicit (state.pxd): a hex whose ``HEX_HOME_CORP`` has
 not placed its token keeps one slot for it, as Ruby's ``City#reservations``
@@ -20,10 +22,17 @@ cdef uint32_t hex_paths(GameState state, int hex) noexcept nogil
 cdef int supply_count(GameState state, int tile) noexcept nogil
 cdef void invalidate_connectivity(GameState state) noexcept nogil
 
+# The corps whose connectivity or routes may depend on the hex, as a corp mask.
+cdef int map_touch_mask(GameState state, int hex) noexcept nogil
+
 # MAP.lay's and MAP.place_token's writes, without their checks, for nogil
-# callers that apply legal changes (extraction's hypotheticals).
-cdef void map_put_tile(GameState state, int hex, int tile, int rotation) noexcept nogil
-cdef void map_put_token(GameState state, int hex, int corp) noexcept nogil
+# callers that apply legal changes (extraction's hypotheticals). ``touch`` is
+# the hex's ``map_touch_mask`` before the change: the corps marked stale. A
+# caller that tries several changes on copies of one state computes it once,
+# and one that throws the changed state away may pass only the corps whose
+# caches it will read there.
+cdef void map_put_tile(GameState state, int hex, int tile, int rotation, int touch) noexcept nogil
+cdef void map_put_token(GameState state, int hex, int corp, int touch) noexcept nogil
 
 # Cities, revenue, and terrain
 cdef int map_token_count(GameState state, int hex) noexcept nogil
@@ -58,6 +67,7 @@ cdef class HexMap:
     cpdef int supply(self, GameState state, int tile)
     cpdef void set_supply(self, GameState state, int tile, int count)
     cpdef int conn_dirty(self, GameState state)
+    cpdef int touch_mask(self, GameState state, int hex)
 
     # Queries
     cpdef int free_slots(self, GameState state, int hex)

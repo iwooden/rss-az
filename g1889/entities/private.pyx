@@ -54,6 +54,11 @@ cdef bint private_blocks_hex(GameState state, int hex) noexcept nogil:
     return <int>OWNER_PLAYER <= owner < <int>OWNER_CORP
 
 
+cdef void private_close(GameState state, int private) noexcept nogil:
+    """PRIVATES[private].close's write, without its check, for nogil callers."""
+    state._data[_slot(private, PRIVATE_FIELDS.owner)] = <int16_t>OWNER_CLOSED
+
+
 # =============================================================================
 # AUCTION QUERIES
 # =============================================================================
@@ -140,7 +145,7 @@ cdef class Private:
         """Close this private (``Company#close!``): its revenue, abilities, and
         block end."""
         assert self.owner(state) >= <int>OWNER_UNSOLD, f"private {self.sym} is not open"
-        self.set_owner(state, <int>OWNER_CLOSED)
+        private_close(state, self.private_id)
 
     cpdef int revenue(self, GameState state):
         return private_revenue(state, self.private_id)

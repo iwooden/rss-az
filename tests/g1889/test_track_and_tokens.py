@@ -88,15 +88,56 @@ def test_lay_takes_from_and_returns_to_the_supply(state):
     assert [b - a for b, a in zip(before, after)] == [int(t == TILE['440']) for t in range(D.NUM_SUPPLY_TILES)]
 
 
-def test_lay_keeps_tokens_and_invalidates_every_corp(state):
-    takamatsu(state)
+def _refresh_all(state):
     for c in range(D.NUM_CORPS):
         GRAPH.refresh(state, c)
-    state._array[ROUTE_DIRTY_SLOT] = 0
+    state._array[ROUTE_DIRTY_SLOT] = 0  # test setup: the route caches too
+
+
+def _stale(state):
+    """(connectivity, routes) marked stale, as corp masks."""
+    return MAP.conn_dirty(state), sum(c.route_dirty(state) << i for i, c in enumerate(CORPS))
+
+
+def test_lay_keeps_tokens_and_invalidates_the_corps_it_touches(state):
+    takamatsu(state)
+    _refresh_all(state)
     assert MAP.conn_dirty(state) == 0
     lay(state, 'K4', '440', 0)
     assert MAP.tokens(state, HEX['K4']) == 1 << KO
-    assert MAP.conn_dirty(state) == ALL_CORPS and all(c.route_dirty(state) for c in CORPS)
+    assert _stale(state) == (1 << KO, 1 << KO)  # no other corp has a token on the map
+
+
+def test_a_lay_or_token_marks_the_corps_whose_track_touches_the_hex(state):
+    """``map_touch_mask``: a hex with a path the corp's track joins, or
+    across an open side of one, through the centers it may pass. A token
+    also marks its own corp, and the raw setters every corp."""
+    both = 1 << KO | 1 << AR
+    place(state, KO, 'K4')   # Takamatsu: track to K6, J5, and J3
+    place(state, AR, 'K8')   # Anan, two hexes south of K4: no track yet
+    assert [MAP.touch_mask(state, HEX[h]) for h in ('K4', 'J3', 'J5', 'K6', 'K8', 'I4')] == \
+        [1 << KO, 1 << KO, 1 << KO, 1 << KO, 1 << AR, 0]
+    _refresh_all(state)
+    lay(state, 'I4', '438', 0)                     # Kotohira, off both networks: nobody
+    assert _stale(state) == (0, 0)
+    lay(state, 'K6', '9', 0)                       # K4 - K6, facing K8: KO's track now reaches Anan's hex
+    assert _stale(state) == (1 << KO, 1 << KO)
+    assert (MAP.touch_mask(state, HEX['K6']), MAP.touch_mask(state, HEX['K8'])) == (1 << KO, both)
+    _refresh_all(state)
+    lay(state, 'K8', '5', 3)                       # Anan's track, facing K6: both
+    assert _stale(state) == (both, both)
+    _refresh_all(state)
+    lay(state, 'J5', '58', 2)                      # past Takamatsu, whose one slot KO fills: AR stops there
+    assert MAP.blocked_for(state, HEX['K4'], AR) and _stale(state) == (1 << KO, 1 << KO)
+    _refresh_all(state)
+    lay(state, 'K4', '440', 0)                     # a second slot: AR, which reached the full city, may pass
+    assert _stale(state) == (both, both) and MAP.touch_mask(state, HEX['J5']) == both
+    _refresh_all(state)
+    place(state, IR, 'E2')                         # a home token far away: its own corp
+    assert _stale(state) == (1 << IR, 1 << IR)
+    _refresh_all(state)
+    MAP.set_tokens(state, HEX['E2'], 1 << IR)      # the raw setters: every corp
+    assert _stale(state) == (ALL_CORPS, ALL_CORPS)
 
 
 def test_lay_rejects_what_the_upgrade_table_does_not_hold(state):
@@ -119,7 +160,7 @@ def test_place_and_buy_token(state):
     fund(state, KO, 50)
     MAP.buy_token(state, HEX['K4'], KO)  # the home token is free
     assert (CORPS[KO].tokens_left(state), CORPS[KO].cash(state)) == (1, 50)
-    assert MAP.tokens(state, HEX['K4']) == 1 << KO and MAP.conn_dirty(state) == ALL_CORPS
+    assert MAP.tokens(state, HEX['K4']) == 1 << KO and MAP.conn_dirty(state) >> KO & 1
     assert CORPS[KO].token_price(state) == D.CORP_TOKEN_PRICE[KO][1] == 40
     lay(state, 'J5', '58', 2)
     lay(state, 'I4', '438', 0)  # Kotohira: KO's track does not reach it, which buy_token does not check

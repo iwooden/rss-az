@@ -708,7 +708,7 @@ def test_g1889_conventions_match_engine_constants(g1889_case: Case):
         phase for phase in range(policy.num_phases) if g1889_decode(phase, 0).type == G1889_PASS
     }
     for max_players in range(3, 7):  # engine-design §3: 760 + 18 per seat
-        assert game.state_size(max_players) == g1889_layout(max_players).total_size == 760 + 18 * max_players
+        assert game.state_size(max_players) == g1889_layout(max_players).total_size == 803 + 18 * max_players
 
 
 def test_g1889_new_game_and_scratch_state_carry_the_flags(g1889_case: Case):

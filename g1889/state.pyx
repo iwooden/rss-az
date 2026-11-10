@@ -87,6 +87,7 @@ cdef GlobalOffsets compute_global_offsets() noexcept nogil:
     g.market_stamp = _take(&o, 1)
     g.conn_dirty = _take(&o, 1)
     g.route_dirty = _take(&o, 1)
+    g.hyp_dirty = _take(&o, 1)
     g.size = o
     return g
 
@@ -108,6 +109,9 @@ cdef CorpFieldOffsets compute_corp_field_offsets() noexcept nogil:
     c.last_revenue = _take(&o, 1)
     c.route_cache = _take(&o, 1)
     c.route_available = _take(&o, 1)
+    c.route_hexes = _take(&o, <int>ROUTE_HEX_WORDS)
+    c.route_after_rust = _take(&o, 1)
+    c.route_with_next = _take(&o, 1)
     c.size = o
     return c
 
@@ -152,6 +156,8 @@ cdef PlayerFieldOffsets compute_player_field_offsets() noexcept nogil:
     p.size = o
     return p
 
+
+assert 16 * <int>ROUTE_HEX_WORDS >= <int>NUM_HEXES
 
 LAYOUT = compute_layout()
 GLOBALS = compute_global_offsets()
@@ -442,8 +448,10 @@ cdef class GameState:
             MAP.set_supply(self, i, TILE_COUNT[i])
         for i in range(<int>NUM_TRAIN_TYPES):
             TRAINS.set_depot(self, i, TRAIN_COUNT[i])
-        # Caches start valid: no tokens and no trains. Phase 2 sets one OR per set;
-        # or_num is 1 outside ORs, as Ruby's round_num.
+        # Caches start valid: no tokens and no trains, so every route max is 0,
+        # whatever the next train (stocking the depot marked them stale). Phase
+        # 2 sets one OR per set; or_num is 1 outside ORs, as Ruby's round_num.
+        self._data[LAYOUT.global_offset + GLOBALS.hyp_dirty] = 0
         TURN.set_round(self, ROUND_AUCTION)
         TURN.set_step(self, STEP_AUCTION)
         TURN.set_turn(self, 1)

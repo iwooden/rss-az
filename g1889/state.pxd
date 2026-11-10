@@ -11,6 +11,10 @@ slots have no struct: tile t's copies are at ``supply_offset + t`` and the
 """
 
 from libc.stdint cimport int16_t
+from libc.string cimport memcpy
+
+cdef enum:
+    ROUTE_HEX_WORDS = 4            # 16 hexes a slot: NUM_HEXES is 52
 
 
 cdef struct StateLayout:
@@ -66,7 +70,8 @@ cdef struct GlobalOffsets:
     int ebuy_sold_any
     int market_stamp               # counter for the next market move
     int conn_dirty                 # corp mask
-    int route_dirty                # corp mask
+    int route_dirty                # corp mask: route_cache and route_hexes
+    int hyp_dirty                  # corp mask: route_after_rust and route_with_next
     int size
 
 
@@ -85,6 +90,9 @@ cdef struct CorpFieldOffsets:
     int last_revenue
     int route_cache
     int route_available
+    int route_hexes                # ROUTE_HEX_WORDS: the hexes of the best routes, 16 a slot
+    int route_after_rust           # the route max once the next rust has happened
+    int route_with_next            # the route max with the next train bought
     int size
 
 
@@ -154,3 +162,11 @@ cdef class GameState:
 
 # ``view`` repointed at a raw row, or a new state over it (the extraction batches).
 cdef GameState view_row(GameState view, object row)
+
+
+cdef inline void copy_row(GameState scratch, GameState state) noexcept nogil:
+    """Copy the row, caches included, into ``scratch``, a state of its
+    capacity: a hypothetical starts here, then changes the copy through the
+    entity primitives, which mark the caches it makes stale."""
+    memcpy(scratch._data, state._data,
+           (LAYOUT.players_offset + PLAYER_FIELDS.size * state.max_players) * sizeof(int16_t))

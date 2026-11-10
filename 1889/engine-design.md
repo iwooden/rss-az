@@ -160,12 +160,14 @@ exceeds it, the value moves to two slots behind the same API.
 | Stock round | `sr_bought`, `sr_sold_mask`, `sr_sold_then_bought` |
 | Operating round | `operating_corp`, `or_index`, `or_order[7]`, `route_revenue` |
 | Pending choice | `pending_hex` (TILE), `pending_corp` (PAR, SELL_AMOUNT, EMERGENCY_SELL_AMOUNT), `pending_private` (BID, PRIVATE_PRICE), `pending_train_source` (SELECT_TRAIN and TRAIN_PRICE: the depot, the pool, or corp c), `pending_train_type` (TRAIN_PRICE), `pending_seller` (ER_BONUS) |
-| Emergency, caches | `ebuy_sold_mask`, `ebuy_sold_any`, `market_stamp`, `conn_dirty`, `route_dirty` |
+| Emergency, caches | `ebuy_sold_mask`, `ebuy_sold_any`, `market_stamp`, `conn_dirty`, `route_dirty`, `hyp_dirty` |
 
-**Total: 760 + 18 × capacity int16.** That is 814, 832, 850, and 868 at
+**Total: 803 + 18 × capacity int16.** That is 857, 875, 893, and 911 at
 capacities 3, 4, 5, and 6. RSS v3 uses 755 at capacity 5. 6.10 added
 `pending_train_type`; until then `pending_train_source` held TRAIN_PRICE's
-train as 6c + t.
+train as 6c + t. v1's step 9.6 added `hyp_dirty` and six cache slots a corp
+(`route_hexes[4]`, `route_after_rust`, `route_with_next`): 43 slots, from
+760 + 18 × capacity.
 
 - **Tokens are a corp mask, not per-slot entries.** A hex holds at most one
   city, and slot identity has no rule effect. Free slots are
@@ -207,8 +209,25 @@ cert counts, and crowding are cheap enough to compute on demand.
 
 | Cache | Dirty bit | Invalidated by | Refresh |
 |---|---|---|---|
-| connectivity, `route_available` | `conn_dirty` | `MAP.lay` and `MAP.place_token`, for all corps | search from the corp's token nodes |
-| `route_cache` | `route_dirty` | the same, plus `TRAINS.set_corp_trains` for that corp (buys, discards, rusting) and `PHASE.set_current` for all | `route_max`, the route solver (Section 8) |
+| connectivity, `route_available` | `conn_dirty` | `MAP.lay` and `MAP.place_token`, for the corps whose track touches the hex (`map_touch_mask`) and the token's own; the raw setters `MAP.set_tile` and `MAP.set_tokens`, for all | search from the corp's token nodes |
+| `route_cache`, `route_hexes` (the hexes of the best routes) | `route_dirty` | the same, plus `TRAINS.set_corp_trains` for that corp (buys, discards, rusting) and `PHASE.set_current` for all | `route_max`, the route solver (Section 8) |
+| `route_after_rust`, `route_with_next` (v1-design §5.9) | `hyp_dirty` | whatever sets `route_dirty`, plus a depot or pool write that changes which train is the cheapest on sale, for all | `routes_refresh_hypotheticals`, on a scratch copy; extraction only |
+
+**Which corps a lay or token marks** (v1's step 9.6; until then, every
+corp). `map_touch_mask(state, hex)` searches, for every corp at once, the
+track joined to its tokens: every path at a token's city, then from each
+path the hex across each open side with that hex's paths at the facing
+side, and the other paths of a center the corp may pass. A hex is touched
+when one of its paths is taken or it lies across an open side of one. The
+search marks nothing off, so it covers what GRAPH's walks record and what
+the solver's routes can use, and it reads only touched hexes; a change to
+an untouched hex, by another corp, therefore leaves both computations
+reading what they read before. The argument is spelled out in
+`entities/hexmap.pyx`; `tests/g1889/test_cache_purity.py` checks it along
+whole games. GRAPH's own entries are not used for this: GRAPH replays
+Ruby's walk, marks included, and nothing shows that walk reaches every hex
+the solver can route through. On the human games the search touches 0.4%
+more (corp, hex) pairs than GRAPH reaches.
 
 **Connectivity** is `Graph#compute` (`graph.rb:193`), replayed step for step
 (`entities/graph.pyx`). A tokened hex reaches all its open sides. Each token
@@ -888,8 +907,8 @@ train's list reached 10,000 without changing the best.
 operating corp in `route_revenue` (¥0 without trains or a route) and moves
 on to DIVIDEND. Extraction may call `solve_routes(state, corp, NULL)` for
 any corp in its nogil prologue. `route_cache` goes stale through `MAP`'s
-writes (lays and tokens: every corp), `TRAINS.set_corp_trains` (that corp;
-6.7's buys, discards, trade-ins, and rusting must use it), and
+writes (lays and tokens: the corps they touch, Section 4), `TRAINS.set_corp_trains`
+(that corp; 6.7's buys, discards, trade-ins, and rusting must use it), and
 `PHASE.set_current` (every corp).
 
 **Replay.** `DRIVER.override_route_revenue(state, revenue)` is legal only at

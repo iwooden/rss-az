@@ -28,7 +28,8 @@ from tests.g1889.replay.snapshot import CORP, HEX, PRIVATE, TRAIN, compare, load
 from tests.g1889.replay.harness import new_game
 
 FIELDS = get_global_fields()
-CACHE_SLOTS = [get_layout(D.MAX_PLAYERS).global_offset + f for f in (FIELDS.conn_dirty, FIELDS.route_dirty)]
+CACHE_SLOTS = [get_layout(D.MAX_PLAYERS).global_offset + f
+               for f in (FIELDS.conn_dirty, FIELDS.route_dirty, FIELDS.hyp_dirty)]
 
 
 def extracts():

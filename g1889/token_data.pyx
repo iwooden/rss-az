@@ -22,7 +22,7 @@ cash and train-scale money, ¥100 for prices, values, bids, and revenues,
 import numpy as np
 
 from libc.stdint cimport int16_t, uint16_t, uint32_t
-from libc.string cimport memcpy, memset
+from libc.string cimport memset
 
 from g1889.actions cimport (
     ACTION_PAR, ACTION_PRICE_POINT, ACTION_TRADE_IN, ACTION_TRAIN_TYPE, ActionInfo, LayCandidate, can_buy_private,
@@ -53,7 +53,7 @@ from g1889.entities.corp cimport (
 from g1889.entities.graph cimport GRAPH_NODE, GRAPH_SIDES, graph_refresh, graph_route_available
 from g1889.entities.hexmap cimport (
     hex_paths, hex_rotation, hex_tile, hex_tokens, map_blocked_for, map_free_slots, map_has_slot_for,
-    map_lay_cost, map_put_tile, map_put_token, map_revenue, map_token_count, supply_count,
+    map_lay_cost, map_put_tile, map_put_token, map_revenue, map_token_count, map_touch_mask, supply_count,
 )
 from g1889.entities.market cimport (
     MOVE_DOWN, MOVE_LEFT, MOVE_RIGHT, market_col, market_moved, market_price, market_row, market_type,
@@ -78,7 +78,7 @@ from g1889.entities.turn cimport (
     turn_route_revenue, turn_sr_bought_corp, turn_sr_sold_mask, turn_turn,
 )
 from g1889.routes.solver cimport MAX_ROUTES, route_max
-from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, GameState, view_row
+from g1889.state cimport CORP_FIELDS, GLOBALS, LAYOUT, PLAYER_FIELDS, GameState, copy_row, view_row
 
 
 # =============================================================================
@@ -382,14 +382,6 @@ cdef GameState _scratch_for(GameState scratch, GameState state):
             or not _has_hypotheticals(get_decision_phase(state))):
         return scratch
     return GameState.from_array(state._array, turn_num_players(state), state.max_players)
-
-
-cdef inline void _scratch_load(GameState scratch, GameState state) noexcept nogil:
-    """Copy the row, caches included, into the scratch state, of its capacity:
-    each hypothetical starts here, then changes the copy through the entity
-    primitives, which mark the caches it makes stale."""
-    memcpy(scratch._data, state._data,
-           (LAYOUT.players_offset + PLAYER_FIELDS.size * state.max_players) * sizeof(int16_t))
 
 
 cdef int resolve_max_players(int num_players, int max_players, str func) except -1:
@@ -777,8 +769,10 @@ cdef void _fill_candidates(GameState state, GameState scratch, float[:, ::1] buf
     cdef uint32_t old_paths, added
     cdef float cost
     cdef float* row
+    cdef int touch
     if count == 0:
         return
+    touch = map_touch_mask(state, hex)  # one search serves every candidate's copy
     old_paths = hex_paths(state, hex)
     cost = 0 if x.phase == DPHASE_ER_BONUS else map_lay_cost(state, hex, x.corp) / PRICE_DIV
     route = _corp_field(state, x.corp, CORP_FIELDS.route_cache)
@@ -789,8 +783,8 @@ cdef void _fill_candidates(GameState state, GameState scratch, float[:, ::1] buf
         tile = candidates[k].tile
         rotation = candidates[k].rotation
         row = &buffer[<int>ROW_CANDIDATE + k, 0]
-        _scratch_load(scratch, state)
-        map_put_tile(scratch, hex, tile, rotation)
+        copy_row(scratch, state)
+        map_put_tile(scratch, hex, tile, rotation, touch)
         row[0] = 1
         row[CA_ER] = x.phase == DPHASE_ER_BONUS
         _fill_tile_block(row + <int>TILE_BLOCK, tile, rotation, map_revenue(scratch, hex, x.game_phase, False))
@@ -831,8 +825,8 @@ cdef void _fill_token_outcomes(GameState state, GameState scratch, float[:, ::1]
     cdef int h
     for h in range(<int>NUM_HEXES):
         if can_token(state, x.corp, h):
-            _scratch_load(scratch, state)
-            map_put_token(scratch, h, x.corp)
+            copy_row(scratch, state)
+            map_put_token(scratch, h, x.corp, 0)  # only the corp's own caches are read
             buffer[<int>ROW_HEX + h, H_TOKENABLE] = 1
             buffer[<int>ROW_HEX + h, H_TOKEN_DELTA] = _route_delta(scratch, state, x.corp)
 
@@ -854,7 +848,7 @@ cdef void _fill_train_outcomes(GameState state, GameState scratch, float[:, ::1]
         t = info.train_type
         if info.type == ACTION_TRAIN_TYPE and corp_train_total(state, c) >= <int>MAX_ROUTES:
             continue
-        _scratch_load(scratch, state)
+        copy_row(scratch, state)
         if info.type == ACTION_TRAIN_TYPE:
             slot = T_ADD_DELTA
             trains_set_count(scratch, c, t, corp_train_count(state, c, t) + 1)
