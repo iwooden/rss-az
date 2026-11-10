@@ -476,8 +476,9 @@ values; the value head; initialization.
   - `select_train` and `train_price`: the seller's Δ.
 
 **Tier C decided four more** (results in Section 10): `value_loss_weight` is
-0.25, and `cand_head`, `hex_mix`, and `bias_init` are not adopted, so the
-trunk, the candidate rows, and relations 21-24 stay as v0's.
+0.25; `cand_head` is adopted, by the user's decision; `hex_mix` and
+`bias_init` are not. Extraction still emits relations 21-24, which v0 reads
+in a mixed game, and the v1 model ignores them.
 
 | Test | If it holds | If not |
 |---|---|---|
@@ -589,7 +590,7 @@ base seeds. The bar is twice the gap between those seeds, given in brackets.
 | Test | Result | Decision |
 |---|---|---|
 | `value_w025` | Value MSE 0.146 against 0.178, 18% lower [1.5%], and lower at every check from step 2,500 (0.137 against 0.162 and 0.169). Policy KL unchanged (0.1312 against 0.1304 and 0.1311) | **Adopted:** `value_loss_weight` 0.25 |
-| `cand_head` | TILE policy KL 0.1814 against 0.1774 and 0.1764, 2.5% worse [0.6%], at steps 20,000 and 30,000 alike; ER_BONUS 1% worse [0.8%]. Forward time 0.80 of base | **Not adopted:** the bar was parity on TILE. v1 keeps 95 rows. It is the close call: a fifth of the forward time for 2.5% on one phase |
+| `cand_head` | TILE policy KL 0.1814 against 0.1774 and 0.1764, 2.5% worse [0.6%], at steps 20,000 and 30,000 alike; ER_BONUS 1% worse [0.8%]. Forward time 0.80 of base | **Adopted** by the user on 2026-11-10, for the speed, though it missed the parity bar on TILE: a fifth of the forward time for 2.5% on one phase. v1's trunk runs on 80 rows |
 | `hex_mix` | TRACK policy KL 5% worse [0.6%] and TOKEN 8% worse [1.7%]; TILE unchanged. Value MSE 2-5% better | **Left out** |
 | `bias_init` | TRACK, TILE, TOKEN policy KL within 1% | **Left out** |
 | `route_rel` | TRACK +1%, TILE 0%, TOKEN +1%; value MSE 1-2% better, inside the bar | No gain. ROUTE stays, as decided |
