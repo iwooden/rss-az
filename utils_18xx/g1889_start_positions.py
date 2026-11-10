@@ -28,18 +28,14 @@ are normalised first: at DIVIDEND the revenue is the engine's best, as
 ``utils_18xx/g1889_deviation.py`` sets it for human positions, and the
 extraction prologue refreshes every graph and route cache in the row.
 
-The ``.npz`` holds the rows at the config's player capacity and, per row, its
-player count, source game (an index into ``source_games``), decision index,
-decisions left, game phase (an index into ``phase_names``), decision phase, and
-round; and the row size, capacity, ``state_layout_hash()``, and the engine
-flags. ``load_start_positions`` refuses a file whose hash or row size is not
-the running engine's: rebuild it with the command above.
+The ``.npz`` holds the rows at the config's player capacity, what the builder
+knows of each, and the engine flags; ``games/g1889_starts.py`` has its format
+and its loader, which self-play reads it through.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -62,82 +58,16 @@ from g1889.entities.bank import BANK
 from g1889.entities.phase import PHASE
 from g1889.entities.turn import TURN
 from g1889.routes.solver import max_route_revenue
-from g1889.state import (
-    GameState, get_corp_fields, get_global_fields, get_hex_fields, get_layout, get_player_fields,
-    get_private_fields, get_train_fields,
-)
+from g1889.state import GameState, get_global_fields, get_layout
 from games import RELATION_RECORD_WIDTH, Game, get_game
-from train.config import _ENGINE_OPTIONS, TrainingConfig
+from games.g1889_starts import StartPositions, engine_options, save_start_positions, state_layout_hash
+from train.config import TrainingConfig
 
 HUMAN_GAMES = Path("tests/g1889/games/data")
 CONFIG = Path("train_configs/1889-v0.json")
 MIN_LEFT = 50
 MAX_PLAYOUT = 20_000  # decisions; uniform playouts from the opening take about 800
 _NUM_PLAYERS = get_layout(0).global_offset + get_global_fields().num_players
-
-
-def state_layout_hash() -> str:
-    """What a row's slots mean: each block's offset, each block's fields and their
-    offsets, the codes the row stores, and the id orders of the tables it indexes.
-    The width, which the player capacity sets, is checked apart."""
-    layout = {k: v for k, v in get_layout(0)._asdict().items() if k not in ("total_size", "max_players")}
-    blocks = {"global": get_global_fields(), "corp": get_corp_fields(), "private": get_private_fields(),
-              "hex": get_hex_fields(), "train": get_train_fields(), "player": get_player_fields()}
-    blocks = {name: block._asdict() for name, block in blocks.items()}
-    codes = {e.__name__: {m.name: int(m) for m in e} for e in (K.Round, K.Step, K.EndReason, K.Owner, K.TrainSource)}
-    tables = {name: list(getattr(D, name)) for name in ("HEX_IDS", "TILE_NAMES", "CORP_SYMS", "PRIVATE_SYMS",
-                                                        "TRAIN_NAMES", "PHASE_NAMES", "PAR_PRICE", "MARKET_PRICE")}
-    text = json.dumps([layout, blocks, codes, tables], sort_keys=True)
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
-
-
-@dataclass(frozen=True)
-class StartPositions:
-    rows: np.ndarray            # (N, row_size) int16, at capacity max_players
-    num_players: np.ndarray     # (N,)
-    source_game: np.ndarray     # (N,) index into source_games
-    decision_index: np.ndarray  # (N,) decisions before the position in its game
-    decisions_left: np.ndarray  # (N,) decisions from it to the end, itself included
-    game_phase: np.ndarray      # (N,) index into phase_names
-    decision_phase: np.ndarray  # (N,) K.DecisionPhase
-    round_type: np.ndarray      # (N,) K.Round
-    source_games: np.ndarray    # (G,) game ids, the file stems
-    phase_names: np.ndarray     # D.PHASE_NAMES
-    max_players: int
-    layout_hash: str
-    engine_options: str         # JSON: the flags the positions were filtered under
-
-
-def save_start_positions(path: Path, positions: StartPositions) -> None:
-    arrays = {f.name: getattr(positions, f.name) for f in fields(positions)}
-    np.savez_compressed(path, row_size=positions.rows.shape[1], **arrays)
-
-
-def load_start_positions(path: Path, max_players: int | None = None) -> StartPositions:
-    """The positions in ``path``, checked against the running engine's layout and,
-    if given, the run's player capacity."""
-    rebuild = f"rebuild it: python -m utils_18xx.g1889_start_positions --out {path}"
-    names = [f.name for f in fields(StartPositions)]
-    with np.load(path, allow_pickle=False) as data:
-        if missing := sorted({*names, "row_size"} - set(data.files)):
-            raise ValueError(f"{path}: not a start-position file of this format, missing {missing}; {rebuild}")
-        loaded = {name: data[name] for name in names}
-        row_size = int(data["row_size"])
-    for name in ("max_players", "layout_hash", "engine_options"):
-        loaded[name] = loaded[name].item()
-    positions = StartPositions(**loaded)
-    if positions.layout_hash != state_layout_hash():
-        raise ValueError(f"{path}: state layout hash {positions.layout_hash} is not the engine's "
-                         f"{state_layout_hash()}; {rebuild}")
-    width = get_layout(positions.max_players).total_size
-    if not row_size == positions.rows.shape[1] == width:
-        raise ValueError(f"{path}: rows of {positions.rows.shape[1]} slots (row_size {row_size}) are not the "
-                         f"engine's {width} at capacity {positions.max_players}; {rebuild}")
-    if max_players is not None and positions.max_players != max_players:
-        raise ValueError(f"{path}: rows at capacity {positions.max_players}, not the run's {max_players}; {rebuild}")
-    if not np.array_equal(positions.rows[:, _NUM_PLAYERS], positions.num_players):
-        raise ValueError(f"{path}: the rows' player counts disagree with num_players")
-    return positions
 
 
 # =============================================================================
@@ -309,13 +239,12 @@ def build(paths: list[Path], config: TrainingConfig, min_left: int = MIN_LEFT, s
     rows = np.concatenate([r.rows for r in results])
     meta = np.concatenate([r.meta for r in results])
     source = np.repeat(np.arange(len(results), dtype=np.int16), [len(r.rows) for r in results])
-    options = {name: getattr(config, name) for name in _ENGINE_OPTIONS["1889"]}
     positions = StartPositions(
         rows=rows, num_players=rows[:, _NUM_PLAYERS].astype(np.int8), source_game=source,
         decision_index=meta[:, 0], decisions_left=meta[:, 1], game_phase=meta[:, 2].astype(np.int8), decision_phase=meta[:, 3].astype(np.int8),
         round_type=meta[:, 4].astype(np.int8), source_games=np.array([p.stem for p in used]),
         phase_names=np.array(D.PHASE_NAMES), max_players=config.effective_max_players,
-        layout_hash=state_layout_hash(), engine_options=json.dumps(options, sort_keys=True),
+        layout_hash=state_layout_hash(), engine_options=json.dumps(engine_options(config), sort_keys=True),
     )
     report = {
         "games": len(used), "games_skipped": len(paths) - len(used),

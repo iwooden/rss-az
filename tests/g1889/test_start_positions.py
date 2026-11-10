@@ -1,7 +1,7 @@
 """Start positions from the human games (``utils_18xx/g1889_start_positions.py``,
 1889/v1-design.md §2.1): a build from a few scraped games, which skips without
 them, ``submodules/18xx``, or the means to make their extracts; the loader's
-checks; and the checked-in file, if there is one."""
+checks (``games/g1889_starts.py``); and the checked-in file, if there is one."""
 
 from __future__ import annotations
 
@@ -20,12 +20,11 @@ from g1889.entities.turn import TURN
 from g1889.routes.solver import max_route_revenue
 from g1889.state import GameState
 from games import RELATION_RECORD_WIDTH, get_game
+from games import g1889_starts
+from games.g1889_starts import StartPositions, load_start_positions, save_start_positions, state_layout_hash
 from train.config import TrainingConfig
 from utils_18xx import g1889_start_positions as S
-from utils_18xx.g1889_start_positions import (
-    MIN_LEFT, StartPositions, build, load_start_positions, playout, playout_rng, save_start_positions,
-    state_layout_hash,
-)
+from utils_18xx.g1889_start_positions import MIN_LEFT, build, playout, playout_rng
 
 from tests.g1889.replay.extracts import SUBMODULE
 
@@ -158,8 +157,8 @@ def test_the_loader_refuses_another_layout_or_row_size(tmp_path):
 
 def test_the_layout_hash_follows_the_fields(monkeypatch):
     before = state_layout_hash()
-    fields_ = S.get_corp_fields()
-    monkeypatch.setattr(S, "get_corp_fields", lambda: fields_._replace(route_cache=fields_.route_cache + 1))
+    fields_ = g1889_starts.get_corp_fields()
+    monkeypatch.setattr(g1889_starts, "get_corp_fields", lambda: fields_._replace(route_cache=fields_.route_cache + 1))
     assert state_layout_hash() != before
 
 

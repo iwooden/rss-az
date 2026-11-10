@@ -36,9 +36,9 @@ best, as the model runs its routes. Either way it keeps at most one position a g
 draws ``--per-cell`` games for each player count and phase. ``play`` runs the
 readouts and continuations, a JSON line each, and skips those already in ``--results``,
 so rerunning it resumes. A continuation is ``train.self_play.play_game`` from the
-position, its start state patched in as ``utils_18xx/g1889_selfplay_log.py`` patches its
-collector: the run's config at the checkpoint's epoch (simulations, c_puct, root noise,
-forced playouts), at the late-game temperature, ``temp_final``, from the first move. Both
+position (its ``start_row``): the run's config at the checkpoint's epoch (simulations,
+c_puct, root noise, forced playouts), at the late-game temperature, ``temp_final``, from
+the first move. Both
 branches of a continuation share its seed. ``play`` evaluates in fp32, uncompiled, so it
 runs on the local ROCm GPU.
 """
@@ -278,8 +278,9 @@ def branch_state(game: Game, root: GameState, position: Position, branch: str) -
 
 
 def continuation_config(config: TrainingConfig) -> TrainingConfig:
-    """``config`` at its late-game temperature from the first move: ``play_game`` counts
-    moves from its start, and every position is past the temperature windows."""
+    """``config`` at its late-game temperature from the first move: without a
+    ``start_move``, ``play_game`` counts moves from its start, and every position is past
+    the temperature windows."""
     return replace(config, temp_initial=config.temp_final)
 
 
@@ -304,14 +305,11 @@ def continue_game(game: Game, evaluator: Any, config: TrainingConfig, epoch_conf
                 first.append((int(legal_actions[chosen_idx]), get_decision_phase_py(state),
                               bool(np.array_equal(state._array[WHERE], start._array[WHERE]))))
 
-    def new_game(_num_players: int, _max_players: int, _seed: int) -> GameState:
-        return game.scratch_state(start, start._array.copy())
-
-    spied = replace(game, new_game=new_game, new_selfplay_stats=Recorder)
+    spied = replace(game, new_selfplay_stats=Recorder)
     with patch.object(self_play, "get_game", lambda _: spied):
         record = self_play.play_game(
             evaluator, config, game_seed=seed, rng=np.random.default_rng(seed), state_pool=pool,
-            epoch_config=epoch_config, num_players=num_players,
+            epoch_config=epoch_config, num_players=num_players, start_row=start._array,
         )
     stats = record.game_stats
     net_worths = [int(v) for v in record.net_worths]

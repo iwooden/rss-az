@@ -36,6 +36,7 @@ from train.config import EpochConfig, TrainingConfig
 from train.eval_server import RemoteEvaluator
 from train.profile_stats import EvalClientStats, GameProfileData, SearchStats
 from train.policy_metrics import PolicyMetrics, kl_to_prior
+from train.replay_buffer import FLAG_FROM_POSITION
 
 
 @dataclass
@@ -77,7 +78,7 @@ class GameRecord:
     policy_priorities: np.ndarray  # (num_examples,), float32 — replay priority
     num_players: int  # Actual player count for this game
     num_examples: int  # Number of training examples
-    total_moves: int  # Decision points (MCTS searches)
+    total_moves: int  # Decision points (MCTS searches) this game played
     net_worths: list[int]  # game.final_scores: final net worth per player (canonical order)
     duration_secs: float  # Wall-clock time
     policy_entropy_mean: float = 0.0  # Legacy alias: policy target entropy
@@ -89,6 +90,7 @@ class GameRecord:
     profile: GameProfileData | None = None
     game_id: int = -1
     flags: int = 0  # replay's per-game flags (train.replay_buffer.FLAG_*)
+    start_move: int = 0  # the move number a game started from a position began at
     game_seed: int = -1
     rng_seed: int = -1
     final_state: np.ndarray | None = None
@@ -202,6 +204,47 @@ def build_epoch_player_count_schedule(
     return schedule
 
 
+_START_DRAW_STREAM = 0x57A27  # keeps the start draws apart from other uses of the seed
+
+
+def build_epoch_start_schedule(
+    player_count_schedule: list[int],
+    start_num_players: np.ndarray | None,
+    fraction: float,
+    seed: int,
+    epoch: int,
+) -> list[int]:
+    """Per game of the epoch's schedule, the index of the start position it
+    plays from, or -1 for the opening.
+
+    ``start_num_players`` is each available position's player count. Of a
+    player count's G games, ``fraction * G`` rounded to the nearest (halves
+    up) start from a position: evenly spaced through its games, the last of
+    every 1 / fraction, each drawn uniformly and independently from that
+    count's positions. A count with no position plays from the opening.
+
+    The draws are a function of ``(seed, epoch, player count)`` alone, so the
+    run's other random streams are as they are without starts, and an epoch
+    replayed after a resume draws what it drew before.
+    """
+    starts = [-1] * len(player_count_schedule)
+    if start_num_players is None or fraction <= 0:
+        return starts
+    for num_players in sorted(set(player_count_schedule)):
+        pool = np.flatnonzero(start_num_players == num_players)
+        games = [i for i, n in enumerate(player_count_schedule) if n == num_players]
+        started = int(fraction * len(games) + 0.5)
+        if len(pool) == 0 or started == 0:
+            continue
+        rng = np.random.default_rng((seed, epoch, num_players, _START_DRAW_STREAM))
+        picks = pool[rng.integers(len(pool), size=started)]
+        for j, game_idx in enumerate(games):
+            k = j * started // len(games)
+            if (j + 1) * started // len(games) > k:
+                starts[game_idx] = int(picks[k])
+    return starts
+
+
 def _validate_assigned_num_players(
     config: TrainingConfig,
     num_players: int,
@@ -247,6 +290,8 @@ def play_game(
     collect_strategy_trace: bool = False,
     game_id: int = -1,
     rng_seed: int = -1,
+    start_row: np.ndarray | None = None,
+    start_move: int = 0,
 ) -> GameRecord:
     """Play one self-play game, returning training examples.
 
@@ -261,6 +306,16 @@ def play_game(
             mixed player-count training.
         collect_strategy_trace: Also record the game's strategy trace and
             final state. RSS only; other games raise ``ValueError``.
+        start_row: A raw state row at the config's player capacity to start
+            from instead of the opening, a decision with ``num_players``
+            players; it is copied. The game runs under the config's engine
+            options, and its record carries ``FLAG_FROM_POSITION``.
+        start_move: The decisions before ``start_row`` in the game it came
+            from. Both temperature schedules read ``start_move`` plus the
+            decisions played here, except that the first
+            ``config.start_explore_moves`` decisions sample actions at
+            ``temp_initial``. The record's ``total_moves`` and per-move means
+            count only the decisions played here.
     """
     t0 = time.perf_counter()
 
@@ -278,6 +333,34 @@ def play_game(
     state = game.new_game(num_players, max_players, game_seed)
 
     total_int16_size = game.state_size(max_players)
+    explore_moves = 0
+    if start_row is None:
+        if start_move != 0:
+            raise ValueError(f"start_move {start_move} needs a start_row")
+    else:
+        if start_move < 0:
+            raise ValueError(f"start_move must be >= 0, got {start_move}")
+        if start_row.shape != (total_int16_size,):
+            raise ValueError(
+                f"start_row of shape {start_row.shape} is not a state row of "
+                f"{total_int16_size} slots at player capacity {max_players}"
+            )
+        row_players = game.num_players_from_row(start_row)
+        if row_players != num_players:
+            raise ValueError(
+                f"start_row is a {row_players}-player position, but the game "
+                f"is assigned {num_players} players"
+            )
+        # scratch_state wraps the row it is given and carries new_game's flags.
+        state = game.scratch_state(state, np.array(start_row, dtype=np.int16))
+        if game.is_terminal(state) or game.enumerate_policy_actions(
+            state, np.empty(policy.max_action_size, dtype=np.uint16),
+        ) == 0:
+            raise ValueError(
+                "start_row is not a decision to play from: the game is over "
+                "or the position has no policy action"
+            )
+        explore_moves = config.start_explore_moves
 
     # Ensure state pool exists for subtree reuse across searches
     if state_pool is None:
@@ -313,7 +396,7 @@ def play_game(
     target_top1_sum = 0.0
     sample_entropy_sum = 0.0
     sample_top1_sum = 0.0
-    move_count = 0
+    move_count = 0  # decisions played here; the schedules read move_number
     stats = game.new_selfplay_stats(num_players)
     policy_metrics = PolicyMetrics()
     root_priors: list[np.ndarray] = []
@@ -334,6 +417,7 @@ def play_game(
     observe_stats = stats.observe
 
     while True:
+        move_number = start_move + move_count
         phase_id = decision_phase(state)
         n_legal = enumerate_policy_actions(state, legal_scratch)
         legal_actions = legal_scratch[:n_legal].copy()
@@ -378,14 +462,14 @@ def play_game(
             root_priors[0], mcts_config.forced_playouts_k,
         )
         target_temperature = _compute_policy_target_temperature(
-            move_count, config, num_players,
+            move_number, config, num_players,
         )
         policy_target_sparse = scale_visit_counts_by_temperature(
             target_counts, target_temperature,
         )
         policy_metrics.observe(
             root_priors[0], counts, policy_target_sparse,
-            policy.phase_names[phase_id], move_count, target_anneal_window,
+            policy.phase_names[phase_id], move_number, target_anneal_window,
             target_counts=target_counts,
         )
 
@@ -393,7 +477,12 @@ def play_game(
         value_target = get_greedy_leaf_value(root, num_players)
 
         # Temperature-scaled sampling distribution over the same sparse list.
-        temperature = _compute_temperature(move_count, config, num_players, epoch_config)
+        # A started game's first decisions explore, so that games from one
+        # position part ways early.
+        temperature = (
+            config.temp_initial if move_count < explore_moves
+            else _compute_temperature(move_number, config, num_players, epoch_config)
+        )
         sample_probs = scale_visit_counts_by_temperature(counts, temperature)
 
         # Stats: keep target and action-sampling distributions separate.
@@ -445,6 +534,7 @@ def play_game(
             )
         status = apply_action(state, action_idx)
         if trace_builder is not None:
+            # The trace's move numbers index the record's rows.
             trace_builder.append_action_events(state, move_number=move_count)
         move_count += 1
 
@@ -522,6 +612,8 @@ def play_game(
         sample_top1_action_fraction=sample_top1_sum / max(move_count, 1),
         profile=game_profile,
         game_id=game_id,
+        flags=FLAG_FROM_POSITION if start_row is not None else 0,
+        start_move=start_move,
         game_seed=game_seed,
         rng_seed=rng_seed,
         final_state=(state._array.copy() if trace_builder is not None else None),
@@ -570,20 +662,24 @@ def self_play_worker(
             if task is None:
                 break
             task_len = len(task)
+            start_row, start_move = None, 0
             if task_len == 3:
                 game_seed, rng_seed, epoch_config = task
                 num_players = None
             elif task_len == 4:
                 game_seed, rng_seed, num_players, epoch_config = task
+            elif task_len == 6:  # a game started from a position
+                game_seed, rng_seed, num_players, epoch_config, start_row, start_move = task
             else:
                 raise ValueError(
-                    f"self-play task must have 3 or 4 fields, got {task_len}"
+                    f"self-play task must have 3, 4, or 6 fields, got {task_len}"
                 )
             rng = np.random.default_rng(rng_seed)
             record = play_game(
                 evaluator, config, game_seed, rng,
                 state_pool=state_pool, epoch_config=epoch_config,
                 num_players=num_players, rng_seed=rng_seed,
+                start_row=start_row, start_move=start_move,
             )
             result_queue.put(record)
     except (KeyboardInterrupt, EOFError, BrokenPipeError, OSError):

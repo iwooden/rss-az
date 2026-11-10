@@ -499,6 +499,13 @@ class TrainingLogger:
                 f"{config.replay_priority_fraction:g} of batch by "
                 f"policy KL^{config.replay_priority_exponent:g}",
             )
+        if config.human_start_fraction > 0:
+            table.add_row(
+                "Started games",
+                f"{config.human_start_fraction:g} of each player count's from "
+                f"{config.start_positions_path}, exploring "
+                f"{config.start_explore_moves} moves",
+            )
         if config.forced_playouts_k > 0 or config.policy_target_pruning != "none":
             table.add_row(
                 "Forced playouts",

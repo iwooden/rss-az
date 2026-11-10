@@ -76,6 +76,17 @@ class SelfPlayStats(Protocol):
 
 
 @dataclass(frozen=True)
+class StartRows:
+    """Positions self-play may start games from (``Game.load_start_positions``)."""
+
+    rows: np.ndarray  # (N, state_size(max_players)) int16
+    num_players: np.ndarray  # (N,) each row's actual player count
+    # (N,) decisions before the row in its game, counted as play_game counts
+    # moves: the move number a game started there begins at
+    start_moves: np.ndarray
+
+
+@dataclass(frozen=True)
 class Game:
     """One game's constants and engine entry points."""
 
@@ -133,6 +144,10 @@ class Game:
     # (rows in write order, max_players) -> positions of the rows that are their
     # game's first decision (train/capacity_probe.py)
     game_start_rows: Callable[[np.ndarray, int], np.ndarray] | None = None
+    # path -> the file's positions for self-play to start games from, checked
+    # against the engine's layout and the config's player capacity and engine
+    # options (train/main.py, start_positions_path)
+    load_start_positions: Callable[[str], StartRows] | None = None
 
     # --- RSS-only; None for other games ---
     # num_players -> strategy-trace builder, for

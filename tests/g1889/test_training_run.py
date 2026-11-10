@@ -253,10 +253,14 @@ def test_a_run_set_by_a_replay_ratio_and_temperature_shares_resumes_where_it_was
     assert "Resumed from epoch 0" in output and "no game lengths" not in output
 
     scalars = read_tb_scalars(str(tmp_path / "runs"))
-    length = {n: [value for _, value in scalars[f"self_play_{n}p/game_length_mean"]] for n in (3, 4, 5)}
-    first = {n: length[n][0] for n in (3, 4, 5)}
-    second = {3: length[3][1], 4: first[4], 5: length[5][1]}
-    assert length[4][1] != first[4]  # the started game had a length of its own
+    # Each epoch's mean length by player count, over its games from the opening;
+    # the started game is reported apart (self_play_started).
+    length = {n: dict(scalars[f"self_play_{n}p/game_length_mean"]) for n in (3, 4, 5)}
+    assert [sorted(length[n]) for n in (3, 4, 5)] == [[1, 2, 3], [1, 3], [1, 2, 3]]
+    first = {n: length[n][1] for n in (3, 4, 5)}
+    second = {3: length[3][2], 4: first[4], 5: length[5][2]}
+    (started_epoch, started_length), = scalars["self_play_started_4p/game_length_mean"]
+    assert started_epoch == 2 and started_length != first[4]  # the started game had a length of its own
 
     # Temperature windows, by game: 3 of epoch 0, 1 before the shutdown, 3 + 3.
     assert sorted(n for n, _ in games[:3]) == [3, 4, 5] and len(games) == 10
@@ -267,7 +271,7 @@ def test_a_run_set_by_a_replay_ratio_and_temperature_shares_resumes_where_it_was
         load_checkpoint(checkpoints / f"checkpoint_epoch_{epoch:04d}.pt", device).get("game_lengths")
         for epoch in (2, 3)
     ]
-    assert stored == [second, {n: length[n][2] for n in (3, 4, 5)}]
+    assert stored == [second, {n: length[n][3] for n in (3, 4, 5)}]
     for n in (3, 4, 5):
         for edge, tag in enumerate(("start", "end")):
             assert scalars[f"schedule/temp_anneal_{tag}_{n}p"] == [
@@ -276,6 +280,7 @@ def test_a_run_set_by_a_replay_ratio_and_temperature_shares_resumes_where_it_was
 
     # Steps: 1.1 draws a row, by the share of the 2 epochs held.
     played = [int(value) for _, value in scalars["self_play_aggregate/total_examples"]]
+    played[1] += int(scalars["self_play_started/total_examples"][0][1])
     sizes = [int(value) for _, value in scalars["buffer/size"]]
     partial = sizes[1] - sum(played[:2])
     assert partial > 0

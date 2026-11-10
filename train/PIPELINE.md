@@ -85,6 +85,30 @@ Notes below name RSS's implementations where they matter
   count in a run's first epoch, plays at `temp_initial` throughout. The
   config's move numbers then apply only to `play_game` calls whose
   `EpochConfig` carries no windows; the target temperature keeps its own.
+- **Optional starts from supplied positions.** With `start_positions_path` and
+  `human_start_fraction` f > 0 (default 0; 1889 only), the main process loads
+  the game's start-position file once (`Game.load_start_positions`), which
+  refuses one built for another state layout, player capacity, or set of
+  engine options. Each epoch, `build_epoch_start_schedule` starts f of each
+  player count's games, to the nearest game, from a position: the last of
+  every 1/f of that count's games, so they are spread through the epoch, each
+  drawn uniformly with replacement from that count's positions. A count with
+  none plays from the opening. The draw is seeded by `seed`, the epoch, and
+  the player count, apart from the run's generator, so game seeds are the same
+  with starts or without. The worker's task carries the row and its decision
+  index in its source game. `play_game` plays from a copy of the row
+  (`start_row`) under the config's engine options, and both temperature
+  schedules and the policy metrics' stages read that index plus the decisions
+  played (`start_move`), so the game anneals as one from the opening would
+  there. Its first `start_explore_moves` (20) decisions sample actions at
+  `temp_initial` whatever the schedule says, so games from one position part
+  ways; targets keep their schedule. `total_moves` and the per-move means
+  count only the decisions played. A started game's rows carry replay's flag
+  bit 0 and are trained on like any others. Its stats go to
+  `self_play_started` and `self_play_started_<n>p`, with `games` and
+  `start_move_mean`, and stay out of `self_play_aggregate`, `self_play_<n>p`,
+  and the lengths behind the temperature windows; the console counts every
+  game together.
 - **A0GB value targets.** `get_greedy_leaf_value` follows max-visit children
   to a terminal node or to a node whose best child has 0 visits. That node's
   `value_sum / visit_count` is its single NN value or its terminal reward.
@@ -136,7 +160,7 @@ Notes below name RSS's implementations where they matter
   final net worths in canonical order (-1 past the game's players). One
   `add_stacked` call is one game and takes the buffer's next id, so ids never
   decrease in write order. Flag bit 0 marks a game started from a supplied
-  position; nothing sets it yet. Rows saved before these columns load as
+  position (`play_game`'s `start_row`). Rows saved before these columns load as
   unknown: id -1, flags 0, net worths -1.
 - **Optional epoch window.** The main loop calls `begin_epoch` and the buffer
   records each epoch's first game id. With `buffer_epochs` N > 0, sampling
@@ -242,7 +266,12 @@ Notes below name RSS's implementations where they matter
   resume moves the rate to that epoch's. The checkpoint stores the game
   lengths `temp_anneal_*_pcts` read, as of its epoch, so a resumed epoch, or
   one replayed after a shutdown, plays in the windows it would have. A
-  checkpoint saved without them plays its next epoch at `temp_initial`.
+  checkpoint saved without them plays its next epoch at `temp_initial`. An
+  epoch's start positions follow from `seed`, the epoch, and the file, not
+  from the restored RNG state, so a resumed epoch draws the starts it would
+  have. An epoch replayed after a shutdown draws them again for the same
+  games, under new game seeds, beside any of its games the shutdown left in
+  the buffer.
 - **Model selection.** `model_path` selects the implementation; every config
   that builds a model names one (no default). A module that defines
   `build_model(config, spec)` builds its own model for any game; any other is

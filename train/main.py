@@ -17,7 +17,7 @@ import torch
 import torch.multiprocessing as mp
 from torch._dynamo.decorators import mark_unbacked
 
-from games import get_game
+from games import Game, StartRows, get_game
 from nn import create_model, get_model_input_spec
 from nn.model_contract import FLAT_RELATION_RECORD_WIDTH
 from train.checkpoint import (
@@ -41,6 +41,7 @@ from mcts.evaluator import NNEvaluator
 from mcts.search import StatePool
 from train.self_play import (
     build_epoch_player_count_schedule,
+    build_epoch_start_schedule,
     play_game,
     self_play_worker,
 )
@@ -565,6 +566,71 @@ class _SelfPlayMetricAccumulator:
         }
 
 
+class _EpochSelfPlayMetrics:
+    """An epoch's self-play metrics for TensorBoard, the games started from a
+    position apart from those played from the opening: a started game's
+    length, trains, and end differ, and the opening games' groups stay
+    comparable with runs that have no starts. ``every`` holds all the games,
+    for the console."""
+
+    def __init__(self) -> None:
+        self.opening = _SelfPlayMetricAccumulator()
+        self.started = _SelfPlayMetricAccumulator()
+        self.every = _SelfPlayMetricAccumulator()
+        self._start_moves: dict[int, int] = {}  # started games' start moves, summed by player count
+
+    def add_record(self, record: Any) -> None:
+        self.every.add_record(record)
+        if record.flags & FLAG_FROM_POSITION:
+            self.started.add_record(record)
+            num_players = int(record.num_players)
+            self._start_moves[num_players] = self._start_moves.get(num_players, 0) + int(record.start_move)
+        else:
+            self.opening.add_record(record)
+
+    def scalars(self) -> dict[str, float]:
+        """``self_play_aggregate`` and ``self_play_<n>p`` over the opening
+        games; ``self_play_started`` and ``self_play_started_<n>p`` over the
+        started ones, with their number and mean start move."""
+        scalars = _build_epoch_self_play_scalars(self.opening)
+        groups = {"self_play_started": (self.started.aggregate_snapshot(), sum(self._start_moves.values()))}
+        groups.update(
+            (f"self_play_started_{num_players}p", (stats, self._start_moves[num_players]))
+            for num_players, stats in self.started.count_snapshots().items()
+        )
+        for prefix, (stats, start_moves) in groups.items():
+            if stats["games"] > 0:
+                scalars.update(_build_self_play_scalars(prefix, stats))
+                scalars[f"{prefix}/games"] = stats["games"]
+                scalars[f"{prefix}/start_move_mean"] = start_moves / stats["games"]
+        return scalars
+
+
+def _load_start_positions(config: TrainingConfig, game: Game) -> StartRows | None:
+    """The positions ``human_start_fraction`` of the games start from, loaded
+    once for the main process to hand out; None with the feature off."""
+    path = config.start_positions_path
+    if path is None:
+        return None
+    if game.load_start_positions is None:
+        raise ValueError(
+            f"start_positions_path is set, but game {game.name!r} has no start positions"
+        )
+    if config.human_start_fraction <= 0:
+        return None
+    starts = game.load_start_positions(path)
+    by_count = {n: int((starts.num_players == n).sum()) for n in config.iter_player_counts()}
+    print(
+        f"Start positions: {path}, {len(starts.rows):,} rows ("
+        + ", ".join(f"{n}p {count:,}" for n, count in by_count.items())
+        + f"); {config.human_start_fraction:.0%} of each player count's games start from one"
+    )
+    for n, count in by_count.items():
+        if count == 0:
+            print(f"  No start positions at {n} players: its games all start from the opening")
+    return starts
+
+
 class _OpeningGameLengths:
     """An epoch's game lengths in moves by player count, over the games played
     from the opening: a game started from a position measures only its
@@ -969,6 +1035,7 @@ def main() -> None:
     # Compact int16 state — replay buffer stores raw state rows, the
     # trainer builds token buffers per-batch through the game's adapter.
     game = get_game(config)
+    start_positions = _load_start_positions(config, game)
     max_players = config.effective_max_players
     state_size_int16 = game.state_size(max_players)
     num_tokens = game.num_tokens(max_players)
@@ -1232,7 +1299,7 @@ def main() -> None:
 
             # --- Phase 1: Self-play ---
             model.eval()
-            self_play_metrics = _SelfPlayMetricAccumulator()
+            self_play_metrics = _EpochSelfPlayMetrics()
             opening_lengths = _OpeningGameLengths()
             game_profiles: list[GameProfileData] = []
 
@@ -1252,8 +1319,9 @@ def main() -> None:
                 opening_lengths.add_record(record)
                 if record.profile is not None:  # type: ignore[union-attr]
                     game_profiles.append(record.profile)  # type: ignore[union-attr]
-                aggregate_stats = self_play_metrics.aggregate_snapshot()
-                count_stats = self_play_metrics.count_snapshots()
+                # The console counts every game, started or not.
+                aggregate_stats = self_play_metrics.every.aggregate_snapshot()
+                count_stats = self_play_metrics.every.count_snapshots()
                 logger.update_self_play(
                     games_done=game_idx + 1,
                     total_examples=int(aggregate_stats["examples"]),
@@ -1305,15 +1373,31 @@ def main() -> None:
 
             games_collected = 0
             player_count_schedule = build_epoch_player_count_schedule(config)
+            # Each game's start position, -1 for the opening. The draw leaves
+            # master_rng alone: seeds are the same with starts or without.
+            start_schedule = build_epoch_start_schedule(
+                player_count_schedule,
+                start_positions.num_players if start_positions is not None else None,
+                config.human_start_fraction, config.seed, epoch,
+            )
             buffer.begin_epoch(epoch)
+
+            def _game_start(game_idx: int) -> tuple[np.ndarray, int] | None:
+                position = start_schedule[game_idx]
+                if position < 0:
+                    return None
+                assert start_positions is not None
+                return start_positions.rows[position], int(start_positions.start_moves[position])
 
             if config.num_workers > 0:
                 assert task_queue is not None and result_queue is not None
                 # Feed all game assignments to workers (with epoch config).
-                for num_players in player_count_schedule:
+                for game_idx, num_players in enumerate(player_count_schedule):
                     game_seed = int(master_rng.integers(0, 2**31))
                     rng_seed = int(master_rng.integers(0, 2**63))
-                    task_queue.put((game_seed, rng_seed, num_players, epoch_cfg))
+                    task = (game_seed, rng_seed, num_players, epoch_cfg)
+                    # A started game's task carries its row and move number.
+                    task_queue.put(task + (_game_start(game_idx) or ()))
 
                 # Collect results as they complete
                 for game_idx in range(config.games_per_epoch):
@@ -1349,10 +1433,12 @@ def main() -> None:
                     game_seed = int(master_rng.integers(0, 2**31))
                     game_rng = np.random.default_rng(master_rng.integers(0, 2**63))
 
+                    start_row, start_move = _game_start(game_idx) or (None, 0)
                     record = play_game(
                         evaluator, config, game_seed, game_rng,
                         state_pool=state_pool, epoch_config=epoch_cfg,
                         num_players=num_players,
+                        start_row=start_row, start_move=start_move,
                     )
                     _collect_record(record, game_idx)
                     games_collected = game_idx + 1
@@ -1437,8 +1523,8 @@ def main() -> None:
             game_lengths.update(opening_lengths.means())
 
             # Self-play Tensorboard metrics
-            self_play_stats = self_play_metrics.aggregate_snapshot()
-            self_play_by_count_stats = self_play_metrics.count_snapshots()
+            self_play_stats = self_play_metrics.every.aggregate_snapshot()
+            self_play_by_count_stats = self_play_metrics.every.count_snapshots()
             logger.log_scalars(
                 epoch_num,
                 {
@@ -1463,7 +1549,7 @@ def main() -> None:
                         for num_players, window in (epoch_cfg.temp_anneal_windows or {}).items()
                         for edge, move in zip(("start", "end"), window)
                     },
-                    **_build_epoch_self_play_scalars(self_play_metrics),
+                    **self_play_metrics.scalars(),
                 },
             )
 

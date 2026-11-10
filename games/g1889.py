@@ -7,6 +7,7 @@ The model takes the static relation planes from
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -43,8 +44,9 @@ from g1889.token_data import (
     get_token_data_batch,
     get_token_dim,
 )
-from games import Game
+from games import Game, StartRows
 from games.g1889_selfplay import G1889SelfPlayStats
+from games.g1889_starts import engine_options, load_start_positions
 from nn.policy_layout import PolicyLayout
 
 if TYPE_CHECKING:
@@ -129,6 +131,10 @@ def make_game(config: TrainingConfig) -> Game:
         state.initialize_game(num_players, seed=seed, max_players=max_players)
         return state
 
+    def load_starts(path: str) -> StartRows:
+        positions = load_start_positions(Path(path), config.effective_max_players, engine_options(config))
+        return StartRows(positions.rows, positions.num_players, positions.decision_index)
+
     return Game(
         name="1889",
         policy=POLICY_LAYOUT,
@@ -157,4 +163,5 @@ def make_game(config: TrainingConfig) -> Game:
         fill_relations_sparse_batch=get_relation_coord_data_batch,
         new_selfplay_stats=G1889SelfPlayStats,
         game_start_rows=_game_start_rows,
+        load_start_positions=load_starts,
     )

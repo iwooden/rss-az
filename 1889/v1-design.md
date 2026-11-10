@@ -87,8 +87,14 @@ A quarter of each epoch's games start from a decision in one of the 87 scraped
   pipeline may import them: `train/` cannot import the engine
   (`tests/test_pipeline_boundary.py`), so they go behind the `Game` adapter.
 - `human_start_fraction` (0.25) of each player count's games in the epoch's
-  schedule (`train/self_play.py:153-189`) get a start, drawn uniformly from
-  that count's positions.
+  schedule get a start (`build_epoch_start_schedule`): the nearest whole
+  number, spaced evenly through that count's games, each drawn uniformly and
+  with replacement from that count's positions. The draw is a function of the
+  seed, the epoch, and the player count, so it leaves the run's other random
+  streams as they are, and a replayed epoch draws the same starts.
+- **Repeats:** at 500 games an epoch, each count starts 42. Over 300 epochs
+  that is 12,500 draws a count: 0.5 a position at 3 players, 0.7 at 4, and 3.8
+  at 5, where the file holds only 3,330 positions.
 - **Moves count from the position's decision index** in its source game, so
   the temperature schedule (2.4) reads the same in a started game. The first
   `start_explore_moves` (20) decisions play at the initial temperature, so
@@ -98,7 +104,9 @@ A quarter of each epoch's games start from a decision in one of the 87 scraped
 
 - Its rows carry a flag in replay (3.1), and the held-out loss reports them
   apart (Section 4).
-- Its stats go to their own TensorBoard group, `self_play_started`. Several
+- Its stats go to their own TensorBoard groups, `self_play_started` and
+  `self_play_started_<n>p`, with the number of started games and their mean
+  start move, and stay out of the groups for games from the opening. Several
   1889 stats read the final state (`games/g1889_selfplay.py:74-99`), so a
   started game's train counts include the humans' purchases.
 - It does not count toward the game lengths that set the temperature windows.

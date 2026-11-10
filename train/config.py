@@ -193,6 +193,15 @@ class TrainingConfig:
     policy_target_pruning: str = "none"
     search_batch_size: int = 8
     check_nonfinite_mcts: bool = True
+    # Games started from a supplied position: human_start_fraction of each
+    # player count's games in an epoch begin at a row of the game's
+    # start-position file (Game.load_start_positions), drawn uniformly from
+    # that count's rows, and count their moves from the row's place in its
+    # source game. Their first start_explore_moves decisions sample actions at
+    # temp_initial, so games from one position part ways early.
+    start_positions_path: str | None = None
+    human_start_fraction: float = 0.0
+    start_explore_moves: int = 20
     num_workers: int = 4
     num_eval_servers: int = 1
     # Optional one-device-per-eval-server mapping, e.g. ["cuda:0", "cuda:1"].
@@ -663,6 +672,22 @@ class TrainingConfig:
                 f"buffer_capacity ({self.buffer_capacity}) must exceed "
                 f"min_buffer_size ({self.min_buffer_size})"
             )
+        if self.start_positions_path is not None and not isinstance(self.start_positions_path, str):
+            raise ValueError(
+                f"start_positions_path must be a path string or None, got {self.start_positions_path!r}"
+            )
+        if not 0.0 <= self.human_start_fraction <= 1.0:
+            raise ValueError(
+                f"human_start_fraction must be in [0, 1], got {self.human_start_fraction}"
+            )
+        if self.human_start_fraction > 0 and not self.start_positions_path:
+            raise ValueError(
+                "human_start_fraction > 0 requires start_positions_path: the "
+                "file the games' start positions are drawn from"
+            )
+        moves = self.start_explore_moves
+        if not isinstance(moves, int) or isinstance(moves, bool) or moves < 0:
+            raise ValueError(f"start_explore_moves must be an integer >= 0, got {moves!r}")
         if self.buffer_epochs < 0:
             raise ValueError(f"buffer_epochs must be >= 0, got {self.buffer_epochs}")
         if self.replay_ratio < 0:
