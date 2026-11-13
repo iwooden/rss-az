@@ -13,14 +13,17 @@ document is wrong. The rationale is in
 The `Game` adapter (`games/g1889.py`) exposes the extractors:
 `num_tokens(max_players)`, `token_dim(layout_version)`, `num_relations` (29),
 `max_relation_edges` (4,096), and the six fills, which take
-`layout_version` for tokens. Relations have no layout version.
+`layout_version` for tokens. Relations have no layout version. For layout 3,
+which is packed (`packed_layouts`, relation format `"none"`), it exposes
+`input_size`, `fill_inputs`, and `fill_inputs_batch` (Exports, layout 3).
 
 ## Layout id
 
 `get_token_dim(layout_version)` and `get_token_widths(max_players,
-layout_version)` accept 1 and 2 and raise `ValueError` for any other id. A
-1889 model module declares its `INPUT_LAYOUT_VERSION`, and each evaluator
-fills its own model's layout, so models of both can share a game.
+layout_version)` accept 1 and 2 and raise `ValueError` for any other id;
+layout 3's exports accept 3 alone. A 1889 model module declares its
+`INPUT_LAYOUT_VERSION`, and each evaluator fills its own model's layout, so
+models of all three can share a game.
 
 **Layout 1 is pinned.** v0 stays playable as the tournament's opponent
 (v1-design §8), so its tokens must not change:
@@ -622,3 +625,874 @@ each decision's choices ([`1889/model-design.md`](1889/model-design.md)
 
 BUY_TRAIN and DIVIDEND now read the purchase's outcome on TRAIN 10 before
 SELECT_TRAIN, which the driver usually plays by itself.
+
+## Layout 3
+
+Layout 3 is the input of `nn/transformer-1889-v2.py`
+([`1889/v2-design.md`](1889/v2-design.md) §4-7). It is built
+(`fill_inputs`, `g1889/token_data.pyx/.pxd`; v2-design §10, steps 1 and 2)
+but for build distance, whose slots and channels are zero until step 6; the
+sections on them are the contract that step builds against. Where this
+document and the code differ, the code is right, as for layouts 1 and 2:
+`tests/g1889/test_token_data_doc_layout3.py` pins these tables against it,
+and `tests/g1889/test_extraction_layout3.py` and
+`test_extraction_layout3_choices.py` the values against the entity APIs.
+
+Layout 3 has no relation records, and no TRAIN, PRICE, DIVIDEND, CANDIDATE,
+or plain-hex rows. A state is one packed vector of three kinds of part:
+
+- **Rows:** the trunk's 40 + max_players rows, each type at its own width.
+- **Pair blocks:** five dense arrays over two row types. The model appends
+  each row's slice to its features and builds attention bias from the same
+  values, both ways (v2-design §4.3).
+- **The choice table:** 46 rows, row k for phase-local action k of the
+  current decision, filled by the engine with what that action does
+  (v2-design §5).
+
+Slot 0, hidden rows, the actor, the decision corp, the divisors, and layout
+2's terms (the next train, room, a purchase, the next rust, route max with
+the next train and after the next rust, log-scaled) carry over. Further
+terms:
+
+- **The subject** (v2-design §5.4's s) is the row that PRIVATE 1, CORP 2,
+  CORP 3, or CENTER 1 selects. They are set at disjoint decisions, so there
+  is at most one.
+- **A tile code** is a tile id + 1 (1-92), and **a hex code** a hex's index
+  in `HEX_IDS` + 1 (1-52); 0 is none. Codes and rotations (0-5, canonical)
+  are integers carried as float values, which float16 holds exactly.
+- **Applied:** the row copied to the scratch state, with the decision's
+  action k applied alone by the driver's dispatch (`apply_alone`), without
+  the auto-chain (v2-design §5.3). The copy may rest mid-step, or
+  with another player to act; what is read from it is read raw. **Δ x** is
+  x applied less x on the row.
+- **bd** is [`1889/build-distance-design.md`](1889/build-distance-design.md)'s
+  distance: D_c (its §3.3) and the center matrix (§3.4). Every bd slot and
+  channel is 0 until v2-design §10's step 6.
+
+**Point n** marks a slot whose definition settles a point that v2-design
+left open, contradicted the code on, or got wrong. The user settled every
+point as the tables have it on 2026-11-13; the list at the end of this
+section keeps each with the options it was chosen from.
+
+### Shapes, layout 3
+
+| Part | Name | Shape | Offset | Values at capacity 5 |
+|---|---|---|---|---|
+| GLOBAL | `GLOBAL` | 1 × 135 | 0 | 135 |
+| CORP | `CORP` | 7 × 76 | 135 | 532 |
+| PRIVATE | `PRIVATE` | 7 × 15 | 667 | 105 |
+| CENTER | `CENTER` | 25 × 21 | 772 | 525 |
+| CORP × PRIVATE | `CORP_PRIVATE` | 7 × 7 × 1 | 1,297 | 49 |
+| CORP × CENTER | `CORP_CENTER` | 7 × 25 × 4 | 1,346 | 700 |
+| CENTER × CENTER | `CENTER_CENTER` | 25 × 25 × 1 | 2,046 | 625 |
+| Choices | `CHOICES` | 46 × 47 | 2,671 | 2,162 |
+| PLAYER | `PLAYER` | P × 20 | 4,833 | 100 |
+| PLAYER × CORP | `PLAYER_CORP` | P × 7 × 3 | 4,833 + 20P | 105 |
+| PLAYER × PRIVATE | `PLAYER_PRIVATE` | P × 7 × 2 | 4,833 + 41P | 70 |
+| Total | | 4,833 + 55P | | 5,108 |
+
+- **P is max_players,** the capacity: 4,998, 5,053, and 5,108 values at
+  3-5. The three parts that grow with P come last, so every other offset is
+  the same at every capacity, as in the raw row (**Point 23**).
+- **Each part is row-major** with its last axis fastest: a row's slots; a
+  pair block's [first type][second type][channel].
+- **dtype.** The fill writes float32. Through the transport (v2-design
+  §10, step 4), workers send float16 to the eval server, 10,216 bytes a
+  state against layout 2's 37 KB of tokens and records, and the trainer
+  re-extracts float32 from the raw int16 rows the replay buffer stores, as
+  for tokens today. The legal mask stays its own `(228,)`
+  uint8 input. Nothing is padded to a common width.
+- **3 and 4 players** at capacity P: the PLAYER rows and the pair blocks'
+  player rows from num_players to P are zero; GLOBAL 36-38 give the count;
+  seat offsets (PLAYER 2-6, DIVIDEND 3-6) wrap at num_players; UTF's row is
+  hidden below 4 players and its pair-block entries are zero.
+
+### Exports, layout 3
+
+From `g1889.token_data`; `layout_version` is keyword-only and must be 3
+(any other raises `ValueError`), and `max_players` is 3-5:
+
+| Export | What it gives |
+|---|---|
+| `fill_inputs(state, buffer, max_players=0, *, layout_version)` | fills a float32 `buffer` of exactly `get_input_size(max_players)` values; `max_players` 0 is the state's player count; writes the refreshed caches back into the state's row, as the token fills do, and changes nothing else in it; holds the GIL throughout |
+| `fill_inputs_batch(state_arrays, buffer, max_players=0, *, layout_version)` | fills `buffer[i]`, a float32 `(n, size)` array, from raw row `state_arrays[i]`; rows may mix player counts; `max_players` 0 takes the capacity from the buffer's width |
+| `get_input_size(max_players, *, layout_version)` | the vector's length, 4,833 + 55 × max_players |
+| `get_input_parts(max_players, *, layout_version)` | the parts in order, each an `InputPart(name, offset, shape, rows)`: `rows` gives each leading axis's trunk rows as `(first, count)`, one for a row part, two for a pair block, none for `CHOICES` |
+| `get_num_trunk_rows(max_players, *, layout_version)` | 40 + max_players |
+| `get_tile_table()` | the tile table, `(93, 6, 76)` float32 (Model buffers, below) |
+| `get_choice_slots()` | `(19, 46)` int16: the unified slot of choice row k at decision phase d, or -1 past the phase's size |
+| `get_named_rows()` | `(228,)` int16: each unified slot's named trunk row, `NAMED3_NONE` (-1), or `NAMED3_TOPMOST` (-2) for AUCTION's buy |
+| `TokenWidth3`, `TrunkRow3`, `PairChannels3`, `ChoiceTable3`, `InputOffset3`, `NamedRow3` | the widths, first trunk rows, channel counts, choice-table columns, part offsets, and named-row codes as enums (`TW3_CORP`, `TRUNK3_CENTER`, `CH3_CORP_CENTER`, `CHOICE3_PHASE`, `IN3_CHOICES`, ...) |
+
+`g1889.driver.apply_alone(state, action_id)` (a `cpdef` in `driver.pxd`)
+applies one engine-legal decision by its handler alone, as the choice
+table's fills do (**Point 22**).
+
+### Rows, layout 3
+
+| Trunk row | Type | Count | Width | Visible (slot 0 = 1) |
+|---|---|---|---|---|
+| 0 | GLOBAL | 1 | 135 | always |
+| 1 | CORP | 7 | 76 | always |
+| 8 | PRIVATE | 7 | 15 | in play and not closed (**Point 4**) |
+| 15 | CENTER | 25 | 21 | always |
+| 40 | PLAYER | max_players | 20 | real players |
+
+- **43, 44, and 45 rows** at capacities 3-5, players last. Corps are in
+  `CorpId` order, privates in `PrivateId` order, players in seat order, and
+  row 15 + r is revenue center r (`RC_HEX[r]`, `HEX_RC`'s index), which is
+  hex order: A10, B3, B7, B11, C4, C10, E2, F1, F3, F9, G4, G10, G12, G14,
+  H7, I2, I4, I12, J1, J5, J9, J11, K4, K8, L7.
+- **is_selected** slots: CORP 1, 2, 3; PRIVATE 1, 2; CENTER 1; PLAYER 1,
+  each as layout 2's of the same name. GLOBAL 1 is an ordinary feature.
+- **CENTER 2 and 3 are integers,** a tile code and its rotation, which the
+  model looks up in its tile table (Model buffers, below) and does not
+  project as features.
+
+### GLOBAL, layout 3 (135)
+
+| Slots | Feature | Layout 2 |
+|---|---|---|
+| 1-89 | as layout 2 | GLOBAL 1-89 |
+| 90-131 | per train type t (2, 3, 4, 5, 6, D), at 90 + 7t + i: i = 0, depot copies /6 (0 for D); 1, pool copies /4; 2, the depot sells it now; 3, the cheapest train on sale; 4, rusted; 5, rusts when the next phase starts; 6, its next depot purchase starts a new phase | TRAIN 3, 5, 6, 7, 8, 9, 14 |
+| 132 | reference /1000: the private's face at BID and PRIVATE_PRICE; the pending train's list price at TRAIN_PRICE; 0 elsewhere | PRICE 22 |
+| 133 | payer's funds /1000: the actor's `player_available` for the bid private at BID; the actor's cash at PAR; the decision corp's cash at TRAIN_PRICE and PRIVATE_PRICE; 0 elsewhere | PRICE 23 |
+| 134 | at DIVIDEND, the operating corp's revenue r (`route_revenue`) /100 | DIVIDEND 1 |
+
+List prices, distances, and the rust table are constants (Model buffers).
+TRAIN 4 (unlimited) holds only for D, a constant, and is dropped. Ten
+per-type slots are 0 by the rules, and stay so the block is the same for
+every type: D's depot copies (D is unlimited), 2s' and Ds' pool copies (only
+discards, of 3s to 5s, and trade-ins, of 4s to 6s, put a train in the pool),
+the two rust slots of 5s, 6s, and Ds, which never rust, and 2s' phase start.
+
+### CORP, layout 3 (76)
+
+| Slots | Feature | Layout 2 |
+|---|---|---|
+| 1, 2, 3 | is_selected: the decision corp; the train's seller at SELECT_TRAIN and TRAIN_PRICE from a corp; the corp a sale is of at SELL_AMOUNT and EMERGENCY_SELL_AMOUNT | 1-3 |
+| 4, 5, 6 | parred, floated, home token placed | 4-6 |
+| 7, 8 | par price, share price /100 | 7, 8 |
+| 9, 10 | market row /10, market column /14 | 9, 10 |
+| 11-14 | market zone: normal, par, no certificate limit, unlimited | 11-14 |
+| 15 | sold out | 20 |
+| 16 | cash /1000 | 21 |
+| 17, 18 | IPO shares /10, pool shares /10 | 22, 23 |
+| 19, 20 | tokens left /3, next token's price /100 | 24, 25 |
+| 21-26 | trains by type /4 | 26-31 |
+| 27 | trains over the phase's limit | 32 |
+| 28, 29 | last revenue /100, route max /100 | 33, 34 |
+| 30 | route available | 35 |
+| 31 | must buy a train | 36 |
+| 32 | in an emergency (the decision corp only) | 37 |
+| 33-39 | the corp's operating rank, one-hot | 38-44 |
+| 40 | operated this OR | 45 |
+| 41, 42, 43 | hexes reached /52, centers reached /25, their revenue now /100 | 46-48 |
+| 44 | reached cities with a slot for the corp /15 | 49 |
+| 45 | sold by the actor this SR (**Point 21**) | 50 |
+| 46 | sold this SR turn | 51 |
+| 47 | sold in this turn's emergency | 52 |
+| 48 | bought or parred this SR turn | 53 |
+| 49 | privates owned /7 | 56 |
+| 50 | is the operating corp | 57 |
+| 51, 52, 53 | share price after a payout, a withhold, and ending an SR sold out /100 | 58-60 |
+| 54 | trains held / the train limit | 61 |
+| 55 | room /4 | 62 |
+| 56 | trains that survive the next rust /4 | 63 |
+| 57 | room when the next phase starts /4 | 64 |
+| 58, 59 | route max after the next rust, and with the next train, /100 | 65, 66 |
+| 60 | the shortfall from the treasury to the next train's list price /1000 | 67 |
+| 61 | shares that must still leave the IPO before the corp floats /5 | 68 |
+| 62 | their cost /1000 | 69 |
+| 63, 64 | the president's cash covers that cost; the actor's does | 70, 71 |
+| 65 | the president has sold this corp this SR (**Point 21**) | 72 |
+| 66 | on the decision corp in an emergency: the cash its president must still raise /1000 | 73 |
+| 67, 68, 69 | log-scaled share price, treasury, and route max | 74-76 |
+| 70, 71, 72 | bd: centers it does not reach at distance 1, 2, 3, each /10 | bd §4.2's 77-79 |
+| 73, 74 | bd: revenue now of the centers at distance 1, and at 2, each /300 | 80, 81 |
+| 75 | bd: the nearest unreached center's distance /6, 1 if none within 5 | 82 |
+
+Slots 7-14, 51-53, and 67 are 0 while the corp is unparred, and 70-75 while
+it has no token on the map. Layout 2's per-choice slots leave the row
+(v2-design §4.2): the sale prices 15-19 go to STOCK 8, SELL_AMOUNT and
+EMERGENCY_SELL_AMOUNT 1, and BUY_TRAIN 14; the actor's largest sale 54 to
+STOCK 7; the emergency sale limit 55 to BUY_TRAIN 13.
+
+### PRIVATE, layout 3 (15)
+
+| Slots | Feature | Layout 2 |
+|---|---|---|
+| 1 | is_selected: BID's private (a closed auction's, else the pending one), PRIVATE_PRICE's pending private | 1 |
+| 2 | is_selected: the topmost unsold private | 2 |
+| 3, 4, 5 | owner: unsold, a player, a corp (**Point 4**) | 3-5 |
+| 6, 7, 8 | face value, revenue now, price now with A's discount (unsold only) /100 | 7-9 |
+| 9-12 | while unsold: high bid /100, bids /5, minimum bid /100, the actor's bid /100 | 10-13 |
+| 13 | blocking its hex (TR on K4, ER on C4) | 14 |
+| 14 | MF's port tile used, on MF's row only | 15 |
+
+Layout 2's 6 (closed) goes: a closed private's row is hidden (**Point 4**).
+16 and 17 (`can_buy_private`, `can_exchange_dr`) are the legality of the
+BUY_PRIVATE and DR rows, which the legal mask carries (**Point 20**).
+
+### CENTER, layout 3 (21)
+
+| Slots | Feature | Layout 2 |
+|---|---|---|
+| 1 | is_selected: TILE's pending hex when it is a center; C4 at ER_BONUS | HEX 1 |
+| 2, 3 | its tile's code and rotation, integers | HEX 2-77, the tile block |
+| 4 | revenue now /100: its tile's, an offboard's by phase (`map_revenue`) | HEX 73 |
+| 5 | revenue to a D train /100 | HEX 78 |
+| 6, 7 | mountain, water | HEX 79, 80 |
+| 8, 9, 10 | tokens /3, slots open to any corp /3, a home reservation still open | HEX 81-83 |
+| 11 | lay cost /100 of the current tile, before SMR's discount | HEX 84 |
+| 12 | blocked by a private | HEX 85 |
+| 13-18 | dangling exits by side | HEX 86-91 |
+| 19, 20 | upgrade targets now /15; in supply whatever the phase /15 | HEX 92, 93 |
+
+HEX 94-104, relative to the decision corp, leave the row: 94-102 go to
+TRACK 8-16, 103 is TOKEN's legality, and 104 is TOKEN's S4. A plain hex's
+HEX row has no successor in the trunk; TRACK's row carries it. Slots 6 and
+7 are 0 in 1889, since no revenue center's hex has terrain; they stay, as
+v2-design §4.2 lists them.
+
+### PLAYER, layout 3 (20)
+
+| Slots | Feature | Layout 2 |
+|---|---|---|
+| 1-10 | as layout 2 | PLAYER 1-10 |
+| 11 | passed | 31 |
+| 12, 13 | presidencies /7, privates owned /7 | 32, 33 |
+| 14 | on the operating corp's president: an emergency sale since the turn's last purchase | 34 |
+| 15 | can float a corp alone | 35 |
+| 16 | in a closed auction's BID: this player acts when the auction resolves | 36 |
+| 17 | income of an OR at the current route maxes /1000 | 37 |
+| 18, 19 | log-scaled cash and net worth | 38, 39 |
+
+Layout 2's 11-17 (shares) go to PLAYER × CORP 0, 18-24 (sold this SR) to
+PLAYER × CORP 2, and 25-30 (bids) to PLAYER × PRIVATE 1.
+
+### Pair blocks, layout 3
+
+| Block | Shape | Channel | Feature | Replaces |
+|---|---|---|---|---|
+| PLAYER × CORP | P × 7 × 3 | 0 | shares held /10 (`player_shares`; the President's Certificate counts 2) | relations 0-3; PLAYER 11-17 |
+| | | 1 | is its president (`corp_president`) | relations 4, 5 |
+| | | 2 | sold it this SR (`player_sold_mask`) | relations 25, 26; PLAYER 18-24 |
+| PLAYER × PRIVATE | P × 7 × 2 | 0 | owns it | relations 6, 7 |
+| | | 1 | bid on it /100 (`player_bid`) | relations 10, 11; PLAYER 25-30 |
+| CORP × PRIVATE | 7 × 7 × 1 | 0 | owns it | relations 8, 9 |
+| CORP × CENTER | 7 × 25 × 4 | 0 | has a token in it (`hex_tokens`) | relations 14, 15 |
+| | | 1 | reaches it (`GRAPH_NODE`) | relations 18, 19 |
+| | | 2 | it is on the routes that earn the corp's route max (`route_hex`) | relations 27, 28 |
+| | | 3 | bd: D_c to it, as closeness (**Point 5**) | new; zero until step 6 |
+| CENTER × CENTER | 25 × 25 × 1 | 0 | bd: the center matrix, as closeness (**Point 5**) | new; zero until step 6 |
+
+- **Orientation:** the first type named is the first axis, players in seat
+  order, centers in CENTER's row order. CENTER × CENTER is symmetric
+  (bd §3.4 makes it so by its minimum).
+- **Padded seats** are zero player rows; **hidden privates,** zero
+  columns, since a private out of play or closed has no owner and no bids.
+  TR's bid column is always zero, since a bid on the topmost buys it
+  (layout 2 dropped the column); it stays for a rectangular block.
+- **CORP × CENTER 2** names stops: a center hex on a route is a stop, since
+  every path of a tile with a revenue center touches it.
+- **Closeness** is (6 − d)/6 for a distance of d ≤ 5 lays: 1 for a center
+  reached now, 1/6 at 5 lays. It is 0 for none within 5, for a corp with no
+  token, on CENTER × CENTER's diagonal, and everywhere before step 6.
+- **A CORP row's player slice** is in canonical seat order. A model that
+  appends it may rotate it to start at the actor (PLAYER 2-6 give each
+  seat's offset).
+- **Not carried:** relations 0-1 (channel 0 > 0), 12-13 (CORP 21-26), 16-17
+  (CORP 41, TRACK 8-13), 20 (CENTER 13-18, TRACK 0-5), 21-24 (TILE's and
+  ER_BONUS's rows), 27-28 at plain hexes, and every static plane (the row
+  identities and slot embeddings hold them).
+
+### The choice table
+
+#### Columns
+
+| Columns | Content |
+|---|---|
+| 0 | hex code (**Point 3**) |
+| 1, 2 | tile code, rotation |
+| 3-9 | the shared block, S0-S6 |
+| 10-46 | the phase block: slot i of the decision's block at column 10 + i, zero past its width |
+
+- **F = 47** (**Point 1**): 3 integer columns, the shared block's 7, and the
+  widest phase block, TILE's 37.
+- **Row k** is the decision's phase-local action k. A row past the phase's
+  size, or whose action is not engine-legal, is zero, its integers
+  included. Engine-legal rows that the policy filters out are filled, and
+  the legal mask excludes them: per-choice features describe engine-legal
+  choices, as in layouts 1 and 2. Without a decision (GAME_OVER) the table
+  is zero.
+- **46 rows hold every decision:** `MAX_ACTION_SIZE` is TRACK's 46, and the
+  next largest phase is STOCK's 31. Exact amounts (`*_EXACT` ids, at or above
+  their phase's size) have no policy slot and no row.
+- **Integer columns:** a TRACK row has its hex and its current tile; TILE's,
+  the pending hex and the candidate; ER_BONUS's candidates, C4 and the
+  candidate; TOKEN's, its hex and no tile; PORT's, its port hex and tile 437
+  at the lay's rotation (**Point 13**). Every other row's are 0.
+
+#### The shared block
+
+| Column | Slot | Feature | Layout 2 or engine |
+|---|---|---|---|
+| 3 | S0 | Δ the actor's cash /1000 | new (`player_cash`) |
+| 4 | S1 | Δ the row's corp's treasury /1000 | new (`corp_cash`) |
+| 5 | S2 | Δ the row's corp's share price /100; 0 if it is unparred before or after (**Point 16**) | new (`market_price`) |
+| 6 | S3 | Δ the actor's certificates / the player count's limit | new (`player_cert_count`, `CERT_LIMIT`) |
+| 7 | S4 | Δ the row's corp's route max /100 | CANDIDATE 104, HEX 104, TRAIN 10-12 |
+| 8 | S5 | Δ the row's corp's route max with the next train /100 | CANDIDATE 108; new elsewhere |
+| 9 | S6 | the price the action pays or commits /1000 (below) | PRICE 5-21; CANDIDATE 99 |
+
+- **The actor** is the decision's, fixed before the action: the player
+  whose cash S0 reads after it, whoever acts next.
+- **S4 and S5** are computed at TILE, ER_BONUS, TOKEN, DISCARD, SELECT_TRAIN,
+  TRAIN_PRICE, and PORT, and are 0 by construction at every other decision,
+  where no action changes track, tokens, or trains (**Point 24**). S5 on an
+  applied state is its own solve (**Point 22**).
+- **S6:** at AUCTION's buy, the topmost's price; at BID's points, the
+  amount, committed, and paid if it buys; at STOCK, the par price of an IPO
+  share and the share price of a pool share; at PAR, twice the par, the
+  President's Certificate; at TILE, the lay cost after SMR's discount
+  (`map_lay_cost`); at TOKEN, the token's price (`corp_token_price`); at
+  SELECT_TRAIN, a depot or pool train's list price, or ¥800 for a trade-in
+  (`trade_in_price`); at TRAIN_PRICE and PRIVATE_PRICE, the point's amount.
+  Every other row's is 0.
+- **A row whose action only opens a sub-decision** has a zero shared block
+  by design (v2-design §5.3); its phase block previews the sub-decision
+  (Previews, below).
+
+The row's corp (v2-design's "affected corp", **Point 10**):
+
+| Decision | The row's corp |
+|---|---|
+| AUCTION, BID | none |
+| STOCK | the corp rows 1-28 name; IR at DR (row 29); none at pass and MF |
+| PAR | the pending corp |
+| SELL_AMOUNT, EMERGENCY_SELL_AMOUNT | the corp sold (`pending_corp`) |
+| BUY_PRIVATE_PRE, BUY_PRIVATE_POST | IR at DR; the operating corp otherwise |
+| DISCARD | the first crowded corp |
+| PORT | the operating corp in an OR; none at an SR's PORT |
+| every other decision | the operating corp (at ER_BONUS, ER's buyer) |
+
+With none, S1, S2, S4, and S5 are 0.
+
+#### Rows and what they name
+
+Each row's unified slot is its decision's first slot + k
+(`POLICY_LAYOUT.offsets`). The named row and the subject are model inputs
+(v2-design §5.4); "—" names none.
+
+| Decision (size, first slot) | Row k | Named row | Phase block |
+|---|---|---|---|
+| AUCTION (8, 0) | 0 pass; 1 buy the topmost; 2-7 bid on private k − 1, MF to UTF (BID follows) | 1: the topmost (**Point 9**); 2-7: PRIVATE k − 1 | AUCTION and BID |
+| BID (17, 8) | 0 drop (a closed auction's only); 1-16 bid the minimum + ¥5(k − 1) | — (s: PRIVATE 1) | AUCTION and BID |
+| STOCK (31, 25) | 0 pass or done; 1-7 an IPO share of corp k − 1; 8-14 a pool share of k − 8; 15-21 par k − 15 (PAR follows); 22-28 sell k − 22 (SELL_AMOUNT follows); 29 DR's exchange; 30 MF (PORT follows) | 1-28: the CORP row of the corp named; 29: PRIVATE DR; 30: PRIVATE MF | STOCK |
+| PAR (6, 56) | par at `PAR_PRICE[k]` | — (c: the pending corp) | PAR |
+| SELL_AMOUNT (5, 62) | sell k + 1 shares | — (s: CORP 3) | SELL_AMOUNT |
+| BUY_PRIVATE_PRE (10, 67) | 0 done; 1-7 buy private k − 1 (PRIVATE_PRICE follows); 8 DR's exchange; 9 MF (PORT follows) | 1-7: PRIVATE k − 1; 8: DR; 9: MF | BUY_PRIVATE |
+| TRACK (46, 77) | 0 pass; 1-45 lay on `TRACK_HEXES[k − 1]` (TILE follows) | the hex's CENTER row at the 19 centers (A10, B11, C4, C10, E2, F3, F9, G4, G10, G12, H7, I2, I4, I12, J5, J9, J11, K4, K8); — at the 26 plain hexes | TRACK |
+| TILE (15, 123) | lay candidate k on the pending hex (`enumerate_lay_candidates`' order) | — (s: CENTER 1 at a center) | TILE |
+| TOKEN (16, 138) | 0 pass; 1-15 token `TOKEN_HEXES[k − 1]` | the hex's CENTER row (all 15 are cities) | TOKEN |
+| DIVIDEND (2, 154) | 0 withhold; 1 payout | — | DIVIDEND |
+| DISCARD (3, 156) | discard a `DISCARD_TYPES[k]`: a 3, 4, 5 | — (c: the crowded corp) | none |
+| BUY_TRAIN (18, 159) | 0 pass; 1 the depot; 2 the pool; 3-9 corp k − 3's trains (SELECT_TRAIN follows each); 10-16 an emergency sale of corp k − 10 (EMERGENCY_SELL_AMOUNT follows); 17 bankruptcy | 3-9: CORP k − 3; 10-16: CORP k − 10 | TRAIN |
+| SELECT_TRAIN (9, 177) | 0-5 a type-k train from the pending source (from a corp, TRAIN_PRICE follows); 6-8 a D for a traded `TRADE_IN_TYPE[k − 6]`, a 4, 5, 6 | — (s: CORP 2 from a corp) | TRAIN |
+| TRAIN_PRICE (5, 186) | pay ¥1; the list price; ⌈cash/3⌉; ⌈2 cash/3⌉; the treasury | — (s: CORP 2) | TRAIN |
+| EMERGENCY_SELL_AMOUNT (5, 191) | sell k + 1 shares | — (s: CORP 3) | SELL_AMOUNT |
+| BUY_PRIVATE_POST (9, 196) | 0 done; 1-7 buy private k − 1; 8 DR's exchange | 1-7: PRIVATE k − 1; 8: DR | BUY_PRIVATE |
+| PRIVATE_PRICE (4, 205) | pay ⌈face/2⌉; face; ⌈1½ face⌉; min(2 face, treasury) | — (s: PRIVATE 1) | BUY_PRIVATE |
+| ER_BONUS (9, 209) | 0 pass; 1-8 lay `er_candidates`' k − 1 on C4 | — (s: CENTER 1, C4) | TILE |
+| PORT (10, 218) | the port tile on `PORT_LAY_HEX[k]` at `PORT_LAY_ROT[k]` | the hex's CENTER row (B11, G10, I12, J9) | none |
+
+#### Previews
+
+A row that only opens a sub-decision previews it through one of that
+decision's rows, against which per-choice truth tests it:
+
+| Row | Its phase block is |
+|---|---|
+| AUCTION's bid on p | p's price, minimum, and high bid, and what a minimum bid leaves |
+| STOCK's par of c | PAR's presidency (STOCK 4 = 1) and the float after the certificate (STOCK 6) |
+| STOCK's sale of c | SELL_AMOUNT's largest row: its size, price after, and presidency |
+| BUY_PRIVATE's p | PRIVATE_PRICE's last point |
+| TRACK's hex | TILE's rows at the hex, each slot's best (**Point 2**) |
+| BUY_TRAIN's source | the SELECT_TRAIN row there with the largest buyer's Δ route max (**Point 6**) |
+| BUY_TRAIN's sale of c | EMERGENCY_SELL_AMOUNT's largest row |
+| SELECT_TRAIN from a corp | TRAIN_PRICE's rows, whose route deltas do not depend on the price |
+
+Pass, done, and drop rows have an all-zero phase block. Their shared block
+is their applied Δ, which is nonzero for an AUCTION pass that completes a
+round of passes and pays the actor's privates (**Point 17**). STOCK's and
+BUY_PRIVATE_PRE's MF rows preview nothing: PORT's rows are the lays.
+
+#### AUCTION and BID (4)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0 | the price /100: at AUCTION's buy, the topmost's (`private_price`, with A's discount); at a bid on p, p's; at BID's points, the amount (`price_amount`) | PRIVATE 9; PRICE 5 + id |
+| 1 | the minimum bid /100 (`private_min_bid`): p's at a bid on p; the bid private's at BID's points; 0 at the buy | PRIVATE 12 |
+| 2 | the high bid /100 (`private_high_bid`) of the same private; 0 at the buy | PRIVATE 10 |
+| 3 | the actor's cash less their bids after the action /1000: `player_available(actor, q)` less slot 0 at the buy (q the topmost) and at BID's points (q the bid private), less slot 1 at a bid on p (q = p) | new; PRICE 23 less PRICE 5 + id |
+
+#### STOCK (9)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0-3 | kind: IPO, pool, par, sell; rows 1-28 (**Point 13**) | static |
+| 4 | the actor's presidency of the row's corp: 1 if the action makes them its president, −1 if it ends it. IPO, pool, and DR, applied; par, 1; sell, from selling slot 7's block, applied on the scratch state as SELL_AMOUNT would | new |
+| 5 | the action floats the row's corp (IPO, DR; applied) | new |
+| 6 | shares that must still leave the IPO before the row's corp floats /5 (CORP 61), after the action: applied at IPO, pool, and DR; less the President's Certificate at par; as now at sell; 0 once floated | CORP 68 |
+| 7 | sell: the actor's largest sale /5 (`sale_limit`) | CORP 54 |
+| 8 | sell: the share price after that sale /100 (a row down per share; at a column's bottom the price repeats) | CORP 15-19 |
+
+Pass and MF are zero; DR fills 4-6, for IR.
+
+#### PAR (3)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0 | the par /100, `PAR_PRICE[k]` (**Point 13**) | static; PRICE 5 + id is twice it /1000 |
+| 1 | of the five shares that must leave the IPO to float the corp, how many are out once the actor has spent all their cash at this par, /5: min(5, shares already out + ⌊cash/par⌋) | PRICE 24 + id |
+| 2 | the treasury at float /1000, 10 × par (**Point 13**) | static |
+
+Applied: S0 is −2 × par, S3 the certificate, S6 2 × par, and S2 0
+(**Point 16**).
+
+#### SELL_AMOUNT and EMERGENCY_SELL_AMOUNT (4)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0 | shares sold /5, k + 1 (**Point 13**) | static |
+| 1 | the share price after the sale /100 | CORP 15 + k |
+| 2 | SELL_AMOUNT: −1 if the sale ends the actor's presidency (applied); 0 at EMERGENCY_SELL_AMOUNT, whose sales cannot (**Point 19**) | new |
+| 3 | EMERGENCY_SELL_AMOUNT: what the president must still raise after the sale /1000, max(0, need − (k + 1) × the price before it), need = `emergency_need`; 0 at SELL_AMOUNT | new (CORP 73) |
+
+The cash raised is S0 (**Point 11**).
+
+#### BUY_PRIVATE_PRE, BUY_PRIVATE_POST, and PRIVATE_PRICE (5)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0 | the price /100: PRIVATE_PRICE's point (`price_amount`); at a buy-private row, the most the corp may pay, min(2 × face, treasury) | PRICE 5 + id |
+| 1 | the least the corp may pay /100, ⌈face/2⌉ (**Point 19**) | new |
+| 2 | face /100 | PRICE 22; PRIVATE 7 |
+| 3 | revenue now /100 (`private_revenue`) | PRIVATE 8 |
+| 4 | the buyer's treasury after paying slot 0 /1000 | PRICE 23 less PRICE 5 + id |
+
+PRIVATE_PRICE's rows are applied: slot 0 is S6 there. Done, DR, and MF are
+zero; DR's exchange shows in the shared block, for IR.
+
+#### TRACK (30)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0-5 | dangling exits by side | HEX 86-91 |
+| 6, 7 | upgrade targets now /15; in supply whatever the phase /15 | HEX 92, 93 |
+| 8-13 | the decision corp's reached sides, by side | HEX 94-99 |
+| 14 | its reach of the hex's center | HEX 100 |
+| 15 | blocked for it: every slot filled by other corps | HEX 101 |
+| 16 | its lay candidates here /15, TILE's rows | HEX 102 |
+| 17 | its lay cost here /100, after SMR's discount (`map_lay_cost`), the same for every candidate | CANDIDATE 99 |
+| 18 | the most S4 of a TILE row here: Δ route max /100 | best of CANDIDATE 104 |
+| 19 | the most S5: Δ route max with the next train /100 | best of CANDIDATE 108 |
+| 20, 21, 22 | the most TILE 22, 23, 24: Δ hexes reached /52, Δ centers reached /25, Δ reached revenue /100 | best of CANDIDATE 101-103 |
+| 23 | a candidate here makes a route available (the most TILE 25) | best of CANDIDATE 105 |
+| 24, 25 | the fewest TILE 26, 27: other corps whose reached centers grow /6; their summed Δ centers /50 | best of CANDIDATE 106, 107 |
+| 26, 27 | bd: the most TILE 28, 29: centers brought to distance 1, to 2, /5 | bd §4.4's 106, 107 |
+| 28 | bd: the fewest TILE 32: centers put farther /10 | bd §4.4's 108 |
+| 29 | bd: the most TILE 34: other corps' centers put farther /20 | bd §4.4's 109 |
+
+The pass row is zero. Every slot is the decision corp's, on the row's hex,
+over `lay_candidates`' list there. 0-16 are `_fill_hex`'s values; 14 and 15
+are 0 at a plain hex. Each of 18-29 is the best of its own over the
+candidates, which may come from different ones (**Point 2**); with one
+candidate, which the driver lays with no TILE decision, they are its values.
+26-29 are zero until step 6 and optional then (bd §4.4). Layout 2's 78-85,
+103, and 104 are not on the row (**Point 12**).
+
+#### TILE and ER_BONUS (37)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0-20 | paths added: in the candidate's path mask and not the current tile's, `PAIRS` order | CANDIDATE 78-98 |
+| 21 | the tile's copies left after the lay / its `TILE_COUNT` | CANDIDATE 100 |
+| 22, 23, 24 | Δ hexes reached /52, Δ centers reached /25, Δ reached revenue /100 | CANDIDATE 101-103 |
+| 25 | route available after the lay | CANDIDATE 105 |
+| 26 | other corps whose reached centers grow /6 | CANDIDATE 106 |
+| 27 | other corps' summed Δ centers reached /50 | CANDIDATE 107 |
+| 28, 29 | bd: unreached centers the lay brings to distance 1, to distance 2, each /5 | bd §4.3's 109, 110 |
+| 30 | bd: centers brought closer that stay at 3 or more /10 | 111 |
+| 31 | bd: revenue now of the centers brought to distance 1 /200 | 112 |
+| 32 | bd: centers within 5 that the lay puts farther or cuts off /10 | 113 |
+| 33, 34 | bd: other corps' centers brought closer to within 3, and within 3 put farther, summed over the corps, each /20 | 114, 115 |
+| 35, 36 | bd: center pairs of the map brought closer, and put farther, each /50 | 116, 117 |
+
+Outcomes are the row's corp's (the decision corp; ER's buyer at ER_BONUS)
+against the current state, as `_fill_candidates` gives layout 2's CANDIDATE
+rows. The shared block holds CANDIDATE 99 (S6, and S1 = −S6 at TILE; both 0
+at ER_BONUS, where ER's seller pays nothing), 104 (S4), and 108 (S5)
+(**Point 11**). Columns 1-2 replace the candidate's tile block (CANDIDATE
+2-77), and the decision phase CANDIDATE 1. ER_BONUS's pass row is zero.
+
+#### TOKEN (14)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0 | other corps' route max lost /100, summed: over every corp o but the row's, o's route max on the row less applied (**Point 7**) | new |
+| 1 | the largest of those losses /100 | new |
+| 2, 3 | the same for their route max with the next train /100, summed and largest | new |
+| 4 | the city's slots open to any corp after the token /3 (`map_free_slots`, applied; **Point 14**) | new |
+| 5-13 | bd: TILE 28-36's definitions for the token, comparing D before it and after it (**Point 8**) | bd §4.3 |
+
+The pass row is zero. The corp's own gains are S4 (`_fill_token_outcomes`'
+HEX 104) and S5, and the token's price is S6 (**Point 11**). The losses are 0
+or more, and nonzero only where the token fills the city's last slot.
+TOKEN 9 and 10 (bd §4.3's 113, 114) are zero by construction for a token.
+
+#### DIVIDEND (7)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0 | per-share payout ⌈r/10⌉ /100; 0 at withhold | layout 1's DIVIDEND 2 |
+| 1 | total paid to holders /1000: each player's ⌈shares × r/10⌉ and the corp's for its pool shares; 0 at withhold (**Point 15**) | new |
+| 2 | the shortfall to the next train's list price after the choice /1000: max(0, price − treasury − r) at withhold, max(0, price − treasury − the pool's payout) at payout; 0 without room | DIVIDEND 8, 9 |
+| 3-6 | the payout to the player 1, 2, 3, 4 seats after the actor /100, ⌈shares × r/10⌉; 0 at withhold and past the player count (**Point 15**) | new |
+
+The shared block holds the rest of layout 2's DIVIDEND row: S0 the
+president's payout (DIVIDEND 5; the actor is the president), S1 the
+treasury's gain (r at withhold, DIVIDEND 4 less the treasury; the pool's
+payout, DIVIDEND 6), and S2 the price's move (DIVIDEND 2, 3). Its 7 (the
+next train's price) is derivable and dropped, and 10-12 are CORP 55, 59,
+and 58.
+
+#### BUY_TRAIN, SELECT_TRAIN, and TRAIN_PRICE (16)
+
+| Slots | Feature | Layout 2 or engine |
+|---|---|---|
+| 0-5 | the train's type, one-hot (2, 3, 4, 5, 6, D): SELECT_TRAIN's row's (D at a trade-in), TRAIN_PRICE's pending type, a BUY_TRAIN source's previewed train (**Point 18**) | TRAIN 1 |
+| 6 | its price /1000: the list price from the depot or the pool, ¥800 at a trade-in, the point's amount at TRAIN_PRICE; 0 for a corp's train before TRAIN_PRICE | TRAIN 2; PRICE 5 + id |
+| 7 | the buyer's Δ route max /100, with the phase the purchase starts (`route_max_after_purchase`; `_fill_corp_sale` for a corp's train) | TRAIN 10, 11 |
+| 8 | the purchase starts a new game phase | TRAIN 14 |
+| 9 | the buyer's trains that phase start rusts /4, a trade-in's traded train aside | new |
+| 10 | other corps' trains it rusts /6 | new |
+| 11 | a corp's train: the seller's Δ route max /100 (0 or less) | TRAIN 13 |
+| 12 | the president's contribution /1000: max(0, price − treasury), from the depot or the pool in an emergency (`_contribute`); SELECT_TRAIN offers one train then, which the driver buys, so in a table it shows on BUY_TRAIN's previews | new |
+| 13 | BUY_TRAIN's sale of corp c: the largest block the president may sell toward the need /5 (`emergency_sale_limit`) | CORP 55 |
+| 14 | the share price after that sale /100 | CORP 15-19 |
+| 15 | what the president must still raise after it /1000, max(0, need − block × price) | new |
+
+- **SELECT_TRAIN** from the depot or the pool, and its trade-ins, are
+  applied: 0-12 from the applied state or closed forms, 7 equal to S4. From
+  a corp, its rows preview TRAIN_PRICE: 6, 8-10, and 12 are 0.
+- **TRAIN_PRICE** is applied; 7 and 11 are one solve each for the decision,
+  the same on every row (v2-design §5.3).
+- **BUY_TRAIN's** source rows (1-9) preview slots 0-12 (**Point 6**); its sale
+  rows (10-16) fill 13-15; pass and bankruptcy are zero, and bankruptcy's
+  shared block is its applied Δ.
+- **Slots 13-15** are BUY_TRAIN's only (**Point 19**).
+
+#### DISCARD and PORT (0)
+
+No phase block. DISCARD's route max lost (TRAIN 12) is S4, and S5 its
+change with the next train. PORT's row is its integer columns and its
+shared block: S4 and S5 are the operating corp's at an OR's PORT, and none
+at an SR's.
+
+### Model buffers, layout 3
+
+What is static per action slot never crosses the wire (v2-design §5.1):
+
+- **The slot,** `POLICY_LAYOUT.offsets[phase] + k` (`get_choice_slots`),
+  indexes the slot embedding (228 rows). For TRACK's slot of a hex it is
+  that hex's identity.
+- **The named row,** a trunk row or none per unified slot, from the table
+  above (`get_named_rows`): `TRACK_HEXES`, `TOKEN_HEXES`, and
+  `PORT_LAY_HEX` through `HEX_RC`, and the corp and private blocks of STOCK,
+  BUY_TRAIN, AUCTION, and the private decisions. AUCTION's row 1 is a
+  selector, `NAMED3_TOPMOST`: the PRIVATE row PRIVATE 2 picks (**Point 9**).
+- **The tile table,** `(93, 6, 76)` (`get_tile_table`): code 0 is zero, and
+  code t + 1 at rotation r is the tile block (§ The tile block, offsets
+  0-75) of tile t at r, with revenue `TILE_REVENUE[t]` /100, which is 0 for
+  an offboard (CENTER 4 has its revenue by phase). Printed tiles occur at
+  rotation 0 only. It serves CENTER 2-3 and choice columns 1-2. Extraction
+  builds it with `_fill_tile_block`, so the model does not rebuild it.
+- **The hex code** indexes a learned embedding of 53 rows, 0 for none.
+- **Per train type,** the list price, distance, and the phase that rusts it,
+  for a model that projects GLOBAL 90-131 type by type (`g1889.data.tables`:
+  `TRAIN_PRICE`, `TRAIN_DISTANCE`, `TRAIN_RUSTS_ON`).
+- **Each part's trunk rows,** for its two bias rectangles if a pair block
+  (`get_input_parts`' `rows`).
+
+Static values that do ride the wire, in phase blocks narrower than F: STOCK
+0-3, PAR 0 and 2, SELL_AMOUNT 0, SELECT_TRAIN's type, and the integer
+columns of TRACK, TOKEN, ER_BONUS, and PORT (**Point 13**).
+
+### Engine work, layout 3
+
+**The rows** are filled by layout 2's fills into a scratch row and copied
+through slot maps (`_fill_global2`, `_fill_train`, and `_fill_price`'s
+reference and funds for GLOBAL; `_fill_corp2`; `_fill_private`, with closed
+privates hidden; `_fill_hex`, with no decision corp, for CENTER;
+`_fill_player2`), after layout 2's prologue (`_prologue2`). **The pair
+blocks** come from the reads `relations._emit` makes, written densely.
+
+**The choice table** (`_fill_choices3`):
+
+- **Applied rows:** each engine-legal action is applied alone
+  (`apply_alone`) on a copy of the row, scratch state a, and S0-S3 are read
+  off it against the row. S4 and S5 are solved on it with scratch state b:
+  a full solve at DISCARD, SELECT_TRAIN, and PORT; `solve_routes_via`
+  through the city at TOKEN, as `_fill_token_outcomes` does, with the next
+  train from the same forest; once for every price at TRAIN_PRICE.
+- **Lays** (TILE, ER_BONUS, and TRACK's best) take the CANDIDATE rows' fast
+  path: `_fill_candidates`' work, split into `_lay_base` (per hex) and
+  `_lay_outcome` (per candidate), which layouts 1 and 2 now share. Their
+  shared block's other slots are closed forms: the corp pays the lay cost
+  at TILE, and ER's seller nothing.
+- **Previews** read the state or play the sub-decision on scratch state a:
+  BUY_TRAIN's sources open SELECT_TRAIN there, and STOCK's sales play the
+  largest block. A SELECT_TRAIN choice's gain is solved once a decision
+  (`route_max_after_purchase`), shared by every source, since a train that
+  starts a phase is only ever the depot's.
+- **Scratch states:** a pair per capacity, made on first use and kept by the
+  module. The fill holds the GIL throughout, rows included, so nothing else
+  can use them meanwhile; layouts 1 and 2's fills still release it.
+- `_set_profile3(skip)` is a timing hook for the profile scripts: its bits
+  skip parts of the table. Its default, 0, fills everything.
+
+**Tested** (`tests/g1889/test_extraction_layout3.py`,
+`test_extraction_layout3_choices.py`, `test_token_data_doc_layout3.py`,
+`test_driver_apply_alone.py`): every row slot and pair-block channel
+against the entity APIs on whole games at every player count and capacity;
+every choice row of every phase, applied rows against the state
+`apply_alone` leaves (route maxes solved afresh on copies) and previews
+against the sub-decision's row reached by playing the action, TRACK's best
+against the TILE rows its hex opens and a forced lay against the driver's;
+hidden rows, padding, zero rows, capacity, purity over the whole vector,
+every slot exercised, the exports, and these tables; `apply_alone` against
+`apply_action`'s history.
+
+**Cost**, measured on one pinned core of a 9950X3D, default build, on the
+6,385 states of the purity games at stride 3, each fill on a fresh copy
+(caches as the driver left them), the least of three runs a state; µs a
+state, by decision phase, and weighted by the decision phases of the
+fixture's self-play games:
+
+| | Layout 2 tokens and records | Layout 3 | Its rows and pair blocks | Its choice table |
+|---|---|---|---|---|
+| STOCK (44.5% of self-play) | 18.3 | 16.9 | 15.8 | 1.1 |
+| TRACK (12.9%) | 35.4 | 174.5 | 26.3 | 148.1 |
+| DIVIDEND (11.1%) | 41.5 | 38.8 | 37.5 | 1.3 |
+| BUY_TRAIN (8.1%) | 35.3 | 41.9 | 31.1 | 10.8 |
+| TILE (6.2%) | 48.0 | 42.9 | 22.2 | 20.7 |
+| TOKEN (3.3%) | 29.3 | 47.4 | 20.8 | 26.6 |
+| Self-play weighted | 26.0 | 43.7 | 20.6 | 23.1 |
+
+TRACK's best over its candidates (18-25) is 139.8 µs of TRACK's 148.1, 18.0
+µs a leaf weighted: other corps' reach (24-25) 48.4 of it, the next train
+(19) a further 30.5. TOKEN's other corps' solves (0-3) are 12.7 µs a TOKEN
+state, and BUY_TRAIN's source previews 9.5 a BUY_TRAIN state (**Point 2**).
+
+### Known unbounded slots, layout 3
+
+As in layout 2, under uncapped engine-legal play the auction's passes can
+grow GLOBAL 39 without bound, and with the players' cash, the bid slots:
+GLOBAL 133 at BID, PRIVATE 9, 11, and 12, PLAYER × PRIVATE 1, and AUCTION
+and BID 0-3. The shared block and the train block's 7 and 11 are signed,
+and STOCK 4 and SELL_AMOUNT 2 take −1.
+
+### Settled points, layout 3
+
+Most consequential first. Each gives the issue, the options, and the choice
+the tables follow, which the user settled on 2026-11-13.
+
+1. **F is 47, not "about 24."** v2-design §5.1 estimates F, and §7.1 a state
+   of about 4,100 values (8 KB). Its own contents for TILE (CANDIDATE 99-108,
+   the added paths, and bd's nine slots) and TRACK (HEX 78-104 and a best
+   over tiles) do not fit 24. As tabled, TILE's block is 37 after the shared
+   block takes CANDIDATE 99, 104, and 108, so the table is 2,162 values and
+   the state 5,108 (10.2 KB). Options: (a) as tabled; (b) at TILE, carry the
+   pending hex's current tile as two more integer columns and let the model
+   compute the added paths from the tile table's masks: TILE's block falls
+   to 16, TRACK's 30 sets the width, F is 42 and the table 1,932; (c) (b)
+   without TRACK's optional bd slots: F 38, 1,748. **Settled: (a).** It
+   costs 460 bytes a state over (b) in float16 and keeps an exact engine
+   fact out of model arithmetic.
+2. **TRACK's best over tiles costs a candidate fill for every legal lay.**
+   v2-design §2.6 budgets the apply-and-diff at 1.6-3.6 µs a decision, where
+   a TRACK row is a selection with a zero diff, and §5.3's list of solves
+   leaves TRACK out. TRACK 17-29 need `_fill_candidates`' work for every lay
+   of the decision: a graph refresh and `solve_routes_via` now and with the
+   next train per candidate, and other corps' refreshes for 24-25. That is
+   10 lays on average in self-play, 24 in human games, and up to 102
+   (v2-design §11 item 7), against about 6 candidates at a TILE leaf. The
+   definition is settled: each slot is the best of its own, with the
+   direction its table gives; with one candidate it is that candidate's, the
+   only place its outcome appears, since the driver lays it with no TILE
+   decision. **Settled:** as tabled, with the cost measured at step 1.
+   If it is over budget, drop 24-25 first (other corps' reach, the dearest
+   per candidate), then 19 (the extra train's forest). **Measured** (Engine
+   work, above): 139.8 µs a TRACK state, 18.0 µs a self-play leaf, which
+   takes layout 3 from 25.6 to 43.7 µs a leaf against layout 2's 26.0.
+   Dropping 24-25 saves 48.4 µs a TRACK state (6.2 a leaf), and 19 a
+   further 30.5 (3.9 a leaf). Nothing is dropped; the user decides.
+3. **At TILE on a plain hex, nothing names the hex.** v2-design §4.2 gives
+   the pending hex as CENTER 1, which exists only at centers, and 26 of
+   TRACK's 45 hexes are plain. TILE's rows would carry a tile and its added
+   paths but not where they go, and the model sees one state at a time.
+   Options: (a) the hex code column (as tabled), with a learned hex
+   embedding added to the row; (b) the pending hex's TRACK slot as an
+   integer in GLOBAL; (c) a 45-wide one-hot in GLOBAL. **Settled: (a),**
+   filled on every row that names a hex (static at TRACK, TOKEN, ER_BONUS,
+   and PORT), so the model has one path.
+4. **Closed privates are visible today.** v2-design §4.1 and §11 item 5 say
+   closed privates are hidden "as today"; layouts 1 and 2 hide only privates
+   out of play, and show a closed one with PRIVATE 6 set. **Settled:**
+   hide them (slot 0 = 0, the row all zero), as the design intends, and as
+   its §2.6 count of idle rows assumes: a closed private has no owner,
+   revenue, ability, or score. Layout 2's 6 (closed) then has no use and goes
+   (PRIVATE slot 0, 3-5). Alternative: keep them visible with an owner slot
+   for closed, width 16.
+5. **Build distance's encoding.** v2-design §4.3 sends D_c /6, 1 for none
+   within 5, and buckets it in the model (0, 1, 2, 3, 4-5). Then 0 means
+   "reached now," which is also every cell before step 6: the 0 bucket is on
+   everywhere, so its bias weights get gradient from the start, against
+   §4.3's "no gradient until the channels are filled." **Settled:**
+   closeness, (6 − d)/6, 0 for none within 5, no token, the diagonal, and
+   before step 6, with buckets only for nonzero values. The information is
+   the same (CORP × CENTER 3, CENTER × CENTER 0). The CORP summaries 70-75
+   are linear and keep bd §4.2's definitions: at zero their weights get no
+   gradient.
+6. **Which train a BUY_TRAIN source previews.** A source row opens
+   SELECT_TRAIN, which may offer several trains: in phase 6 the depot's 6
+   and D and up to three trade-ins, the pool any type it holds, a corp each
+   type it has. Options: (a) the SELECT_TRAIN row with the largest buyer's Δ
+   route max (TRAIN 7), ties to the lower id (as tabled); (b) the cheapest;
+   (c) each slot's best, as TRACK, which mixes trains in slots that are
+   better in neither direction (a phase start, rust). **Settled: (a).**
+   Cost: layout 2 already solves each type on sale at BUY_TRAIN (TRAIN 10),
+   and each trade-in is one more solve. A corp source, which layout 2 did
+   not preview, needs the buyer's gain per type (one solve a type, shared by
+   every seller) and the seller's loss on its previewed train (one solve a
+   seller).
+7. **Other corps' losses at TOKEN.** They are computable from the applied
+   token. Another corp can lose routes only where the token fills the
+   city's last slot, which then blocks every corp without a token there
+   (`tile_blocks`). Now: a full solve for each such corp whose routes use
+   the city (`route_hex`), since routes are removed and `solve_routes_via`
+   does not apply. With the next train: a purchase solve for each such corp
+   whose network touches the hex (`map_touch_mask`), since its with-next
+   routes are not cached. A token that leaves a slot open needs none.
+   "Opponents" are every other corp, the actor's own others included
+   (PLAYER × CORP shows which); splitting those off is the alternative.
+   **Settled:** as tabled, with the cost measured on phase-5 and later
+   states.
+8. **TOKEN's bd slots.** v2-design §5.2 gives TOKEN bd §4.3's 113-115. For a
+   token, 113 (its corp's centers put farther) and 114 (other corps'
+   brought closer) are zero by construction, up to the search's heuristic:
+   a corp's own token only adds a city to compose through, and it helps no
+   one else. What a token does by distance is 109-112 (centers it brings
+   closer for its corp) and 115 (others' it puts farther). **Settled:**
+   TOKEN takes all nine of TILE's bd slots (TOKEN 5-13). Its block is
+   narrow, so they cost nothing on the wire.
+9. **AUCTION's buy row names a private that changes.** v2-design §5.1 has
+   AUCTION's rows name PRIVATE p statically; row 1 buys the topmost unsold
+   private, whichever that is. Options: (a) its named row is the PRIVATE row
+   PRIVATE 2 selects, resolved in the forward as the subject is (as tabled);
+   (b) no named row; (c) the topmost's index in an integer column.
+   **Settled: (a).**
+10. **The row's corp.** v2-design §5.2 says "the affected corp." The table
+    takes the decision corp except: the corp a STOCK row names, and IR at
+    DR's exchange wherever it is offered; the corp sold at SELL_AMOUNT and
+    EMERGENCY_SELL_AMOUNT, whose price the sale moves, not the operating
+    corp, whose treasury it does not touch; none at an SR's PORT. The
+    alternative at EMERGENCY_SELL_AMOUNT is the operating corp, which leaves
+    S1, S2, S4, and S5 zero there.
+11. **Items the shared block holds.** Where an item v2-design §5.2 lists
+    equals a shared slot on every row of its decision, the phase block does
+    not repeat it: TILE's cost (S6), Δ route max (S4), and with the next
+    train (S5); TOKEN's own gains (S4, S5) and price (S6); DISCARD's route
+    max lost (S4); DIVIDEND's president's income (S0, the actor being the
+    president); SELL_AMOUNT's cash raised (S0). An item that is a preview on
+    some rows stays (TRAIN 7 repeats S4 on applied rows). The alternative
+    is to repeat them all.
+12. **TRACK's hex slots.** v2-design gives TRACK "the hex's layout-2 slots
+    78-104." TRACK 0-16 keep 86-102. Of the rest: 78 and 81-83 are city and
+    revenue facts, 0 at every plain hex and on the named CENTER row at a
+    center; 79-80 (terrain) are static per hex, the slot embedding's; 85
+    (blocked by a private) holds only at K4 and C4, which are centers, and a
+    blocked hex has no lay, so no legal TRACK row has it; 84 (the tile's
+    cost before SMR's discount) gives way to TRACK 17, the corp's cost;
+    103-104 are TOKEN's, 0 at TRACK.
+13. **Static values on the wire.** v2-design §5.1 keeps what a row names off
+    the wire, and §5.2 lists static values in phase blocks: STOCK's kind,
+    PAR's price and treasury at float, the shares sold. They ride the wire
+    in blocks narrower than F, so they add no length, and a scalar
+    generalizes across slots where an embedding cannot. So do SELECT_TRAIN's
+    type and the integer columns of TRACK, TOKEN, ER_BONUS, and PORT, which
+    keep the model's tile and hex lookups one path. The alternative is to
+    zero them and hold buffers.
+14. **TOKEN's "slots left."** Read as the city's slots open to any corp
+    after the token (TOKEN 4), which says whether it fills the city. The
+    alternative, the corp's tokens left, is CORP 19 less one.
+15. **DIVIDEND's rivals and total.** "Each rival's income" is taken per
+    player in seat order after the actor (DIVIDEND 3-6), as PLAYER 2-6 count
+    seats; the alternative is summed and largest. "Total paid" is what the
+    bank pays the holders, the players and the corp for its pool shares: 0 at
+    a withhold, whose revenue is S1.
+16. **S2 where the corp was unparred.** At PAR the corp has no price before,
+    so S2 is 0 there, as wherever the row's corp is unparred before or after,
+    and PAR 0 gives the price. The alternative, the par as the change,
+    would make S2 a price rather than a move.
+17. **A handler does more than its action.** "The action alone" is its
+    handler, which in the auction includes the resolution: a buy or a bid
+    ends the turn, and the topmost privates then sell to their single
+    bidders, the actor among them, whose cash moves by that bid too. The pass
+    that completes a round of passes pays every private's owner or takes ¥5
+    off A. These are the action's own effects, not the driver's chain, and
+    the shared block shows them.
+18. **TRAIN_PRICE's train.** v2-design §4.2's GLOBAL per-type block has no
+    slot for layout 2's TRAIN 1, the type TRAIN_PRICE prices, and
+    TRAIN_PRICE's rows name prices, not trains. The train block's 0-5 carry
+    the type on every train row, so GLOBAL stays 6 × 7. The alternative is an
+    eighth per-type GLOBAL slot, which makes GLOBAL 141 wide.
+19. **Additions not in v2-design:** the hex code (**Point 3**); SELL_AMOUNT 2,
+    the sale ending the presidency, which STOCK 4 previews; the least price
+    of a private (BUY_PRIVATE 1); and BUY_TRAIN 13-15, an emergency sale's
+    preview, where layout 2's CORP 15-19 and 55 served BUY_TRAIN's sale rows
+    and v2-design §4.2 moves them to choices without saying where.
+20. **Layout 2 content not carried:** PRIVATE 16-17, the legality of the
+    BUY_PRIVATE and DR rows, which the legal mask carries at those decisions
+    but which layout 2 also showed at others; TRAIN 10 at DIVIDEND, and at
+    BUY_TRAIN for trains other than each source's previewed one (CORP 59 keeps
+    the next train's); DIVIDEND 7; and the relations and static planes listed
+    under Pair blocks.
+21. **CORP 45 and 65 stay** (the actor sold this corp this SR; its president
+    did), though PLAYER × CORP 2 has every player's sales: they are relative
+    to the actor and the president, whom a CORP row cannot pick out of its
+    player slice.
+22. **The apply.** `GameDriver._dispatch` was already a `cdef` method in
+    `g1889/driver.pxd`; with `history` None it is the action alone,
+    interjections included. The public entry is now `cpdef int
+    apply_alone(GameState state, int action_id) except -1` there, which
+    takes the decision phase from the state and checks only that there is a
+    decision: checking legality would enumerate the decision once per row,
+    so the caller passes `enumerate_legal_actions`' ids. Handlers take Python
+    objects and are `except *`, so the choice fill holds the GIL (v2-design
+    §5.3); layout 3's fill holds it throughout, rows included, and keeps a
+    pair of scratch states per capacity, which the GIL guards. S5
+    on an applied state needs a scratch state of its own
+    (`route_max_after_purchase` writes one), so a fill holds two;
+    `routes_refresh_hypotheticals` would also solve the after-rust max,
+    which S5 does not need.
+23. **Part order.** Players' parts last keeps every other offset fixed across
+    capacities, as the raw row does. v2-design orders nothing. The
+    alternative, rows, then pair blocks, then choices, moves the pair blocks'
+    and the table's offsets with P.
+24. **S4 and S5 by construction.** They are 0 without a read outside TILE,
+    ER_BONUS, TOKEN, DISCARD, SELECT_TRAIN, TRAIN_PRICE, and PORT: an entity
+    write there (a share, a private's sale) may mark a route cache stale
+    without changing a route, and reading it would solve for nothing.

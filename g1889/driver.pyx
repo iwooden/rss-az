@@ -245,7 +245,27 @@ cdef class GameDriver:
         return self._forced_action(state)
 
 
-DRIVER = GameDriver()
+cdef GameDriver _DRIVER = GameDriver()
+DRIVER = _DRIVER
+
+
+cpdef int apply_alone(GameState state, int action_id) except -1:
+    """Apply one decision by its handler alone (``_dispatch``, interjections
+    included), without the automated steps and forced decisions
+    ``apply_action`` runs after it, and record no history: what extraction's
+    choice table diffs (1889/v2-design.md §5.3). The state may be left at an
+    automated step, mid-step, or with another player to act.
+
+    The action must be engine-legal here (``is_legal_action``). Like the
+    handlers, this trusts its caller, extraction, which applies the ids
+    ``enumerate_legal_actions`` gives: checking each would enumerate the
+    decision again. Returns 0."""
+    cdef int phase = get_decision_phase(state)
+    assert phase >= 0 and turn_round(state) != ROUND_GAME_OVER, \
+        f"apply_alone: no decision at step {Step(turn_step(state)).name}"
+    assert action_id >= 0, f"apply_alone: action id {action_id}"
+    return _DRIVER._dispatch(state, phase, action_id, None)
+
 
 # Python mirrors: a bare assignment would be shadowed by the cdef names.
 for _name, _member in ActionStatus.__members__.items():

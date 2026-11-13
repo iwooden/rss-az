@@ -14,6 +14,9 @@ solver's maximum, ``override_private_slot`` take a human's private move at a
 decision that offers no slot for it, ``apply_out_of_turn`` DR's exchange at
 another player's decision, and ``override_topmost_bid`` a human's bid on
 private 0, which has no slot.
+
+``apply_alone`` applies one decision by its handler, without the auto-chain:
+what extraction's choice table diffs (1889/v2-design.md §5.3).
 """
 
 from g1889.state cimport GameState
@@ -36,3 +39,7 @@ cdef class GameDriver:
     cpdef int override_private_slot(self, GameState state, int action_id, object history=*) except -1
     cpdef int apply_out_of_turn(self, GameState state, int private, object history=*) except -1
     cpdef int override_topmost_bid(self, GameState state, object history=*) except -1
+
+
+# One engine-legal decision by its handler alone; the caller guarantees legality.
+cpdef int apply_alone(GameState state, int action_id) except -1
