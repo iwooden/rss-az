@@ -454,6 +454,9 @@ It is kept as built:
   the real build distance (extraction-design §8) the first addition after v1
   launches; its ids append after 28, and E is already 4,096. No gain leaves it
   out.
+  **Since** (2026-11-10): the proxy showed no gain (Section 10), and a design
+  between revenue centers followed:
+  [`build-distance-design.md`](build-distance-design.md). It is not built.
 - Relation extraction has no layout version. v0 ignores ids past 24
   (`nn/transformer-1889.py:491`), so it reads layout 2's records unchanged.
 

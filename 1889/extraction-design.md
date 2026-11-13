@@ -589,6 +589,10 @@ candidate attend to its hex and to the hexes across its exits (relations
 
 ## 8. Build distance and shortest-build-path planes
 
+**Superseded (2026-11-10)** by [`build-distance-design.md`](build-distance-design.md),
+which measures distance between revenue centers, not from each corp. What
+follows is step 7's plan as it stood.
+
 **Recommendation: none of blueprint §7-8 in step 7.** Step 8's v0 reads
 none of it, and pipeline-refactor §8 trains v0 first. Build distance then
 lands as its own step (here called 7b) before the comparison.
