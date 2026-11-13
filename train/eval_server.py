@@ -18,9 +18,10 @@ Communication uses shared memory (torch tensors with share_memory_()):
                     The model builds per-layer attention bias directly from
                     these sparse coordinates. For a flat game
                     (``Game.relation_format``) the server flattens them on the
-                    CPU as it packs a batch, so the GPU receives no padded
-                    records: only real ones, rounded up to a launch shape with
-                    value-0 rows in bucketed mode.
+                    CPU as it gathers a batch, reading each state's records up
+                    to its zero tail (``mcts_core.gather_flat_relations``), so
+                    the GPU receives no padded records: only real ones, rounded
+                    up to a launch shape with value-0 rows in bucketed mode.
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
       priors  : float32 (W, B, unified_dim)  — legal slots sum to 1
@@ -107,7 +108,6 @@ from mcts.evaluator import BaseEvaluator
 from nn.model_contract import (
     FLAT_RELATION_RECORD_WIDTH,
     ModelInputSpec,
-    flatten_relation_records,
     normalize_model_type,
 )
 from train.profile_stats import (
@@ -761,21 +761,20 @@ def _eval_server_serve(
     relation_coord_width = shared_bufs.relation_coord_width
     relation_coord_row_bytes = max_relation_edges * relation_coord_width
     flat_relations = shared_bufs.relation_format == "flat"
+    # Any other game ships its padded records, gathered here.
     pin_rel_coord_list = [
         torch.empty(
             alloc_batch, max_relation_edges, relation_coord_width,
-            # A flat game's padded records stop on the CPU, at the flatten.
-            dtype=torch.uint8, pin_memory=use_cuda and not flat_relations,
+            dtype=torch.uint8, pin_memory=use_cuda,
         )
-        for _ in range(buf_depth)
+        for _ in range(0 if flat_relations else buf_depth)
     ]
-    pin_rel_coord_np_list = [p.numpy() for p in pin_rel_coord_list]
     pin_rel_coord_flat_bytes_list = [
-        p.reshape(alloc_batch, relation_coord_row_bytes).view(np.int8)
-        for p in pin_rel_coord_np_list
+        p.numpy().reshape(alloc_batch, relation_coord_row_bytes).view(np.int8)
+        for p in pin_rel_coord_list
     ]
-    # A flat game ships flat rows: room for a full batch's, of which a launch
-    # sends the first N. Any other game ships its padded records.
+    # A flat game ships flat rows, flattened straight out of shared memory:
+    # room for a full batch's, of which a launch sends the first N.
     flat_rel_shape = (alloc_batch * max_relation_edges, FLAT_RELATION_RECORD_WIDTH)
     pin_rel_flat_list = [
         torch.empty(flat_rel_shape, dtype=torch.int16, pin_memory=use_cuda)
@@ -830,6 +829,7 @@ def _eval_server_serve(
 
     # Cython gather/scatter helpers (nogil memcpy, no per-worker Python loop).
     from mcts.mcts_core import (
+        gather_flat_relations as _gather_flat_relations,
         gather_masks as _gather_masks,
         gather_states as _gather_states,
         scatter_results as _scatter_results,
@@ -843,7 +843,9 @@ def _eval_server_serve(
     all_states_bytes = shared_bufs._states.numpy().reshape(
         shared_bufs.num_workers, shared_bufs.batch_size, input_flat_width,
     ).view(np.int8)
-    all_relation_coords_bytes = shared_bufs._relation_coords.numpy().reshape(
+    # A flat game's records are read as records, each state's up to its tail.
+    all_relation_coords_np = shared_bufs._relation_coords.numpy()
+    all_relation_coords_bytes = all_relation_coords_np.reshape(
         shared_bufs.num_workers, shared_bufs.batch_size, relation_coord_row_bytes,
     ).view(np.int8)
     all_masks_np = shared_bufs._legal_mask.numpy()
@@ -959,8 +961,6 @@ def _eval_server_serve(
 
         pin_s_slot = pin_s_list[slot]
         pin_s_flat_bytes = pin_s_flat_bytes_list[slot]
-        pin_rel_coord_slot = pin_rel_coord_list[slot]
-        pin_rel_coord_flat_bytes = pin_rel_coord_flat_bytes_list[slot]
         pin_mask_slot = pin_mask_list[slot]
         pin_mask_np = pin_mask_np_list[slot]
         pin_priors_slot = pin_priors_list[slot]
@@ -972,15 +972,24 @@ def _eval_server_serve(
             pin_s_flat_bytes, all_states_bytes, widx, cnts, n_req,
             states_row_bytes,
         )
-        relation_coord_n = _gather_states(
-            pin_rel_coord_flat_bytes, all_relation_coords_bytes,
-            widx, cnts, n_req, relation_coord_row_bytes,
-        )
-        if relation_coord_n != actual_n:
-            raise AssertionError(
-                f"relation coord gather count {relation_coord_n} "
-                f"!= state gather count {actual_n}"
+        # The relations' real rows: a flat game's records, as flat rows in
+        # this slot's pinned buffer, each state's zero tail left in shared
+        # memory; any other game's padded records, a row per state.
+        if flat_relations:
+            real_rows = _gather_flat_relations(
+                pin_rel_flat_np_list[slot], all_relation_coords_np,
+                widx, cnts, n_req,
             )
+        else:
+            real_rows = _gather_states(
+                pin_rel_coord_flat_bytes_list[slot], all_relation_coords_bytes,
+                widx, cnts, n_req, relation_coord_row_bytes,
+            )
+            if real_rows != actual_n:
+                raise AssertionError(
+                    f"relation coord gather count {real_rows} "
+                    f"!= state gather count {actual_n}"
+                )
         _gather_masks(pin_mask_np, all_masks_np, widx, cnts, n_req)
         start_ti = stats.charge(GATHER)
         launch_n = _resolve_launch_batch_size(
@@ -998,15 +1007,11 @@ def _eval_server_serve(
         if flat_relations:
             # A launch's scratch rows have no records. Its flat rows ship from
             # this slot's pinned buffer, which the next launch mustn't overwrite.
-            flat = flatten_relation_records(pin_rel_coord_np_list[slot][:actual_n])
-            real_rows = len(flat)
             relation_rows = _resolve_flat_launch_rows(
                 real_rows=real_rows, launch_n=launch_n,
                 batch_shape_mode=batch_shape_mode,
             )
-            pin_rel_flat_np = pin_rel_flat_np_list[slot]
-            pin_rel_flat_np[:real_rows] = flat
-            pin_rel_flat_np[real_rows:relation_rows] = (
+            pin_rel_flat_np_list[slot][real_rows:relation_rows] = (
                 flat_filler[:relation_rows - real_rows]
             )
             gpu_rel[:relation_rows].copy_(
@@ -1016,7 +1021,7 @@ def _eval_server_serve(
         else:
             relation_rows = launch_n
             gpu_rel[:actual_n].copy_(
-                pin_rel_coord_slot[:actual_n],
+                pin_rel_coord_list[slot][:actual_n],
                 non_blocking=True,
             )
         gpu_mask[:actual_n].copy_(pin_mask_slot[:actual_n], non_blocking=True)

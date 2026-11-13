@@ -11,6 +11,8 @@ with relation multipliers scrambled so that relations matter:
 - ``NNEvaluator``'s three entries give the same outputs on records as on planes;
 - an eval server with real worker processes gives ``NNEvaluator``'s priors and
   values for the same states, whichever workers a launch combines;
+- its gather flattens records straight out of shared memory into the rows
+  ``flatten_relation_records`` gives, reading each state up to its zero tail;
 - its bucketed launches ship only B × K rows, the real records and then filler
   the model ignores, and its dynamic launches only the real records;
 - the eval server's warmup leaves N dynamic: launches of any shape and real
@@ -24,6 +26,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import queue
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -37,6 +40,7 @@ from g1889.relations import RelationSize, get_relation_coord_data_batch, get_rel
 from g1889.token_data import get_num_tokens
 from games import Game, get_game
 from mcts.evaluator import NNEvaluator
+from mcts.mcts_core import gather_flat_relations
 from mcts.search import StatePool
 from nn import create_model, get_model_input_spec
 from nn.model_contract import FLAT_RELATION_RECORD_WIDTH, flatten_relation_records
@@ -514,6 +518,100 @@ def _get_result(results: Any, server: EvaluationServer, workers: list[Any]) -> A
             if any(process.exitcode not in (None, 0) for process in workers):
                 raise RuntimeError("an eval worker died") from None
     raise TimeoutError("eval workers did not finish")
+
+
+# =============================================================================
+# THE EVAL SERVER'S GATHER
+# =============================================================================
+
+HUMAN_STARTS = Path(__file__).resolve().parents[2] / "g1889/data/human_starts.npz"
+
+
+def _shared_records(rows: list[np.ndarray], batch_size: int) -> np.ndarray:
+    """Workers' shared records for ``rows``, ``batch_size`` states to a worker, as
+    workers fill them; the slots past the last state hold stale bytes."""
+    workers = -(-len(rows) // batch_size)
+    shared = np.full((workers, batch_size, EDGES, 4), 0xAB, np.uint8)
+    get_relation_coord_data_batch([row.copy() for row in rows], shared.reshape(-1, EDGES, 4)[:len(rows)], MAX_PLAYERS)
+    return shared
+
+
+def _server_gather(shared: np.ndarray, requests: list[tuple[int, int]], room: int) -> tuple[int, np.ndarray]:
+    """The serve loop's gather of ``requests``, (worker, count) pairs, into a flat
+    buffer of ``room`` rows that holds stale rows; returns the count and buffer."""
+    dst = np.full((room, FLAT_RELATION_RECORD_WIDTH), -7, np.int16)
+    widx = np.array([worker for worker, _ in requests], np.int32)
+    cnts = np.array([count for _, count in requests], np.int32)
+    return gather_flat_relations(dst, shared, widx, cnts, len(requests)), dst
+
+
+def _assert_gathers_as_flatten(shared: np.ndarray, requests: list[tuple[int, int]], room: int | None = None) -> int:
+    """The gather's rows and count are ``flatten_relation_records`` of the batch's
+    gathered records, and it writes no row past them."""
+    gathered = [shared[worker, :count] for worker, count in requests]
+    expected = flatten_relation_records(np.concatenate(gathered) if gathered else shared[0, :0])
+    count, dst = _server_gather(shared, requests, len(expected) if room is None else room)
+    assert count == len(expected)
+    assert dst.dtype == expected.dtype == np.int16
+    np.testing.assert_array_equal(dst[:count], expected)
+    assert (dst[count:] == -7).all()
+    return count
+
+
+def test_server_gather_gives_flatten_s_rows_on_real_records(samples):
+    """States of every decision phase and human start positions, 3-5 players, in
+    requests of mixed counts and worker order, as a launch combines them."""
+    rng = np.random.default_rng(4)
+    starts = np.load(HUMAN_STARTS)
+    assert int(starts["max_players"]) == MAX_PLAYERS
+    human = list(starts["rows"][rng.choice(len(starts["rows"]), 241, replace=False)])
+    for rows in ([sample.row for sample in samples], human):
+        shared = _shared_records(rows, batch_size=8)
+        workers = len(shared)
+        last = len(rows) - 8 * (workers - 1)  # the last worker's states
+        order = rng.permutation(workers)
+        full = [(int(w), 8 if w < workers - 1 else last) for w in order]
+        mixed = [(int(w), int(rng.integers(0, (8 if w < workers - 1 else last) + 1))) for w in order]
+        # A launch of all the states; of mixed counts, some 0; of one worker; of one state.
+        for requests in (full, mixed, full[:1], [(int(order[0]), 1)]):
+            assert _assert_gathers_as_flatten(shared, requests) > 0
+            # In the server's flat buffer, room for every state's E records.
+            _assert_gathers_as_flatten(shared, requests, room=sum(c for _, c in requests) * EDGES)
+
+
+def test_server_gather_edge_cases():
+    """No records; a state at the full E; relation ids and values the model ignores
+    or never sees; rows of any byte; and a flat buffer exactly the rows' size."""
+    rng = np.random.default_rng(5)
+    shared = np.zeros((3, 4, EDGES, 4), np.uint8)
+    shared[0, 0] = rng.integers(0, 256, (EDGES, 4), np.uint8)
+    shared[0, 0, :, 3] = rng.integers(1, 256, EDGES, np.uint8)  # all E records real
+    shared[0, 0, :4] = [[0, 0, 0, 1], [24, 255, 255, 255], [28, 94, 0, 3], [255, 7, 7, 200]]
+    count = int(rng.integers(1, 300))
+    shared[0, 2, :count] = shared[0, 0, :count]
+    shared[1, 1, :1] = [[29, 1, 2, 1]]  # past NUM_RELATIONS, which the model drops
+    shared[2, 3, :count] = shared[0, 0, -count:]
+    for requests in (
+        [], [(1, 0)], [(1, 1)], [(0, 1)], [(1, 4)], [(2, 4)],  # no states; an empty one; one; a full one
+        [(1, 2), (0, 4), (2, 4)],  # a full state with states after it
+        [(2, 4), (1, 0), (0, 3), (1, 2)],
+    ):
+        _assert_gathers_as_flatten(shared, requests)
+    assert _assert_gathers_as_flatten(shared, [(0, 1)], room=EDGES) == EDGES
+
+
+def test_server_gather_asserts_on_a_short_buffer_and_a_broken_tail():
+    """A debug build's asserts: rows past the flat buffer, and a value-0 record
+    that isn't the start of the zero tail. The release build drops them."""
+    shared = np.zeros((1, 2, EDGES, 4), np.uint8)
+    shared[0, 0, :3] = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 9, 9]]
+    shared[0, 1, :2] = [[1, 1, 1, 1], [2, 2, 2, 2]]
+    assert _assert_gathers_as_flatten(shared, [(0, 2)]) == 5
+    with pytest.raises(AssertionError, match="rows past dst"):
+        _server_gather(shared, [(0, 2)], room=4)
+    shared[0, 1, 1] = [2, 2, 2, 0]
+    with pytest.raises(AssertionError, match="zero tail"):
+        _server_gather(shared, [(0, 2)], room=8)
 
 
 # =============================================================================

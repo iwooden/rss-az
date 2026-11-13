@@ -545,10 +545,12 @@ def increment_visits(list path, leaf):
 # ---------------------------------------------------------------------------
 # Eval-server shared-memory gather/scatter helpers
 # ---------------------------------------------------------------------------
-# Both gather helpers share the same skeleton: a nogil loop that walks the
-# (worker_indices, counts) request list and memcpys each request's contiguous
-# row block from the per-worker shared-mem slot into a flat batch buffer.
-# They differ only by dtype and row width. scatter_results is the inverse.
+# The gather helpers share the same skeleton: a nogil loop that walks the
+# (worker_indices, counts) request list and copies each request's rows from
+# the per-worker shared-mem slot into a flat batch buffer. gather_states and
+# gather_masks memcpy the whole row block and differ only by dtype and row
+# width; gather_flat_relations flattens each state's records as it copies
+# them. scatter_results is the inverse.
 
 def gather_states(
     char[:, :] dst,
@@ -627,6 +629,78 @@ def gather_masks(
             memcpy(&dst[total, 0], &src[widx, 0, 0], n * row_bytes)
             total = total + n
     return total
+
+
+def gather_flat_relations(
+    int16_t[:, ::1] dst,
+    const uint8_t[:, :, :, ::1] src,
+    const int[:] worker_indices,
+    const int[:] counts,
+    int num_requests,
+):
+    """Gather a flat-relation game's records into flat rows, straight out of
+    the workers' shared memory.
+
+    The fused gather and flatten of a ``Game.relation_format == "flat"`` eval
+    batch: for each request's states in turn, one ``(batch, relation, query,
+    key, value)`` int16 row per record, ``batch`` counting the batch's states
+    from 0. That is ``nn.model_contract.flatten_relation_records`` of the
+    batch's gathered ``(B, E, 4)`` records, without gathering them.
+
+    It relies on the zero-tail layout that ``g1889/relations.pyx``'s
+    ``_fill_records`` writes and ``tests/g1889/test_extraction_relations.py``
+    checks: a state's real records, each with a value above 0, then all-zero
+    records to E. A state stops at its first value-0 record, which a debug
+    build asserts is all zero, so none of its padding is read.
+    ``flatten_relation_records`` instead drops value-0 records wherever they
+    sit; the two differ only on records that break the layout.
+
+    Args:
+        dst: Flat rows, shape (rows, 5) int16, with room for the batch's records.
+        src: Per-worker records, shape (num_workers, batch_size, E, 4) uint8.
+        worker_indices: Worker index per request, shape (num_requests,).
+        counts: Number of states per request, shape (num_requests,).
+        num_requests: Number of requests in this batch.
+
+    Returns:
+        The number of rows written.
+    """
+    cdef Py_ssize_t edges = src.shape[2]
+    cdef Py_ssize_t rows = 0
+    cdef Py_ssize_t e, limit
+    cdef int state = 0
+    cdef int i, j, widx
+    cdef const uint8_t* rec
+    cdef int16_t* out
+    assert src.shape[3] == 4 and dst.shape[1] == 5, \
+        f"gather_flat_relations: records of {src.shape[3]}, rows of {dst.shape[1]}"
+    with nogil:
+        for i in range(num_requests):
+            widx = worker_indices[i]
+            assert 0 <= widx < src.shape[0] and 0 <= counts[i] <= src.shape[1], \
+                "gather_flat_relations: request outside the records"
+            for j in range(counts[i]):
+                rec = &src[widx, j, 0, 0]
+                out = &dst[rows, 0]
+                # The bound keeps a short dst's overflow out of memory in a
+                # release build; a debug build asserts on it below.
+                limit = min(edges, dst.shape[0] - rows)
+                e = 0
+                while e < limit and rec[3] != 0:
+                    out[0] = <int16_t>state
+                    out[1] = rec[0]
+                    out[2] = rec[1]
+                    out[3] = rec[2]
+                    out[4] = rec[3]
+                    out += 5
+                    rec += 4
+                    e += 1
+                assert e == edges or rec[3] == 0, "gather_flat_relations: rows past dst"
+                assert e == edges or rec[0] == rec[1] == rec[2] == 0, \
+                    "gather_flat_relations: a value-0 record before the zero tail"
+                rows += e
+                state += 1
+    return rows
 
 
 def scatter_results(

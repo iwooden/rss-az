@@ -273,7 +273,11 @@ two schedules agree at every step.
   `epoch/grad_norm_avg`, `_max`, and `epoch/grad_clipped_share`; and
   `eval_server/*`: real and launched rows, `padding_share`, launches and mean
   real rows at each launched size, and the serve loop's time split between
-  gather, build, forward, scatter, and idle. The flatten is inside build.
+  gather, build, forward, scatter, and idle. The flatten is inside gather,
+  fused with the records' copy out of shared memory, which reads each state's
+  records only up to its zero tail. Before 2026-11-12 gather copied the whole
+  padded records and build flattened them, so gather and build shares from
+  either side of that change compare only as their sum.
   **A local 6-worker run padded 28% of launched rows** (launches at 32 carried
   21 real rows on average). If the cloud's `padding_share` is similar, padding
   explains most of the gap below, and finer launch sizes are the fix to test

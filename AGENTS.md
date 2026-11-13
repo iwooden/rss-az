@@ -71,7 +71,9 @@ affected producers, consumers, tests, and documentation together.
   RSS (`"dense"`) sends dense planes from the trainer and `NNEvaluator` and the
   sparse relation records that eval-server IPC passes straight through. 1889
   (`"flat"`, from `g1889/relations.pyx`) sends flat `(N, 5)` records from all
-  three, flattened on the CPU by `flatten_relation_records`.
+  three, flattened on the CPU: by `flatten_relation_records` in the trainer
+  and `NNEvaluator`, and by `mcts_core.gather_flat_relations` in the eval
+  server, as it gathers a batch out of shared memory.
 - Transformer values and replay/self-play/evaluator values use canonical
   player order. Preserve player identity across the pipeline.
 - When changing model/input/output contracts, follow the active path through

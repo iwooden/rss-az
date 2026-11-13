@@ -252,11 +252,16 @@ Notes below name RSS's implementations where they matter
   original 10 binary relations, while v3 reads all relations and scales edges by
   value. For 1889 (`"flat"`), all of them send flat `(N, 5)` int16 records: the
   caller flattens the padded wire records on the CPU
-  (`flatten_relation_records`). N is a dynamic dimension in both batch-shape
-  modes. A dynamic launch ships its real records; a bucketed one rounds them up
-  with value-0 rows to B × K, K a power of two from 256 to 4,096, the small
-  set of shapes CUDA graphs need. 1889's model also accepts dense planes, for
-  tests. Keep each model's formats in parity.
+  (`flatten_relation_records`). The eval server flattens them as it gathers
+  them, straight from shared memory into its pinned flat buffer
+  (`mcts_core.gather_flat_relations`, in the gather stage), and reads each
+  state's records only up to its first value-0 record: the extraction writes
+  real records, all valued above 0, then a zero tail, so it gives the same
+  rows without reading or copying the padding. N is a dynamic dimension in
+  both batch-shape modes. A dynamic launch ships its real records; a bucketed
+  one rounds them up with value-0 rows to B × K, K a power of two from 256 to
+  4,096, the small set of shapes CUDA graphs need. 1889's model also accepts
+  dense planes, for tests. Keep each model's formats in parity.
 - **Precision and weights.** Eval servers keep autocast (`eval_dtype`) open
   with `cache_enabled=False`, because same-device servers share trainer
   parameters through CUDA IPC. Without autocast (no `eval_dtype`, or a CPU
