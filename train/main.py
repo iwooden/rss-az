@@ -71,6 +71,17 @@ def _parse_str_list(value: str) -> list[str]:
     return values
 
 
+def _parse_positive_int(value: str) -> int:
+    """Parse an integer of at least 1."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        parsed = 0
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {value!r}")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="AlphaZero self-play training"
@@ -277,6 +288,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-compile", action="store_true", default=False,
         help="Disable torch.compile model optimization",
+    )
+    parser.add_argument(
+        "--openblas-threads", type=_parse_positive_int,
+        help="OPENBLAS_NUM_THREADS for the self-play worker and eval-server "
+             "processes (default: the environment's value, else 1)",
     )
     parser.add_argument(
         "--eval-dtype", type=str, choices=["bfloat16", "float16"],
@@ -1158,6 +1174,14 @@ def main() -> None:
     result_queue: Any = None  # mp.Queue
 
     if config.num_workers > 0:
+        # numpy's OpenBLAS starts a thread per core (up to 64) at import, in
+        # every spawned process, before a worker's set_num_threads(1) can run.
+        # 128 workers of those exhaust a container's thread limit. Set here,
+        # after this process's own pool exists, it reaches only the children:
+        # --openblas-threads when given, else the environment's value, else 1.
+        if args.openblas_threads is not None:
+            os.environ["OPENBLAS_NUM_THREADS"] = str(args.openblas_threads)
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
         ctx = mp.get_context("spawn")
         task_queue = ctx.Queue()
         task_queue.cancel_join_thread()

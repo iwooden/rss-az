@@ -185,6 +185,20 @@ def test_cli_overrides_weight_decay() -> None:
     assert config.weight_decay == 0.02
 
 
+def test_cli_openblas_threads_is_positive_and_not_persisted() -> None:
+    parser = _build_parser()
+    assert parser.parse_args([]).openblas_threads is None
+    args = parser.parse_args(["--openblas-threads", "4"])
+    assert args.openblas_threads == 4
+    # A per-machine option: it stays out of the config checkpoints save.
+    config = TrainingConfig()
+    _apply_overrides(config, args)
+    assert config.to_json() == TrainingConfig().to_json()
+    for invalid in ("0", "-1", "two"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--openblas-threads", invalid])
+
+
 def test_training_config_rejects_unknown_eval_batch_shape_mode() -> None:
     with pytest.raises(ValueError, match="eval_batch_shape_mode"):
         TrainingConfig(eval_batch_shape_mode="wrong")
