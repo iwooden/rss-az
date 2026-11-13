@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import overload
+from typing import TYPE_CHECKING, overload
 
 import numpy as np
 import torch
 
 from games import RELATION_RECORD_WIDTH
+
+if TYPE_CHECKING:
+    from games import Game
 
 # Flat relation records: (batch, relation, query, key, value), int16.
 FLAT_RELATION_RECORD_WIDTH = RELATION_RECORD_WIDTH + 1
@@ -35,6 +38,12 @@ class ModelInputSpec:
 
     ``policy_dim``, ``num_tokens``, and ``token_dim`` are those of ``game``'s
     adapter (``games.get_game``). A spec without ``game`` is RSS's.
+
+    A packed layout (1889's layout 3, ``nn/transformer-1889-v2.py``) has no
+    token rows: ``input_size`` is its vector's length a state, and
+    ``num_tokens`` and ``token_dim`` are 0. A token layout's ``input_size``
+    is 0. The vector's parts are the engine's to give (1889:
+    ``g1889.token_data.get_input_parts``); consumers here need only its length.
     """
 
     model_type: str
@@ -49,6 +58,42 @@ class ModelInputSpec:
     # share-count planes.
     layout_version: int
     game: str = "rss"
+    input_size: int = 0
+
+    @property
+    def packed(self) -> bool:
+        """One vector a state, no relations: the forward is ``(inputs, legal_mask)``."""
+        return self.input_size > 0
+
+    @property
+    def input_shape(self) -> tuple[int, ...]:
+        """A state's model input: ``(input_size,)``, or ``(num_tokens, token_dim)``."""
+        return (self.input_size,) if self.packed else (self.num_tokens, self.token_dim)
+
+
+def input_spec_for(
+    game: Game, num_players: int, layout_version: int,
+    model_type: str = "transformer",
+) -> ModelInputSpec:
+    """``game``'s input contract for layout ``layout_version`` at capacity
+    ``num_players``: a packed layout's vector length, or a token layout's
+    rows and width."""
+    input_size = 0
+    if layout_version in game.packed_layouts:
+        assert game.input_size is not None, f"game {game.name!r} packs layout {layout_version} without input_size"
+        input_size = int(game.input_size(num_players, layout_version=layout_version))
+    packed = input_size > 0
+    return ModelInputSpec(
+        model_type=model_type,
+        num_players=num_players,
+        policy_dim=game.policy.unified_dim,
+        value_dim=num_players,
+        num_tokens=0 if packed else game.num_tokens(num_players),
+        token_dim=0 if packed else game.token_dim(layout_version),
+        layout_version=layout_version,
+        game=game.name,
+        input_size=input_size,
+    )
 
 
 def normalize_model_type(model_type: str) -> ModelKind:

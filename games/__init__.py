@@ -16,11 +16,16 @@ Conventions every game follows:
 - Scores and values are per player, in canonical order.
 - Sparse relation records are ``uint8`` rows of ``RELATION_RECORD_WIDTH``:
   ``(relation, query token, key token, value)``. Rows past the count are zero.
-- ``relation_format`` says how relations reach the model: ``"dense"`` games send
-  planes from replay, the trainer, and ``NNEvaluator`` and padded records from
-  the eval server; ``"flat"`` games send flat records
+- ``relation_format`` says how relations reach a token layout's model:
+  ``"dense"`` games send planes from replay, the trainer, and ``NNEvaluator``
+  and padded records from the eval server; ``"flat"`` games send flat records
   (``nn.model_contract.flatten_relation_records``) from all of them. It follows
   from the game's sizes, so it is a constant, not a config field.
+- A packed layout (``packed_layouts``; 1889's layout 3) has no token rows and no
+  relations: one float vector a state (``fill_inputs``), and the model's
+  forward is ``(inputs, legal_mask)``. Its relation format is ``"none"``
+  (``relation_format_of``). A game's token and packed layouts share its
+  raw state, so evaluators of different layouts can play one game.
 - Self-play diagnostics are a game hook (``SelfPlayStats``).
 """
 
@@ -118,12 +123,12 @@ class Game:
     enumerate_policy_actions: Callable[[Any, np.ndarray], int]
     final_scores: Callable[[Any], list[int]]  # one per player; feeds terminal values
 
-    # Model inputs: planes or records, by relation_format. Workers write
-    # records in either format. Batches take raw rows, which may mix player
-    # counts within one capacity.
+    # Token layouts' model inputs: tokens, and planes or records by
+    # relation_format. Workers write records in either format. Batches take
+    # raw rows, which may mix player counts within one capacity.
     num_tokens: Callable[[int], int]  # max_players -> token rows
     token_dim: Callable[[int], int]  # token layout version -> token width
-    relation_format: str  # "dense" or "flat"
+    relation_format: str  # a token layout's: "dense" or "flat"
     num_relations: int
     max_relation_edges: int  # sparse record rows per state
     # (state | rows, float32 buf, *, max_players, layout_version)
@@ -140,6 +145,16 @@ class Game:
     # Self-play diagnostics: num_players -> one game's collector
     new_selfplay_stats: Callable[[int], SelfPlayStats]
 
+    # Packed layouts' model inputs: one float32 vector a state, no token rows
+    # and no relations. A game without them leaves these empty.
+    packed_layouts: frozenset[int] = frozenset()
+    # (max_players, *, layout_version) -> the vector's length
+    input_size: Callable[..., int] | None = None
+    # (state, float32 (input_size,) buf, max_players=0, *, layout_version)
+    fill_inputs: Callable[..., None] | None = None
+    # (rows, float32 (n, input_size) buf, max_players=0, *, layout_version)
+    fill_inputs_batch: Callable[..., None] | None = None
+
     # --- 1889-only; None for other games ---
     # (rows in write order, max_players) -> positions of the rows that are their
     # game's first decision (train/capacity_probe.py)
@@ -153,6 +168,11 @@ class Game:
     # num_players -> strategy-trace builder, for
     # play_game(collect_strategy_trace=True) (train/strategy_data.py)
     new_strategy_trace: Callable[[int], Any] | None = None
+
+    def relation_format_of(self, layout_version: int) -> str:
+        """How relations reach a model of ``layout_version``: ``"none"`` for a
+        packed layout, else the game's ``relation_format``."""
+        return "none" if layout_version in self.packed_layouts else self.relation_format
 
 
 def get_game(config: TrainingConfig) -> Game:

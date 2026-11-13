@@ -1,8 +1,10 @@
 """Shikoku 1889 adapter over the g1889 engine (1889/engine-design.md §11) and
 its extraction (``g1889.token_data``, ``g1889.relations``; 1889/extraction-design.md).
 
-The model takes the static relation planes from
-``g1889.relations.static_relation_planes`` itself (extraction-design §6.2).
+Token layouts 1 and 2 (v0 and v1) send flat relation records, and the model
+takes the static relation planes from ``g1889.relations.static_relation_planes``
+itself (extraction-design §6.2). Layout 3 (v2) is packed: one vector a state,
+with no relations (token-data-1889.md, "Layout 3").
 """
 
 from __future__ import annotations
@@ -39,6 +41,9 @@ from g1889.state import (
     get_storage_player_capacity,
 )
 from g1889.token_data import (
+    fill_inputs,
+    fill_inputs_batch,
+    get_input_size,
     get_num_tokens,
     get_token_data,
     get_token_data_batch,
@@ -65,6 +70,9 @@ POLICY_LAYOUT = PolicyLayout(
     # DIVIDEND's withhold is a choice, not a pass, like RSS's zero dividend.
     phases_with_pass_slot=K.PHASES_WITH_PASS_SLOT,
 )
+
+# Layout 3, one vector a state (v2-design §7.1); layouts 1 and 2 are tokens.
+PACKED_LAYOUTS = frozenset({3})
 
 # Only total_size depends on the player count.
 _NUM_PLAYERS_OFFSET = get_layout(0).global_offset + get_global_fields().num_players
@@ -162,6 +170,10 @@ def make_game(config: TrainingConfig) -> Game:
         fill_relations_sparse=get_relation_coord_data,
         fill_relations_sparse_batch=get_relation_coord_data_batch,
         new_selfplay_stats=G1889SelfPlayStats,
+        packed_layouts=PACKED_LAYOUTS,
+        input_size=get_input_size,
+        fill_inputs=fill_inputs,
+        fill_inputs_batch=fill_inputs_batch,
         game_start_rows=_game_start_rows,
         load_start_positions=load_starts,
     )

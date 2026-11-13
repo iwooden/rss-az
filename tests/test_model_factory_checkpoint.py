@@ -287,9 +287,14 @@ def test_model_module_with_build_model_builds_its_own_model(tmp_path) -> None:
     with pytest.raises(TypeError, match="defines build_model"):
         create_model(num_players=3, model_path=str(path))
     # Any game reaches the builder through its own adapter, which takes only
-    # its own token layouts: 1889's is 1.
-    with pytest.raises(ValueError, match="Unsupported 1889 token layout version: 3"):
+    # its own layouts: 1889's 3 is packed, which this token module is not, and
+    # it has no layout 4.
+    with pytest.raises(ValueError, match="layout 3 of game '1889' is packed"):
         create_model(TrainingConfig(game="1889", model_path=str(path)))
+    path_4 = tmp_path / "dummy_layout_4_model.py"
+    path_4.write_text(DUMMY_MODEL_MODULE.replace("INPUT_LAYOUT_VERSION = 3", "INPUT_LAYOUT_VERSION = 4"))
+    with pytest.raises(ValueError, match="Unsupported 1889 token layout version: 4"):
+        create_model(TrainingConfig(game="1889", model_path=str(path_4)))
     assert len(module.calls) == 1
     path_1889 = tmp_path / "dummy_1889_model.py"
     path_1889.write_text(DUMMY_MODEL_MODULE.replace("INPUT_LAYOUT_VERSION = 3", "INPUT_LAYOUT_VERSION = 1"))

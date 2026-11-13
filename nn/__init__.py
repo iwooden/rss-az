@@ -2,7 +2,9 @@
 
 A config's ``model_path`` names its model module, a module name or a Python
 file, loaded on first use; there is no default module. Every module declares
-its token layout as ``INPUT_LAYOUT_VERSION``. A module that defines
+its token layout as ``INPUT_LAYOUT_VERSION``; one whose input is a packed
+vector, not token rows, also defines ``packed_input_size(max_players)``. A
+module that defines
 ``build_model(config, spec)`` builds its model from the config and its
 ``ModelInputSpec``, for any game. Any other module is an RSS transformer
 (``RSSTransformerNet`` and ``TransformerConfig``), the fallback, which runs
@@ -29,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 import torch.nn as nn
 
 from games import get_game
-from nn.model_contract import ModelInputSpec, ModelKind, normalize_model_type
+from nn.model_contract import ModelInputSpec, ModelKind, input_spec_for, normalize_model_type
 
 
 _MODEL_IMPL_MODULE_PREFIX = "_rss_model_impl_"
@@ -196,16 +198,17 @@ def get_model_input_spec(config: object) -> ModelInputSpec:
     module, path = _model_module(config)
     layout_version = int(_require_symbol(module, "INPUT_LAYOUT_VERSION", path))
     game = get_game(config)  # type: ignore[arg-type]
-    return ModelInputSpec(
-        model_type=model_kind.value,
-        num_players=max_players,
-        policy_dim=game.policy.unified_dim,
-        value_dim=max_players,
-        num_tokens=game.num_tokens(max_players),
-        token_dim=game.token_dim(layout_version),
-        layout_version=layout_version,
-        game=game.name,
-    )
+    spec = input_spec_for(game, max_players, layout_version, model_kind.value)
+    # A packed module's vector is its game's layout: the game fills it.
+    packed_input_size = getattr(module, "packed_input_size", None)
+    module_size = 0 if packed_input_size is None else int(packed_input_size(max_players))
+    if module_size != spec.input_size:
+        raise ValueError(
+            f"model_path {path!r} takes {module_size or 'token'} inputs a state at {max_players} players, "
+            f"but layout {layout_version} of game {game.name!r} is "
+            f"{f'packed, {spec.input_size} values' if spec.packed else 'a token layout'}"
+        )
+    return spec
 
 
 def create_model(
