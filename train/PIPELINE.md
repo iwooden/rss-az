@@ -154,8 +154,9 @@ Notes below name RSS's implementations where they matter
   evenly by count, giving the remainder to the lowest. Value MSE ignores padded
   player slots.
 - **Replay stores raw state.** Rows hold compact int16 state, dense masks and
-  targets, and padded values. Tokens and relation inputs are rebuilt with the
-  current extractors when sampled, so extractor changes also affect old rows.
+  targets, and padded values. Tokens and relation inputs, or a packed layout's
+  vectors, are rebuilt with the current extractors when sampled, so extractor
+  changes also affect old rows, and a buffer trains a model of any layout.
 - **Rows know their game.** Each row carries its game's serial id, flags, and
   final net worths in canonical order (-1 past the game's players). One
   `add_stacked` call is one game and takes the buffer's next id, so ids never
@@ -238,20 +239,23 @@ Notes below name RSS's implementations where they matter
 - **Wire format.** Workers write fp16 tokens, uint8 legal masks over the
   policy's `unified_dim` slots, and uint8 relation records
   (`game.max_relation_edges`, 4). Each record is
-  `(relation_id, query, key, value)`. Workers set a lock-free bitmap bit. The
-  server masks and softmaxes on GPU and returns dense fp32 priors plus
-  canonical values. Workers gather legal slots through the policy's
-  `build_action_lut()` and run no torch ops on the hot path.
-  `SharedEvalBuffers` carries the policy layout to the server, never the
-  `Game`: each process builds its own.
-- **Two relation formats, per game.** `Game.relation_format` sets what replay,
-  the trainer, `NNEvaluator`, the eval server, and the compile warmups send. For
-  RSS (`"dense"`), model `forward` accepts dense planes (trainer, `NNEvaluator`)
-  or sparse records (eval server). It scatters sparse records straight into the
-  per-head attention bias; the server never builds dense planes. V2 reads its
-  original 10 binary relations, while v3 reads all relations and scales edges by
-  value. For 1889 (`"flat"`), all of them send flat `(N, 5)` int16 records: the
-  caller flattens the padded wire records on the CPU
+  `(relation_id, query, key, value)`. A packed layout's workers write one fp16
+  vector a state (`ModelInputSpec.input_size`) and the mask, and no records.
+  Workers set a lock-free bitmap bit. The server masks and softmaxes on GPU
+  and returns dense fp32 priors plus canonical values. Workers gather legal
+  slots through the policy's `build_action_lut()` and run no torch ops on the
+  hot path. `SharedEvalBuffers` carries the policy layout to the server, never
+  the `Game`: each process builds its own.
+- **Three relation formats, per layout.** `Game.relation_format_of(layout)`
+  sets what replay, the trainer, `NNEvaluator`, the eval server, and the
+  compile warmups send: a token layout's `Game.relation_format`, or `"none"`
+  for one of the game's `packed_layouts`. For RSS (`"dense"`), model `forward`
+  accepts dense planes (trainer, `NNEvaluator`) or sparse records (eval
+  server). It scatters sparse records straight into the per-head attention
+  bias; the server never builds dense planes. V2 reads its original 10 binary
+  relations, while v3 reads all relations and scales edges by value. For 1889's
+  token layouts 1 and 2 (`"flat"`; v0 and v1), all of them send flat `(N, 5)`
+  int16 records: the caller flattens the padded wire records on the CPU
   (`flatten_relation_records`). The eval server flattens them as it gathers
   them, straight from shared memory into its pinned flat buffer
   (`mcts_core.gather_flat_relations`, in the gather stage), and reads each
@@ -260,14 +264,23 @@ Notes below name RSS's implementations where they matter
   rows without reading or copying the padding. N is a dynamic dimension in
   both batch-shape modes. A dynamic launch ships its real records; a bucketed
   one rounds them up with value-0 rows to B × K, K a power of two from 256 to
-  4,096, the small set of shapes CUDA graphs need. 1889's model also accepts
-  dense planes, for tests. Keep each model's formats in parity.
+  4,096, the small set of shapes CUDA graphs need. 1889's v0 and v1 also
+  accept dense planes, for tests. Keep each model's formats in parity. 1889's
+  layout 3 (`"none"`; v2) is packed: `forward(inputs, legal_mask)`, with the
+  pair facts that were relations inside the vector (token-data-1889.md,
+  "Layout 3"). The server gathers each state's vector and mask and nothing
+  else: no flatten, no filler, and a bucketed launch's shape is its batch
+  alone, B a power of two, its padding rows zero. Its extraction holds the GIL
+  where the token layouts' release it; every caller extracts on a thread of
+  its own (a worker's, the trainer's main thread), so nothing waits on it.
 - **Precision and weights.** Eval servers keep autocast (`eval_dtype`) open
   with `cache_enabled=False`, because same-device servers share trainer
   parameters through CUDA IPC. Without autocast (no `eval_dtype`, or a CPU
-  server) the server upcasts the fp16 wire tokens to fp32 on the device. After
-  training, every server reloads a CPU snapshot (`_sync_eval_servers`).
-  `bucketed` mode pads launches to powers of 2.
+  server) the server upcasts a token model's fp16 wire to fp32 on the device.
+  A packed model casts its input to fp32 itself, so its device buffer stays
+  fp16 in every mode, and its warmup traces fp16 inputs. After training,
+  every server reloads a CPU snapshot (`_sync_eval_servers`). `bucketed`
+  mode pads launches to powers of 2.
 - **Launch and stage tags.** `eval_server/` gives each epoch's real and
   launched (padded) rows, launches by launched size, and the serve loop's time
   by stage (`profile_stats.STAGES`); GPU work it doesn't wait on is uncounted.
@@ -324,7 +337,9 @@ Notes below name RSS's implementations where they matter
   that builds a model names one (no default). A module that defines
   `build_model(config, spec)` builds its own model for any game; any other is
   an RSS transformer. Every module declares `INPUT_LAYOUT_VERSION`, which sets
-  token width for every consumer (`get_model_input_spec`).
+  token width for every consumer (`get_model_input_spec`). A module whose
+  input is packed also defines `packed_input_size(max_players)`, which must be
+  its game's layout's (`input_spec_for`), or the spec refuses it.
   `phase_conditioning`, `d_proj`, and `price_slot_fourier_bands` are v2-only,
   `relation_input_mixing` is v3-only, and `zero_sum_values` is v3's and 1889's.
   Engine flags `v3_behavior` and `acq_same_president` are independent of the model (see `README.md`).

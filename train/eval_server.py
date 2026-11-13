@@ -10,10 +10,12 @@ snapshot after each training phase.
 Communication uses shared memory (torch tensors with share_memory_()):
 
   Worker → Server (inputs)
-      states      : float16 (W, B, num_tokens, token_dim)
+      states      : float16 (W, B, num_tokens, token_dim), or a packed
+                    layout's (W, B, input_size)
       legal_mask  : uint8   (W, B, unified_dim)  — 1=legal slot
       relation_coords
-                 : uint8   (W, B, max_relation_edges, 4)
+                 : uint8   (W, B, max_relation_edges, 4); none for a packed
+                    layout (relation format ``"none"``)
                     — sparse (relation_id, query_token, key_token, value) records.
                     The model builds per-layer attention bias directly from
                     these sparse coordinates. For a flat game
@@ -22,6 +24,9 @@ Communication uses shared memory (torch tensors with share_memory_()):
                     to its zero tail (``mcts_core.gather_flat_relations``), so
                     the GPU receives no padded records: only real ones, rounded
                     up to a launch shape with value-0 rows in bucketed mode.
+                    A packed layout (1889's layout 3) sends one vector a state
+                    and nothing else: the forward is ``(inputs, legal_mask)``,
+                    and launches bucket by batch size alone.
 
   Server → Worker (outputs — dense over unified slots, softmaxed on GPU)
       priors  : float32 (W, B, unified_dim)  — legal slots sum to 1
@@ -34,9 +39,10 @@ the worker casts into fp16 once at the shm boundary (one vectorized numpy
 astype per eval request). Under CUDA autocast (``eval_dtype``) the model
 takes the fp16 tokens as they are; otherwise (no ``eval_dtype``, or a CPU
 server) the server copies them into an fp32 device buffer, because the
-models' fp32 weights do not cast their inputs. All token feature values sit
-in [-1, ~3] post-normalization, so fp16 round-trip error is <1e-3 absolute
-(see scratchpad/fp16_token_precision.py).
+token models' fp32 weights do not cast their inputs. A packed layout's model
+casts its input to fp32 itself, so its device buffer stays fp16 in every
+mode. All token feature values sit in [-1, ~3] post-normalization, so fp16
+round-trip error is <1e-3 absolute (see scratchpad/fp16_token_precision.py).
 
 The unified policy tensor (width ``unified_dim``) is the wire format.
 Workers build a dense legal-mask (via the same ``build_action_lut`` mapping
@@ -108,6 +114,7 @@ from mcts.evaluator import BaseEvaluator
 from nn.model_contract import (
     FLAT_RELATION_RECORD_WIDTH,
     ModelInputSpec,
+    input_spec_for,
     normalize_model_type,
 )
 from train.profile_stats import (
@@ -251,10 +258,12 @@ class SharedEvalBuffers:
 
     Inputs (worker → server):
         states      (W, B, num_tokens, token_dim)       float16
+                    or a packed layout's (W, B, input_size)
         legal_mask  (W, B, unified_dim)                 uint8 (1=legal slot)
         relation_coords
                     (W, B, max_relation_edges, 4)
-                    uint8 sparse relation records with raw values
+                    uint8 sparse relation records with raw values; None for
+                    a packed layout (``relation_format`` ``"none"``)
 
     Outputs (server → worker):
         priors  (W, B, unified_dim)  float32  (softmaxed over legal slots)
@@ -305,22 +314,31 @@ class SharedEvalBuffers:
         self.model_type = model_kind.value
         self.num_tokens = int(input_spec.num_tokens)
         self.token_dim = int(input_spec.token_dim)
+        self.input_size = int(input_spec.input_size)
         self.layout_version = input_spec.layout_version
+        # A state's input: (num_tokens, token_dim), or a packed (input_size,).
+        self.input_shape = input_spec.input_shape
 
-        expected_tokens = game.num_tokens(num_players)
-        if self.num_tokens != expected_tokens:
+        expected = input_spec_for(game, num_players, self.layout_version)
+        if input_spec.packed or expected.packed:
+            if self.input_shape != expected.input_shape:
+                raise ValueError(
+                    f"Transformer input shape {self.input_shape} does not match "
+                    f"layout {self.layout_version}'s {expected.input_shape} at {num_players} players"
+                )
+        elif self.num_tokens != expected.num_tokens:
             raise ValueError(
                 f"Transformer num_tokens ({self.num_tokens}) does not "
-                f"match game.num_tokens({num_players}) ({expected_tokens})"
+                f"match game.num_tokens({num_players}) ({expected.num_tokens})"
             )
-        expected_dim = game.token_dim(self.layout_version)
-        if self.token_dim != expected_dim:
+        elif self.token_dim != expected.token_dim:
             raise ValueError(
                 f"Transformer token_dim ({self.token_dim}) does not "
-                f"match layout {self.layout_version} width ({expected_dim})"
+                f"match layout {self.layout_version} width ({expected.token_dim})"
             )
 
-        self.relation_format = game.relation_format
+        # "dense", "flat", or a packed layout's "none".
+        self.relation_format = game.relation_format_of(self.layout_version)
         self.num_relations = game.num_relations
         self.max_relation_edges = game.max_relation_edges
         self.relation_coord_width = RELATION_RECORD_WIDTH
@@ -329,7 +347,7 @@ class SharedEvalBuffers:
         # fp16 on the wire halves shared-memory and transfer volume. Cython
         # fills fp32 scratch and the worker casts once at the boundary.
         self._states = torch.zeros(
-            num_workers, batch_size, self.num_tokens, self.token_dim,
+            num_workers, batch_size, *self.input_shape,
             dtype=torch.float16,
         ).share_memory_()
         self._legal_mask = torch.zeros(
@@ -337,11 +355,14 @@ class SharedEvalBuffers:
         ).share_memory_()
         # Sparse Graphormer-style directed relation coordinates. The eval
         # model consumes these directly and builds dense SDPA bias tensors.
-        self._relation_coords = torch.zeros(
-            num_workers, batch_size,
-            self.max_relation_edges, self.relation_coord_width,
-            dtype=torch.uint8,
-        ).share_memory_()
+        self._relation_coords: torch.Tensor | None = (
+            None if self.relation_format == "none"
+            else torch.zeros(
+                num_workers, batch_size,
+                self.max_relation_edges, self.relation_coord_width,
+                dtype=torch.uint8,
+            ).share_memory_()
+        )
 
         # --- Outputs (server → worker) ---
         # Dense priors over unified slots, already masked + softmaxed on the
@@ -382,7 +403,8 @@ class SharedEvalBuffers:
     def get_input_states_np(self, worker_idx: int) -> np.ndarray:
         """View into this worker's model-input slot.
 
-        Shape is ``(batch, num_tokens, token_dim)`` float16.
+        Shape is ``(batch, num_tokens, token_dim)``, or a packed layout's
+        ``(batch, input_size)``, float16.
         """
         return self._states[worker_idx].numpy()
 
@@ -391,7 +413,9 @@ class SharedEvalBuffers:
         return self._legal_mask[worker_idx].numpy()
 
     def get_input_relation_coords_np(self, worker_idx: int) -> np.ndarray:
-        """(batch, max_relation_edges, 4) uint8 (relation, query, key, value) records."""
+        """(batch, max_relation_edges, 4) uint8 (relation, query, key, value)
+        records. A packed layout has none."""
+        assert self._relation_coords is not None, "a packed layout sends no relations"
         return self._relation_coords[worker_idx].numpy()
 
     # ------------------------------------------------------------------
@@ -494,16 +518,23 @@ def _warmup_compiled_model(
     autocast_dtype: torch.dtype | None,
     input_dtype: torch.dtype,
 ) -> None:
-    """Trace a compiled model at the launch shapes the serve loop will use."""
+    """Trace a compiled model at the launch shapes the serve loop will use.
+
+    A packed layout's calls are ``(inputs, legal_mask)``, with no relations to
+    shape: bucketed, each power of two traces as the serve loop launches it,
+    and the second batch makes the batch dimension dynamic for the rest.
+    """
     num_tokens = shared_bufs.num_tokens
-    token_dim = shared_bufs.token_dim
     u_dim = shared_bufs.unified_dim
     policy = shared_bufs.policy
     lut = policy.build_action_lut()
-    flat_relations = shared_bufs.relation_format == "flat"
+    relation_format = shared_bufs.relation_format
+    flat_relations = relation_format == "flat"
+    packed = relation_format == "none"
     if batch_shape_mode == "dynamic":
         # Warm up with the EXACT call signature the hot path uses —
-        # (states, legal_mask, relations). Dynamic-shape strategy (see
+        # (states, legal_mask, relations), or a packed layout's
+        # (inputs, legal_mask). Dynamic-shape strategy (see
         # ``train/gpu/{amd,nvidia}.py`` for why we dropped global
         # ``dynamic=True``): the batch dim gets ``mark_unbacked`` so the
         # single compiled graph handles all batch sizes 1..max_batch, and
@@ -528,11 +559,13 @@ def _warmup_compiled_model(
         for warmup_n in warmup_batches:
             # The serve loop allocates its tensors outside inference mode, and
             # Dynamo guards on the dispatch keys that mode sets, so a flat
-            # game's warmup does too: inference tensors would cost a recompile
-            # at the first launch.
-            with torch.inference_mode(not flat_relations):
+            # game's warmup and a packed layout's do too: inference tensors
+            # would cost a recompile at the first launch.
+            with torch.inference_mode(relation_format == "dense"):
+                # A packed model clamps the codes it looks up, so random
+                # inputs are safe to trace with.
                 dummy_s = torch.randn(
-                    warmup_n, num_tokens, token_dim, device=device,
+                    warmup_n, *shared_bufs.input_shape, device=device,
                     dtype=input_dtype,
                 )
                 # A flat game's N differs across launches in both batch-shape
@@ -541,7 +574,9 @@ def _warmup_compiled_model(
                 # unspecialized. Each mode's graph takes every N from here;
                 # Inductor records a shape's CUDA graph in the serve loop.
                 dummy_rel = (
-                    torch.from_numpy(_flat_filler_rows(
+                    None
+                    if packed
+                    else torch.from_numpy(_flat_filler_rows(
                         _resolve_flat_launch_rows(
                             real_rows=2 * warmup_n, launch_n=warmup_n,
                             batch_shape_mode=batch_shape_mode,
@@ -564,13 +599,14 @@ def _warmup_compiled_model(
                     phase_id = i % policy.num_phases
                     n = policy.phase_sizes[phase_id]
                     dummy_mask[i, lut[phase_id, :n].to(device)] = True
+            inputs = (dummy_s, dummy_mask) if dummy_rel is None else (dummy_s, dummy_mask, dummy_rel)
             if batch_shape_mode == "dynamic":
-                for _t in (dummy_s, dummy_mask, dummy_rel):
+                for _t in inputs:
                     mark_unbacked(_t, 0)
-            elif flat_relations:
+            elif dummy_rel is not None and flat_relations:
                 mark_unbacked(dummy_rel, 0)
-            model(dummy_s, dummy_mask, dummy_rel)
-            del dummy_s, dummy_mask, dummy_rel
+            model(*inputs)
+            del dummy_s, dummy_mask, dummy_rel, inputs
 
 
 def _eval_server_main(
@@ -686,14 +722,17 @@ def _eval_server_serve(
         from train.gpu import GpuConfig
         GpuConfig(vendor=gpu_vendor).apply_optimizations()
 
-    # Autocast runs only on CUDA. Without it the models' fp32 weights need
-    # fp32 inputs, so the device token buffer upcasts the fp16 wire.
+    # Autocast runs only on CUDA. Without it the token models' fp32 weights
+    # need fp32 inputs, so the device token buffer upcasts the fp16 wire. A
+    # packed layout's model casts its input itself: its buffer stays fp16.
     _dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
     eval_autocast_dtype: torch.dtype | None = (
         _dtype_map.get(eval_dtype) if use_cuda and eval_dtype else None
     )
+    relation_format = shared_bufs.relation_format
+    packed = relation_format == "none"
     model_input_dtype = (
-        torch.float16 if eval_autocast_dtype is not None else torch.float32
+        torch.float16 if eval_autocast_dtype is not None or packed else torch.float32
     )
 
     partition_size = worker_end - worker_start
@@ -711,7 +750,6 @@ def _eval_server_serve(
 
     normalize_model_type(shared_bufs.model_type)
     num_tokens = shared_bufs.num_tokens
-    token_dim = shared_bufs.token_dim
     u_dim = shared_bufs.unified_dim
     npl = shared_bufs.num_players
 
@@ -740,8 +778,9 @@ def _eval_server_serve(
     buf_depth = 2 if use_cuda else 1
 
     # --- Inputs: pinned CPU + GPU side ---
-    input_shape = (alloc_batch, num_tokens, token_dim)
-    input_flat_width = num_tokens * token_dim
+    # A state's tokens, or a packed layout's vector.
+    input_shape = (alloc_batch, *shared_bufs.input_shape)
+    input_flat_width = int(np.prod(shared_bufs.input_shape))
     input_dtype = torch.float16
     states_row_bytes = input_flat_width * 2  # fp16 == 2 bytes
 
@@ -760,14 +799,16 @@ def _eval_server_serve(
     max_relation_edges = shared_bufs.max_relation_edges
     relation_coord_width = shared_bufs.relation_coord_width
     relation_coord_row_bytes = max_relation_edges * relation_coord_width
-    flat_relations = shared_bufs.relation_format == "flat"
-    # Any other game ships its padded records, gathered here.
+    flat_relations = relation_format == "flat"
+    # A dense game ships its padded records, gathered here; a packed layout
+    # ships no relations.
+    dense_relations = relation_format == "dense"
     pin_rel_coord_list = [
         torch.empty(
             alloc_batch, max_relation_edges, relation_coord_width,
             dtype=torch.uint8, pin_memory=use_cuda,
         )
-        for _ in range(0 if flat_relations else buf_depth)
+        for _ in range(buf_depth if dense_relations else 0)
     ]
     pin_rel_coord_flat_bytes_list = [
         p.numpy().reshape(alloc_batch, relation_coord_row_bytes).view(np.int8)
@@ -793,6 +834,8 @@ def _eval_server_serve(
             alloc_batch, max_relation_edges, relation_coord_width,
             dtype=torch.uint8, device=device,
         )
+        if dense_relations
+        else None
     )
     # Shared-memory mask gather stays uint8, but bucketed launches use a
     # preallocated bool tensor at the model call site so the GPU-visible
@@ -844,10 +887,15 @@ def _eval_server_serve(
         shared_bufs.num_workers, shared_bufs.batch_size, input_flat_width,
     ).view(np.int8)
     # A flat game's records are read as records, each state's up to its tail.
-    all_relation_coords_np = shared_bufs._relation_coords.numpy()
-    all_relation_coords_bytes = all_relation_coords_np.reshape(
-        shared_bufs.num_workers, shared_bufs.batch_size, relation_coord_row_bytes,
-    ).view(np.int8)
+    all_relation_coords_np = (
+        None if shared_bufs._relation_coords is None else shared_bufs._relation_coords.numpy()
+    )
+    all_relation_coords_bytes = (
+        None if all_relation_coords_np is None
+        else all_relation_coords_np.reshape(
+            shared_bufs.num_workers, shared_bufs.batch_size, relation_coord_row_bytes,
+        ).view(np.int8)
+    )
     all_masks_np = shared_bufs._legal_mask.numpy()
     all_priors_np = shared_bufs._priors.numpy()
     all_values_np = shared_bufs._values.numpy()
@@ -974,13 +1022,15 @@ def _eval_server_serve(
         )
         # The relations' real rows: a flat game's records, as flat rows in
         # this slot's pinned buffer, each state's zero tail left in shared
-        # memory; any other game's padded records, a row per state.
+        # memory; a dense game's padded records, a row per state; a packed
+        # layout's none.
+        real_rows = 0
         if flat_relations:
             real_rows = _gather_flat_relations(
                 pin_rel_flat_np_list[slot], all_relation_coords_np,
                 widx, cnts, n_req,
             )
-        else:
+        elif dense_relations:
             real_rows = _gather_states(
                 pin_rel_coord_flat_bytes_list[slot], all_relation_coords_bytes,
                 widx, cnts, n_req, relation_coord_row_bytes,
@@ -1004,7 +1054,10 @@ def _eval_server_serve(
 
         gpu_s_batch = gpu_s[:launch_n]
         gpu_s_batch[:actual_n].copy_(pin_s_slot[:actual_n], non_blocking=True)
+        # A packed layout's one input is the batch's vectors.
+        relation_rows = 0
         if flat_relations:
+            assert gpu_rel is not None
             # A launch's scratch rows have no records. Its flat rows ship from
             # this slot's pinned buffer, which the next launch mustn't overwrite.
             relation_rows = _resolve_flat_launch_rows(
@@ -1018,7 +1071,8 @@ def _eval_server_serve(
                 pin_rel_flat_list[slot][:relation_rows],
                 non_blocking=True,
             )
-        else:
+        elif dense_relations:
+            assert gpu_rel is not None
             relation_rows = launch_n
             gpu_rel[:actual_n].copy_(
                 pin_rel_coord_list[slot][:actual_n],
@@ -1027,7 +1081,8 @@ def _eval_server_serve(
         gpu_mask[:actual_n].copy_(pin_mask_slot[:actual_n], non_blocking=True)
         if launch_n > actual_n:
             gpu_s_batch[actual_n:launch_n].zero_()
-            if not flat_relations:
+            if dense_relations:
+                assert gpu_rel is not None
                 gpu_rel[actual_n:launch_n].zero_()
             gpu_mask[actual_n:launch_n].zero_()
             gpu_mask_bool[actual_n:launch_n].zero_()
@@ -1044,9 +1099,13 @@ def _eval_server_serve(
             # serve loop). The model sees ``launch_n`` rows, but only the first
             # ``actual_n`` rows contain real gathered work and only those rows
             # are copied back to shared memory.
-            logits, values = model(
-                gpu_s_batch, mask_batch, gpu_rel[:relation_rows],
-            )
+            if packed:
+                logits, values = model(gpu_s_batch, mask_batch)
+            else:
+                assert gpu_rel is not None
+                logits, values = model(
+                    gpu_s_batch, mask_batch, gpu_rel[:relation_rows],
+                )
             gpu_priors[:actual_n] = (
                 logits[:actual_n].softmax(dim=1).to(torch.float32)
             )
@@ -1496,7 +1555,8 @@ class RemoteEvaluator(BaseEvaluator):
     Implements the same evaluate / evaluate_leaves / evaluate_terminal
     interface as NNEvaluator, so it can be used as a drop-in replacement.
 
-    Hot path is pure numpy: workers fill transformer token buffers and a dense
+    Hot path is pure numpy: workers fill transformer token buffers and their
+    relation records, or a packed layout's vectors, and a dense
     ``unified_dim`` legal mask into shared-memory slots, publish a bitmap
     bit, and sleep on the per-server done-condition until a shared-memory done
     flag flips. Returned priors are already masked and softmaxed on the GPU;
@@ -1532,14 +1592,21 @@ class RemoteEvaluator(BaseEvaluator):
         normalize_model_type(shared_bufs.model_type)
         self.layout_version = shared_bufs.layout_version
         self.token_dim = shared_bufs.token_dim
+        self._packed = shared_bufs.relation_format == "none"
+        # The fills: a packed layout's vectors, or tokens and records.
+        if self._packed:
+            assert game.fill_inputs is not None and game.fill_inputs_batch is not None
+            self._fill_one, self._fill_batch = game.fill_inputs, game.fill_inputs_batch
+        else:
+            self._fill_one, self._fill_batch = game.fill_tokens, game.fill_tokens_batch
 
         # Input views (worker writes these).
-        # ``_in_states_np`` is fp16 on the wire. ``fill_tokens`` writes
-        # fp32, so keep scratch and cast into the slot at the boundary.
+        # ``_in_states_np`` is fp16 on the wire. The fills write fp32, so
+        # keep scratch and cast into the slot at the boundary.
         self._in_states_np = shared_bufs.get_input_states_np(worker_idx)
         self._in_legal_mask_np = shared_bufs.get_input_legal_mask_np(worker_idx)
-        self._in_relation_coords_np = shared_bufs.get_input_relation_coords_np(
-            worker_idx
+        self._in_relation_coords_np = (
+            None if self._packed else shared_bufs.get_input_relation_coords_np(worker_idx)
         )
         self._states_scratch_fp32 = np.empty(
             self._in_states_np.shape, dtype=np.float32,
@@ -1641,16 +1708,17 @@ class RemoteEvaluator(BaseEvaluator):
         game = self.game
         actual_num_players = self._actual_num_players(state)
         phase_id = game.decision_phase(state)
-        game.fill_tokens(
+        self._fill_one(
             state, self._states_scratch_fp32[0],
             max_players=self.num_players,
             layout_version=self.layout_version,
         )
         self._in_states_np[0] = self._states_scratch_fp32[0].astype(np.float16)
-        game.fill_relations_sparse(
-            state, self._in_relation_coords_np[0],
-            max_players=self.num_players,
-        )
+        if self._in_relation_coords_np is not None:
+            game.fill_relations_sparse(
+                state, self._in_relation_coords_np[0],
+                max_players=self.num_players,
+            )
         n = game.enumerate_policy_actions(state, self._enum_scratch)
         self._fill_mask_row(0, phase_id, self._enum_scratch[:n])
 
@@ -1706,10 +1774,10 @@ class RemoteEvaluator(BaseEvaluator):
         if _stats is not None:
             _t0 = perf_counter()
 
-        # Batched token fill amortizes Python dispatch and state wrapper
+        # Batched input fill amortizes Python dispatch and state wrapper
         # construction. Cast the fp32 scratch into the fp16 wire slot once.
         game = self.game
-        game.fill_tokens_batch(
+        self._fill_batch(
             state_arrays, self._states_scratch_fp32[:n],
             max_players=self.num_players,
             layout_version=self.layout_version,
@@ -1717,10 +1785,11 @@ class RemoteEvaluator(BaseEvaluator):
         self._in_states_np[:n] = self._states_scratch_fp32[:n].astype(
             np.float16
         )
-        game.fill_relations_sparse_batch(
-            state_arrays, self._in_relation_coords_np[:n],
-            max_players=self.num_players,
-        )
+        if self._in_relation_coords_np is not None:
+            game.fill_relations_sparse_batch(
+                state_arrays, self._in_relation_coords_np[:n],
+                max_players=self.num_players,
+            )
         # Caller already has the dense mask — copy it straight into shm.
         np.copyto(self._in_legal_mask_np[:n], legal_mask, casting="unsafe")
 

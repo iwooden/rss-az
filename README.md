@@ -37,10 +37,13 @@ for development guidance.
   transformer-v2 mixed 3-5 player config; `1889-v0.json` is the first Shikoku 1889
   run, and `1889-v0-smoke.json` its local smoke test (run with `--no-compile`).
   `1889-v1.json` and `1889-v1-smoke.json` are the second run's, on
-  `nn/transformer-1889-v1.py` ([`1889/v1-design.md`](1889/v1-design.md)).
+  `nn/transformer-1889-v1.py` ([`1889/v1-design.md`](1889/v1-design.md)), and
+  `1889-v2.json` and `1889-v2-smoke.json` the third's, on
+  `nn/transformer-1889-v2.py` ([`1889/v2-design.md`](1889/v2-design.md)).
   [`1889/model-design.md`](1889/model-design.md) Section 11 is the runs' runbook:
-  11.1 for v1's launch, with `cloud/setup.sh` and `cloud/profile_1889.py`, and 11.2
-  for v0's run, with `cloud/rescale_1889.py` and `train/capacity_probe.py`.
+  11.1 for v1's launch, with `cloud/setup.sh` and `cloud/profile_1889.py`, 11.2
+  for v0's run, with `cloud/rescale_1889.py` and `train/capacity_probe.py`, and
+  11.3 for v2's launch.
 - `utils_18xx/` - 18xx.games replay parsing, replay analysis, API client, and
   live-play server.
 - `tests/` - phase tests, engine invariants, model contract tests, MCTS tests,
@@ -61,14 +64,17 @@ layout rather than differences from another version.
 | `nn/transformer-v3.py` | 3 | [V3 token data](token-data-v3.md) |
 | `nn/transformer-1889.py` | 1 (game `1889`) | [1889 token data](token-data-1889.md) |
 | `nn/transformer-1889-v1.py` | 2 (game `1889`) | [1889 token data](token-data-1889.md), "Layout 2" |
+| `nn/transformer-1889-v2.py` | 3 (game `1889`), packed | [1889 token data](token-data-1889.md), "Layout 3" |
 
 Set `model_path` in the training config to select the model; there is no
 default. Every model module declares its input version as
 `INPUT_LAYOUT_VERSION`; evaluators, training, IPC, and diagnostics use that
 contract to select the layout. Every extraction call names its layout: query
 `get_token_dim(layout_version)` and
-`get_token_widths(max_players, layout_version)` for dimensions. V2 is retained
-as the evaluation baseline for v3.
+`get_token_widths(max_players, layout_version)` for dimensions. A packed
+layout (1889's layout 3) is one vector a state with no relations: its module
+also defines `packed_input_size`, and the game's `input_size` and
+`fill_inputs` serve it. V2 is retained as the evaluation baseline for v3.
 
 V3 enables relation input mixing before type embeddings by default. For an
 ablation, set `"relation_input_mixing": false` in the training JSON or pass
@@ -217,10 +223,11 @@ Resume the newest checkpoint from the configured checkpoint directory:
 ```
 
 A 1889 run launches the same way, on the cloud box by the runbook above
-(`train_configs/1889-v1.json`), or here as a smoke test on the local GPU:
+(`train_configs/1889-v2.json`, the next run's), or here as a smoke test on the
+local GPU:
 
 ```bash
-.venv/bin/python -m train --config train_configs/1889-v1-smoke.json --no-compile
+.venv/bin/python -m train --config train_configs/1889-v2-smoke.json --no-compile
 ```
 
 Watch training metrics:
@@ -233,7 +240,8 @@ Watch training metrics:
 unnoised-prior confidence, search-disagreement, and phase-specific policy-fit
 metrics, including their denominators and interpretation.
 
-Play and inspect one analysis game from the latest checkpoint:
+Play and inspect one analysis game from the latest RSS checkpoint (a 1889
+checkpoint's game is `utils_18xx.g1889_selfplay_log`'s, below):
 
 ```bash
 .venv/bin/python -m train.analyze_game latest \
@@ -313,9 +321,9 @@ Compare checkpoints of one game (RSS or 1889) in a small tournament:
   --games-per-pair 20 \
   --simulations 200
 
-# 1889: v1 against v0 at 4 players, sampling each game's first 20 decisions
+# 1889: v2 against v1 at 4 players, sampling each game's first 20 decisions
 .venv/bin/python -m train.tournament \
-  checkpoints/1889-v1/checkpoint_epoch_0100.pt,checkpoints/1889-v0/checkpoint_epoch_0058.pt \
+  checkpoints/1889-v2/checkpoint_epoch_0100.pt,checkpoints/1889-v1/checkpoint_epoch_0100.pt \
   --num-players 4 --simulations 1600 --search-batch-size 8 --sample-moves 20 --games-per-pair 60 \
   --workers 8
 ```

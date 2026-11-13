@@ -1,7 +1,10 @@
 # Shikoku 1889 v2 Design: inputs and the policy readout
 
-Status: draft for the user's review, dated 2026-11-13. Nothing here is built.
-Decision 1 is settled: the trunk has 45 rows (Section 11).
+Status: dated 2026-11-13. Section 10's steps 1-4 are built: the engine's
+fills, layout 3, the model, and the transport; step 5 is next. Every decision
+in Section 11 is settled, and implementation follows Section 10's sub-steps. The exact slots, widths, and offsets are the Layout 3 section
+of [`token-data-1889.md`](../token-data-1889.md), which is the contract where
+this document gives only content.
 It follows the review of v1 at epoch 10 (Section 2) and replaces token layout
 2, the relation records, and v1's policy heads. It owes v0 and v1 no
 compatibility.
@@ -32,8 +35,8 @@ still being collected; **Open** marks a decision for the user (Section 11);
    well, the model is 0.3% behind v1 on held-out policy, inside the seed
    gap. With no location rows it is 1.5% behind, mostly at STOCK.
 5. **What it buys is throughput:** about half of v1's trunk time
-   (**Measured** on a 5090: 0.55 at 45 rows and batch 256), about a fifth of
-   the bytes per state on the wire, and no flatten, filler, or K buckets in
+   (**Measured** on a 5090: 0.55 at 45 rows and batch 256), a bit over a
+   quarter of the bytes per state on the wire, and no flatten, filler, or K buckets in
    the eval server. It does not address the economy stall (Section 2.1),
    which needs its own change.
 
@@ -410,8 +413,9 @@ lands (Section 10, step 6).
   v1, and no location rows leave it 1.5% behind. The 27 plain hexes' rows
   add nothing measurable beyond the centers', and would take the trunk from
   45 rows to 72. Build distance (Section 10, step 6) needs the CENTER rows as well.
-- **Hidden rows** are as today: privates not in play or closed, and padded
-  seats, with slot 0 as the key mask. They still cost a query each; trimming
+- **Hidden rows:** privates not in play, closed privates, and padded seats,
+  with slot 0 as the key mask. Hiding a closed private is new: layout 2
+  shows it with a "closed" slot, which has no use here. They still cost a query each; trimming
   them needs launches of two lengths, which is not planned (Section 11,
   item 5).
 
@@ -462,23 +466,26 @@ own learned weight per layer and head, as `relation_bias_mult` does today.
 | PLAYER × CORP | P × 7 | shares /10; is president; sold this SR | relations 0-5, 25, 26; PLAYER 12-25 |
 | PLAYER × PRIVATE | P × 7 | owns; bid /100 | relations 6, 7, 10, 11; PLAYER 26-32 |
 | CORP × PRIVATE | 7 × 7 | owns | relations 8, 9 |
-| CORP × CENTER | 7 × 25 | has a token there; reaches it; it is a stop on the corp's best routes; build distance D_c /6 (step 6) | relations 14, 15, 18, 19, 27, 28 |
-| CENTER × CENTER | 25 × 25 | build distance /6 (step 6) | nothing in layout 2 |
+| CORP × CENTER | 7 × 25 | has a token there; reaches it; it is a stop on the corp's best routes; build distance D_c as closeness (step 6) | relations 14, 15, 18, 19, 27, 28 |
+| CENTER × CENTER | 25 × 25 | build distance as closeness (step 6) | nothing in layout 2 |
 
-- **About 1,550 values a state** at capacity 5: 224 for the first three
-  blocks (105 + 70 + 49), 700 for CORP × CENTER, 625 for CENTER × CENTER.
+- **1,549 values a state** at capacity 5: 224 for the first three blocks
+  (105 + 70 + 49), 700 for CORP × CENTER, 625 for CENTER × CENTER.
 - **The first three are the relations 2.2 found in use:** holdings,
   presidency, and private ownership.
 - **CORP × CENTER is what 2.4's centers arm kept and its summaries arm
   flattened.** As a pair block it reaches a CORP row as its 25 centers'
   values, a CENTER row as its 7 corps' values (which corps token it, reach
   it, and run it), and the attention between the two as bias.
-- **The distance channels are zero until step 6.** The bias weights and the
-  feature projections' columns for them start at zero and get no gradient
-  until the channels are filled, so build distance can be switched on in a
-  running model. A distance is 1 where there is none within 5. For the bias a
-  distance is bucketed in the model (one-hot of 0, 1, 2, 3, 4-5), so the
-  bias is not linear in distance (build-distance-design 4.1's reason).
+- **The distance channels are zero until step 6.** A distance of d lays
+  travels as closeness, (6 − d)/6: 1 for a center reached now, 1/6 at five
+  lays, and 0 for none within 5. Zero then means both "far" and "not filled
+  yet", so the bias weights and the feature projections' columns for these
+  channels start at zero and get no gradient until the channels are filled,
+  and build distance can be switched on in a running model. For the bias a
+  nonzero closeness is bucketed in the model (one-hot of distance 0, 1, 2,
+  3, 4-5), so the bias is not linear in distance (build-distance-design
+  4.1's reason).
 - **Dropped with no replacement:** TRACK_LINK, the static HEX_SIDE, HOME, and
   ABILITY planes, CORP_TRAINS, and REACHES_HEX as a relation. A corp's reach
   over plain hexes survives as CORP's reach counts and as each TRACK choice's
@@ -505,10 +512,11 @@ own learned weight per layer and head, as `relation_bias_mult` does today.
 
 ### 5.1 Shape
 
-`choices`: `(46, F)` per state. Row k is the current decision's phase-local
+`choices`: `(46, 47)` per state. Row k is the current decision's phase-local
 action k; 46 is TRACK's size, the largest. A row whose action is illegal is
-zero, and the legal mask excludes it as now. F is about 24 (**Test:** fixed
-at implementation).
+zero, and the legal mask excludes it as now. The 47 columns are three
+integers (a hex code, a tile code, a rotation), the shared block's 7, and
+the widest phase block, TILE's 37; narrower phase blocks are zero-padded.
 
 **Not compacted to the legal actions.** A table of 32 rows would hold every
 decision seen (2.6), but TRACK's bound is its 46 slots, so a smaller table
@@ -524,9 +532,17 @@ What a row names is static per action slot, so it never crosses the wire:
 - **A named row,** for slots that point at an entity: CORP c (STOCK,
   BUY_TRAIN's corp slots), PRIVATE p (AUCTION, the private purchases),
   CENTER r (TRACK, TOKEN, and PORT on a revenue center). A plain hex has no
-  row to name; its choices carry its features (5.2).
-- **A tile,** for TILE, ER_BONUS, and TRACK: tile id and rotation ride in the
-  row as integers and the model looks up the tile block.
+  row to name; its choices carry its features (5.2). AUCTION's buy row names
+  the topmost unsold private, which changes, so the forward resolves it
+  through that private's selector slot.
+
+Two things do ride in the row, as integers:
+
+- **A tile,** for TILE, ER_BONUS, TRACK, and PORT: tile code and rotation,
+  and the model looks up the tile block.
+- **A hex,** for every row that acts on one: a hex code, which indexes a
+  learned embedding. At TILE on a plain hex nothing else says where the
+  candidate goes.
 
 ### 5.2 Features
 
@@ -546,7 +562,7 @@ the next train, and the cost paid. Zero where an action leaves one unchanged.
 | BUY_PRIVATE_*, PRIVATE_PRICE | the price; face; revenue; the buyer's cash after |
 | TRACK | the hex's layout-2 slots 78-104; the best over its tiles of TILE's outcomes |
 | TILE, ER_BONUS | layout 2's CANDIDATE 99-108; paths added; build-distance-design 4.3's nine slots |
-| TOKEN | the corp's route max gained, with its trains now and with the next train; opponents' route max lost, summed and largest, likewise now and with each one's next train; the price; slots left |
+| TOKEN | the corp's route max gained, with its trains now and with the next train; other corps' route max lost, summed and largest, likewise now and with each one's next train; the price; the city's slots left; build-distance-design 4.3's nine slots |
 | DIVIDEND | per share and total paid; shortfall to the next train after; the president's and each rival's income |
 | BUY_TRAIN, SELECT_TRAIN, TRAIN_PRICE | source; price; starts a phase; the buyer's trains rusted; opponents' trains rusted; the seller's route max lost; the president's contribution |
 | DISCARD | route max lost |
@@ -560,7 +576,10 @@ the next train, and the cost paid. Zero where an action leaves one unchanged.
   train, but puts a center farther from it. TILE's rows say only whether a
   lay *helps* other corps (CANDIDATE 106, 107). Build-distance-design 4.3's
   slots 113-115 add the centers a lay puts farther, for the corp and for the
-  others; TOKEN's rows take the same three slots at step 6.
+  others; TOKEN's rows take all nine of its slots at step 6.
+- **Where an item above equals a shared slot on every row,** the phase block
+  does not repeat it: a lay's cost and route gains, a token's own gains and
+  price, a discard's loss, the president's dividend.
 - **Pass, drop, and done** are rows like any other, with a slot embedding and
   an all-zero phase block.
 
@@ -574,8 +593,20 @@ the next train, and the cost paid. Zero where an action leaves one unchanged.
   30% of BUY_PRIVATE_POST passes show a diff that is partly a later event (a
   forced train purchase, the next stock round's price moves), and the actor
   is often no longer the one deciding. It also costs six times as much. So
-  the fill calls the driver's dispatch without its chain, which needs a
-  `cdef` entry in `g1889/driver.pxd` for extraction to use.
+  the fill calls the driver's dispatch without its chain, through a public
+  `cdef` wrapper in `g1889/driver.pxd`.
+- **Not in 2.6's budget: TRACK's best over tiles,** a candidate evaluation
+  for every legal lay, 10 a decision on average. **Measured** as built (one
+  core of a 9950X3D, 6,385 states, weighted by self-play's phases): a leaf's
+  extraction is 43.7 µs against layout 2's 26.0. The rows and pair blocks
+  are 20.6 µs and the choice table 23.1, of which TRACK's best-over is 18.0
+  (140 µs at a TRACK state). The other corps' solves at TOKEN cost 0.4 µs a
+  leaf and BUY_TRAIN's previews 0.8.
+- **TRACK's best-over is kept whole.** It is what closed TRACK's gap in 2.4,
+  and self-play workers wait on the eval server 96% of the time (2.6), so a
+  leaf that costs 18 µs more does not cost games. If workers become the
+  limit, dropping the other corps' reach slots saves 6.2 µs a leaf and the
+  next-train route gain another 3.9.
 - **After the action alone the state may rest mid-step** (the SR's end after
   the last pass, ROUTE after a token pass). The observables are still raw
   reads; the row is not a decision state and nothing else is read from it.
@@ -595,9 +626,14 @@ the next train, and the cost paid. Zero where an action leaves one unchanged.
   2's per-choice slots.
 - **The apply holds the GIL:** phase handlers are `except *` and take Python
   objects, where today's fills run `nogil` throughout. Self-play workers are
-  single-threaded processes, so they lose nothing. **Test:** that no caller
-  (the trainer's batch re-extraction, the eval tools) relies on extraction
-  releasing it.
+  single-threaded processes, so they lose nothing. **Checked** at step 4: no
+  caller relies on extraction releasing it. The trainer fills each batch on
+  its main thread, with no loader or prefetch thread; the training process's
+  one other thread waits on stdin. The eval server never extracts, and its
+  scatter thread waits on CUDA events. The tournament, the game log, the
+  deviation test, and the profile extract on their main thread, and their
+  parallel forms are processes. The one threaded evaluator, live play's move
+  worker, plays RSS.
 - **Test:** per-choice truth, as v1-design 5.9: each feature against the
   state after the real action, for every phase.
 - **Test:** purity: the same table whatever the row's caches hold.
@@ -609,8 +645,9 @@ One module scores all phases:
     h_k   = slot_embed[u_k] + W[phase] · f_k + named_proj(row[ptr_k]) + tile_proj(tile_k)
     logit = MLP([g, a, c, s, h_k])
 
-- `W[phase]` is a first layer indexed by decision phase (19 × F × d), since a
-  phase block's slots mean different things by phase.
+- `W[phase]` is a first layer indexed by decision phase (19 × 44 × d, over
+  the shared and phase blocks), since a phase block's slots mean different
+  things by phase. The hex code and the tile have their own lookups.
 - `g, a, c, s` are GLOBAL, the actor, the decision corp, and the decision's
   subject (the private bid on, the corp sold, the train's seller), found by
   the `is_selected` slots as v1 finds them.
@@ -639,9 +676,14 @@ the value head; initialization; Muon and AdamW's split.
   weights, both directions; then the hidden keys. No scatter. Weights are
   zero at initialization.
 - **Heads:** Section 5.4's module replaces v1's sixteen.
-- **Parameters:** **Estimated** about v1's 18.5M: the heads shrink (one MLP
-  where there were sixteen), and the slot embeddings (228 × 256), `W` (19 × F
-  × 256) is added.
+- **Parameters:** 13.7M against v1's 18.5M (**Measured** as built). The trunk
+  is the same 12.8M; the heads fall from 5.5M to 0.7M, one MLP with the slot
+  embeddings and `W` where there were sixteen heads.
+- **As built, beyond the above:** a CORP or PRIVATE row's slice of a player
+  pair block is reordered to start at the actor; every build-distance input
+  (the two channels, CORP's six summaries, and the choice slots) starts
+  with zero weights; the forward casts its input to fp32 itself, so the
+  fp16 wire goes straight in.
 
 **Test:** v1-design Section 7's list on layout 3, plus: a choice's logit
 moves with its own row's features; a hidden row or an illegal choice changes
@@ -652,35 +694,47 @@ entity facts on fixture states.
 
 ### 7.1 The wire
 
-| Part | Values at capacity 5 (**Estimated**) |
+| Part | Values at capacity 5 |
 |---|---|
-| Rows (GLOBAL ~130, 7 CORP × ~80, 7 PRIVATE × ~14, 25 CENTER × ~21, 5 PLAYER × ~20) | ~1,410 |
-| Pair blocks (4.3) | ~1,550 |
-| Choice table (46 × 24) | ~1,100 |
-| Total | ~4,100, or 8 KB as fp16 |
+| Rows (GLOBAL 135, 7 CORP × 76, 7 PRIVATE × 15, 25 CENTER × 21, 5 PLAYER × 20) | 1,397 |
+| Pair blocks (4.3) | 1,549 |
+| Choice table (46 × 47) | 2,162 |
+| Total | 5,108, or 10.2 KB as fp16 |
 
-Against about 37 KB today. Types are packed at their own widths; nothing is
+Against about 37 KB today. The parts that grow with the player count come
+last, so every other offset is the same at every capacity. Types are packed at their own widths; nothing is
 padded to the widest row.
 
 ### 7.2 What changes
 
 Following AGENTS.md's active path:
 
-- **`Game` adapter:** `relation_format` gains `"none"`; the fills become one
-  `fill_inputs(state, out, layout_version)` for layout 3. RSS's and layouts 1
-  and 2's paths stay until v2 has beaten v1 (as v1 kept layout 1 for v0).
+- **`Game` adapter:** `packed_layouts` names layout 3, whose relation format
+  (`relation_format_of(layout_version)`) is `"none"`; `relation_format`
+  stays the token layouts' `"flat"`. Layout 3's fills are `fill_inputs` and
+  `fill_inputs_batch`, its length `input_size`. RSS's and layouts 1 and 2's
+  paths stay until v2 has beaten v1 (as v1 kept layout 1 for v0).
 - **`nn/model_contract.py`:** `ModelInputSpec` describes a packed input by
-  its parts' offsets. The forward takes `(inputs, legal_mask)`.
-- **Eval server and IPC:** one input buffer a state. The flat-record path
-  (flatten, filler, K buckets) is not used by layout 3: launches bucket by
-  batch alone, 9 shapes where v1 has 45.
+  its length alone (`input_size`; `packed`, `input_shape`), which
+  `input_spec_for` reads from the game; the parts' offsets are the engine's
+  `get_input_parts`, which only the model reads. The forward takes
+  `(inputs, legal_mask)`.
+- **Eval server and IPC:** one fp16 input buffer a state, and no relation
+  buffer. The flat-record path (flatten, filler, K buckets) is not used by
+  layout 3: launches bucket by batch alone, 9 shapes where v1 has 45. The
+  model casts its input, so the device buffer stays fp16 with or without
+  autocast.
 - **`mcts/evaluator.py`, the trainer, replay:** replay stores raw states and
-  re-extracts, so only the extraction call changes.
-- **`train/analyze_game.py`, the profile, the tournament:** each evaluator
-  fills its own model's layout, as v0 and v1 do in one game today.
+  re-extracts, so the extraction call and the forward's arguments change, and
+  replay does not.
+- **The game log, the profile, the tournament:** each evaluator fills its own
+  model's layout, as v0 and v1 do in one game today. 1889's game log is
+  `utils_18xx/g1889_selfplay_log.py`; `train/analyze_game.py` plays RSS alone.
 
-**Test:** the transport tests of `tests/g1889/test_relation_transport.py` and
-`test_pipeline_v1.py`, on layout 3; a tournament game of v1 against v2.
+**Test:** `tests/g1889/test_packed_transport.py`, the transport tests of
+`test_relation_transport.py` and `test_pipeline_v1.py` on layout 3;
+`test_pipeline_v2.py`, a run with workers and a resume, and the game log on its
+checkpoint; and in `test_tournament.py`, games of v1 against v2.
 
 ## 8. Cost
 
@@ -693,11 +747,12 @@ From 2.6's measurements; the profile of v2 itself is Section 9's:
 - **On the current cloud box the GPUs are not the limit** (2.1), so the
   smaller trunk shows up there as GPU headroom, not as games per hour. The
   headroom can be spent on a wider or deeper trunk.
-- **Extraction:** the choice table's generic part adds about 2-4 µs a leaf
-  against 26 µs today. The relation emitter and the 27 plain HEX fills go,
-  and a CENTER row is a fifth of a HEX row's width; the phase blocks' fills
-  are mostly layout 2's per-choice work moved.
-- **Server:** no flatten, about a fifth of the bytes to gather and copy.
+- **Extraction:** **Measured** 43.7 µs a leaf against 26.0 µs today (5.3):
+  the rows and pair blocks are cheaper than layout 2's tokens and records,
+  and TRACK's best over tiles is most of what the choice table adds. The
+  fill holds the GIL, which layouts 1 and 2 release.
+- **Server:** no flatten, a bit over a quarter of the bytes to gather and
+  copy.
 
 ## 9. How to judge it
 
@@ -732,7 +787,7 @@ Steps 1-3 can be checked on v1's saved buffer before any self-play runs.
 
 ## 11. Decisions
 
-Mine to propose, the user's to settle:
+All settled by the user on 2026-11-13:
 
 1. **Location rows: the 25 CENTER rows, a 45-row trunk, and no rows for
    plain hexes.** *Settled by the user, 2026-11-13.* An earlier draft
@@ -750,17 +805,16 @@ Mine to propose, the user's to settle:
      KL, it appears only after the first pass over the data, and value does
      not separate the arms.
 2. **The choice head scores each choice independently,** with no decoder and
-   no rank features. *Proposed yes:* neither helped in any phase (2.5), and
-   the simplest form is also the cheapest.
-3. **Relations as pair blocks,** with no records on the wire. *Proposed yes.*
+   no rank features. Neither helped in any phase (2.5), and the simplest
+   form is also the cheapest.
+3. **Relations are pair blocks,** with no records on the wire.
 4. **TRAIN, PRICE, and DIVIDEND fold** into GLOBAL and the choice table.
-   *Proposed yes.*
-5. **No launches of two lengths** for closed privates and empty seats.
-   *Proposed no.* Seven PRIVATE rows are idle in 16% of self-play rows and
-   one seat on average, so a second length would save about 5% of trunk work
+5. **Every launch has one length.** Closed privates and empty seats stay as
+   hidden rows. Seven PRIVATE rows are idle in 16% of self-play rows and one
+   seat on average, so a second length would save about 5% of trunk work
    and split every launch in two.
-6. **Build distance staged** behind the layout, not in the first v2 run.
-   *Proposed yes:* its gate (the economy) has not opened.
+6. **Build distance is staged** behind the layout, not in the first v2 run:
+   its gate (the economy) has not opened.
 7. **TRACK and TILE stay two decisions,** and TRACK's row carries the best
    outcome over its hex's tiles. One decision over (hex,
    tile, rotation) would score every lay by its own outcome and take one
@@ -775,8 +829,6 @@ Mine to propose, the user's to settle:
    - *Settled by the user, 2026-11-13:* they stay two decisions for now. The
      choice table makes merging them a later change of one phase block, not
      of the model.
-
-**Open:**
-
-- Whether v2 starts a fresh run or waits for the stall remedy, so the two are
-  not confounded more than they must be.
+8. **v2 starts a fresh run.** The v1 run is stopped. v2 does not address
+   the economy stall (2.1), so its run is compared with v1's curve as it
+   stands, and a stall remedy is a separate change.

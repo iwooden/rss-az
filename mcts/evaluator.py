@@ -1,9 +1,10 @@
 """NN evaluator for MCTS leaf evaluation.
 
-Fills token buffers and relation inputs (planes, or a flat game's records) from
-compact int16 game states through the game's adapter (``games.Game``), runs NN
-inference, and returns sparse softmax priors over the policy action set plus
-canonical-order values.
+Fills model inputs from compact int16 game states through the game's adapter
+(``games.Game``): token buffers and relation inputs (planes, or a flat game's
+records), or a packed layout's one vector a state. Runs NN inference, and
+returns sparse softmax priors over the policy action set plus canonical-order
+values.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from nn.model_contract import (
     ModelInputSpec,
     ModelKind,
     flatten_relation_records,
+    input_spec_for,
     normalize_model_type,
 )
 
@@ -34,16 +36,7 @@ def _unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
 def _transformer_input_spec(
     game: Game, num_players: int, layout_version: int,
 ) -> ModelInputSpec:
-    return ModelInputSpec(
-        model_type=ModelKind.TRANSFORMER.value,
-        num_players=num_players,
-        policy_dim=game.policy.unified_dim,
-        value_dim=num_players,
-        num_tokens=game.num_tokens(num_players),
-        token_dim=game.token_dim(layout_version),
-        layout_version=layout_version,
-        game=game.name,
-    )
+    return input_spec_for(game, num_players, layout_version, ModelKind.TRANSFORMER.value)
 
 
 def _infer_model_input_spec(
@@ -100,16 +93,23 @@ def _validate_model_input_spec(
             f"num_players ({num_players})"
         )
 
-    if int(input_spec.num_tokens) != game.num_tokens(num_players):
+    expected = _transformer_input_spec(game, num_players, input_spec.layout_version)
+    if input_spec.packed or expected.packed:
+        if input_spec.input_shape != expected.input_shape:
+            raise ValueError(
+                f"Transformer input_spec input shape {input_spec.input_shape} does not match "
+                f"layout {input_spec.layout_version}'s {expected.input_shape} at {num_players} players"
+            )
+        return input_spec
+    if int(input_spec.num_tokens) != expected.num_tokens:
         raise ValueError(
             f"Transformer input_spec.num_tokens ({input_spec.num_tokens}) "
             f"does not match game.num_tokens({num_players})"
         )
-    expected_dim = game.token_dim(input_spec.layout_version)
-    if int(input_spec.token_dim) != expected_dim:
+    if int(input_spec.token_dim) != expected.token_dim:
         raise ValueError(
             f"Transformer input_spec.token_dim ({input_spec.token_dim}) "
-            f"does not match layout {input_spec.layout_version} width ({expected_dim})"
+            f"does not match layout {input_spec.layout_version} width ({expected.token_dim})"
         )
     return input_spec
 
@@ -268,6 +268,9 @@ class NNEvaluator(BaseEvaluator):
     grown on demand. On a CPU device the "device" half aliases the host half
     and no copy runs. A flat game's relation scratch holds up to
     ``n * max_relation_edges`` flat rows, of which the forward gets the first N.
+    A packed layout (``input_spec.packed``) fills one fp32 vector a state into
+    the input scratch, has no relation scratch, and calls the model with
+    ``(inputs, legal_mask)``.
     """
 
     _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16}
@@ -292,7 +295,9 @@ class NNEvaluator(BaseEvaluator):
         self.token_dim = input_spec.token_dim
         self.layout_version = input_spec.layout_version
         self._unified_dim = game.policy.unified_dim
-        self._flat_relations = game.relation_format == "flat"
+        self._relation_format = game.relation_format_of(self.layout_version)
+        self._packed = self._relation_format == "none"
+        self._flat_relations = self._relation_format == "flat"
         # Flat rows of the batch in relation scratch, set as they are filled.
         self._relation_rows: int = 0
 
@@ -323,16 +328,20 @@ class NNEvaluator(BaseEvaluator):
             return
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
-        nt, td = self.num_tokens, self.token_dim
+        nt = self.num_tokens
+        input_shape = (cap, *self.input_spec.input_shape)
         u_dim = self._unified_dim
         if self._flat_relations:
             edges = self.game.max_relation_edges
-            rel_shape = (cap * edges, FLAT_RELATION_RECORD_WIDTH)
+            rel_shape: tuple[int, ...] = (cap * edges, FLAT_RELATION_RECORD_WIDTH)
             rel_dtype = torch.int16
             # Padded records: CPU-only (consumed by the flatten), never shipped.
             self._records_np = np.empty(
                 (cap, edges, RELATION_RECORD_WIDTH), dtype=np.uint8,
             )
+        elif self._packed:
+            rel_shape = (0,)  # no relations
+            rel_dtype = torch.uint8
         else:
             rel_shape = (cap, self.game.num_relations, nt, nt)
             rel_dtype = torch.uint8
@@ -340,8 +349,9 @@ class NNEvaluator(BaseEvaluator):
         # Host (pinned on CUDA): exposed as numpy for the mask scatter.
         # Mask is zero-initialized so ``_build_mask_row`` only touches
         # legal slots — the full row is reset on each fill via a
-        # contiguous ``row[:] = 0`` before the scatter.
-        self._tok_h = torch.empty((cap, nt, td), dtype=torch.float32, pin_memory=pm)
+        # contiguous ``row[:] = 0`` before the scatter. ``_tok_h`` holds the
+        # model inputs: token rows, or a packed layout's vectors.
+        self._tok_h = torch.empty(input_shape, dtype=torch.float32, pin_memory=pm)
         self._tok_h_np = self._tok_h.numpy()
         self._rel_h = torch.empty(rel_shape, dtype=rel_dtype, pin_memory=pm)
         self._rel_h_np = self._rel_h.numpy()
@@ -352,7 +362,7 @@ class NNEvaluator(BaseEvaluator):
         # Device: separate on CUDA, aliased on CPU (no copy needed).
         if pm:
             self._tok_d = torch.empty(
-                (cap, nt, td), dtype=torch.float32, device=self.device,
+                input_shape, dtype=torch.float32, device=self.device,
             )
             self._rel_d = torch.empty(rel_shape, dtype=rel_dtype, device=self.device)
             self._mask_d = torch.empty(
@@ -370,6 +380,25 @@ class NNEvaluator(BaseEvaluator):
         flat = flatten_relation_records(self._records_np[:n])
         self._relation_rows = len(flat)
         self._rel_h_np[:self._relation_rows] = flat
+
+    def _fill_inputs_batch(self, state_arrays: list[np.ndarray], n: int) -> None:
+        """Fill host input scratch [:n], and relation scratch, from ``n`` raw
+        state rows: one batched Cython call each."""
+        game = self.game
+        if self._packed:
+            assert game.fill_inputs_batch is not None
+            game.fill_inputs_batch(
+                state_arrays, self._tok_h_np[:n],
+                max_players=self.num_players,
+                layout_version=self.layout_version,
+            )
+            return
+        game.fill_tokens_batch(
+            state_arrays, self._tok_h_np[:n],
+            max_players=self.num_players,
+            layout_version=self.layout_version,
+        )
+        self._fill_relations_batch(state_arrays, n)
 
     def _fill_relations_batch(self, state_arrays: list[np.ndarray], n: int) -> None:
         """Fill host relation scratch from ``n`` raw state rows."""
@@ -441,19 +470,26 @@ class NNEvaluator(BaseEvaluator):
 
         # Fill preallocated scratch row 0.
         self._ensure_scratch(1)
-        game.fill_tokens(
-            state, self._tok_h_np[0], max_players=self.num_players,
-            layout_version=self.layout_version,
-        )
-        if self._flat_relations:
-            game.fill_relations_sparse(
-                state, self._records_np[0], max_players=self.num_players,
+        if self._packed:
+            assert game.fill_inputs is not None
+            game.fill_inputs(
+                state, self._tok_h_np[0], max_players=self.num_players,
+                layout_version=self.layout_version,
             )
-            self._flatten_relations(1)
         else:
-            game.fill_relations_dense(
-                state, self._rel_h_np[0], max_players=self.num_players,
+            game.fill_tokens(
+                state, self._tok_h_np[0], max_players=self.num_players,
+                layout_version=self.layout_version,
             )
+            if self._flat_relations:
+                game.fill_relations_sparse(
+                    state, self._records_np[0], max_players=self.num_players,
+                )
+                self._flatten_relations(1)
+            else:
+                game.fill_relations_dense(
+                    state, self._rel_h_np[0], max_players=self.num_players,
+                )
         self._build_mask_row(0, phase_id, self._enum_scratch[:n_legal])
 
         priors_np, values_np = self._forward(1)
@@ -492,12 +528,7 @@ class NNEvaluator(BaseEvaluator):
         # Python-side and each state has its own per-phase enumerator.
         game = self.game
         state_arrays = [s._array for s in states]
-        game.fill_tokens_batch(
-            state_arrays, self._tok_h_np[:n],
-            max_players=self.num_players,
-            layout_version=self.layout_version,
-        )
-        self._fill_relations_batch(state_arrays, n)
+        self._fill_inputs_batch(state_arrays, n)
         phase_ids: list[int] = [0] * n
         n_legals: list[int] = [0] * n
         # Buffer to hold the enumerated ids across rows so we can gather
@@ -568,12 +599,7 @@ class NNEvaluator(BaseEvaluator):
         # per-state Python dispatch + wrapper construction that the prior
         # loop incurred. The batched entry reuses a single scratch
         # state internally via rebind.
-        self.game.fill_tokens_batch(
-            state_arrays, self._tok_h_np[:n],
-            max_players=self.num_players,
-            layout_version=self.layout_version,
-        )
-        self._fill_relations_batch(state_arrays, n)
+        self._fill_inputs_batch(state_arrays, n)
         # Copy caller's dense mask into host scratch — cheaper than
         # per-row LUT scatter because the caller built it once already.
         np.copyto(self._mask_h_np[:n], legal_mask, casting="unsafe")
@@ -595,14 +621,19 @@ class NNEvaluator(BaseEvaluator):
         Callers that need a sparse legal slice pick it out of the returned
         numpy array via the same ``action_lut`` used to build the mask.
         """
-        relation_rows = self._relation_rows if self._flat_relations else n
+        relation_rows = (
+            0 if self._packed else self._relation_rows if self._flat_relations else n
+        )
         self._h2d(n, relation_rows)
 
         with torch.autocast(self.device.type, dtype=self._autocast_dtype,
                             enabled=self._autocast_dtype is not None):
-            logits, value_output = self.model(
-                self._tok_d[:n], self._mask_d[:n], self._rel_d[:relation_rows],
-            )
+            if self._packed:
+                logits, value_output = self.model(self._tok_d[:n], self._mask_d[:n])
+            else:
+                logits, value_output = self.model(
+                    self._tok_d[:n], self._mask_d[:n], self._rel_d[:relation_rows],
+                )
             priors = logits.softmax(dim=1).to(torch.float32)
             values = value_output.to(torch.float32)
 

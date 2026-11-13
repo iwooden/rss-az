@@ -1251,9 +1251,9 @@ The user settled these on 2026-11-04. Each item gives the options and the decisi
 
 The runs on the cloud RTX 5090, in order. The box is reached only by the user, so
 each step that needs it writes a file to send back. Commands run from the repo
-root, with the box's tmux keeping the run's TTY for `q`. 11.1 is the sequence for
-the next launch, v1's. 11.2 is v0's run as it went, kept as its record and for its
-notes on the box and the build.
+root, with the box's tmux keeping the run's TTY for `q`. 11.3 is the sequence for
+the next launch, v2's, by its differences from 11.1, v1's. 11.2 is v0's run as it
+went, kept as its record and for its notes on the box and the build.
 
 ### 11.1 v1's launch
 
@@ -1556,6 +1556,123 @@ outputs within 1e-7 of eager, and uncompiled on ROCm; the rescale, on
 `runs/1889-v0-smoke`; a resume with its fields, on the local GPU; the probe, on the smoke
 buffer at small sizes, interrupted and rerun. Inductor's CUDA graphs, bf16 under
 compilation, and every time above are the 5090's to report.
+
+### 11.3 v2's launch
+
+v2 ([`v2-design.md`](v2-design.md)) is a fresh run, `train_configs/1889-v2.json`:
+v1's config but for `model_path` and the run's directories, so its search,
+optimizer, schedule, starts, and held-out rows are v1's. Each step is 11.1's,
+with these differences.
+
+**1. Code.** The user pushes `az-1889` from the dev box.
+
+**2. Setup and build.** As 11.1's, but the build must be clean, since
+`g1889/token_data.pxd` and `g1889/driver.pxd` changed:
+
+```bash
+python setup.py clean_build 2>&1 | grep -E "(warning|error)" || true
+pytest tests/g1889 tests/test_pipeline_boundary.py -q
+df -h /dev/shm /workspace       # the workers' shared buffers take 11 MB (v1's 37); the buffer saves 7.4 GB
+```
+
+- **The wire** is 10,216 bytes a state of fp16 inputs and no relation records,
+  against v1's 37 KB; replay is the same raw rows as v1's, so the buffer's size
+  on disk and in memory is v1's.
+
+**3. Profile.** `cloud/profile_1889.py` profiles v2's config by default:
+
+```bash
+tmux new -s 1889-v2
+python cloud/profile_1889.py
+```
+
+It writes `1889-v2-cloud-profile.json`; send it back. Model time runs v3, v0, v1,
+and v2 on the same states, each in its own layout; launches are B alone, the 9
+buckets from 1 to 256, with no K; extraction is layout 3 against layout 2.
+
+- **Stops the launch until understood:** a `FAIL` on graph breaks, compiled
+  graphs (2: batch 1 and the rest), recompiles, each B recording one graph,
+  recorded graphs against the 9 B, compiled against eager, the weight sync, or
+  memory growth; or `v2/v1 model time` over 1 at either batch.
+- **Results to record, not blockers:** v2/v1 against v2-design's 0.65 at batch 64
+  and 0.55 at 256 (Sections 2.6 and 8); `v1/v0` and `v0/v3` against their
+  records, which say whether the box is the same; a leaf's extraction, layout 3,
+  against the dev box's 41 µs over all game phases, 114 in phase D, and a p99 of
+  1,800 there (layout 2: 23, 63, and 640; v2-design §5.3's TRACK best-over is the
+  tail); and steps a second at 13.7M parameters.
+- **v1 again,** for a twin: `--config train_configs/1889-v1.json`, which writes
+  `1889-v1-cloud-profile.json`.
+
+**4. Launch.**
+
+```bash
+ls checkpoints/1889-v2 runs/1889-v2     # neither exists: an old run's files would be overwritten or merged
+TORCH_LOGS=recompiles python -m train --config train_configs/1889-v2.json
+```
+
+The banner shows `nn/transformer-1889-v2.py` and 13,692,094 parameters, and, as
+v1's did, the replay ratio, the anneal shares, the started games, and the start
+positions. The config, as v1's, trains and serves on one GPU, the trainer's;
+with another run on the box, pick the free one with `CUDA_VISIBLE_DEVICES`.
+
+**5. The first epochs.** `tensorboard --logdir runs/1889-v2`. 11.1's list holds,
+and:
+
+- **Compile and memory.** One `Recompiling function forward` in the warmup,
+  batch 1 to batch 2, and none after. The server records one CUDA graph a bucket
+  it launches at, 9 at most where v1 recorded one a (B, K), 45; `nvidia-smi`
+  memory stops growing once they are.
+- **The server.** `eval_server/gather_share` and `build_share` against v1's: no
+  flatten and a quarter of the bytes should shrink both. `forward_share`,
+  `idle_share`, and `profile/server_throughput` say whether the server is the
+  limit; v2-design §8 expects GPU headroom rather than more games an hour, since
+  workers wait on the server 96% of the time.
+- **Workers.** A leaf's layout 3 extraction holds the GIL and costs 41 µs on
+  average where layout 2's cost 23, with a tail at TRACK; the epoch profile's
+  `EvalClient avg/game: prepare` share says whether workers ever wait on it.
+- **Against v1's curve:** `heldout/policy_kl` by phase and `heldout/value_mse`,
+  at the same epochs, STOCK and SELL_AMOUNT first (v2-design §9). The economy
+  stall is not this run's to fix (v2-design §1, item 5).
+
+**6. Stopping and resuming.** As 11.1's:
+
+```bash
+TORCH_LOGS=recompiles python -m train --config train_configs/1889-v2.json --resume latest
+```
+
+**7. v2 against v1,** once a checkpoint is worth it:
+
+```bash
+python -m train.tournament \
+  checkpoints/1889-v2/checkpoint_epoch_0100.pt,checkpoints/1889-v1/checkpoint_epoch_0100.pt \
+  --num-players 4 --simulations 1600 --search-batch-size 8 --sample-moves 20 --games-per-pair 60 \
+  --workers 8 --output v2-vs-v1-4p.report
+```
+
+Each seat's evaluator fills its own model's layout, v1's tokens and records and
+v2's vectors, in one game. As 11.1's, it runs in fp32 uncompiled, so play between
+a stop and a resume, or on the dev box.
+
+**Checked before the box** (2026-11-13): the transport's tests on layout 3
+(`tests/g1889/test_packed_transport.py`), on the CPU and on ROCm, with real
+workers through a real server; `tests/g1889/test_pipeline_v2.py`'s run with
+workers and an in-process resume, and the game log of its checkpoint through
+Ruby; v1 against v2 in one game (`test_tournament.py`); the profile on the CPU,
+uncompiled and compiled through the real kwargs and warmup (no graph breaks, 2
+graphs, no recompiles, compiled within 1e-7 of eager); and
+`train_configs/1889-v2-smoke.json` through `python -m train` on the local GPU,
+with a resume. Inductor's CUDA graphs, bf16 under compilation with the fp16 wire,
+the 128-worker server, and every time above are the 5090's to report.
+
+**The smoke run** (2026-11-13, `scratchpad/v2_pipeline/smoke/`): 8 workers and one
+eval server on the local GPU, fp32 uncompiled, full size; two epochs, then
+`--resume latest --num-epochs 3`, which restored step 140 and the buffer's 15,571
+rows. Epochs 1-3: 12 games each, 3 of them started; 6,744, 8,827, and 9,318 rows;
+39, 101, and 160 steps by `replay_ratio`, at about 0.14 s a step at batch 64; the
+server at 1,200, 1,450, and 1,269 evaluations a second (v1's smoke: 841-913), 22-25
+ms a launch, padding 29%, 11%, and 25%; its time 93-96% forward, 1.5-2.5% gather,
+0.8% build, and 1.5-4% idle; workers waited on it 99% of the time and spent 0.7-0.8%
+extracting.
 
 ## 12. v1
 

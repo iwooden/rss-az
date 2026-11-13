@@ -575,6 +575,12 @@ def analyze_game(
     player_names: list[str] | None = None,
 ) -> str:
     """Play a full game or an 18xx JSON continuation and return its MCTS log."""
+    if config.game != "rss":
+        # The log renders RSS states and actions; 1889's is a hotseat game.
+        raise ValueError(
+            f"train.analyze_game plays Rolling Stock Stars, not {config.game!r}: for a 1889 "
+            "checkpoint, any model version, use python -m utils_18xx.g1889_selfplay_log"
+        )
     if seed_18xx is not None and game_json_18xx is not None:
         raise ValueError("seed_18xx and game_json_18xx are mutually exclusive")
 
@@ -1053,6 +1059,11 @@ def main() -> None:
 
         print(f"Loading checkpoint: {cp_path}")
         model, config, cp = load_model_from_checkpoint(cp_path, device)
+        if config.game != "rss":
+            parser.error(
+                f"{cp_path} is a {config.game} checkpoint; this plays Rolling Stock Stars. "
+                "For 1889, use python -m utils_18xx.g1889_selfplay_log"
+            )
         model.eval()
         checkpoint_path_for_log = cp_path
 

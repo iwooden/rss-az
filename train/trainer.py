@@ -4,9 +4,9 @@ Dense unified-slot contract: batches carry compact int16 game states,
 dense ``legal_mask`` + ``policy_target`` rows over the model's unified
 logit space, canonical per-player ``value_target``, and a pure-reporting
 ``phase_id`` that the model never sees. The trainer materializes transformer
-tokens and relation inputs (planes, or a flat game's records) from those compact
-states at training time. Replay and model values both remain in canonical player
-order.
+tokens and relation inputs (planes, or a flat game's records), or a packed
+layout's one vector a state, from those compact states at training time. Replay
+and model values both remain in canonical player order.
 """
 
 from __future__ import annotations
@@ -138,11 +138,13 @@ class Trainer:
 
         spec = get_model_input_spec(config)
         self._layout_version = spec.layout_version
-        self._token_dim = spec.token_dim
+        self._input_shape = spec.input_shape  # tokens, or a packed layout's vector
         self._num_players = config.effective_max_players
         self._num_tokens = game.num_tokens(self._num_players)
         self._state_size = game.state_size(self._num_players)
-        self._flat_relations = game.relation_format == "flat"
+        relation_format = game.relation_format_of(spec.layout_version)
+        self._packed = relation_format == "none"
+        self._flat_relations = relation_format == "flat"
 
         # Lazy pinned host + device scratch (see _ensure_scratch).
         self._scratch_cap: int = 0
@@ -328,35 +330,40 @@ class Trainer:
         ``phase_ids`` widens to ``torch.long`` for ``index_add_`` on the
         TB bucketing path; it never enters the model graph.
 
-        ``_rel_h`` and ``_rel_d`` hold planes, or for a flat game up to
-        ``n * max_relation_edges`` flat rows, of which the forward gets the
-        first N.
+        ``_tok_h`` and ``_tok_d`` hold the model inputs: token rows, or a
+        packed layout's vectors. ``_rel_h`` and ``_rel_d`` hold planes, or for
+        a flat game up to ``n * max_relation_edges`` flat rows, of which the
+        forward gets the first N; a packed layout has none.
         """
         if n <= self._scratch_cap:
             return
         cap = max(n, max(self._scratch_cap * 2, 1))
         pm = self.device.type == "cuda"
-        nt, td = self._num_tokens, self._token_dim
+        nt = self._num_tokens
+        input_shape = (cap, *self._input_shape)
         u_dim = self._policy.unified_dim
         N = self._num_players
         if self._flat_relations:
             edges = self._game.max_relation_edges
-            rel_shape = (cap * edges, FLAT_RELATION_RECORD_WIDTH)
+            rel_shape: tuple[int, ...] = (cap * edges, FLAT_RELATION_RECORD_WIDTH)
             rel_dtype = torch.int16
             # Padded records: CPU-only (consumed by the flatten), never shipped.
             self._records_np = np.empty(
                 (cap, edges, RELATION_RECORD_WIDTH), dtype=np.uint8,
             )
+        elif self._packed:
+            rel_shape = (0,)  # no relations
+            rel_dtype = torch.uint8
         else:
             rel_shape = (cap, self._game.num_relations, nt, nt)
             rel_dtype = torch.uint8
 
-        # Raw states: CPU-only (consumed by fill_tokens), never shipped.
+        # Raw states: CPU-only (consumed by the input fill), never shipped.
         self._states_np = np.empty((cap, self._state_size), dtype=np.int16)
 
         # Pinned host (on CUDA). Exposed as numpy for buffer fills.
         self._tok_h = torch.empty(
-            (cap, nt, td), dtype=torch.float32, pin_memory=pm,
+            input_shape, dtype=torch.float32, pin_memory=pm,
         )
         self._tok_h_np = self._tok_h.numpy()
         self._rel_h = torch.empty(rel_shape, dtype=rel_dtype, pin_memory=pm)
@@ -376,7 +383,7 @@ class Trainer:
 
         if pm:
             self._tok_d = torch.empty(
-                (cap, nt, td), dtype=torch.float32, device=self.device,
+                input_shape, dtype=torch.float32, device=self.device,
             )
             self._rel_d = torch.empty(rel_shape, dtype=rel_dtype, device=self.device)
             self._phase_d = torch.empty(cap, dtype=torch.long, device=self.device)
@@ -420,10 +427,13 @@ class Trainer:
 
     def _fill_token_batch(self, n: int) -> None:
         """Fill ``_tok_h_np[:n]`` from ``_states_np[:n]`` via the batched
-        Cython entry. One Python dispatch for the whole batch; rows are
-        filled in a nogil loop with a shared rebindable scratch state.
+        Cython entry: tokens, or a packed layout's vectors. One Python dispatch
+        for the whole batch, with a shared rebindable scratch state; token
+        rows fill without the GIL, a packed layout's (1889's layout 3) with it.
         """
-        self._game.fill_tokens_batch(
+        fill = self._game.fill_inputs_batch if self._packed else self._game.fill_tokens_batch
+        assert fill is not None
+        fill(
             [self._states_np[i] for i in range(n)],
             self._tok_h_np[:n],
             max_players=self._num_players,
@@ -433,15 +443,24 @@ class Trainer:
     def _ship_inputs(self, n: int) -> int:
         """Build the model inputs of the raw scratch's first ``n`` rows and
         start their H→D copies (an aliased no-op on CPU). Returns the row count
-        of the relations the forward takes."""
+        of the relations the forward takes, 0 for a packed layout."""
         self._fill_token_batch(n)
-        relation_rows = n
+        relation_rows = 0 if self._packed else n
         if self._flat_relations:
             flat = flatten_relation_records(self._records_np[:n])
             relation_rows = len(flat)
             self._rel_h_np[:relation_rows] = flat
         self._h2d(n, relation_rows)
         return relation_rows
+
+    def _forward(
+        self, n: int, legal_masks: torch.Tensor, relation_rows: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """The model on device scratch [:n]: ``(inputs, legal_mask)`` for a
+        packed layout, else with the first ``relation_rows`` relations."""
+        if self._packed:
+            return self.model(self._tok_d[:n], legal_masks)
+        return self.model(self._tok_d[:n], legal_masks, self._rel_d[:relation_rows])
 
     def _pass_action_logit_abs(
         self,
@@ -525,7 +544,10 @@ class Trainer:
             self._mask_h_np[:B],
             self._pt_h_np[:B],
             self._vt_h_np[:B],
-            relations_out=(self._records_np if self._flat_relations else self._rel_h_np)[:B],
+            relations_out=(
+                None if self._packed
+                else (self._records_np if self._flat_relations else self._rel_h_np)[:B]
+            ),
             player_counts_out=self._pc_h_np[:B],
             is_weights_out=self._w_h_np[:B],
         )
@@ -570,9 +592,7 @@ class Trainer:
         # -1e9 via ``legal_masks``, so log_softmax normalizes over the
         # legal set only (illegal log-probs are ~-∞ × 0 = 0 in the loss).
         self._raw_values = None
-        policy_logits, values = self.model(
-            self._tok_d[:B], legal_masks, self._rel_d[:relation_rows],
-        )
+        policy_logits, values = self._forward(B, legal_masks, relation_rows)
         raw_values = self._raw_values
 
         # Policy loss: dense cross-entropy over the unified slot space.
@@ -805,7 +825,7 @@ class Trainer:
             self._game.fill_relations_sparse_batch(
                 rows, self._records_np[:B], max_players=self._num_players,
             )
-        else:
+        elif not self._packed:
             self._game.fill_relations_dense_batch(
                 rows, self._rel_h_np[:B], max_players=self._num_players,
             )
@@ -814,9 +834,7 @@ class Trainer:
         self._vt_h_np[:B] = value_targets
         self._pc_h_np[:B] = player_counts
         relation_rows = self._ship_inputs(B)
-        policy_logits, values = self.model(
-            self._tok_d[:B], self._mask_d[:B].to(torch.bool), self._rel_d[:relation_rows],
-        )
+        policy_logits, values = self._forward(B, self._mask_d[:B].to(torch.bool), relation_rows)
         cross_entropy, target_entropy = policy_row_losses(policy_logits, self._pt_d[:B])
         value_sqerr, _ = value_row_sqerr(values, self._vt_d[:B], self._pc_d[:B])
         return (

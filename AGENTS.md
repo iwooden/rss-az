@@ -66,14 +66,18 @@ affected producers, consumers, tests, and documentation together.
   `core/driver.pyx`). Legality is not a guard: `STATUS_INVALID` for an illegal
   action stays in every build. Setup-time validation of user input, such as an
   unsupported layout version, may still raise.
-- Transformer inputs come from `core/token_data.pyx` and `core/relations.pyx`.
-  Forward calls require relations, in the format `Game.relation_format` gives.
-  RSS (`"dense"`) sends dense planes from the trainer and `NNEvaluator` and the
-  sparse relation records that eval-server IPC passes straight through. 1889
-  (`"flat"`, from `g1889/relations.pyx`) sends flat `(N, 5)` records from all
-  three, flattened on the CPU: by `flatten_relation_records` in the trainer
-  and `NNEvaluator`, and by `mcts_core.gather_flat_relations` in the eval
-  server, as it gathers a batch out of shared memory.
+- Transformer inputs come from `core/token_data.pyx` and `core/relations.pyx`
+  (RSS), and `g1889/token_data.pyx` and `g1889/relations.pyx` (1889). A
+  token layout's forward calls require relations, in the format
+  `Game.relation_format_of(layout_version)` gives. RSS (`"dense"`) sends dense
+  planes from the trainer and `NNEvaluator` and the sparse relation records
+  that eval-server IPC passes straight through. 1889's token layouts 1 and 2
+  (`"flat"`) send flat `(N, 5)` records from all three, flattened on the CPU:
+  by `flatten_relation_records` in the trainer and `NNEvaluator`, and by
+  `mcts_core.gather_flat_relations` in the eval server, as it gathers a batch
+  out of shared memory. 1889's layout 3 (v2) is packed (`Game.packed_layouts`,
+  format `"none"`): one vector a state from `Game.fill_inputs`, no relations,
+  and a forward of `(inputs, legal_mask)`. Its fill holds the GIL.
 - Transformer values and replay/self-play/evaluator values use canonical
   player order. Preserve player identity across the pipeline.
 - When changing model/input/output contracts, follow the active path through

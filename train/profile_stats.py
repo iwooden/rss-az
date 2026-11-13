@@ -48,9 +48,11 @@ class GameProfileData:
 
 # The serve loop's stages, in ``EvalServerStats.stage_secs`` order:
 # - gather: draining requests, waiting for more while a min batch fills, and
-#   copying the requests' rows out of the workers' shared memory, a flat
-#   game's relation records flattened as they are copied;
-# - build: padding, and issuing the device copies;
+#   copying the requests' rows out of the workers' shared memory: tokens and
+#   relation records, a flat game's flattened as they are copied, or a packed
+#   layout's vectors alone;
+# - build: padding (a bucketed launch's zero rows, a flat game's filler), and
+#   issuing the device copies;
 # - forward: issuing the forward, softmax and copies back, then any wait on the
 #   GPU for a free ping-pong slot (until the GPU finished that slot's launch);
 #   on the CPU, the forward itself;

@@ -1,5 +1,5 @@
 """The cloud profile of a 1889 run, before its launch (1889/model-design.md §11;
-v0's results are in §5.3 and §6.5, v1's in §12.7).
+v0's results are in §5.3 and §6.5, v1's in §12.7; v2's is 1889/v2-design.md §9).
 
 Standalone; run from the repo root. It imports production code, compiles through
 the real ``get_compile_kwargs`` and ``_warmup_compiled_model``, and feeds real
@@ -10,24 +10,27 @@ what it had, and prints a pass/fail summary. Send the JSON back.
     python cloud/profile_1889.py --cpu          # uncompiled CPU, CUDA parts skipped
     python cloud/profile_1889.py --cpu --compile
     python cloud/profile_1889.py --rocm         # uncompiled ROCm, fp32, small batches
-    python cloud/profile_1889.py --config train_configs/1889-v0.json
+    python cloud/profile_1889.py --config train_configs/1889-v1.json
 
-``--config`` names the run, 1889-v1's by default. Sections, each failing alone:
+``--config`` names the run, 1889-v2's by default. Sections, each failing alone:
 
 - ``model_time``: model-only time at batch 64 and 256 as ``v3-cloud-profile.json``
   measured v3 (Inductor without its graphs, then an explicit CUDA graph, timed by
-  CUDA events): v3, v0, and the run's model if it is not v0, on the same states;
+  CUDA events): v3, v0, v1 if the run's model is newer, and the run's model, on
+  the same states, each in its own layout;
 - ``compile``: ``torch.compile`` with graph breaks and recompiles counted;
 - ``launches``: a serve-loop launch at every (B, K) pair, by launch number, with
-  outputs against eager at each shape's first launches and at replay;
+  outputs against eager at each shape's first launches and at replay. A packed
+  layout (v2's layout 3) has no relations and no K: its launches are B alone;
 - ``replay``: compiled against eager on new inputs and after a weight sync, and the
-  same states at different K;
+  same states at different K (not for a packed layout, which has one);
 - ``memory``: recorded graphs and GPU memory over many launches;
 - ``launch_sizes``: the serve path's time at every launch size and at sizes between
   them, which the eval server does not launch at: what finer sizes than powers of
   two would save on a padded launch, and cost in recorded graphs and their memory;
-- ``extraction``: a search leaf's token and relation extraction on this CPU, layout
-  2 against layout 1, on the checked-in human positions by game phase;
+- ``extraction``: a search leaf's extraction on this CPU, the run's layout against
+  the one before it (layout 2 against 1, or v2's 3 against 2), on the checked-in
+  human positions by game phase;
 - ``train_steps``: training steps a second at the run's settings, and at the
   capacity probe's other shapes.
 
@@ -58,8 +61,9 @@ def _fail(message: str) -> NoReturn:
 
 
 REQUIRED_FILES = (
-    "nn/transformer-1889.py", "nn/transformer-1889-v1.py", "train_configs/1889-v0.json",
-    "train_configs/1889-v1.json", "train_configs/v3-10-01-26.json",
+    "nn/transformer-1889.py", "nn/transformer-1889-v1.py", "nn/transformer-1889-v2.py",
+    "train_configs/1889-v0.json", "train_configs/1889-v1.json", "train_configs/1889-v2.json",
+    "train_configs/v3-10-01-26.json",
 )
 for _path in REQUIRED_FILES:
     if not Path(_path).exists():
@@ -72,7 +76,7 @@ try:
 
     from games import STATUS_GAME_OVER, STATUS_OK, Game, get_game
     from nn import create_model, get_model_input_spec
-    from nn.model_contract import flatten_relation_records
+    from nn.model_contract import flatten_relation_records, input_spec_for
     from train.config import TrainingConfig
     from train.eval_server import (
         SharedEvalBuffers,
@@ -91,9 +95,10 @@ except Exception as exc:  # ImportError, or a stale extension's ValueError
     )
 
 
-REVISION = 2
-DEFAULT_CONFIG = "train_configs/1889-v1.json"
+REVISION = 3
+DEFAULT_CONFIG = "train_configs/1889-v2.json"
 V0_CONFIG = "train_configs/1889-v0.json"
+V1_CONFIG = "train_configs/1889-v1.json"
 V3_CONFIG = "train_configs/v3-10-01-26.json"
 START_POSITIONS = "g1889/data/human_starts.npz"
 ALL_SECTIONS = (
@@ -101,7 +106,7 @@ ALL_SECTIONS = (
 )
 # Sections that launch the serving model, which the compile section builds.
 SERVING_SECTIONS = ("launches", "replay", "memory", "launch_sizes")
-MODEL_LABELS = {"nn/transformer-1889.py": "v0", "nn/transformer-1889-v1.py": "v1"}
+MODEL_LABELS = {"nn/transformer-1889.py": "v0", "nn/transformer-1889-v1.py": "v1", "nn/transformer-1889-v2.py": "v2"}
 
 # For reference only, since the ratios come from one run's own models: v3 in
 # v3-cloud-profile.json (v3-10-01-26's settings, mixing off; 2026-10), and what
@@ -112,7 +117,14 @@ V0_OVER_V3_MEASURED = {64: 1.43, 256: 1.71}
 # model-design §12.5: 80 trunk rows for 95. At small batches a launch's fixed
 # cost brings the ratio toward 1; over 1 is a result to understand before a run.
 V1_OVER_V0_EXPECTED = (0.80, 0.85)
+# v2-design §2.6 and §8: the 45-row trunk's forward against v1's on a 5090, by batch.
+V2_OVER_V1_EXPECTED = {64: 0.65, 256: 0.55}
 EXTRACTION_MAX_MEAN_US = 500  # a tenth of a worker's core at its 200 leaves a second (v1-design §5.9)
+# What the dev box (a 9950X3D) measured, by the run's layout, for the extraction check's detail.
+EXTRACTION_MEASURED = {
+    2: "the dev box (a 9950X3D) measured 24, 65, and 600. ",
+    3: "the dev box (a 9950X3D) measured 41, 114, and 1,800 on 2026-11-13, where layout 2 took 23, 63, and 640. ",
+}
 MIN_TRAIN_STEPS_PER_SECOND = 5.0  # the probe's 40K steps in about two hours, a run's epoch in minutes
 EPOCH_ROWS = 300_000  # the samples of 500 games (model-design §7.1), for an epoch's steps
 LOGIT_MAX_ABS = 0.05
@@ -134,7 +146,7 @@ class Mode:
     autocast: bool  # bf16 under autocast, fp16 tokens; else fp32
     sizes: tuple[int, ...]  # model-only batches
     buckets: tuple[int, ...]  # launch batches
-    ks: tuple[int, ...]  # flat rows per state
+    ks: tuple[int, ...]  # flat rows per state; (0,) for a packed layout, which has none
     launches_per_pair: int
     memory_cycles: int
     iterations: int  # replays per timing round
@@ -147,6 +159,10 @@ class Mode:
     d_model: int = 256
     num_layers: int = 15
     pool_states: int = 2048
+    # The weight sync's perturbation, a share of a unit normal on every weight:
+    # enough to move the logits past LOGIT_MAX_ABS. At --smoke's size v2's
+    # moved 0.024 under 0.02, and 0.40 at the run's.
+    sync_noise: float = 0.02
     probe_shapes: tuple[str, ...] = tuple(PROBE_SHAPES)
     output: str = "cloud-profile"  # after the config's name
 
@@ -181,13 +197,17 @@ CPU_MODE = Mode(
 
 @dataclass(frozen=True)
 class Entry:
-    tokens: np.ndarray  # (T, token_dim) fp32
+    inputs: np.ndarray  # fp32: (T, token_dim) tokens, or a packed layout's (input_size,)
     legal: np.ndarray  # (unified_dim,) bool
-    records: np.ndarray  # (E, 4) uint8, zero past the real ones
+    records: np.ndarray  # (E, 4) uint8, zero past the real ones; (0, 4) for a packed layout
     record_count: int
     phase: int
     players: int
     row: np.ndarray  # the raw int16 state
+
+
+def _packed(pool: list[Entry]) -> bool:
+    return pool[0].inputs.ndim == 1
 
 
 def make_pool(game: Game, config: TrainingConfig, count: int, seed: int = 91023) -> list[Entry]:
@@ -215,13 +235,18 @@ def make_pool(game: Game, config: TrainingConfig, count: int, seed: int = 91023)
                 seen += 1
                 slot = len(pool) if len(pool) < count else int(rng.integers(seen))
                 if slot < count:
-                    tokens = np.empty((spec.num_tokens, spec.token_dim), np.float32)
-                    game.fill_tokens(state, tokens, max_players=capacity, layout_version=spec.layout_version)
-                    records = np.zeros((game.max_relation_edges, 4), np.uint8)
-                    record_count = int(game.fill_relations_sparse(state, records, max_players=capacity))
+                    inputs = np.empty(spec.input_shape, np.float32)
+                    if spec.packed:
+                        assert game.fill_inputs is not None
+                        game.fill_inputs(state, inputs, max_players=capacity, layout_version=spec.layout_version)
+                        records, record_count = np.zeros((0, 4), np.uint8), 0
+                    else:
+                        game.fill_tokens(state, inputs, max_players=capacity, layout_version=spec.layout_version)
+                        records = np.zeros((game.max_relation_edges, 4), np.uint8)
+                        record_count = int(game.fill_relations_sparse(state, records, max_players=capacity))
                     legal = np.zeros(game.policy.unified_dim, bool)
                     legal[lut[phase, actions[:n]]] = True
-                    entry = Entry(tokens, legal, records, record_count, phase, players, state._array.copy())
+                    entry = Entry(inputs, legal, records, record_count, phase, players, state._array.copy())
                     if slot == len(pool):
                         pool.append(entry)
                     else:
@@ -241,9 +266,12 @@ def _rows_at(pool: list[Entry], batch: int, offset: int) -> list[Entry]:
     return [pool[(i + offset) % len(pool)] for i in range(batch)]
 
 
-def _wire_tokens(entries: list[Entry], mode: Mode) -> torch.Tensor:
-    tokens = torch.from_numpy(np.stack([e.tokens for e in entries]))
-    return tokens.to(device=mode.device, dtype=torch.float16 if mode.autocast else torch.float32)
+def _wire_inputs(entries: list[Entry], mode: Mode) -> torch.Tensor:
+    """The serve loop's device inputs: fp16 under autocast, and always for a
+    packed layout, whose model casts its input itself; else fp32."""
+    inputs = torch.from_numpy(np.stack([e.inputs for e in entries]))
+    fp16 = mode.autocast or inputs.ndim == 2
+    return inputs.to(device=mode.device, dtype=torch.float16 if fp16 else torch.float32)
 
 
 def _legal(entries: list[Entry], mode: Mode) -> torch.Tensor:
@@ -259,7 +287,13 @@ def flat_inputs(
     rows = batch * k
     filler = _flat_filler_rows(rows - len(flat), edges, num_tokens)
     relations = torch.from_numpy(np.concatenate((flat, filler))).to(mode.device)
-    return _wire_tokens(entries, mode), _legal(entries, mode), relations
+    return _wire_inputs(entries, mode), _legal(entries, mode), relations
+
+
+def packed_inputs(pool: list[Entry], batch: int, offset: int, mode: Mode) -> tuple[torch.Tensor, torch.Tensor]:
+    """A packed layout's launch: its vectors and legal masks, nothing else."""
+    entries = _rows_at(pool, batch, offset)
+    return _wire_inputs(entries, mode), _legal(entries, mode)
 
 
 def padded_wire_inputs(
@@ -268,7 +302,7 @@ def padded_wire_inputs(
     """v3's eval-server inputs: padded uint8 records."""
     entries = _rows_at(pool, batch, offset)
     records = torch.from_numpy(np.stack([e.records for e in entries])).to(mode.device)
-    return _wire_tokens(entries, mode), _legal(entries, mode), records
+    return _wire_inputs(entries, mode), _legal(entries, mode), records
 
 
 def launch_k(pool: list[Entry], batch: int, offsets: tuple[int, ...]) -> int:
@@ -439,11 +473,22 @@ def section_model_time(ctx: Context) -> dict[str, Any]:
     mode = ctx.mode
     v3_config = _model_config(ctx.v3_config, mode)
     v3_pool = make_pool(ctx.v3_game, v3_config, mode.pool_states)
-    # v0 on the run's states in its own layout: the playouts are the same ones.
-    v0_config = ctx.config if ctx.label == "v0" else ctx.v0_config
-    v0_pool = ctx.pool if ctx.label == "v0" else make_pool(ctx.game, v0_config, mode.pool_states)
-    if not all(np.array_equal(a.records, b.records) for a, b in zip(ctx.pool, v0_pool, strict=True)):
-        raise RuntimeError("v0's pool is not the run's states: the two layouts' playouts parted")
+    # v0, v1 for a newer run, and the run's model, each on the run's states in its
+    # own layout: the playouts are the same ones.
+    configs = {ctx.label: ctx.config}
+    pools = {ctx.label: ctx.pool}
+    newer = ctx.label not in ("v0", "v1")
+    for name, config in (("v0", ctx.v0_config), ("v1", ctx.v1_config)):
+        if name not in configs and (name == "v0" or newer):
+            configs[name] = config
+            pools[name] = make_pool(ctx.game, config, mode.pool_states)
+    for name, pool in pools.items():
+        if not all(
+            a.phase == b.phase and a.players == b.players and np.array_equal(a.legal, b.legal)
+            for a, b in zip(ctx.pool, pool, strict=True)
+        ):
+            raise RuntimeError(f"{name}'s pool is not the run's states: the layouts' playouts parted")
+    order = [name for name in ("v0", "v1") if name in configs] + ([ctx.label] if newer else [])
     num_tokens = ctx.game.num_tokens(ctx.config.effective_max_players)
     edges = ctx.game.max_relation_edges
     options = _graph_options() if mode.graphs else {}
@@ -455,6 +500,7 @@ def section_model_time(ctx: Context) -> dict[str, Any]:
         ),
         "v3_reference_ms": V3_REFERENCE_MS,
         "v0_over_v3_measured": V0_OVER_V3_MEASURED,
+        "label": ctx.label,
         "rows": rows,
     }
 
@@ -464,13 +510,12 @@ def section_model_time(ctx: Context) -> dict[str, Any]:
             return create_model(config).to(mode.device).eval()
         return build
 
-    # v3 takes its eval server's padded records; 1889's models take flat rows.
+    # v3 takes its eval server's padded records; 1889's token models take flat
+    # rows, and a packed one its vectors alone.
     cases: list[tuple[str, Callable[[], torch.nn.Module], list[Entry] | None]] = [
         ("v3", factory(v3_config), None),
-        ("v0", factory(v0_config), v0_pool),
+        *((name, factory(configs[name]), pools[name]) for name in order),
     ]
-    if ctx.label != "v0":
-        cases.append((ctx.label, factory(ctx.config), ctx.pool))
     with torch.inference_mode(), _autocast(mode):
         for size in mode.sizes:
             for name, build, pool in cases:
@@ -479,9 +524,14 @@ def section_model_time(ctx: Context) -> dict[str, Any]:
                 net = None
                 try:
                     net = build()
+                    data: tuple[torch.Tensor, ...]
+                    changed: tuple[torch.Tensor, ...]
                     if pool is None:
                         data = padded_wire_inputs(v3_pool, size, 0, mode)
                         changed = padded_wire_inputs(v3_pool, size, size, mode)
+                    elif _packed(pool):
+                        data = packed_inputs(pool, size, 0, mode)
+                        changed = packed_inputs(pool, size, size, mode)
                     else:
                         k = launch_k(pool, size, (0, size))
                         row["k"] = k
@@ -507,13 +557,17 @@ def section_model_time(ctx: Context) -> dict[str, Any]:
 def model_time_ratios(
     rows: list[dict[str, Any]], sizes: tuple[int, ...], label: str = "v0",
 ) -> dict[str, dict[str, float]]:
-    """Each batch's v0 against v3, and the run's model against v0."""
+    """Each batch's v0 against v3, v1 against v0, and a run's model newer than
+    v1 against v1."""
     ms = {(r["case"], r["batch"]): r["gpu_ms"] for r in rows if "gpu_ms" in r}
+    pairs = [("v0", "v3"), ("v1", "v0")]
+    if label not in ("v0", "v1"):
+        pairs.append((label, "v1"))
     ratios: dict[str, dict[str, float]] = {}
     for size in sizes:
         by_batch: dict[str, float] = {}
-        for over, under in (("v0", "v3"), (label, "v0")):
-            if over != under and (over, size) in ms and (under, size) in ms:
+        for over, under in pairs:
+            if (over, size) in ms and (under, size) in ms:
                 by_batch[f"{over}_over_{under}"] = ms[(over, size)] / ms[(under, size)]
         ratios[str(size)] = by_batch
     return ratios
@@ -633,24 +687,30 @@ def nvidia_smi_memory() -> dict[str, Any]:
 class Launcher:
     """The serve loop's launch (``_infer_and_scatter``), in its buffers and order,
     without the workers: gather to pinned host buffers, flatten and round up to the
-    launch shape, copy, run under the persistent autocast, softmax, copy back."""
+    launch shape, copy, run under the persistent autocast, softmax, copy back. A
+    packed layout's launch has no relations to flatten: its vectors and masks."""
 
-    def __init__(self, game: Game, num_tokens: int, token_dim: int, num_players: int, max_batch: int, mode: Mode) -> None:
+    def __init__(
+        self, game: Game, input_shape: tuple[int, ...], num_players: int, max_batch: int, mode: Mode,
+        *, packed: bool = False,
+    ) -> None:
         self.mode = mode
+        self.packed = packed
         device = mode.device
         pin = device == "cuda"
         edges = game.max_relation_edges
         u_dim = game.policy.unified_dim
-        self.pin_s = torch.empty(max_batch, num_tokens, token_dim, dtype=torch.float16, pin_memory=pin)
+        self.pin_s = torch.empty(max_batch, *input_shape, dtype=torch.float16, pin_memory=pin)
+        # A packed model casts its fp16 wire itself, as the serve loop gives it.
         self.gpu_s = torch.empty(
-            max_batch, num_tokens, token_dim,
-            dtype=torch.float16 if mode.autocast else torch.float32, device=device,
+            max_batch, *input_shape,
+            dtype=torch.float16 if mode.autocast or packed else torch.float32, device=device,
         )
-        flat_rows = max_batch * edges
+        flat_rows = 0 if packed else max_batch * edges
         self.pin_rel = torch.empty(flat_rows, 5, dtype=torch.int16, pin_memory=pin)
         self.pin_rel_np = self.pin_rel.numpy()
         self.gpu_rel = torch.empty(flat_rows, 5, dtype=torch.int16, device=device)
-        self.filler = _flat_filler_rows(flat_rows, edges, num_tokens)
+        self.filler = _flat_filler_rows(flat_rows, edges, input_shape[0])
         self.pin_mask = torch.empty(max_batch, u_dim, dtype=torch.uint8, pin_memory=pin)
         self.gpu_mask = torch.zeros(max_batch, u_dim, dtype=torch.uint8, device=device)
         self.gpu_mask_bool = torch.zeros(max_batch, u_dim, dtype=torch.bool, device=device)
@@ -664,7 +724,7 @@ class Launcher:
         """A launch's shared-memory rows, before the serve loop gathers them. A
         server gets these from its workers, so a launch's time leaves them out."""
         return (
-            torch.from_numpy(np.stack([e.tokens for e in entries]).astype(np.float16)),
+            torch.from_numpy(np.stack([e.inputs for e in entries]).astype(np.float16)),
             torch.from_numpy(np.stack([e.legal for e in entries]).astype(np.uint8)),
             np.stack([e.records for e in entries]),
         )
@@ -676,16 +736,19 @@ class Launcher:
         actual_n = len(records)
         self.pin_s[:actual_n] = tokens
         self.pin_mask[:actual_n] = masks
-        flat = flatten_relation_records(records)
-        real_rows = len(flat)
-        relation_rows = launch_n * k
-        if real_rows > relation_rows:
-            raise RuntimeError(f"{real_rows} real rows don't fit {launch_n} x {k}")
-        self.pin_rel_np[:real_rows] = flat
-        self.pin_rel_np[real_rows:relation_rows] = self.filler[:relation_rows - real_rows]
+        relation_rows = 0
+        if not self.packed:
+            flat = flatten_relation_records(records)
+            real_rows = len(flat)
+            relation_rows = launch_n * k
+            if real_rows > relation_rows:
+                raise RuntimeError(f"{real_rows} real rows don't fit {launch_n} x {k}")
+            self.pin_rel_np[:real_rows] = flat
+            self.pin_rel_np[real_rows:relation_rows] = self.filler[:relation_rows - real_rows]
         batch = self.gpu_s[:launch_n]
         batch[:actual_n].copy_(self.pin_s[:actual_n], non_blocking=True)
-        self.gpu_rel[:relation_rows].copy_(self.pin_rel[:relation_rows], non_blocking=True)
+        if not self.packed:
+            self.gpu_rel[:relation_rows].copy_(self.pin_rel[:relation_rows], non_blocking=True)
         self.gpu_mask[:actual_n].copy_(self.pin_mask[:actual_n], non_blocking=True)
         if launch_n > actual_n:
             batch[actual_n:launch_n].zero_()
@@ -703,7 +766,9 @@ class Launcher:
         states = self.gpu_s[:launch_n]
         mask = self.gpu_mask_bool[:launch_n]
         with torch.inference_mode():
-            logits, values = model(states, mask, self.gpu_rel[:relation_rows])
+            logits, values = (
+                model(states, mask) if self.packed else model(states, mask, self.gpu_rel[:relation_rows])
+            )
             self.gpu_priors[:actual_n] = logits[:actual_n].softmax(dim=1).to(torch.float32)
             self.gpu_val[:actual_n] = values[:actual_n].to(torch.float32)
             self.pin_priors[:actual_n].copy_(self.gpu_priors[:actual_n], non_blocking=True)
@@ -723,6 +788,11 @@ class Launcher:
         relation_rows = self.inputs(wire, launch_n, k)
         kept = self.run(model, launch_n, len(entries), relation_rows, keep=keep)
         return 1000 * (time.perf_counter() - begin), kept
+
+
+def pair_key(launch_n: int, k: int) -> str:
+    """A launch shape's name: ``B=8,K=256``, or a packed layout's ``B=8`` (K is 0)."""
+    return f"B={launch_n},K={k}" if k else f"B={launch_n}"
 
 
 def choose_states(by_k: dict[int, list[Entry]], launch_n: int, k: int, number: int, rng: np.random.Generator) -> list[Entry]:
@@ -790,7 +860,8 @@ def section_compile(ctx: Context) -> dict[str, Any]:
         batch_shape_mode="bucketed",
         max_launch_batch=max(mode.buckets),
         autocast_dtype=torch.bfloat16 if mode.autocast else None,
-        input_dtype=torch.float16 if mode.autocast else torch.float32,
+        # The serve loop's: a packed model takes the fp16 wire in every mode.
+        input_dtype=torch.float16 if mode.autocast or spec.packed else torch.float32,
     )
     if mode.device == "cuda":
         torch.cuda.synchronize()
@@ -830,7 +901,7 @@ def section_launches(ctx: Context) -> dict[str, Any]:
         reasons_before = len(events.recompile_reasons) if events else 0
         for launch_n in mode.buckets:
             for k in mode.ks:
-                key = f"B={launch_n},K={k}"
+                key = pair_key(launch_n, k)
                 ms: list[float] = []
                 recorded: list[int] = []
                 differences = []
@@ -897,15 +968,17 @@ def section_replay(ctx: Context) -> dict[str, Any]:
             for k in mode.ks:
                 entries = choose_states(ctx.by_k, launch_n, k, 0, rng)
                 # A replay's new inputs, on their first and second forward.
-                by_pair[f"B={launch_n},K={k}"] = merge_differences([
+                by_pair[pair_key(launch_n, k)] = merge_differences([
                     _against_eager(launcher, model, base, entries, launch_n, k) for _ in range(2)
                 ])
         result["by_pair"] = by_pair
         result["against_eager"] = merge_differences(list(by_pair.values()))
 
         # K changes nothing but the filler: the same states at each K, compiled.
+        # A packed layout has one K, 0, and no filler.
         launch_n = next((b for b in reversed(mode.buckets) if b <= 64), mode.buckets[-1])
-        entries = choose_states(ctx.by_k, launch_n, mode.ks[0], 0, rng)
+        first_k = mode.ks[0]
+        entries = choose_states(ctx.by_k, launch_n, first_k, 0, rng)
         outputs = []
         wire = launcher.wire(entries)
         for k in mode.ks:
@@ -915,17 +988,17 @@ def section_replay(ctx: Context) -> dict[str, Any]:
             outputs.append(kept)
         result["filler_invariance"] = merge_differences([
             output_differences(other[:2], outputs[0][:2], outputs[0][2]) for other in outputs[1:]
-        ])
+        ]) if len(outputs) > 1 else None
 
         # A weight sync: load_state_dict in place, as _check_weight_sync does. The
         # replay must follow, or self-play would run on stale weights.
         saved = {name: value.clone() for name, value in base.state_dict().items()}
-        relation_rows = launcher.inputs(wire, launch_n, mode.ks[0])
+        relation_rows = launcher.inputs(wire, launch_n, first_k)
         before = launcher.run(model, launch_n, launch_n, relation_rows, keep=True)
         assert before is not None
         torch.manual_seed(7)
         base.load_state_dict({
-            name: value + 0.02 * torch.randn_like(value) if value.is_floating_point() else value
+            name: value + mode.sync_noise * torch.randn_like(value) if value.is_floating_point() else value
             for name, value in saved.items()
         }, strict=True)
         if mode.device == "cuda":
@@ -955,7 +1028,7 @@ def section_memory(ctx: Context) -> dict[str, Any]:
             for launch_n in mode.buckets:
                 for k in mode.ks:
                     entries = choose_states(ctx.by_k, launch_n, k, cycle, rng)
-                    latencies.setdefault(f"B={launch_n},K={k}", []).append(
+                    latencies.setdefault(pair_key(launch_n, k), []).append(
                         launcher.launch(model, entries, launch_n, k)[0]
                     )
                     launches += 1
@@ -1027,7 +1100,7 @@ def section_launch_sizes(ctx: Context) -> dict[str, Any]:
                         "launch_ms": statistics.median(launch_ms[len(launch_ms) // 2:]),
                         "forward_ms": statistics.median(forward_ms),
                     })
-                    print(f"  B={launch_n}, K={k}: {rows[-1]['forward_ms']:.3f} ms", flush=True)
+                    print(f"  {pair_key(launch_n, k)}: {rows[-1]['forward_ms']:.3f} ms", flush=True)
             marks.append(mark())
             ctx.save()
     forward = {(row["batch"], row["k"]): row["forward_ms"] for row in rows}
@@ -1035,8 +1108,9 @@ def section_launch_sizes(ctx: Context) -> dict[str, Any]:
         "rows": rows,
         # A launch that pads to the bucket today, at the size between instead.
         "between_against_bucket": {
-            f"B={size},K={k}": {
+            pair_key(size, k): {
                 "bucket": _next_power_of_two(size),
+                "k": k,
                 "forward_ms": forward[(size, k)],
                 "bucket_forward_ms": forward[(_next_power_of_two(size), k)],
                 "saving": 1 - forward[(size, k)] / forward[(_next_power_of_two(size), k)],
@@ -1063,8 +1137,10 @@ def _microseconds(samples: list[float]) -> dict[str, float]:
 def section_extraction(ctx: Context) -> dict[str, Any]:
     """A search leaf's extraction on one core of this CPU, by layout, after
     v1-design §5.9's measure: fill a human position, which writes its caches
-    back, apply each of its policy actions to a copy, and time the child's tokens
-    and records, the faster of two runs. In µs, by the parent's game phase."""
+    back, apply each of its policy actions to a copy, and time the child's
+    inputs, the faster of two runs: a token layout's tokens and records, a
+    packed layout's vector. In µs, by the parent's game phase. The run's
+    layout goes against the one before it: 2 against 1, or 3 against 2."""
     from games.g1889_starts import engine_options, load_start_positions
 
     game, config = ctx.game, ctx.config
@@ -1073,15 +1149,21 @@ def section_extraction(ctx: Context) -> dict[str, Any]:
         Path(config.start_positions_path or START_POSITIONS), capacity, engine_options(config),
     )
     rng = np.random.default_rng(3)
-    layouts = (1, 2)
-    tokens = {v: np.empty((game.num_tokens(capacity), game.token_dim(v)), np.float32) for v in layouts}
+    newest = max(2, get_model_input_spec(config).layout_version)
+    layouts = (newest - 1, newest)
+    specs = {v: input_spec_for(game, capacity, v) for v in layouts}
+    inputs = {v: np.empty(spec.input_shape, np.float32) for v, spec in specs.items()}
     records = np.empty((game.max_relation_edges, 4), np.uint8)
     actions = np.empty(game.policy.max_action_size, np.uint16)
     roots = {n: game.new_game(n, capacity, 0) for n in config.iter_player_counts()}
 
     def fill(state: Any, version: int) -> None:
-        game.fill_tokens(state, tokens[version], max_players=capacity, layout_version=version)
-        game.fill_relations_sparse(state, records, max_players=capacity)
+        if specs[version].packed:
+            assert game.fill_inputs is not None
+            game.fill_inputs(state, inputs[version], max_players=capacity, layout_version=version)
+        else:
+            game.fill_tokens(state, inputs[version], max_players=capacity, layout_version=version)
+            game.fill_relations_sparse(state, records, max_players=capacity)
 
     samples: dict[str, dict[int, list[float]]] = {}
     parents: dict[str, int] = {}
@@ -1108,17 +1190,19 @@ def section_extraction(ctx: Context) -> dict[str, Any]:
                     if best is not None:
                         samples[name][version].append(best)
     samples["all"] = {v: [x for by_layout in samples.values() for x in by_layout[v]] for v in layouts}
+    older = layouts[0]
     return {
         "positions": str(config.start_positions_path or START_POSITIONS),
         "cpu": _cpu_name(),
+        "layouts": list(layouts),
         "parents": parents,
         "by_game_phase": {
             name: {
-                "children": len(by_layout[2]),
+                "children": len(by_layout[newest]),
                 **{f"layout{v}": _microseconds(by_layout[v]) for v in layouts},
-                "mean_ratio": float(np.mean(by_layout[2]) / np.mean(by_layout[1])),
+                "mean_ratio": float(np.mean(by_layout[newest]) / np.mean(by_layout[older])),
             }
-            for name, by_layout in samples.items() if by_layout[1]
+            for name, by_layout in samples.items() if by_layout[older]
         },
     }
 
@@ -1220,9 +1304,10 @@ class Serving:
 @dataclass
 class Context:
     mode: Mode
-    label: str  # the run's model: "v0", "v1"
+    label: str  # the run's model: "v0", "v1", "v2"
     config: TrainingConfig
     v0_config: TrainingConfig
+    v1_config: TrainingConfig
     v3_config: TrainingConfig
     game: Game
     v3_game: Game
@@ -1238,7 +1323,7 @@ class Context:
             max_players = self.config.effective_max_players
             spec = get_model_input_spec(self.config)
             self._launcher = Launcher(
-                self.game, spec.num_tokens, spec.token_dim, max_players, max(self.mode.buckets), self.mode,
+                self.game, spec.input_shape, max_players, max(self.mode.buckets), self.mode, packed=spec.packed,
             )
         return self._launcher
 
@@ -1302,6 +1387,7 @@ def _mode_from_args(args: argparse.Namespace) -> Mode:
         mode = replace(
             mode, d_model=32, num_layers=1, pool_states=256, launches_per_pair=4, memory_cycles=2, iterations=2,
             rounds=2, train_steps=2, sizes=mode.sizes[:1], between=mode.between[:1], extraction_parents=5,
+            sync_noise=0.1,
         )
     return mode
 
@@ -1316,6 +1402,10 @@ def build_checks(sections: dict[str, dict[str, Any]], mode: Mode) -> list[dict[s
 
     def verdict(ok: bool) -> str:
         return "PASS" if ok else "FAIL"
+
+    # A launch's shape: (B, K), or a packed layout's B, which has no K.
+    packed = mode.ks == (0,)
+    shape = "B" if packed else "(B, K)"
 
     for name, section in sections.items():
         if section.get("status") == "error":
@@ -1339,11 +1429,20 @@ def build_checks(sections: dict[str, dict[str, Any]], mode: Mode) -> list[dict[s
                     measured = V0_OVER_V3_MEASURED.get(int(size))
                     detail = f"{value:.2f}" + (f"; the 5090 measured {measured:.2f} on 2026-11-05" if measured else "")
                     add(f"v0/v3 model time, batch {size}", "INFO", detail + uncompiled)
-                else:
+                elif under == "v0":
+                    # v1's launch blocker; a newer run reports it beside its own.
                     low, high = V1_OVER_V0_EXPECTED
+                    own = model_time.get("label", "v1") == "v1"
                     add(
-                        f"{over}/v0 model time, batch {size}", verdict(value <= 1.0) if mode.graphs else "INFO",
+                        f"{over}/v0 model time, batch {size}", verdict(value <= 1.0) if mode.graphs and own else "INFO",
                         f"{value:.2f}, expected {low}-{high} at a full batch and under 1 at any" + uncompiled,
+                    )
+                else:
+                    expected = V2_OVER_V1_EXPECTED.get(int(size))
+                    add(
+                        f"{over}/v1 model time, batch {size}", verdict(value <= 1.0) if mode.graphs else "INFO",
+                        f"{value:.2f}, " + (f"v2-design measured {expected:.2f}; " if expected else "")
+                        + "expected under 1 at any batch" + uncompiled,
                     )
 
     compile_section = sections.get("compile", {})
@@ -1362,15 +1461,16 @@ def build_checks(sections: dict[str, dict[str, Any]], mode: Mode) -> list[dict[s
                 f"{launches['compiles_after_warmup']}, expected 0 as N and B vary")
         unsettled = [key for key, pair in launches["pairs"].items() if not pair["settled"]]
         add(
-            "latency settles at every (B, K)", verdict(not unsettled) if mode.graphs else "INFO",
+            f"latency settles at every {shape}", verdict(not unsettled) if mode.graphs else "INFO",
             f"{len(launches['pairs']) - len(unsettled)} of {len(launches['pairs'])}"
             + (f"; not: {', '.join(unsettled[:6])}" if unsettled else ""),
         )
         if "recorded_once_each" in launches:
             add(
-                "each (B, K) records one graph", verdict(launches["recorded_once_each"]),
+                f"each {shape} records one graph", verdict(launches["recorded_once_each"]),
                 f"record launch numbers: {json.dumps(launches['record_launch_histogram'])}; "
-                "2.9.1's source says 1 at K = 256, whose warmup ran, and 2 elsewhere",
+                + ("2.9.1's source says 1 at every B, whose warmup ran" if packed
+                   else "2.9.1's source says 1 at K = 256, whose warmup ran, and 2 elsewhere"),
             )
         trees = launches.get("graph_trees", {})
         if "recorded_nodes" in trees:
@@ -1394,8 +1494,9 @@ def build_checks(sections: dict[str, dict[str, Any]], mode: Mode) -> list[dict[s
     if "against_eager" in replay and mode.compiled:
         add("compiled against eager, replay", verdict(differences_within_limits(replay["against_eager"])),
             _difference_line(replay["against_eager"]))
-        add("filler changes nothing, across K", verdict(differences_within_limits(replay["filler_invariance"])),
-            _difference_line(replay["filler_invariance"]))
+        if replay.get("filler_invariance") is not None:
+            add("filler changes nothing, across K", verdict(differences_within_limits(replay["filler_invariance"])),
+                _difference_line(replay["filler_invariance"]))
         sync = replay["weight_sync"]
         moved = sync["replay_against_before"]["logit_max_abs"]
         add(
@@ -1427,11 +1528,12 @@ def build_checks(sections: dict[str, dict[str, Any]], mode: Mode) -> list[dict[s
     if "between_against_bucket" in launch_sizes:
         for k in sorted({row["k"] for row in launch_sizes["rows"]}):
             add(
-                f"launch sizes between the buckets, K = {k}", "INFO",
+                f"launch sizes between the buckets, K = {k}" if k else "launch sizes between the buckets", "INFO",
                 "forward ms, with the saving on the bucket's: " + ", ".join(
                     f"B = {key.split(',')[0][2:]} {entry['forward_ms']:.2f} for {entry['bucket']}'s "
                     f"{entry['bucket_forward_ms']:.2f} ({entry['saving']:.0%})"
-                    for key, entry in launch_sizes["between_against_bucket"].items() if key.endswith(f"K={k}")
+                    for key, entry in launch_sizes["between_against_bucket"].items()
+                    if entry.get("k", int(key.split("K=")[-1]) if "K=" in key else 0) == k
                 ),
             )
         added = launch_sizes["added"]["between"]
@@ -1446,17 +1548,20 @@ def build_checks(sections: dict[str, dict[str, Any]], mode: Mode) -> list[dict[s
     extraction = sections.get("extraction", {})
     if "by_game_phase" in extraction:
         phases = extraction["by_game_phase"]
-        worst = max((name for name in phases if name != "all"), key=lambda name: phases[name]["layout2"]["mean"])
+        older, newest = extraction.get("layouts", (1, 2))
+        new, old = f"layout{newest}", f"layout{older}"
+        worst = max((name for name in phases if name != "all"), key=lambda name: phases[name][new]["mean"])
+        measured = EXTRACTION_MEASURED.get(newest, "")
         add(
-            "a leaf's extraction, layout 2", verdict(phases[worst]["layout2"]["mean"] <= EXTRACTION_MAX_MEAN_US),
-            f"mean {phases['all']['layout2']['mean']:.0f} us over all phases and {phases[worst]['layout2']['mean']:.0f} "
-            f"in game phase {worst}, p99 {phases[worst]['layout2']['p99']:.0f}; the dev box (a 9950X3D) measured "
-            f"24, 65, and 600. Limit {EXTRACTION_MAX_MEAN_US} in the worst phase, a tenth of a core at 200 leaves a second",
+            f"a leaf's extraction, layout {newest}", verdict(phases[worst][new]["mean"] <= EXTRACTION_MAX_MEAN_US),
+            f"mean {phases['all'][new]['mean']:.0f} us over all phases and {phases[worst][new]['mean']:.0f} "
+            f"in game phase {worst}, p99 {phases[worst][new]['p99']:.0f}; {measured}"
+            f"Limit {EXTRACTION_MAX_MEAN_US} in the worst phase, a tenth of a core at 200 leaves a second",
         )
         add(
-            "layout 2 against layout 1", "INFO",
+            f"layout {newest} against layout {older}", "INFO",
             ", ".join(f"{name} {phase['mean_ratio']:.2f}" for name, phase in phases.items())
-            + f"; layout 1's mean {phases['all']['layout1']['mean']:.0f} us",
+            + f"; layout {older}'s mean {phases['all'][old]['mean']:.0f} us",
         )
 
     train = sections.get("train_steps", {})
@@ -1490,8 +1595,8 @@ def print_summary(checks: list[dict[str, str]], output: Path) -> None:
 
 def _source_hashes() -> dict[str, str]:
     paths = (
-        "nn/transformer-1889.py", "nn/transformer-1889-v1.py", "nn/transformer-v3.py", "train/eval_server.py",
-        "train/gpu/nvidia.py", "cloud/profile_1889.py",
+        "nn/transformer-1889.py", "nn/transformer-1889-v1.py", "nn/transformer-1889-v2.py", "nn/transformer-v3.py",
+        "train/eval_server.py", "train/gpu/nvidia.py", "cloud/profile_1889.py",
     )
     return {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in paths}
 
@@ -1530,14 +1635,20 @@ def main(argv: list[str] | None = None) -> int:
         _fail(f"{args.config} is a {config.game} config; this profiles 1889 runs")
     label = MODEL_LABELS.get(config.model_path or "", Path(config.model_path or "model").stem)
     try:
-        v0_config = _model_config(TrainingConfig.from_json(Path(V0_CONFIG).read_text()), mode)
+        v0_config, v1_config = (
+            _model_config(TrainingConfig.from_json(Path(path).read_text()), mode) for path in (V0_CONFIG, V1_CONFIG)
+        )
         v3_config = TrainingConfig.from_json(Path(V3_CONFIG).read_text())
         game, v3_game = get_game(config), get_game(v3_config)
+        packed = get_model_input_spec(config).packed
     except Exception as exc:
         _fail(
             f"cannot build the games ({type(exc).__name__}: {exc}). Build the extensions: "
             "python setup.py build_ext --inplace (after a pull: python setup.py clean_build)"
         )
+    if packed:
+        # One vector a state and no relations: launches are B alone, K 0.
+        mode = replace(mode, ks=(0,), size_ks=(0,))
 
     report: dict[str, Any] = {
         "revision": REVISION,
@@ -1590,11 +1701,11 @@ def main(argv: list[str] | None = None) -> int:
             for stat, fn in (("min", np.min), ("mean", np.mean), ("median", np.median), ("max", np.max))
         },
     }
-    by_k = {k: [e for e in pool if e.record_count <= k] for k in mode.ks}
+    by_k = {k: [e for e in pool if e.record_count <= k] for k in mode.ks} if not packed else {0: pool}
     empty = [k for k, states in by_k.items() if not states]
     if empty:
         _fail(f"no playout state fits K = {empty}")
-    ctx = Context(mode, label, config, v0_config, v3_config, game, v3_game, pool, by_k, save)
+    ctx = Context(mode, label, config, v0_config, v1_config, v3_config, game, v3_game, pool, by_k, save)
 
     runners: dict[str, Callable[[Context], dict[str, Any]]] = {
         "model_time": section_model_time,

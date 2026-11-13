@@ -1136,7 +1136,6 @@ def main() -> None:
     max_players = config.effective_max_players
     state_size_int16 = game.state_size(max_players)
     num_tokens = game.num_tokens(max_players)
-    token_dim = model_input_spec.token_dim
     buffer = ReplayBuffer(
         game,
         config.buffer_capacity,
@@ -1343,27 +1342,37 @@ def main() -> None:
                 for i in range(warmup_n):
                     n = policy.phase_sizes[i]
                     dummy_mask[i, lut[i, :n].to(device)] = True
+                # Tokens, or a packed layout's vectors, which its model's
+                # clamped lookups take at random.
                 dummy_tokens = torch.randn(
-                    warmup_n, num_tokens, token_dim, device=device,
+                    warmup_n, *model_input_spec.input_shape, device=device,
                 )
                 # The trainer and NNEvaluator send this one format. A flat
                 # game's N comes from its records: value-0 rows, with N past 1
-                # so that ``mark_unbacked`` leaves it unspecialized.
+                # so that ``mark_unbacked`` leaves it unspecialized. A packed
+                # layout has no relations: its forward is (inputs, mask).
+                relation_format = game.relation_format_of(model_input_spec.layout_version)
                 dummy_relations = (
                     torch.zeros(
                         2 * warmup_n, FLAT_RELATION_RECORD_WIDTH,
                         dtype=torch.int16, device=device,
                     )
-                    if game.relation_format == "flat"
+                    if relation_format == "flat"
                     else torch.zeros(
                         warmup_n, game.num_relations, num_tokens, num_tokens,
                         dtype=torch.uint8, device=device,
                     )
+                    if relation_format == "dense"
+                    else None
                 )
-                for _t in (dummy_tokens, dummy_mask, dummy_relations):
+                inputs = (
+                    (dummy_tokens, dummy_mask) if dummy_relations is None
+                    else (dummy_tokens, dummy_mask, dummy_relations)
+                )
+                for _t in inputs:
                     mark_unbacked(_t, 0)
-                model(dummy_tokens, dummy_mask, dummy_relations)
-                del dummy_tokens, dummy_relations
+                model(*inputs)
+                del dummy_tokens, dummy_relations, inputs
                 del dummy_mask
             torch.cuda.synchronize()
             print("  Model compiled.")

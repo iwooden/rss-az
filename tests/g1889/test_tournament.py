@@ -1,7 +1,9 @@
 """1889 tournaments (``train/tournament.py``; 1889/v1-design.md §8): games through the
 ``Game`` adapter on a seat-balanced schedule, seats counted from the player who acts
 first, a pairwise score with its standard error, and checkpoints of one game and one
-set of engine options; and v0 and v1, on their two token layouts, in one game."""
+set of engine options; v0 and v1, on their two token layouts, in one game; and v1 and
+v2, on layout 2's tokens and records and layout 3's packed vectors (1889/v2-design.md
+§7.2)."""
 
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ CONFIG = TrainingConfig(
 )
 GAME = get_game(CONFIG)
 V1_CONFIG = dataclasses.replace(CONFIG, model_path="nn/transformer-1889-v1.py", terminal_rank_tau=0.05)
+V2_CONFIG = dataclasses.replace(V1_CONFIG, model_path="nn/transformer-1889-v2.py")
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +52,7 @@ def checkpoints(tmp_path_factory) -> dict[str, Path]:
         "b": dataclasses.replace(CONFIG, terminal_rank_tau=0.05),
         "uncapped": dataclasses.replace(CONFIG, auction_pass_payout_cap=0),
         "v1": V1_CONFIG,
+        "v2": V2_CONFIG,
     }
     for seed, (name, config) in enumerate(configs.items()):
         torch.manual_seed(seed)
@@ -148,6 +152,62 @@ def test_v0_and_v1_share_a_game_each_on_its_own_layout(checkpoints, monkeypatch,
     assert fills == [{(1, 108)}, {(2, 109)}]
     assert trunk_rows == [{95}, {80}]
     assert [(e.layout_version, e.token_dim, e.terminal_rank_tau) for e in evaluators] == [(1, 108, 0.0), (2, 109, 0.05)]
+
+
+@pytest.mark.parametrize("num_players", [3, 4, 5])
+def test_v1_and_v2_share_a_game_each_on_its_own_layout(checkpoints, monkeypatch, capsys, num_players):
+    """v1's evaluator fills tokens and records and v2's packed vectors, in one
+    game: each forward takes its own model's arguments, v2's two, and v2's trunk
+    is its 45 rows."""
+    fills: list[set[tuple[str, int, int]]] = []
+    trunk_rows: list[set[int]] = []
+    arguments: list[set[int]] = []
+    evaluators: list[tournament.NNEvaluator] = []
+
+    class Spy(tournament.NNEvaluator):
+        def __init__(self, game, model, *args, **kwargs):
+            filled: set[tuple[str, int, int]] = set()
+            rows: set[int] = set()
+            counts: set[int] = set()
+
+            def spy(kind, fill):
+                def wrapped(state, out, *, max_players, layout_version):
+                    filled.add((kind, layout_version, out.shape[-1]))
+                    fill(state, out, max_players=max_players, layout_version=layout_version)
+                return wrapped
+
+            game = dataclasses.replace(
+                game, fill_tokens=spy("tokens", game.fill_tokens), fill_tokens_batch=spy("tokens", game.fill_tokens_batch),
+                fill_inputs=spy("vectors", game.fill_inputs), fill_inputs_batch=spy("vectors", game.fill_inputs_batch),
+            )
+            model.blocks[0].register_forward_hook(lambda _block, inputs, _output: rows.add(inputs[0].shape[1]))
+            model.register_forward_pre_hook(lambda _model, inputs: counts.add(len(inputs)))
+            super().__init__(game, model, *args, **kwargs)
+            fills.append(filled)
+            trunk_rows.append(rows)
+            arguments.append(counts)
+            evaluators.append(self)
+
+    monkeypatch.setattr(tournament, "NNEvaluator", Spy)
+    schedule = tournament._balanced_schedule
+    monkeypatch.setattr(tournament, "_balanced_schedule", lambda *args: list(schedule(*args))[:2])
+    out = _tournament(
+        monkeypatch, capsys, f"{checkpoints['v1']},{checkpoints['v2']}", "--device", "cpu",
+        "--simulations", "2", "--search-batch-size", "2", "--games-per-pair", "1",
+        "--num-players", str(num_players), "--sample-moves", "10",
+    )
+    assert "All 2 games completed" in out
+    assert "[0] transformer-1889-v1 epoch 3:" in out and "input layout 2" in out
+    assert "[1] transformer-1889-v2 epoch 4:" in out and "input layout 3" in out
+    mean, played = _groups(r"\[0\] vs \[1\]: (\d\.\d+) ± \d\.\d+  \((\d+) games\)", out)
+    assert 0 <= float(mean) <= 1 and int(played) == 2
+
+    assert fills == [{("tokens", 2, 109)}, {("vectors", 3, 5108)}]
+    assert trunk_rows == [{80}, {45}]
+    assert arguments == [{3}, {2}]
+    assert [(e.layout_version, e.input_spec.packed, e.terminal_rank_tau) for e in evaluators] == [
+        (2, False, 0.05), (3, True, 0.05),
+    ]
 
 
 def test_worker_processes_play_the_games_the_seed_gives(checkpoints, monkeypatch):
